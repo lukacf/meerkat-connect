@@ -135,7 +135,7 @@ pub(super) fn proposal_schema() -> Value {
                 "required":["kind"],"properties":{"kind":{"const":"declared_secret_slots"}}},
             "operations":{"type":"array","minItems":1,"maxItems":128,"uniqueItems":true,
                 "items":{"type":"string","minLength":1,"maxLength":128}},
-            "agent":{"type":"string"},
+            "agent":consumer_agent_schema(),
             "expires_in_ms":{"type":["integer","null"],"minimum":1},
             "tool_policy":tool_policy_schema(),
         }})
@@ -186,7 +186,7 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
         agent: proposal.agent, expires_in_ms: proposal.expires_in_ms, tool_policy: proposal.tool_policy };
     let (config, slots) = checked_configuration(&selected, &selection).map_err(|_| unavailable())?;
     let prepared = match &owner.tasks {
-        Some(tasks) => tasks.prepare(call, &current, plan, &selection.agent).await,
+        Some(tasks) => tasks.prepare_captured_consumer(call, &current, plan).await,
         None => Ok(None),
     };
     if let Some(refreshed) = current.check_tool_authorization(call, plan)? { current = refreshed; }
@@ -195,6 +195,7 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
         toolkit_mobkit::private_originals::PrivateOriginalError::Denied
         | toolkit_mobkit::private_originals::PrivateOriginalError::Conflict => ToolError::access_denied(call.name),
     })?.ok_or_else(|| ToolError::access_denied(call.name))?;
+    require_captured_consumer(call.name, &selection.agent, &task)?;
     // This alternative has no application-policy or terminal fallback. The
     // existing task grant permits the request, never realm administration.
     if task.console_login().is_none()

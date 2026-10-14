@@ -22,6 +22,15 @@ impl InstalledServiceTaskSource {
     ) -> Result<Option<InstalledServiceTask>, PrivateOriginalError> {
         self.prepare_selected(call, context, plan, Some(agent)).await
     }
+    /// Prepare only this helper's captured waiting consumer through the same
+    /// source, audience and currentness checks. This performs no review or
+    /// effect and does not accept or resolve a proposed member name.
+    pub async fn prepare_captured_consumer(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
+    ) -> Result<Option<InstalledServiceTask>, PrivateOriginalError> {
+        self.prepare_selected(call, context, plan, None).await
+    }
     /// Software review has no proposed target principal. Select the waiting
     /// member from this exact helper's existing canonical acquisition custody.
     pub async fn prepare_software(

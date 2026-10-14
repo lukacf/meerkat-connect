@@ -446,6 +446,15 @@ async fn public_mcp_review_uses_the_actual_waiting_task_and_separate_no_connecto
         let snapshot = acquisition(&fixture,&dispatch).await;
         assert!(matches!(fixture.source.prepare_service_task(fixture.store.clone(),snapshot.clone(),
             "wrong-consumer", "unrelated-agent").await, Err(PrivateOriginalError::Denied)));
+        let captured = snapshot.request().host().continuation.native_original.as_ref().unwrap()
+            .member.as_ref().unwrap().member.clone();
+        let task = fixture.source.prepare_service_task(fixture.store.clone(), snapshot.clone(),
+            "captured-consumer", &captured).await.unwrap().unwrap();
+        assert_eq!(task.consumer_member(), Some(captured.as_str()));
+        let before = fixture.source.store.get(&fixture.source.key(&task.parent).unwrap()).await.unwrap().unwrap();
+        assert_eq!(task.consumer_member(), Some(captured.as_str()));
+        assert_eq!(fixture.source.store.get(&before.key).await.unwrap().unwrap(), before,
+            "consumer guidance does not issue a grant or publish an input");
         let mut config = reviewed_config(fixture.source.scope.realm.as_str());
         config.connector = None;
         config.access = Some(meerkat_core::McpServerAccess::allowing(["read".to_owned()]));

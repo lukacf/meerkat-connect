@@ -410,6 +410,11 @@ impl InstalledServiceTask {
             toolkit_catalog::AcquisitionPhase::Cancelled | toolkit_catalog::AcquisitionPhase::Expired
                 | toolkit_catalog::AcquisitionPhase::Failed))
     }
+    /// Exact native member captured by this already validated waiting task.
+    /// This is a proposal selector, not authority or a display-name resolver.
+    pub fn consumer_member(&self) -> Option<&str> {
+        self.task.member.as_ref().map(|member| member.member.as_str())
+    }
     /// Process custody from the actual parent original, never an HTTP label.
     pub fn console_login(&self) -> Option<&crate::private_host::ConsoleLoginHandle> {
         self.console_login.as_ref()

@@ -112,3 +112,24 @@ fn optional_tool_policy_preserves_legacy_selection_and_cannot_supply_candidate_a
         tool_policy: None };
     assert!(serde_json::to_value(selection).unwrap().get("tool_policy").is_none());
 }
+
+#[test]
+fn captured_consumer_mismatch_returns_exact_model_visible_guidance_without_resolution() {
+    let captured = "mk--fixture_cmain";
+    for proposed in ["Fixture assistant", "original", "fixture:main", "mk--fixture_cmain "] {
+        let error = validate_captured_consumer(SETUP_PUBLIC_SERVICE_REQUEST, proposed, captured).unwrap_err();
+        let ToolError::InvalidArguments { name, reason } = error else {
+            panic!("a validated name mismatch must explain the exact input correction")
+        };
+        assert_eq!(name, SETUP_PUBLIC_SERVICE_REQUEST);
+        assert!(reason.contains("\"mk--fixture_cmain\""));
+        assert!(reason.contains("same job, raw operations and requested lifetime"));
+        assert!(reason.contains("has not entered access review"));
+    }
+    assert!(validate_captured_consumer(SETUP_PUBLIC_SERVICE_REQUEST, captured, captured).is_ok());
+    assert!(consumer_agent_schema()["description"].as_str().unwrap().contains("not a display name"));
+    let public = serde_json::to_value(public::installed_public_service_request_definition()).unwrap();
+    let account = serde_json::to_value(installed_account_request_definition()).unwrap();
+    assert!(public.to_string().contains("Exact native member identifier"));
+    assert!(account.to_string().contains("Exact native member identifier"));
+}

@@ -348,6 +348,28 @@ fn joined_review<T>(result: Result<T, ConnectError>) -> Result<(), ConnectError>
     }
 }
 
+fn consumer_agent_schema() -> Value {
+    json!({"type":"string", "description":"Exact native member identifier of the captured waiting task, not a display name or role label. If this tool returns a validated consumer mismatch, use only its exact returned selector with the same job, raw operations and requested lifetime."})
+}
+
+// The caller invokes this only after preparing the captured task and checking
+// the borrowed call again. A mismatch discloses no unrelated member or grant.
+fn require_captured_consumer(name: &str, proposed: &str,
+    task: &toolkit_mobkit::private_originals::InstalledServiceTask) -> Result<(), ToolError> {
+    let captured = task.consumer_member().ok_or_else(|| ToolError::unavailable(name,
+        meerkat_core::ToolUnavailableReason::TemporarilyUnavailable))?;
+    validate_captured_consumer(name, proposed, captured)
+}
+
+fn validate_captured_consumer(name: &str, proposed: &str, captured: &str) -> Result<(), ToolError> {
+    if proposed != captured {
+        let exact = serde_json::to_string(captured).map_err(|_| unavailable())?;
+        return Err(ToolError::InvalidArguments { name: name.into(), reason: format!(
+            "agent must be the captured waiting-task member {exact}, not a display name or role label. Correct only agent and resubmit the same job, raw operations and requested lifetime. This request has not entered access review.") });
+    }
+    Ok(())
+}
+
 struct RequestTool {
     checked: Arc<CheckedInstalls>,
     realm: RealmLocator,
@@ -410,7 +432,7 @@ impl RequestTool {
         // A task is offered only by the existing installed acquisition owner.
         // Unsupported requester/route authority leaves account-only setup valid.
         let task = match &self.tasks {
-            Some(tasks) => tasks.prepare(call, &current, plan, &proposal.agent).await,
+            Some(tasks) => tasks.prepare_captured_consumer(call, &current, plan).await,
             None => Ok(None),
         };
         // Revalidate this actual call after every preparation outcome, before
@@ -421,6 +443,7 @@ impl RequestTool {
             toolkit_mobkit::private_originals::PrivateOriginalError::Conflict
             | toolkit_mobkit::private_originals::PrivateOriginalError::Denied => ToolError::access_denied(call.name),
         })?;
+        if let Some(task) = &task { require_captured_consumer(call.name, &proposal.agent, task)?; }
         if task.is_none() && proposal.tool_policy.is_some() { return Err(ToolError::access_denied(call.name)); }
         let selection = InstalledAccountSelection {
             agent: proposal.agent, expires_in_ms: proposal.expires_in_ms,
@@ -599,7 +622,7 @@ pub fn installed_account_request_definition() -> ToolDef {
 
 fn oauth_proposal_schema() -> Value {
     json!({"type":"object","additionalProperties":false,"required":["job_id","connector","operations","agent","expires_in_ms"],
-            "properties":{"job_id":{"type":"string"},"agent":{"type":"string"},"expires_in_ms":{"type":["integer","null"],"minimum":1},
+            "properties":{"job_id":{"type":"string"},"agent":consumer_agent_schema(),"expires_in_ms":{"type":["integer","null"],"minimum":1},
                 "tool_policy":tool_policy_schema(),
                 "connector":{"type":"object","additionalProperties":false,"required":["slot_id","issuer","client","resource","scopes","strategy_id","account_selection"],
                     "properties":{"slot_id":{"type":"string"},"issuer":{"type":"string"},"client":{"type":"string"},"resource":{"type":"string"},
