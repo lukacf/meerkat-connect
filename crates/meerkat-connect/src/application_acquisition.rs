@@ -153,8 +153,8 @@ pub(crate) fn read_application_acquisition(
     let policy = meerkat_core::CompiledApplicationToolPolicy::parse_canonical_json(
         &checked(&prepared.application_tool_policy)?,
     ).map_err(|_| HostLifetimeError::InvalidSelection)?;
-    let helper = prepared.helper_projection().map_err(|_| HostLifetimeError::InvalidSelection)?
-        .with_public_research_from_policy(&policy);
+    let helper = prepared.helper_projection_for_policy(&policy)
+        .map_err(|_| HostLifetimeError::InvalidSelection)?;
     Ok(Some(SelectedApplicationAcquisition { config, prepared, prepared_bytes, helper }))
 }
 

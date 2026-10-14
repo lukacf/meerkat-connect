@@ -263,6 +263,76 @@ fn early_phase_needs_no_original_surface_and_preserves_explicit_policy() {
     assert!(phase.captured.lock().unwrap().is_empty());
 }
 #[test]
+fn dedicated_public_research_compilation_matches_driver_and_retained_resource() {
+    use meerkat_core::{CompiledMemberToolAction, CompiledMemberToolGrant, CompiledToolConsequence};
+    use meerkat_mobkit::mob_handle_runtime::MobBootstrapSpec;
+    for enabled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut input = selected(&root);
+        input.helper_tools = ApplicationSetupTools::CheckedInstallation;
+        assert_eq!(input.helper_profile, ApplicationSetupProfile::Dedicated);
+        let names = ["setup_read_github", "setup_search_github"];
+        if enabled {
+            let member = input.tool_policy.members.iter_mut()
+                .find(|member| member.member_identity == input.helper.member.member).unwrap();
+            member.grants.extend(names.map(|name| CompiledMemberToolGrant {
+                tool_name: name.into(), action: CompiledMemberToolAction::Invoke,
+                consequence: CompiledToolConsequence::R1,
+            }));
+            member.grants.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
+        }
+        let expected_policy = input.tool_policy.clone().compile().unwrap();
+        // This is the production order: capture the reserved definition first,
+        // then invoke the same bootstrap composition called by Driver.
+        let phase = input.validate().unwrap().prepare(super::super::tests::prepared(&root)).unwrap();
+        let service = Arc::new(meerkat_session::EphemeralSessionService::new(
+            ReportBundleSurfaceProbe(Arc::new(Mutex::new(None))), 1,
+        ));
+        let spec = MobBootstrapSpec::new(phase.definition().clone(),
+            meerkat_mob::MobStorage::in_memory(), service);
+        let spec = phase.prepare_helper_bootstrap(spec).unwrap();
+        assert_eq!(&spec.definition, phase.definition());
+        assert_eq!(phase.policy_bytes, expected_policy);
+        assert_eq!(phase.resource.helper_projection().unwrap().server(), phase.server());
+        for name in names {
+            assert_eq!(phase.server().access.as_ref().unwrap().permits(name), enabled);
+        }
+        // Complete only an inert synthetic surface fixture here; this is not
+        // evidence of native held completion or a live MCP operation.
+        phase.retain_owner(owner_selection(&phase, None)).unwrap();
+        phase.capture(0, &surface(false)).unwrap();
+        let mut helper_surface = surface(true);
+        if enabled { helper_surface.tools.extend(names.map(identity)); }
+        phase.capture(1, &helper_surface).unwrap();
+        let (setup, _) = phase.complete_bundle(&root.join("complete")).unwrap();
+        let retained = setup.helper_projection().unwrap();
+        assert_eq!(retained.server(), phase.server());
+        assert_eq!(setup.helper_projection_for_policy(phase.policy.compiled()).unwrap().server(),
+            &setup.server);
+        let mut opposite_policy = phase.policy.compiled().clone();
+        let selected_member = opposite_policy.members.iter_mut()
+            .find(|member| member.member_identity == setup.helper.member.member).unwrap();
+        if enabled {
+            selected_member.grants.retain(|grant| !names.contains(&grant.tool_name.as_str()));
+        } else {
+            selected_member.grants.extend(names.map(|name| CompiledMemberToolGrant {
+                tool_name: name.into(), action: CompiledMemberToolAction::Invoke,
+                consequence: CompiledToolConsequence::R1,
+            }));
+            selected_member.grants.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
+        }
+        assert!(setup.helper_projection_for_policy(&opposite_policy).is_err(),
+            "both missing and extra policy-selected research entries refuse");
+        let completed = super::super::resource::SetupResourceSelection::from_completed(&setup).unwrap();
+        assert_eq!(completed.helper_projection().unwrap().server(), phase.server());
+        let mut unexpected = setup.clone();
+        unexpected.server.access.as_mut().unwrap().allowed_operations.insert("unselected_operation".into());
+        assert!(unexpected.helper_projection().is_err(), "unknown ceiling entries still refuse");
+    }
+}
+
+#[test]
 fn completion_requires_every_selected_output_and_copies_exact_full_bound() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();

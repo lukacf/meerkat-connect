@@ -254,7 +254,8 @@ impl PreparedApplicationSetup {
                     self.helper_tools,
                 )
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            .with_retained_public_research(&self.server);
         if projection.member() != &self.helper.member || projection.server() != &self.server {
             return Err("prepared application helper differs from retained resources".into());
         }
@@ -300,6 +301,19 @@ impl PreparedApplicationSetup {
         // This does not stand in for a call on the actual live provider result.
         self.project_roster(std::slice::from_ref(&self.source_helper_roster))?;
         Ok(projection)
+    }
+
+    /// Bind retained configuration to the separately authenticated application
+    /// policy. Neither absent nor extra public-research ceiling entries can be
+    /// repaired during restoration or prewrite completion.
+    pub(crate) fn helper_projection_for_policy(
+        &self, policy: &meerkat_core::CompiledApplicationToolPolicy,
+    ) -> Result<PreparedSetupHelper, String> {
+        let helper = self.helper_projection()?.with_public_research_from_policy(policy);
+        if helper.server() != &self.server {
+            return Err("retained helper ceiling differs from its compiled policy".into());
+        }
+        Ok(helper)
     }
 
     /// Pure projection over one actual RosterProvider result. Authenticate the

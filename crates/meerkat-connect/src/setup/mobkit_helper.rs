@@ -158,19 +158,32 @@ impl PreparedSetupHelper {
     /// This finite ceiling is not authority: native target lineage and the
     /// compiled application policy still admit each call independently.
     pub fn with_public_research_from_policy(
-        mut self,
+        self,
         policy: &CompiledApplicationToolPolicy,
     ) -> Self {
+        let member_identity = self.member.member.clone();
+        self.with_public_research_operations(|name| policy.members.iter().any(|member| {
+            member.member_identity == member_identity
+                && member.grants.iter().any(|grant| {
+                    grant.tool_name == name && grant.action == CompiledMemberToolAction::Invoke
+                })
+        }))
+    }
+
+    /// Reconstruct only the two optional ceiling entries from the already
+    /// retained application configuration. Callers still compare the complete
+    /// member, server and definition. This does not establish policy authority.
+    pub(crate) fn with_retained_public_research(self, server: &McpServerConfig) -> Self {
+        self.with_public_research_operations(|name| server.access.as_ref()
+            .is_some_and(|access| access.allowed_operations.contains(name)))
+    }
+
+    fn with_public_research_operations(mut self, permits: impl Fn(&str) -> bool) -> Self {
         if self.public_research_ceiling {
             let access = self.server.access.as_mut().expect("prepared helper MCP ceiling");
             for name in ["setup_search_github", "setup_read_github"] {
                 access.allowed_operations.remove(name);
-                if policy.members.iter().any(|member| {
-                    member.member_identity == self.member.member
-                        && member.grants.iter().any(|grant| {
-                            grant.tool_name == name && grant.action == CompiledMemberToolAction::Invoke
-                        })
-                }) {
+                if permits(name) {
                     access.allowed_operations.insert(name.into());
                 }
             }

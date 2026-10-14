@@ -169,6 +169,8 @@ impl ValidatedApplicationCompilation {
         self,
         prepared: PreparedResources,
     ) -> Result<ApplicationSetupCompilation, String> {
+        let policy = PreparedInstalledToolPolicy::from_canonical(&self.policy_bytes)
+            .map_err(|error| error.to_string())?;
         let mut input = self.input;
         let source_helper_member = input.helper.member.clone();
         let source_helper_roster = input.roster[self.roster_index].clone();
@@ -179,7 +181,8 @@ impl ValidatedApplicationCompilation {
                 source_helper_member.clone(),
                 input.helper_tools,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            .with_public_research_from_policy(policy.compiled());
         let mut definition = self.definition;
         projection
             .compose_definition(&mut definition)
@@ -196,15 +199,14 @@ impl ValidatedApplicationCompilation {
                 source_helper_member.clone(),
                 input.helper_tools,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            .with_public_research_from_policy(policy.compiled());
         if retained.member() != projection.member()
             || retained.server() != projection.server()
             || !prepared.artifact_directory.is_absolute()
         {
             return Err("resource result differs from its retained handoff".into());
         }
-        let policy = PreparedInstalledToolPolicy::from_canonical(&self.policy_bytes)
-            .map_err(|error| error.to_string())?;
         let resources = PreparedApplicationResources {
             artifact_directory: prepared.artifact_directory,
             handoff: SelectedHostArtifact { path: handoff_path, sha256: hash(&bytes) },
@@ -403,6 +405,19 @@ impl ApplicationSetupCompilation {
     }
     pub(crate) fn helper_projection(&self) -> Result<PreparedSetupHelper, String> {
         self.resource.helper_projection()
+    }
+
+    /// Driver composition reuses the exact policy-bound resource selected
+    /// before the reserved definition was captured. It cannot expand it later.
+    pub(crate) fn prepare_helper_bootstrap(
+        &self, spec: meerkat_mobkit::mob_handle_runtime::MobBootstrapSpec,
+    ) -> Result<meerkat_mobkit::mob_handle_runtime::MobBootstrapSpec, String> {
+        let helper = self.helper_projection()?
+            .with_public_research_from_policy(self.policy.compiled());
+        if helper.server() != &self.server {
+            return Err("prepared helper ceiling differs from its compiled policy".into());
+        }
+        helper.compose(spec).map_err(|error| error.to_string())
     }
     pub fn registry(&self) -> Arc<ToolConsequencePolicyRegistry> {
         self.policy.registry()
@@ -630,7 +645,7 @@ impl ApplicationSetupCompilation {
                 sha256: hash(&self.policy_bytes),
             },
         };
-        setup.helper_projection()?;
+        setup.helper_projection_for_policy(self.policy.compiled())?;
         let manifest = write_bundle(&output, &setup, &self.policy_bytes)?;
         Ok((setup, manifest))
     }

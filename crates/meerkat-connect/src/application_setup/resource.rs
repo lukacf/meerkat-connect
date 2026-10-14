@@ -85,7 +85,8 @@ impl SetupResourceSelection {
                 let projection = profile.project(
                     PreparedSetupConnection::from_preparer_output(&bytes).map_err(|error| error.to_string())?,
                     source.clone(), *tools,
-                ).map_err(|error| error.to_string())?;
+                ).map_err(|error| error.to_string())?
+                    .with_retained_public_research(&self.server);
                 if projection.member() != helper || projection.server() != &self.server {
                     return Err("prepared helper projection changed".into());
                 }
