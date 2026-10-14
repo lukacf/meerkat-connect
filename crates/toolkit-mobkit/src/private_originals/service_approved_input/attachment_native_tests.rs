@@ -722,6 +722,58 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
     })))
     .catch_unwind()
     .await;
+    // Failure-only observation of the SAME native runtime store. This reads
+    // existing protected audit records before normal cleanup; it neither
+    // authorizes an operation nor replaces the original failure or assertion.
+    if public && !matches!(&outcome, Ok(Ok(()))) {
+        let observed = tokio::time::timeout(WAIT,
+            runtime_store.load_input_states_strict(&LogicalRuntimeId::for_session(&fixture.session))).await;
+        match observed {
+            Ok(Ok(rows)) => for row in rows {
+                let Ok(encoded) = serde_json::to_value(&row) else { continue; };
+                let Some(audit) = encoded.get("authorization_audit") else { continue; };
+                let Ok(records) = serde_json::from_value::<Vec<
+                    meerkat_authorization_contracts::audit::StoredAuthorizationAuditObservation
+                >>(audit.clone()) else { continue; };
+                for (index, record) in records.iter().enumerate() {
+                    use meerkat_authorization_contracts::audit::{AuditObservation, AuditTarget};
+                    let observation = &record.observation;
+                    let (kind, target, reason, publication, observed_at) = match &observation.observation {
+                        AuditObservation::Prepared { target, policy } =>
+                            ("prepared", Some(target.as_ref()), None, Some(policy.publication_sequence), Some(policy.observed_at_ms)),
+                        AuditObservation::Refused { target, reason } =>
+                            ("refused", Some(target.as_ref()), Some(*reason), None, None),
+                        AuditObservation::AuthorizationUnavailable { target } =>
+                            ("authorization_unavailable", Some(target.as_ref()), None, None, None),
+                        AuditObservation::Entry => ("entry", None, None, None, None),
+                        AuditObservation::Outcome { .. } => ("outcome", None, None, None, None),
+                        AuditObservation::ReviewAttemptStarted { .. } => ("review_attempt_started", None, None, None, None),
+                        AuditObservation::MandatoryHookWithheld { .. } => ("mandatory_hook_withheld", None, None, None, None),
+                    };
+                    // Do not print prompts, tool arguments/digests, credentials,
+                    // accounts, endpoints, grant lineages or output payloads.
+                    let target = match target {
+                        Some(AuditTarget::Model(model)) => serde_json::json!({
+                            "kind": "model", "usage": model.usage,
+                            "hosted_capability_count": model.hosted_capabilities.len(),
+                        }),
+                        Some(AuditTarget::Tool { call_id, tool_name, .. }) =>
+                            serde_json::json!({"kind": "tool", "call_id": call_id, "tool_name": tool_name}),
+                        Some(_) => serde_json::json!({"kind": "other"}),
+                        None => serde_json::Value::Null,
+                    };
+                    eprintln!("{}", serde_json::json!({
+                        "event": "attachment_control_native_authorization_audit",
+                        "input_id": row.state.input_id, "index": index,
+                        "operation_id": observation.operation_id, "run_id": observation.run_id,
+                        "kind": kind, "target": target, "reason": reason,
+                        "publication_sequence": publication, "observed_at_ms": observed_at,
+                    }));
+                }
+            },
+            _ => eprintln!("attachment control native audit observation unavailable"),
+        }
+    }
     // Release before shutdown on both success and panic. Native owns process
     // termination; this test does not kill a provider or detached OS process.
     endpoint.release();
