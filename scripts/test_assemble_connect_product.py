@@ -1785,6 +1785,105 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 c.public_review(wrong, accepted, results, operation, owner, VERIFIER.ACQUISITION_ROUTE, task_scope, source_authority)
 
+    def test_controller_reprepare_feedback_is_single_and_pre_tool_only(self):
+        v = VERIFIER
+        request, operation = v.ACQUISITION_REQUEST, v.ACQUISITION_OPERATION
+        rows = [{"role": "user", "content": request},
+                {"role": "user", "content": v.ORIGINAL_CONTROLLER_FEEDBACK}]
+        self.assertEqual(v.original_catalog_history(rows, request, operation, 0,
+                         allow_controller_recovery=True), 1)
+        with self.assertRaises(AssertionError): v.original_catalog_history(rows, request, operation, 0)
+        for wrong in (rows + [rows[1]], [rows[0], {"role": "assistant", "tool_calls": [{}]}, rows[1]],
+                      [rows[0], {"role": "user", "content": v.ORIGINAL_CONTROLLER_FEEDBACK + " trailing"}]):
+            with self.assertRaises(AssertionError):
+                v.original_catalog_history(wrong, request, operation, 0, allow_controller_recovery=True)
+        with mock.patch.object(v.InstalledAcquisitionProvider, "__init__", return_value=None):
+            provider = v.InstalledPublicCatalogProvider(Path("unused"), None)
+            self.assertFalse(v.InstalledAcquisitionProvider.controller_reprepare)
+            self.original_catalog_response_control(provider, controller_recovery=True)
+
+    def controller_reprepare_state(self):
+        target = {"kind": "model", "model": "fixture-original-model", "provider": "self_hosted",
+                  "usage": "controller_inference", "hosted_capabilities": [], "endpoint": "inert-only"}
+        refused = {"kind": "refused", "reason": "reprepare_required", "target": target}
+        def row(op, value):
+            return {"contributors": [{"input_id": "B"}], "observation": {
+                "run_id": "run-B", "operation_id": op, "observation": value}}
+        return {"input_id": "B", "last_run_id": "run-B", "authorization_audit": [
+            row("refused", refused), row("refused", copy.deepcopy(refused)),
+            row("recovered", {"kind": "prepared", "target": copy.deepcopy(target),
+                "policy": {"publication_sequence": 94, "observed_at_ms": 100}}),
+            row("recovered", {"kind": "entry"}), row("recovered", {"kind": "outcome",
+                "outcome": {"kind": "http_response", "status": 200}})]}
+
+    def test_controller_reprepare_audit_rejects_other_refusals_targets_and_inputs(self):
+        v = VERIFIER
+        state = self.controller_reprepare_state()
+        observed = v.original_reprepare_projection(state, "session", "B", "run-B")
+        self.assertEqual((observed["reason"], observed["refusal_count"], observed["recovered_http_status"]),
+                         ("reprepare_required", 2, 200))
+        mutations = [
+            lambda x: x.update(input_id="other"),
+            lambda x: x.update(last_run_id="other"),
+            lambda x: x["authorization_audit"][0]["contributors"][0].update(input_id="other"),
+            lambda x: x["authorization_audit"][0]["observation"]["observation"].update(reason="denied"),
+            lambda x: x["authorization_audit"][0]["observation"]["observation"].update(reason="malformed_facts"),
+            lambda x: x["authorization_audit"][0]["observation"]["observation"]["target"].update(hosted_capabilities=["web_search"]),
+            lambda x: x["authorization_audit"][2]["observation"]["observation"]["target"].update(endpoint="different"),
+            lambda x: x["authorization_audit"][2]["observation"].update(operation_id="refused"),
+            lambda x: x["authorization_audit"][4]["observation"]["observation"]["outcome"].update(status=500),
+            lambda x: x["authorization_audit"].append(copy.deepcopy(x["authorization_audit"][0])),
+            lambda x: x["authorization_audit"].append({"contributors": [{"input_id": "B"}],
+                "observation": {"run_id": "run-B", "operation_id": "refused", "observation": {"kind": "entry"}}})]
+        for mutate in mutations:
+            wrong = copy.deepcopy(state); mutate(wrong)
+            with self.assertRaises(AssertionError): v.original_reprepare_projection(wrong, "session", "B", "run-B")
+
+    def test_controller_reprepare_reads_only_exact_persisted_input(self):
+        v = VERIFIER
+        with tempfile.TemporaryDirectory(prefix="inert-controller-store-") as scratch:
+            directory = Path(scratch); (directory / "state").mkdir()
+            database = directory / "state/runtime.sqlite"
+            state = self.controller_reprepare_state()
+            with v.sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE runtime_input_states(runtime_id TEXT, input_id TEXT, state_json BLOB)")
+                connection.execute("INSERT INTO runtime_input_states VALUES(?,?,?)",
+                                   ("rt:session:session", "B", v.canonical(state)))
+                connection.execute("INSERT INTO runtime_input_states VALUES(?,?,?)",
+                                   ("rt:session:other", "B", b"unrelated row must not be parsed"))
+            before = database.read_bytes()
+            pin = v.retained_original_reprepare(directory, "session", "B", "run-B")
+            result = json.loads(Path(pin["path"]).read_bytes())
+            self.assertEqual(result["row_sha256"], sha(v.canonical(state)))
+            self.assertEqual(result["input_id"], "B")
+            self.assertNotIn("inert-only", Path(pin["path"]).read_text())
+            self.assertEqual(database.read_bytes(), before)
+
+    def test_controller_reprepare_assembler_requires_exact_retained_audit(self):
+        v, a = VERIFIER, ASSEMBLER
+        with tempfile.TemporaryDirectory(prefix="inert-controller-audit-") as scratch:
+            directory = Path(scratch)
+            audit = v.original_reprepare_projection(self.controller_reprepare_state(), "session", "B", "run-B")
+            audit["row_sha256"] = "a" * 64
+            path = directory / "original-b-controller-recovery.json"
+            messages = [{"role": "user", "content": v.ACQUISITION_REQUEST},
+                        {"role": "user", "content": v.ORIGINAL_CONTROLLER_FEEDBACK}]
+            business = {"original_catalog": {}, "controller_recovery_history_index": 1}
+            receipt = {"input_id": "B", "run_id": "run-B", "outcome": {"session_id": "session"}}
+            def check(value):
+                path.write_bytes(v.canonical(value))
+                a.gateway_controller_recovery({"controller_recovery_audit": v.artifact_pin(path)},
+                                              business, messages, 0, directory, receipt)
+            check(audit)
+            for key, value in (("reason", "denied"), ("reason", "malformed_facts"), ("input_id", "other"),
+                               ("run_id", "other"), ("hosted_capabilities", ["web_search"]),
+                               ("recovery_operation_id", "refused"), ("refusal_count", 0),
+                               ("recovered_http_status", 500)):
+                with self.assertRaises(ValueError): check({**audit, key: value})
+            with self.assertRaises(ValueError):
+                a.gateway_controller_recovery({}, business, messages, 0, directory, receipt)
+            a.gateway_controller_recovery({}, {}, messages[:1], 0, directory, receipt)
+
     def test_original_catalog_accepts_only_exact_core_090_display_notices(self):
         v = VERIFIER
         operation, request = "list_boards", "the selected original business request"
@@ -1828,7 +1927,7 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
         self.assertTrue(provider.original_catalog)
         self.original_catalog_response_control(provider)
 
-    def original_catalog_response_control(self, provider):
+    def original_catalog_response_control(self, provider, *, controller_recovery=False):
         import threading
         v = VERIFIER
         provider.results, provider.issued, provider.requests = {}, set(), []
@@ -1865,6 +1964,8 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
             {"role": "user", "content": v.ACQUISITION_REQUEST},
             {"role": "user", "content": boundary}, {"role": "user", "content": added}])
         fresh = 4
+        if controller_recovery:
+            messages.append({"role": "user", "content": v.ORIGINAL_CONTROLLER_FEEDBACK})
         # This is the actual response seam; no server/native/model is started.
         for extra in (v.ACQUISITION_REQUEST, "unrelated input", added + " trailing",
                       added.replace(operation, "other_operation"), removed,
@@ -1902,6 +2003,8 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
         messages.append({"role": "tool", "tool_call_id": v.ORIGINAL_STORY_CALL, "content": content})
         self.assertEqual(provider.response(body)["delta"]["content"], "Hacker News story 123: Controlled public story")
         self.assertEqual(provider.business_observation["b_input_history_index"], fresh)
+        if controller_recovery:
+            self.assertEqual(provider.business_observation["controller_recovery_history_index"], 7)
         self.assertEqual(provider.business_observation["original_catalog"]["load_result"], loaded)
         self.assertEqual(provider.access_arguments("job", [operation])["tool_policy"], {"tools": [], "catalog": "r2"})
         self.assertNotIn("tool_policy", v.InstalledAcquisitionProvider.access_arguments(provider, "job", [operation]))

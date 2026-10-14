@@ -26,6 +26,7 @@ import re
 import select
 import signal
 import socket
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -1866,7 +1867,14 @@ def original_tool_notice(content, operation):
     return None
 
 
-def original_catalog_history(messages, request, operation, fresh):
+ORIGINAL_CONTROLLER_FEEDBACK = (
+    "The requested model operation is unavailable under current authorization. "
+    "Continue with the authorized controller without provider-hosted capabilities, "
+    "or choose another permitted action."
+)
+
+
+def original_catalog_history(messages, request, operation, fresh, *, allow_controller_recovery=False):
     """Keep exactly A/B business inputs; allow only their bounded native notices."""
     require(all(row["role"] != "user" or row.get("content") == request
                 for row in messages[:fresh]), "unexpected original input before B")
@@ -1874,13 +1882,22 @@ def original_catalog_history(messages, request, operation, fresh):
                       and row["tool_call_id"] == "original-catalog-load"]
     require(len(load_positions) <= 1, "duplicate original catalog load result")
     loaded_at = load_positions[0] if load_positions else len(messages)
-    boundaries, deferred = set(), set()
+    boundaries, deferred, recovery = set(), set(), None
+    first_tool = next((i for i, row in enumerate(messages) if i > fresh
+                       and (row.get("tool_calls") or row["role"] == "tool")), len(messages))
     for i, row in enumerate(messages[fresh + 1:], fresh + 1):
         if row["role"] != "user":
             continue
         kind = original_tool_notice(row.get("content"), operation)
         after_load = i > loaded_at
-        if kind == "boundary":
+        if row.get("content") == ORIGINAL_CONTROLLER_FEEDBACK:
+            # This schedules a new controller choice, not a replay of a tool.
+            # Text cannot establish the reason: final acceptance additionally
+            # requires this exact B's persisted ReprepareRequired audit.
+            require(allow_controller_recovery and recovery is None and i < first_tool,
+                    "unexpected original controller feedback stage or count")
+            recovery = i
+        elif kind == "boundary":
             require(after_load not in boundaries, "repeated original tool boundary notice")
             boundaries.add(after_load)
         elif kind == "added":
@@ -1892,6 +1909,63 @@ def original_catalog_history(messages, request, operation, fresh):
             deferred.add(kind)
         else:
             raise AssertionError("another user input followed the selected B request")
+    return recovery
+
+
+def original_reprepare_projection(state, session_id, input_id, run_id):
+    """Read one completed input's audit; historical evidence grants nothing."""
+    require(state["input_id"] == input_id and state["last_run_id"] == run_id,
+            "controller recovery audit belongs to another B input or run")
+    records = state["authorization_audit"]
+    require(records and all(row["observation"]["run_id"] == run_id
+            and [item["input_id"] for item in row["contributors"]] == [input_id]
+            for row in records), "controller recovery audit has foreign contributors or run")
+    observations = [row["observation"] for row in records]
+    prepared_at = next((i for i, row in enumerate(observations)
+                        if row["observation"]["kind"] != "refused"), len(observations))
+    require(0 < prepared_at < len(observations), "controller recovery lacks refused/prepared boundaries")
+    refused, prepared = observations[0], observations[prepared_at]
+    target = refused["observation"]["target"]
+    require(target["kind"] == "model" and target["model"] == "fixture-original-model"
+            and target["provider"] == "self_hosted" and target["usage"] == "controller_inference"
+            and target["hosted_capabilities"] == [], "controller recovery target is not the selected controller")
+    require(all(row["operation_id"] == refused["operation_id"]
+                and row["observation"] == refused["observation"] for row in observations[:prepared_at])
+            and refused["observation"]["reason"] == "reprepare_required"
+            and all(row["operation_id"] != refused["operation_id"] for row in observations[prepared_at:])
+            and not any(row["observation"]["kind"] in ("refused", "authorization_unavailable")
+                        for row in observations[prepared_at:]),
+            "controller recovery includes a denial, malformed facts or later refusal")
+    require(prepared["operation_id"] != refused["operation_id"]
+            and prepared["observation"]["kind"] == "prepared"
+            and prepared["observation"]["target"] == target,
+            "controller recovery did not prepare a fresh operation on the same exact target")
+    entered = [row["observation"] for row in observations[prepared_at + 1:]
+               if row["operation_id"] == prepared["operation_id"]]
+    require(entered == [{"kind": "entry"}, {"kind": "outcome",
+                "outcome": {"kind": "http_response", "status": 200}}],
+            "controller recovery lacks its successful model entry and response")
+    policy = prepared["observation"]["policy"]
+    return {"session_id": session_id, "input_id": input_id, "run_id": run_id,
+        "refused_operation_id": refused["operation_id"], "refusal_count": prepared_at,
+        "reason": "reprepare_required", "model": target["model"], "provider": target["provider"],
+        "usage": target["usage"], "hosted_capabilities": [],
+        "recovery_operation_id": prepared["operation_id"], "recovered_http_status": 200,
+        "policy_publication_sequence": policy["publication_sequence"],
+        "policy_observed_at_ms": policy["observed_at_ms"]}
+
+
+def retained_original_reprepare(directory, session_id, input_id, run_id):
+    path = directory / "state/runtime.sqlite"
+    with sqlite3.connect(path.resolve(strict=True).as_uri() + "?mode=ro", uri=True) as connection:
+        rows = connection.execute("SELECT state_json FROM runtime_input_states "
+            "WHERE runtime_id = ? AND input_id = ?", ("rt:session:" + session_id, input_id)).fetchall()
+    require(len(rows) == 1, "exact native B authorization audit is unavailable")
+    raw = rows[0][0]
+    raw = raw.encode() if isinstance(raw, str) else raw
+    projection = original_reprepare_projection(unique_json(raw), session_id, input_id, run_id)
+    projection["row_sha256"] = hashlib.sha256(raw).hexdigest()
+    return new_artifact(directory / "original-b-controller-recovery.json", canonical(projection))
 
 
 def exact_catalog_load(value, expected):
@@ -1919,6 +1993,7 @@ class InstalledAcquisitionProvider:
     access_tool = "toolkit_request_public_service"
     access_call_id = "public-task-access"
     original_catalog = False
+    controller_reprepare = False
 
     def __init__(self, directory, events):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2074,7 +2149,8 @@ class InstalledAcquisitionProvider:
             require(any(message["role"] == "assistant" and message.get("content") == ORIGINAL_A_FINISH
                         for message in messages[first + 1:fresh]), "fresh B input lacks A's actual final history")
             if self.original_catalog:
-                original_catalog_history(messages, self.request_text, self.operation, fresh)
+                recovery_index = original_catalog_history(messages, self.request_text, self.operation, fresh,
+                    allow_controller_recovery=self.controller_reprepare)
                 search, loaded = "original-catalog-search", "original-catalog-load"
                 if search not in results:
                     return call(search, "tool_catalog_search", {"query": self.operation, "limit": 50})
@@ -2120,6 +2196,8 @@ class InstalledAcquisitionProvider:
                 "model_request_index": len(self.requests) - 1,
                 "model_request_sha256": hashlib.sha256(canonical(body)).hexdigest(),
                 "native_b_admission": "not_observed", "native_b_terminal": "not_observed"}
+            if self.original_catalog and recovery_index is not None:
+                self.business_observation["controller_recovery_history_index"] = recovery_index
             if self.original_catalog:
                 self.business_observation["original_catalog"] = {
                     "search_call_id": search, "load_call_id": loaded,
@@ -2221,6 +2299,7 @@ class InstalledAcquisitionProvider:
 class InstalledPublicCatalogProvider(InstalledAcquisitionProvider):
     """The public package case explicitly selects Original catalog review."""
     original_catalog = True
+    controller_reprepare = True
 
     def access_arguments(self, job_id, raw):
         return {**super().access_arguments(job_id, raw),
@@ -2692,6 +2771,9 @@ async def run_installed_acquisition(private, finalizer, provider, directory, eve
             "native_b": terminal_observation, "native_receipt_reads": receipt_reads,
             "service_readiness": "not_independently_observed",
             "original_task_completion": "native_finalized_completed_for_exact_b_input"}
+        if "controller_recovery_history_index" in business:
+            completion["controller_recovery_audit"] = retained_original_reprepare(
+                directory, b_admission["session_id"], b_admission["input_id"], receipt["run_id"])
         new_artifact(directory / "original-business-observation.json", canonical(completion))
         return completion
     finally:

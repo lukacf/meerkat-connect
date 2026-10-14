@@ -669,6 +669,47 @@ def gateway_business_tool_count(business, messages, b_index, result_index):
     return len(expected)
 
 
+def gateway_controller_recovery(acquisition, business, messages, b_index, directory, receipt):
+    """A display notice is accepted only with the exact B's retained typed audit."""
+    notice = ("The requested model operation is unavailable under current authorization. "
+              "Continue with the authorized controller without provider-hosted capabilities, "
+              "or choose another permitted action.")
+    positions = [i for i, row in enumerate(messages) if row.get("role") == "user"
+                 and row.get("content") == notice]
+    if not positions:
+        require("controller_recovery_history_index" not in business
+                and "controller_recovery_audit" not in acquisition,
+                "controller recovery evidence has no observed feedback")
+        return
+    first_tool = next((i for i, row in enumerate(messages) if i > b_index
+                       and (row.get("tool_calls") or row.get("role") == "tool")), len(messages))
+    require(len(positions) == 1 and b_index < positions[0] < first_tool
+            and business.get("controller_recovery_history_index") == positions[0]
+            and business.get("original_catalog") is not None,
+            "controller feedback is not the one selected pre-tool B recovery")
+    pin = acquisition.get("controller_recovery_audit")
+    require(isinstance(pin, dict) and Path(pin["path"]) == directory / "original-b-controller-recovery.json",
+            "controller recovery lacks its retained native audit")
+    _, audit = gateway_json(pin)
+    expected = {"session_id", "input_id", "run_id", "row_sha256", "refused_operation_id",
+                "refusal_count", "reason", "model", "provider", "usage", "hosted_capabilities",
+                "recovery_operation_id", "recovered_http_status", "policy_publication_sequence",
+                "policy_observed_at_ms"}
+    require(set(audit) == expected and audit["session_id"] == receipt["outcome"]["session_id"]
+            and audit["input_id"] == receipt["input_id"] and audit["run_id"] == receipt["run_id"]
+            and hash_value(audit["row_sha256"])
+            and type(audit["refusal_count"]) is int and audit["refusal_count"] > 0
+            and audit["reason"] == "reprepare_required" and audit["model"] == "fixture-original-model"
+            and audit["provider"] == "self_hosted" and audit["usage"] == "controller_inference"
+            and audit["hosted_capabilities"] == [] and audit["recovered_http_status"] == 200
+            and all(isinstance(audit[key], str) and audit[key]
+                    for key in ("refused_operation_id", "recovery_operation_id"))
+            and audit["refused_operation_id"] != audit["recovery_operation_id"]
+            and all(type(audit[key]) is int and audit[key] >= 0
+                    for key in ("policy_publication_sequence", "policy_observed_at_ms")),
+            "controller recovery audit does not prove exact currentness recovery")
+
+
 def gateway_acquisition(case, events, directory):
     acquisition = case.get("acquisition")
     require(isinstance(acquisition, dict)
@@ -782,6 +823,7 @@ def gateway_acquisition(case, events, directory):
             and receipt["outcome"]["tool_calls"] == gateway_business_tool_count(business, messages, b_index, result_index)
             and receipt["outcome"]["text"] == business["answer"],
             "gateway B lacks its own finalized Completed/Consumed business result")
+    gateway_controller_recovery(acquisition, business, messages, b_index, directory, receipt)
 
 
 def gateway_resource_refusal(case, events, resources, directory, prepare_sha):
