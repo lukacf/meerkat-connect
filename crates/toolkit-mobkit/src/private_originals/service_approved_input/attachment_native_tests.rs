@@ -506,7 +506,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
     let (fixture, runtime_store) = match &script {
         Some(script) => {
             let script = script.clone();
-            PersistentFixture::for_live_attachment_with_model(move |inner| script.provider(inner)).await
+            PersistentFixture::for_live_attachment_with_model_and_human_policy(move |inner| script.provider(inner)).await
         }
         None => PersistentFixture::for_live_attachment().await,
     };

@@ -32,6 +32,14 @@ pub(crate) async fn open_for_service_input(facts: &ControllerModelFacts) -> Host
     open_selected(facts, true, true, true).await
 }
 
+/// Select the ordinary human-reviewed member-policy recovery owner before the
+/// provider or native configuration is shared. Service access still needs its
+/// actual human decision; this selects no standing service authority.
+pub(crate) async fn open_for_service_input_with_human_policy(facts: &ControllerModelFacts) -> Host {
+    open_selected_source(facts, true, true, true, false, None, false, None, false, false,
+        None, None, false, false, true).await
+}
+
 async fn open_selected(facts: &ControllerModelFacts, select_controller: bool, probe: bool, local_operator: bool) -> Host {
     open_selected_subject(facts, select_controller, probe, local_operator, false, None, false, None, false, false).await
 }
@@ -60,7 +68,7 @@ async fn open_selected_subject_with_source(facts: &ControllerModelFacts, select_
     report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool,
     prepare_source: Option<PrepareOriginalSource>) -> Host {
     open_selected_source(facts, select_controller, probe, local_operator, source_subject,
-        acquisition, helper, report, configured_setup, configured_report, prepare_source, None, false, false).await
+        acquisition, helper, report, configured_setup, configured_report, prepare_source, None, false, false, false).await
 }
 
 /// The fixture selects an issuer-qualified Human before constructing the host.
@@ -68,14 +76,14 @@ async fn open_selected_subject_with_source(facts: &ControllerModelFacts, select_
 pub(crate) async fn open_for_console_input(facts: &ControllerModelFacts, human: meerkat_core::PrincipalRef) -> Host {
     assert_eq!(human.kind, meerkat_core::PrincipalKind::Human);
     open_selected_source(facts, true, true, true, false, None, false, None, false, false,
-        None, Some(human), false, false).await
+        None, Some(human), false, false, false).await
 }
 
 /// Explicit fixture administration for an actual fresh task. This does not
 /// authenticate a Human or preselect an application parent for a future session.
 pub(crate) async fn open_for_task_parent_service_input(facts: &ControllerModelFacts) -> Host {
     open_selected_source(facts, true, true, true, false, None, false, None, false, false,
-        None, None, true, false).await
+        None, None, true, false, false).await
 }
 
 async fn open_selected_source(facts: &ControllerModelFacts, select_controller: bool, probe: bool,
@@ -83,7 +91,7 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
     acquisition: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, helper: bool,
     report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool,
     prepare_source: Option<PrepareOriginalSource>, console_human: Option<meerkat_core::PrincipalRef>,
-    task_parent_administration: bool, private_helper_entry: bool) -> Host {
+    task_parent_administration: bool, private_helper_entry: bool, human_policy: bool) -> Host {
     assert!(!private_helper_entry || (helper && report.is_none() && !configured_setup && !configured_report));
     let (directory, mut selection) = super::tests::fixture();
     let mut local: CompiledLocalPolicy = serde_json::from_slice(
@@ -383,13 +391,13 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
         local.native_host.as_mut().unwrap().members[0].setup_capability = Some(capability);
         super::tests::replace_local(&mut selection, &local);
     }
-    restore_selected(Arc::new(directory), selection, acquisition_helper, prepare_source).await
+    restore_selected(Arc::new(directory), selection, acquisition_helper, prepare_source, human_policy).await
 }
 
 /// Reopen the exact installed pair after both previous owners have settled and
 /// dropped. This path restores existing grants and source rows; it issues none.
 pub(crate) async fn reopen_for_continuation(directory: Arc<tempfile::TempDir>, selection: HostBootstrapSelection) -> Host {
-    restore_selected(directory, selection, None, None).await
+    restore_selected(directory, selection, None, None, false).await
 }
 
 #[derive(Clone, Copy)]
@@ -478,9 +486,18 @@ pub(crate) fn configure_service_parent_before_restore(
 }
 
 async fn restore_selected(directory: Arc<tempfile::TempDir>, selection: HostBootstrapSelection,
-    acquisition_helper: Option<acquisition::InstalledSetupSelection>, prepare_source: Option<PrepareOriginalSource>) -> Host {
-    let (lifetime, installed) = InstalledToolkitHost::open(selection.clone(), NativeOwnerStartup::Restore)
-        .await.unwrap();
+    acquisition_helper: Option<acquisition::InstalledSetupSelection>, prepare_source: Option<PrepareOriginalSource>,
+    human_policy: bool) -> Host {
+    let participant = human_policy.then(|| human_policy_recovery::selected(&selection));
+    let (lifetime, installed) = match &participant {
+        Some(participant) => InstalledToolkitHost::open_with_application_service_policy(
+            selection.clone(), NativeOwnerStartup::Restore, None, participant.clone()).await,
+        None => InstalledToolkitHost::open(selection.clone(), NativeOwnerStartup::Restore).await,
+    }.unwrap();
+    if let Some(participant) = &participant {
+        assert!(installed.originals.service_tool_policy.get().unwrap().same_participant(participant),
+            "the actual canonical policy owner retains this selected human recovery participant");
+    }
     let lifetime = Arc::new(lifetime);
     let store = installed.store.clone();
     let source_scope = installed.source_scope.clone();
@@ -557,7 +574,7 @@ pub(crate) async fn open_for_acquisition(
     private_helper_entry: bool,
 ) -> Host {
     open_selected_source(facts, true, false, true, false, Some(tool), true, None, false, false,
-        None, None, false, private_helper_entry).await
+        None, None, false, private_helper_entry, false).await
 }
 #[path = "controller_first_input_acquisition_fixture.rs"]
 mod approved_acquisition;
@@ -595,4 +612,92 @@ pub(crate) async fn open_for_configured_helper_report(
     report: Arc<dyn meerkat_core::AgentToolDispatcher>,
 ) -> Host {
     open_selected_subject(facts, true, false, true, false, Some(acquisition), true, Some(report), true, true).await
+}
+
+// Mirrors Connect's selected_policy::exact_human_policy_decision contract at
+// this lower crate boundary; depending on meerkat-connect would be cyclic.
+// The selection is immutable. Host/task currentness and canonical slot CAS
+// remain the existing production owners' responsibility.
+mod human_policy_recovery {
+    use super::*;
+    use crate::private_originals::{ApplicationServicePolicy, ApplicationServicePolicyDecision,
+        ApplicationServicePolicyRequest, ApplicationServicePolicyReservation,
+        ApplicationToolPolicyRecoveryRequest, ApplicationToolPolicyRecoveryDecision,
+        ActiveMemberToolPolicyDecision, MemberPolicyLifetime};
+    use meerkat_core::{ApprovalStatus, ApprovalDecision, CompiledApplicationToolPolicy, PolicyDigest};
+
+    struct Selected {
+        owner: meerkat_core::PrincipalRef,
+        realm: String,
+        deployment: String,
+        bootstrap: CompiledApplicationToolPolicy,
+    }
+    pub(super) fn selected(selection: &HostBootstrapSelection) -> Arc<dyn ApplicationServicePolicy> {
+        let local: CompiledLocalPolicy = serde_json::from_slice(&fs::read(&selection.local_policy.path).unwrap()).unwrap();
+        let native = local.native_host.as_ref().unwrap();
+        let bytes = read_bundle_artifact(selection, &native.application_tool_policy).unwrap();
+        let bootstrap = CompiledApplicationToolPolicy::parse_canonical_json(&bytes).unwrap();
+        Arc::new(Selected { owner: native.grant_administrator.clone(), realm: native.realm.to_string(),
+            deployment: local.deployment.to_string(), bootstrap })
+    }
+    impl Selected {
+        fn check(&self, decision: &ActiveMemberToolPolicyDecision, canonical: &[u8]) -> Result<(), HostLifetimeError> {
+            let proposal = &decision.proposal;
+            let key = meerkat_toolkit::setup::SetupScope::new(
+                toolkit_package::Id::new(&self.realm).map_err(|_| HostLifetimeError::InvalidSelection)?,
+                toolkit_package::Id::new(&self.deployment).map_err(|_| HostLifetimeError::InvalidSelection)?)
+                .key(&toolkit_package::Id::new(&decision.acquisition.id).map_err(|_| HostLifetimeError::InvalidSelection)?);
+            let candidate = CompiledApplicationToolPolicy::parse_canonical_json(canonical)
+                .map_err(|_| HostLifetimeError::InvalidSelection)?;
+            let bootstrap = self.bootstrap.canonical_json().map_err(|_| HostLifetimeError::InvalidSelection)?;
+            let same_members = candidate.members.iter().map(|member| &member.member_identity).collect::<Vec<_>>()
+                == self.bootstrap.members.iter().map(|member| &member.member_identity).collect::<Vec<_>>();
+            if decision.owner != self.owner || decision.realm != self.realm || decision.deployment != self.deployment
+                || decision.acquisition != key || canonical != proposal.candidate_canonical_json.as_bytes()
+                || proposal.lifetime != MemberPolicyLifetime::UntilSuperseded
+                || proposal.provider_id != self.bootstrap.provider_id || proposal.policy_id != self.bootstrap.policy_id
+                || proposal.prior.revision != self.bootstrap.revision
+                || proposal.prior.digest != PolicyDigest::from_canonical_bytes(&bootstrap)
+                || candidate.provider_id != proposal.provider_id || candidate.policy_id != proposal.policy_id
+                || candidate.revision != proposal.candidate.revision
+                || PolicyDigest::from_canonical_bytes(canonical) != proposal.candidate.digest
+                || !same_members || !candidate.members.iter().any(|member| member.member_identity == proposal.member)
+                || decision.approval_id != proposal.sha256()?
+            { return Err(HostLifetimeError::Denied); }
+            let record = decision.human_review.as_ref().ok_or(HostLifetimeError::Denied)?;
+            let expected = serde_json::to_value(proposal).map_err(|_| HostLifetimeError::InvalidSelection)?;
+            if record.status != ApprovalStatus::Approved
+                || !record.decision.as_ref().is_some_and(|answer| answer.decision == ApprovalDecision::Approve)
+                || record.proposed_action.body.as_ref().and_then(|body| body.get("access_request"))
+                    .and_then(|body| body.get("member_tool_policy"))
+                    .and_then(|body| body.get("proposal")) != Some(&expected)
+            { return Err(HostLifetimeError::Denied); }
+            Ok(())
+        }
+    }
+    impl ApplicationServicePolicy for Selected {
+        fn reserve(&self, _: &ApplicationServicePolicyRequest<'_>) -> Result<ApplicationServicePolicyDecision, HostLifetimeError> {
+            Ok(ApplicationServicePolicyDecision::RequiresHuman)
+        }
+        fn reserve_tool_policy_recovery(&self, request: &ApplicationToolPolicyRecoveryRequest<'_>)
+            -> Result<ApplicationToolPolicyRecoveryDecision, HostLifetimeError> {
+            self.check(request.decision, request.canonical_json)?;
+            // The exact immutable owner selection and approved whole candidate
+            // are retained for every later currentness check, not a Permit bit.
+            Ok(ApplicationToolPolicyRecoveryDecision::Permit(Box::new(Reserved {
+                selected: Selected { owner: self.owner.clone(), realm: self.realm.clone(),
+                    deployment: self.deployment.clone(), bootstrap: self.bootstrap.clone() },
+                decision: request.decision.clone(), canonical: request.canonical_json.to_vec(),
+                provenance: [("fixture_policy".into(), "exact-human-reviewed-candidate".into()),
+                    ("proposal_sha256".into(), request.decision.approval_id.clone().into())].into_iter().collect(),
+            })))
+        }
+    }
+    struct Reserved { selected: Selected, decision: ActiveMemberToolPolicyDecision, canonical: Vec<u8>,
+        provenance: serde_json::Map<String, serde_json::Value> }
+    impl ApplicationServicePolicyReservation for Reserved {
+        fn owner(&self) -> &meerkat_core::PrincipalRef { &self.selected.owner }
+        fn provenance(&self) -> &serde_json::Map<String, serde_json::Value> { &self.provenance }
+        fn check_current(&self) -> Result<(), HostLifetimeError> { self.selected.check(&self.decision, &self.canonical) }
+    }
 }
