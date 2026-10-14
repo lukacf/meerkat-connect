@@ -150,8 +150,11 @@ pub(crate) fn read_application_acquisition(
         || prepared.native_members != native.members
         || prepared.application_tool_policy != native.application_tool_policy
     { return Err(HostLifetimeError::InvalidSelection); }
-    checked(&prepared.application_tool_policy)?;
-    let helper = prepared.helper_projection().map_err(|_| HostLifetimeError::InvalidSelection)?;
+    let policy = meerkat_core::CompiledApplicationToolPolicy::parse_canonical_json(
+        &checked(&prepared.application_tool_policy)?,
+    ).map_err(|_| HostLifetimeError::InvalidSelection)?;
+    let helper = prepared.helper_projection().map_err(|_| HostLifetimeError::InvalidSelection)?
+        .with_public_web_search_from_policy(&policy);
     Ok(Some(SelectedApplicationAcquisition { config, prepared, prepared_bytes, helper }))
 }
 

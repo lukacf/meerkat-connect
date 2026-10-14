@@ -2,6 +2,30 @@ use super::*;
 use meerkat_core::ops::ToolAccessPolicy;
 use serde_json::json;
 
+fn public_search_policy(member: &str, tools: &[&str]) -> CompiledApplicationToolPolicy {
+    use meerkat_core::{
+        CompiledMemberToolGrant, CompiledMemberToolGrants, CompiledPolicySourceProvenance,
+        CompiledToolConsequence, PolicyDigest, PolicyId, PolicyProviderId, PolicyRevision,
+    };
+    CompiledApplicationToolPolicy::new(
+        PolicyProviderId::new("application").unwrap(),
+        PolicyId::new("selected-setup").unwrap(),
+        PolicyRevision(1),
+        CompiledPolicySourceProvenance {
+            source_id: "host-selected-source".into(),
+            source_digest: PolicyDigest::from_canonical_bytes(b"selected-source"),
+        },
+        vec![CompiledMemberToolGrants {
+            member_identity: member.into(),
+            grants: tools.iter().map(|tool| CompiledMemberToolGrant {
+                tool_name: (*tool).into(),
+                action: CompiledMemberToolAction::Invoke,
+                consequence: CompiledToolConsequence::R0,
+            }).collect(),
+        }],
+    ).unwrap()
+}
+
 fn source_member() -> MobMemberBinding {
     MobMemberBinding {
         mob_id: "household".into(),
@@ -368,4 +392,106 @@ fn exclusive_role_composition_preserves_role_keys_and_refuses_server_substitutio
         assert!(selected.compose_definition(&mut conflict).is_err());
         assert_eq!(conflict, before);
     }
+}
+
+#[test]
+fn public_search_requires_the_exact_selected_source_grant() {
+    let selected = helper(SetupHelperTools::CheckedInstallation);
+    let mob = MobId::from("household");
+    let policies = [
+        public_search_policy("setup-helper", &[]),
+        public_search_policy("other-member", &["web_search"]),
+        public_search_policy("setup-helper", &["web_search_extra"]),
+    ];
+    for candidate in std::iter::once(selected.clone()).chain(policies.iter().map(|policy| {
+        selected.clone().with_public_web_search_from_policy(policy)
+    })) {
+        // An absent selection does not overwrite an earlier host decision.
+        for prior in [ToolCategoryOverride::Inherit, ToolCategoryOverride::Disable,
+            ToolCategoryOverride::Enable]
+        {
+            let mut spec = SpawnMemberSpec::new(
+                candidate.profile_name().clone(), candidate.member().member.as_str(),
+            );
+            spec.tool_category_overrides.web_search = prior;
+            let before = spec.tool_category_overrides;
+            SelectedHelperCustomizer(candidate.clone())
+                .apply(&mob, candidate.profile_name(), &mut spec).unwrap();
+            assert_eq!(spec.tool_category_overrides, before);
+        }
+    }
+
+    // The native source vocabulary has only Invoke. Invalid or absent actions
+    // cannot be parsed as a grant and therefore cannot reach this selection.
+    for value in [json!({"tool_name":"web_search", "action":"inspect", "consequence":"r0"}),
+        json!({"tool_name":"web_search", "consequence":"r0"})]
+    {
+        assert!(serde_json::from_value::<meerkat_core::CompiledMemberToolGrant>(value).is_err());
+    }
+}
+
+#[test]
+fn public_search_preserves_source_policy_other_categories_and_existing_tools() {
+    let source = public_search_policy("setup-helper", &["setup_acquire_python", "web_search"]);
+    let policy_bytes = source.canonical_json().unwrap();
+    let restored = CompiledApplicationToolPolicy::parse_canonical_json(&policy_bytes).unwrap();
+    let selected = helper(SetupHelperTools::CheckedInstallation)
+        .with_public_web_search_from_policy(&restored);
+    let mut prior = definition().profiles[&ProfileName::from("research")]
+        .as_inline().unwrap().clone();
+    prior.tools.builtins = false;
+    prior.tools.shell = false;
+    prior.tools.deny.push("web_search".into());
+    let mut expected = prior.clone();
+    expected.tools.mcp_servers.push(selected.server().clone());
+    expected.tools.rust_bundles.push(meerkat_toolkit::setup::SETUP_RESULTS_BUNDLE.into());
+    let mut spec = SpawnMemberSpec::new(
+        selected.profile_name().clone(), selected.member().member.as_str(),
+    );
+    spec.override_profile = Some(prior);
+    spec.tool_access_policy = Some(ToolAccessPolicy::ReadOnly);
+    spec.tool_category_overrides.builtins = ToolCategoryOverride::Disable;
+    spec.tool_category_overrides.shell = ToolCategoryOverride::Disable;
+    spec.tool_category_overrides.memory = ToolCategoryOverride::Enable;
+    let mut expected_categories = spec.tool_category_overrides;
+    expected_categories.web_search = ToolCategoryOverride::Enable;
+    let guard = SelectedHelperCustomizer(selected.clone());
+    for _ in 0..2 {
+        guard.apply(&MobId::from("household"), selected.profile_name(), &mut spec).unwrap();
+        assert_eq!(spec.tool_category_overrides, expected_categories);
+        assert_eq!(spec.override_profile, Some(expected.clone()));
+        assert_eq!(spec.tool_access_policy, Some(ToolAccessPolicy::ReadOnly));
+        assert_eq!(source.canonical_json().unwrap(), policy_bytes);
+    }
+    let access = selected.server().access.as_ref().unwrap();
+    assert!(access.permits("setup_acquire_python"));
+    assert!(access.permits("setup_search_node"));
+    assert!(!access.permits("web_search"));
+}
+
+#[test]
+fn opted_in_search_does_not_reach_another_member_or_override_an_explicit_disable() {
+    let selected = helper(SetupHelperTools::CheckedInstallation)
+        .with_public_web_search_from_policy(&public_search_policy("setup-helper", &["web_search"]));
+    let guard = SelectedHelperCustomizer(selected.clone());
+    let mob = MobId::from("household");
+    let source_role = ProfileName::from("research");
+    let mut ordinary = SpawnMemberSpec::new(source_role.clone(), "ordinary-agent");
+    let before = ordinary.tool_category_overrides;
+    guard.apply(&mob, &source_role, &mut ordinary).unwrap();
+    assert_eq!(ordinary.tool_category_overrides, before);
+    let mut foreign = SpawnMemberSpec::new(selected.profile_name().clone(), "ordinary-agent");
+    assert!(guard.apply(&mob, selected.profile_name(), &mut foreign).is_err());
+    assert_eq!(foreign.tool_category_overrides, before);
+
+    let mut disabled = SpawnMemberSpec::new(
+        selected.profile_name().clone(), selected.member().member.as_str(),
+    );
+    disabled.override_profile = Some(definition().profiles[&source_role].as_inline().unwrap().clone());
+    disabled.tool_category_overrides.web_search = ToolCategoryOverride::Disable;
+    let before_profile = disabled.override_profile.clone();
+    let before_categories = disabled.tool_category_overrides;
+    assert!(guard.apply(&mob, selected.profile_name(), &mut disabled).is_err());
+    assert_eq!(disabled.override_profile, before_profile);
+    assert_eq!(disabled.tool_category_overrides, before_categories);
 }
