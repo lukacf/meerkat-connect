@@ -1,7 +1,7 @@
 //! The production caller enters native from an empty keeper. Only model IO
 //! and installed-package readback use mechanical fixtures. The stdio MCP
 //! process, native Apply, accepted receipt and operation observation are real.
-use super::super::super::admission_tests::approve_b_configuration;
+use super::super::super::admission_tests::{approve_b_configuration, approve_b_configuration_with_tool_policy};
 use super::*;
 use futures::StreamExt;
 use meerkat_authorization_contracts::work_association::InputAuthorityAssociation;
@@ -317,13 +317,26 @@ async fn approved_native(
         config.tool_names.insert("read".into(), "attachment_public_read".into());
         assert!(meerkat::ConnectorMcpInstallation::from_config(&config).is_none());
     }
-    let b = approve_b_configuration(
-        fixture,
-        snapshot,
-        [Id::new("read").unwrap()].into(),
-        Some(config.clone()),
-    )
-    .await;
+    let b = if public {
+        // Raw MCP access and model-facing application invocation are separate.
+        // Review only this mapped read, retaining the empty bootstrap policy.
+        // The fixture checks the actual offered identity before calling it;
+        // it does not request or use native catalog controls.
+        approve_b_configuration_with_tool_policy(
+            fixture, snapshot, [Id::new("read").unwrap()].into(), config.clone(),
+            ServiceToolPolicySelection {
+                tools: vec![crate::installed_host::tool_policy::ServiceToolInvocation {
+                    name: config.tool_names.get("read").unwrap().clone(),
+                    consequence: meerkat_core::CompiledToolConsequence::R0,
+                }],
+                catalog: None,
+            },
+        ).await
+    } else {
+        approve_b_configuration(
+            fixture, snapshot, [Id::new("read").unwrap()].into(), Some(config.clone()),
+        ).await
+    };
     let stored = fixture
         .store
         .get(&fixture.source.key(&b).unwrap())

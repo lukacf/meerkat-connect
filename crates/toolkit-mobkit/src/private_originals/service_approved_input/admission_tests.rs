@@ -124,12 +124,21 @@ pub(super) async fn approve_b_operations<S>(fixture: &ContinuationFixture<S>, sn
 pub(super) async fn approve_b_configuration<S>(fixture: &ContinuationFixture<S>, snapshot: SetupSnapshot,
     operations: std::collections::BTreeSet<Id>, config: Option<meerkat_core::McpServerConfig>) -> PrivateOriginalRef
 {
-    approve_b_call(fixture, snapshot, operations, config, "service-admission-ack").await
+    approve_b_call(fixture, snapshot, operations, config, "service-admission-ack", None).await
+}
+
+pub(super) async fn approve_b_configuration_with_tool_policy<S>(
+    fixture: &ContinuationFixture<S>, snapshot: SetupSnapshot,
+    operations: std::collections::BTreeSet<Id>, config: meerkat_core::McpServerConfig,
+    tool_policy: ServiceToolPolicySelection,
+) -> PrivateOriginalRef {
+    approve_b_call(fixture, snapshot, operations, Some(config), "service-admission-ack",
+        Some(tool_policy)).await
 }
 
 async fn approve_b_call<S>(fixture: &ContinuationFixture<S>, snapshot: SetupSnapshot,
     operations: std::collections::BTreeSet<Id>, config: Option<meerkat_core::McpServerConfig>,
-    call: &str) -> PrivateOriginalRef
+    call: &str, tool_policy: Option<ServiceToolPolicySelection>) -> PrivateOriginalRef
 {
     let member = snapshot.request().host().continuation.native_original.as_ref().unwrap()
         .member.as_ref().unwrap().clone();
@@ -149,19 +158,53 @@ async fn approve_b_call<S>(fixture: &ContinuationFixture<S>, snapshot: SetupSnap
         allowed_decisions: [ApprovalDecision::Approve, ApprovalDecision::Deny].into(),
         expires_at: None, metadata: Default::default(), request_provenance: None,
     };
+    let selected_policy = tool_policy.clone();
     let review = match meerkat::ConnectorMcpInstallation::from_config(&config) {
-        Some(installation) => task.prepare_review(&installation.unwrap(), operations, None, request).await,
-        None => task.prepare_no_connector_review(&config, operations, None, request).await,
+        Some(installation) => task.prepare_review_with_tool_policy(
+            &installation.unwrap(), operations, None, request, tool_policy).await,
+        None => task.prepare_no_connector_review_with_tool_policy(
+            &config, operations, None, request, tool_policy).await,
     }.unwrap();
     let body = review.request().proposed_action.body.as_ref().unwrap();
     let original_target = fixture.binding().await.unwrap().unwrap().candidate().target.clone();
     assert_eq!(body["service_access"]["live_attachment"]["destination"], serde_json::to_value(&original_target).unwrap());
     assert_eq!(body["access_request"]["service_instruction"]["configuration_persistence"], "not authorized by this review");
+    let policy_proposal = selected_policy.as_ref().map(|selection| {
+        let proposal: ServiceToolPolicyProposal = serde_json::from_value(
+            body["access_request"]["member_tool_policy"]["proposal"].clone()).unwrap();
+        let candidate = meerkat_core::CompiledApplicationToolPolicy::parse_canonical_json(
+            proposal.candidate_canonical_json.as_bytes()).unwrap();
+        let initial = &fixture.lifetime().selected_policy().native_host.as_ref().unwrap()
+            .application_tool_policy;
+        assert_eq!(proposal.member, member.member);
+        assert_eq!(&proposal.selection, selection);
+        assert!(proposal.catalog_session.is_none() && selection.catalog.is_none());
+        assert_eq!(proposal.prior.revision, meerkat_core::PolicyRevision(1));
+        assert_eq!(proposal.prior.digest.as_str(), format!("sha256:{}", initial.sha256));
+        assert_eq!(proposal.candidate.revision, meerkat_core::PolicyRevision(2));
+        assert!(candidate.default_deny);
+        assert_eq!(candidate.members, vec![meerkat_core::CompiledMemberToolGrants {
+            member_identity: member.member.clone(), grants: selection.grants().unwrap(),
+        }], "the full reviewed successor adds only the selected member invocation");
+        assert!(!fixture.source.service_tool_policy.get().unwrap()
+            .is_observed_current(proposal.candidate_canonical_json.as_bytes()).unwrap(),
+            "the proposed policy is not current before the human decision");
+        proposal
+    });
+    if selected_policy.is_none() {
+        assert!(body["access_request"].get("member_tool_policy").is_none(),
+            "ordinary fixture reviews do not add application tool grants");
+    }
     let approvals = ApprovalService::new();
     let pending = approvals.request(review.request().clone()).unwrap();
     let approved = approvals.decide(&pending.approval_id, ApprovalDecision::Approve,
         ApprovalPrincipalId::new("fixture-protected-presenter").unwrap(), None, None).unwrap();
     assert!(review.approve(approved, || true).await.unwrap());
+    if let Some(proposal) = policy_proposal {
+        assert!(fixture.source.service_tool_policy.get().unwrap()
+            .is_observed_current(proposal.candidate_canonical_json.as_bytes()).unwrap(),
+            "the actual human-reviewed complete policy must be observed current");
+    }
     let page = fixture.store.list_records(&fixture.scope, None, 256).await.unwrap();
     let record = page.iter().filter(|row| row.data.schema == SOURCE_SCHEMA)
         .map(|row| fixture.source.decode_stored(row).unwrap())
