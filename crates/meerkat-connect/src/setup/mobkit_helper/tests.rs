@@ -7,6 +7,8 @@ fn public_search_policy(member: &str, tools: &[&str]) -> CompiledApplicationTool
         CompiledMemberToolGrant, CompiledMemberToolGrants, CompiledPolicySourceProvenance,
         CompiledToolConsequence, PolicyDigest, PolicyId, PolicyProviderId, PolicyRevision,
     };
+    let mut tools = tools.to_vec();
+    tools.sort_unstable();
     CompiledApplicationToolPolicy::new(
         PolicyProviderId::new("application").unwrap(),
         PolicyId::new("selected-setup").unwrap(),
