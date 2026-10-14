@@ -242,6 +242,10 @@ pub(in crate::private_originals) struct ApplicationServiceEvidence {
     pub service_parent: Option<ServiceParentRuleEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_policy: Option<String>,
+    /// Exact product software evidence, separately retained from policy
+    /// provenance. Absent in old records; absence never permits reconstruction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_readback: Option<RetainedApplicationInstallation>,
 }
 impl ApplicationServiceEvidence {
     pub(in crate::private_originals) fn validate(&self, route: &PrivateOriginalRoute,
@@ -256,6 +260,7 @@ impl ApplicationServiceEvidence {
             || self.provenance.is_empty() || canonical_json(&self.provenance).map_err(|_| PrivateOriginalError::Conflict)?.len() > 16 * 1024
             || decision.evidence.sha256 != digest(&canonical_json(self).map_err(|_| PrivateOriginalError::Conflict)?)
         { return Err(PrivateOriginalError::Conflict); }
+        if let Some(selected) = &self.installation_readback { selected.validate(decision)?; }
         Ok(())
     }
     pub(in crate::private_originals) fn check_parent(&self, lifetime: &NativeHostLifetime,
@@ -351,6 +356,10 @@ impl InstalledServiceTask {
     ) -> Result<ApplicationServicePreparation, ServiceOperationError> {
         let (parent, _) = self.current().await?;
         policy.check(&self)?;
+        if self.installation_readback.as_ref().is_some_and(|selected|
+            selected.configuration().ok().as_ref() != Some(config)) {
+            return Err(PrivateOriginalError::Denied.into());
+        }
         if tool_policy.is_some() && self.source.service_tool_policy.get()
             .is_none_or(|owner| !owner.same_participant(&policy.policy)) {
             return Err(PrivateOriginalError::Denied.into());
@@ -405,6 +414,7 @@ impl InstalledServiceTask {
             source_policy_sha256: policy.source_policy_sha256.clone(), original: self.parent.clone(),
             acquisition: self.acquisition.clone(), instruction_sha256: digest(self.instruction.as_bytes()),
             provenance: reservation.provenance().clone(),
+            installation_readback: self.installation_readback.clone(),
             tool_policy: tool_policy.as_ref().map(|p| p.proposal.sha256()).transpose()?,
             service_parent: operator.as_ref().map(|operator|
                 operator.service_parent_rule(&self.parent, &self.acquisition, &id)).transpose()? };

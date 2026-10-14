@@ -114,8 +114,13 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
     })?
         .ok_or_else(|| ToolError::access_denied(call.name))?;
     if let Some(application) = &owner.application {
+        // Bind the already-checked product selection, independently of the
+        // application policy decision. No human ApprovalRecord is fabricated.
+        let application_task = task.clone().with_installation_readback_source(&config,
+            public_review_body(&selected, &config, &selection).map_err(|_| unavailable())?)
+            .map_err(|_| unavailable())?;
         if let Some(result) = super::application::public(owner, application.clone(), call, &current, plan,
-            &task, &selected, &config, &selection.operations, selection.expires_in_ms, selection.tool_policy.clone()).await? { return Ok(result); }
+            &application_task, &selected, &config, &selection.operations, selection.expires_in_ms, selection.tool_policy.clone()).await? { return Ok(result); }
         if let Some(refreshed) = current.check_tool_authorization(call, plan)? { current = refreshed; }
     }
     // This public entry serves the integrated Console. A local installed host
@@ -293,9 +298,9 @@ impl InstalledServiceReview {
     }
 }
 
-fn public_review_request(selected: &PublicServiceSelection, config: &McpServerConfig,
+fn public_review_body(selected: &PublicServiceSelection, config: &McpServerConfig,
     selection: &PublicSelection,
-) -> Result<ApprovalRequest, ConnectError> {
+) -> Result<Value, ConnectError> {
     if selected.public_configuration(&selection.operations).ok().as_ref() != Some(config) {
         return Err(refused("The exact public package selection is unavailable"));
     }
@@ -306,6 +311,13 @@ fn public_review_request(selected: &PublicServiceSelection, config: &McpServerCo
         "installation":config,"application_selection":selection,
         "notice":"The selected source declares that this service requires no sign-in. This is a researched declaration, not proof of anonymous execution or an observed account. Approval authorizes the reviewed fresh instruction and task-scoped server policy. The existing source and native owners must still verify, attach and observe readiness. It does not promise continuing permission for one fixed endpoint or account. Realm configuration is not changed."});
     body.as_object_mut().expect("source projection is an object").extend(fields.as_object().unwrap().clone());
+    Ok(body)
+}
+
+fn public_review_request(selected: &PublicServiceSelection, config: &McpServerConfig,
+    selection: &PublicSelection,
+) -> Result<ApprovalRequest, ConnectError> {
+    let body = public_review_body(selected, config, selection)?;
     Ok(ApprovalRequest {
         requester: ApprovalPrincipalId::new("connect-installed-setup-agent").map_err(|error| refused(error.to_string()))?,
         owner: ApprovalOwnerRef::Session { session_id: selected.session().clone() },

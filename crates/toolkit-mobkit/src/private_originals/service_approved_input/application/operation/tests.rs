@@ -508,3 +508,137 @@ async fn native_rust_authorizer_observes_retirement_before_entry() {
     assert!(cleanup.is_ok(), "{cleanup:?}");
     if let Err(panic) = result { std::panic::resume_unwind(panic); }
 }
+
+// The package callback is an exact test double only for filesystem readback.
+// Parent/child issuance, source publication and consumer dispatch remain real.
+struct ApplicationPackageReadback {
+    config: meerkat_core::McpServerConfig,
+    document: serde_json::Value,
+    calls: AtomicUsize,
+    store: Arc<dyn toolkit_store::ToolkitStore>,
+    change_during_readback: tokio::sync::Mutex<Option<(StoreKey, toolkit_store::RecordData)>>,
+}
+#[async_trait::async_trait]
+impl ServiceInstallationReadback for ApplicationPackageReadback {
+    async fn readback(&self, _: &ApprovalRecord) -> Result<meerkat_core::McpServerConfig, PrivateOriginalError> {
+        panic!("standing application decision must not become a human approval")
+    }
+    async fn readback_source(&self, source: &ServiceInstallationReadbackSource)
+        -> Result<meerkat_core::McpServerConfig, PrivateOriginalError> {
+        let ServiceInstallationReadbackSource::ApplicationPolicy(source) = source else {
+            panic!("expected the retained application decision")
+        };
+        if source.document() != &self.document || source.configuration()? != self.config {
+            return Err(PrivateOriginalError::Denied);
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some((key, data)) = self.change_during_readback.lock().await.take() {
+            let current = self.store.get(&key).await.unwrap().unwrap();
+            self.store.compare_and_swap(toolkit_store::Transition { key,
+                expected_revision: current.revision, expected_digest: Some(current.content_digest),
+                claim: None, data, events: vec![], effects: vec![],
+            }).await.unwrap();
+        }
+        Ok(self.config.clone())
+    }
+}
+
+async fn application_installation_readback_case(include_source: bool) {
+    let fixture = ContinuationFixture::for_task_parent_service_input().await;
+    let mut operation = None;
+    let result = AssertUnwindSafe(async {
+        let mut task = actual_task(&fixture).await;
+        let mut config = reviewed_config(&fixture.scope.realm);
+        config.connector = None;
+        config.access = Some(meerkat_core::McpServerAccess::allowing(["read".to_owned()]));
+        let document = serde_json::json!({"software":{"receipt_sha256":"a".repeat(64)},
+            "fixture_scope":"exact package readback only"});
+        if include_source {
+            task = task.with_installation_readback_source(&config, document.clone()).unwrap();
+        }
+        let (policy, _, _) = policy(&task, &fixture, &config, Case::Positive, None);
+        let readback = Arc::new(ApplicationPackageReadback { config: config.clone(), document,
+            calls: AtomicUsize::new(0), store: fixture.store.clone(),
+            change_during_readback: tokio::sync::Mutex::new(None) });
+        fixture.source.bind_service_installation_readback(readback.clone()).unwrap();
+        operation = Some(begin(task, policy, &config));
+        let op = operation.as_mut().unwrap();
+        assert!(matches!(tokio::time::timeout(WAIT, prepare(op)).await.unwrap(),
+            Ok(ApplicationServicePreparedStatus::PreparedForEntry)));
+        op.control().enter(|| true).unwrap();
+        let observed = tokio::time::timeout(WAIT, op.drive()).await.unwrap();
+        assert!(observed.outcome == Some(ServiceParentOperationOutcome::Succeeded));
+        assert!(observed.custody == ServiceParentCustody::Joined && observed.parent_issued);
+        let b = observed.source.unwrap();
+        let source = fixture.store.get(&fixture.source.key(&b).unwrap()).await.unwrap().unwrap();
+        let record = fixture.source.decode_record(&source, &b).unwrap();
+        assert_eq!(record.event.original_authentication.revision.as_str(), "application-service-policy-v1");
+        let parent_key = StoreKey { realm: fixture.scope.realm.clone(), owner: fixture.scope.owner.clone(),
+            id: observed.parent_issuance_id.unwrap().as_str().to_owned() };
+        let parent = fixture.store.get(&parent_key).await.unwrap().unwrap();
+        assert_eq!(parent.data.version, 3);
+        assert!(parent.data.body.get("approval").is_none());
+        assert_eq!(parent.data.body["issued"]["state"], "issued");
+        let read = fixture.source.read_service_installation(&b).await;
+        if !include_source {
+            assert!(matches!(read, Err(PrivateOriginalError::Denied)), "old application records do not invent software selection");
+            assert_eq!(readback.calls.load(Ordering::SeqCst), 0);
+            return;
+        }
+        assert_eq!(read.expect("standing application source must reach exact package readback"), config);
+        assert_eq!(readback.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.store.get(&source.key).await.unwrap().unwrap(), source, "readback does not admit B");
+        assert_eq!(fixture.store.get(&parent_key).await.unwrap().unwrap(), parent, "readback never reissues parent");
+        for field in ["administrative_decision", "original", "acquisition"] {
+            let mut changed = parent.data.clone();
+            changed.body[field] = serde_json::Value::Null;
+            let current = fixture.store.get(&parent_key).await.unwrap().unwrap();
+            let corrupt = fixture.store.compare_and_swap(toolkit_store::Transition { key: parent_key.clone(),
+                expected_revision: current.revision, expected_digest: Some(current.content_digest),
+                claim: None, data: changed, events: vec![], effects: vec![],
+            }).await.unwrap();
+            assert!(fixture.source.read_service_installation(&b).await.is_err(), "{field}");
+            assert_eq!(readback.calls.load(Ordering::SeqCst), 1, "corrupt parent never reaches package owner");
+            fixture.store.compare_and_swap(toolkit_store::Transition { key: parent_key.clone(),
+                expected_revision: corrupt.revision, expected_digest: Some(corrupt.content_digest),
+                claim: None, data: parent.data.clone(), events: vec![], effects: vec![],
+            }).await.unwrap();
+        }
+        let grant = &record.approved_task.as_ref().unwrap().grant;
+        let key = crate::private_originals::service_grants::tests::fixture_access_key(&fixture.source, grant).unwrap();
+        let access = fixture.store.get(&key).await.unwrap().unwrap();
+        let mut changed = access.data.clone();
+        changed.body["application_policy"]["installation_readback"]["document"]["software"]["receipt_sha256"] = "b".repeat(64).into();
+        let corrupt = fixture.store.compare_and_swap(toolkit_store::Transition { key: key.clone(),
+            expected_revision: access.revision, expected_digest: Some(access.content_digest),
+            claim: None, data: changed, events: vec![], effects: vec![],
+        }).await.unwrap();
+        assert!(fixture.source.read_service_installation(&b).await.is_err(), "retained software document is bound by access/source digest");
+        assert_eq!(readback.calls.load(Ordering::SeqCst), 1);
+        fixture.store.compare_and_swap(toolkit_store::Transition { key,
+            expected_revision: corrupt.revision, expected_digest: Some(corrupt.content_digest),
+            claim: None, data: access.data, events: vec![], effects: vec![],
+        }).await.unwrap();
+        let mut changed = parent.data.clone();
+        changed.body["administrative_decision"] = serde_json::Value::Null;
+        *readback.change_during_readback.lock().await = Some((parent_key, changed));
+        assert!(fixture.source.read_service_installation(&b).await.is_err(), "post-I/O administrative currentness remains required");
+        assert_eq!(readback.calls.load(Ordering::SeqCst), 2);
+        assert!(fixture.source.decode_record(&fixture.store.get(&source.key).await.unwrap().unwrap(), &b)
+            .unwrap().service_admission.is_none());
+    }).catch_unwind().await;
+    if let Some(operation) = operation.as_mut() { operation.retire().await; }
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    if let Err(panic) = result { std::panic::resume_unwind(panic); }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standing_application_installation_readback_preserves_authority_and_software() {
+    application_installation_readback_case(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn application_installation_readback_refuses_missing_legacy_selection() {
+    application_installation_readback_case(false).await;
+}

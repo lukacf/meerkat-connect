@@ -268,6 +268,51 @@ struct HeldPrivateOriginal {
     service_attachments: Mutex<Vec<Arc<service_approved_input::attachment::HeldServiceAttachment>>>,
 }
 
+/// Exact software selection retained with an application access decision.
+/// This is product-owned data, not a grant, approval or executable capability.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RetainedApplicationInstallation {
+    configuration: serde_json::Value,
+    document: serde_json::Value,
+}
+impl RetainedApplicationInstallation {
+    fn configuration(&self) -> Result<meerkat_core::McpServerConfig, PrivateOriginalError> {
+        let config: meerkat_core::McpServerConfig = serde_json::from_value(self.configuration.clone())
+            .map_err(|_| PrivateOriginalError::Denied)?;
+        if serde_json::to_value(&config).map_err(|_| PrivateOriginalError::Conflict)? != self.configuration
+            || !self.document.is_object()
+            || canonical_json(self).map_err(|_| PrivateOriginalError::Conflict)?.len() > 1024 * 1024
+        { return Err(PrivateOriginalError::Denied); }
+        Ok(config)
+    }
+    fn validate(&self, decision: &PrivateServiceMcpAccessDecision) -> Result<(), PrivateOriginalError> {
+        let config = self.configuration()?;
+        if config.name != decision.permission.connection.as_str()
+            || digest(&canonical_json(&config).map_err(|_| PrivateOriginalError::Conflict)?) != decision.connection_revision.as_str()
+        { return Err(PrivateOriginalError::Denied); }
+        Ok(())
+    }
+}
+
+/// Constructed only after the installed owner has reopened the exact current
+/// source, access decision and native parent. There is no wire constructor.
+pub struct ApplicationInstallationReadback {
+    selected: RetainedApplicationInstallation,
+}
+impl ApplicationInstallationReadback {
+    pub fn document(&self) -> &serde_json::Value { &self.selected.document }
+    pub fn configuration(&self) -> Result<meerkat_core::McpServerConfig, PrivateOriginalError> {
+        self.selected.configuration()
+    }
+}
+
+/// Distinct retained authorization paths for the same package verifier.
+pub enum ServiceInstallationReadbackSource {
+    SettledReview(meerkat_core::approval::ApprovalRecord),
+    ApplicationPolicy(ApplicationInstallationReadback),
+}
+
 /// One shared Rust adapter for Python/TypeScript parent processes. The actual
 /// selected native owner supplies routes and cancellation authority at native
 /// composition, while the parent's private command supplies source facts only.
@@ -281,6 +326,15 @@ pub trait ServiceInstallationReadback: Send + Sync {
         &self,
         review: &meerkat_core::approval::ApprovalRecord,
     ) -> Result<meerkat_core::McpServerConfig, PrivateOriginalError>;
+    /// Existing human-review adapters stay unchanged. Application support must
+    /// explicitly verify the retained product document and exact configuration.
+    async fn readback_source(&self, source: &ServiceInstallationReadbackSource)
+        -> Result<meerkat_core::McpServerConfig, PrivateOriginalError> {
+        match source {
+            ServiceInstallationReadbackSource::SettledReview(review) => self.readback(review).await,
+            ServiceInstallationReadbackSource::ApplicationPolicy(_) => Err(PrivateOriginalError::Denied),
+        }
+    }
 }
 
 pub struct PrivateOriginals {

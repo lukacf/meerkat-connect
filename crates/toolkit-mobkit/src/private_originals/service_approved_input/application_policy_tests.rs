@@ -185,7 +185,7 @@ async fn application_evidence_rejects_swapped_acquisition_scopes() {
             original: task.parent.clone(), acquisition: snapshot.key().clone(),
             instruction_sha256: digest(task.instruction.as_bytes()),
             provenance: [("fixture_policy".into(), "scope-isolation".into())].into_iter().collect(),
-            service_parent: None, tool_policy: None,
+            service_parent: None, tool_policy: None, installation_readback: None,
         };
         let mut decision = PrivateServiceMcpAccessDecision {
             catalog: None, route: route.id.clone(), decision: id(task.fresh.as_str()),

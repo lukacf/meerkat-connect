@@ -232,6 +232,31 @@ impl OperatorSetup {
         self.observe_standing_service(stored, record, selection, current, progress).await
     }
 
+    /// Reopen the actual administrative decision and native issuance. This is
+    /// readback of existing authority, never a human review or a new issuance.
+    pub(crate) async fn retained_standing_service_parent(&self, original: &PrivateOriginalRef,
+        acquisition: &StoreKey, instruction_sha256: &str, decision: &PrivateServiceMcpAccessDecision,
+        expected_parent: &[GrantLineageRef],
+    ) -> Result<(), HostLifetimeError> {
+        self.lifetime.validate_current_selection()?;
+        if expected_parent.len() != 1 { return Err(HostLifetimeError::Denied); }
+        let key = StoreKey { realm: self.native.realm.to_string(),
+            owner: self.lifetime.selected_policy().deployment.to_string(),
+            id: expected_parent[0].grant_id.as_str().to_owned() };
+        let stored = self.originals.get(&key).await.map_err(|_| HostLifetimeError::Unavailable)?
+            .ok_or(HostLifetimeError::Unavailable)?;
+        let record = decode_standing(&stored, &key)?;
+        if record.original != *original || record.acquisition != *acquisition
+            || record.instruction_sha256 != instruction_sha256 || record.decision != *decision
+            || record.source_policy_sha256 != self.lifetime.selected_policy().source_policy_sha256
+            || record.application != self.native.grant_administrator
+            || record.represented_subject != self.route(&original.route)?.represented_subject
+            || !matches!(&record.issued, ParentIssuance::Issued { lineage } if lineage == expected_parent)
+        { return Err(HostLifetimeError::Denied); }
+        self.check_standing_lineage(&record, expected_parent)?;
+        self.lifetime.validate_current_selection()
+    }
+
     fn standing_key(&self, authorization: &ServiceParentRuleEvidence) -> StoreKey {
         StoreKey { realm: self.native.realm.to_string(), owner: self.lifetime.selected_policy().deployment.to_string(),
             id: authorization.issuance_id.as_str().to_owned() }

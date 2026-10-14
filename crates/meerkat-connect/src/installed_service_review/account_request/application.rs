@@ -143,8 +143,7 @@ pub(super) async fn public(owner: &RequestTool, application: Arc<ApplicationRequ
 pub(super) async fn connector(owner: &RequestTool, application: Arc<ApplicationRequestOwner>,
     call: ToolCallView<'_>, context: &ToolDispatchContext, plan: Option<&ResolvedToolExecutionPlan>,
     task: &InstalledServiceTask, login: InstallationLogin, target: &ConnectorOAuthTarget,
-    operations: &BTreeMap<String, McpConnectorOperation>, expires_in_ms: Option<u64>,
-    tool_policy: Option<ServiceToolPolicySelection>,
+    software: &InstalledSelection, selection: &InstalledAccountSelection,
 ) -> Result<Option<ToolDispatchOutcome>, ToolError> {
     application.approvals.check_session(&owner.session).map_err(|_| unavailable())?;
     login.check_target(target).map_err(|_| ToolError::access_denied(call.name))?;
@@ -165,8 +164,13 @@ pub(super) async fn connector(owner: &RequestTool, application: Arc<ApplicationR
     let config = reviewed_configuration(&joined).map_err(|_| ToolError::access_denied(call.name))?;
     let installation = ConnectorMcpInstallation::from_config(&config).ok_or_else(unavailable)?
         .map_err(|_| ToolError::access_denied(call.name))?;
-    let prepared = prepare_connector(&application, task, policy, installation,
-        ids(operations.keys().cloned(), call.name)?, expires_in_ms, tool_policy, call.name).await?;
+    let document = account_review_body(software, target, &account, &installation, selection)
+        .map_err(|_| ToolError::access_denied(call.name))?;
+    let task = task.clone().with_installation_readback_source(&config, document)
+        .map_err(|error| failure(call.name, error))?;
+    let prepared = prepare_connector(&application, &task, policy, installation,
+        ids(selection.operations.keys().cloned(), call.name)?, selection.expires_in_ms,
+        selection.tool_policy.clone(), call.name).await?;
     context.check_tool_authorization(call, plan)?;
     let Some(prepared) = prepared else {
         return human_action(call, "human_service_access_review", human);

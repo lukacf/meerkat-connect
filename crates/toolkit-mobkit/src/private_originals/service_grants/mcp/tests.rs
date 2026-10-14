@@ -153,7 +153,7 @@ async fn application_policy_pending_record_keeps_exact_provenance_without_reissu
         acquisition: StoreKey { realm: adapter.scope.realm.clone(), owner: adapter.scope.owner.clone(), id: "task".into() },
         instruction_sha256: "c".repeat(64),
         service_parent: None,
-        tool_policy: None,
+        tool_policy: None, installation_readback: None,
         provenance: serde_json::json!({"policy_decision":"actual-test-producer-decision"}).as_object().unwrap().clone(),
     };
     decision.evidence.sha256 = digest(&canonical_json(&evidence).unwrap());

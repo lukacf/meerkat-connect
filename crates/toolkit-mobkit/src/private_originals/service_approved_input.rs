@@ -185,6 +185,7 @@ pub struct InstalledServiceTask {
     instruction: String,
     before_ms: u64,
     console_login: Option<crate::private_host::ConsoleLoginHandle>,
+    installation_readback: Option<RetainedApplicationInstallation>,
 }
 
 /// Nonsecret requested effects for the defining realm's native owner. The
@@ -318,7 +319,7 @@ impl PrivateOriginals {
             input_digest: snapshot.request().input_digest().to_string(), fresh,
             instruction: snapshot.request().request().request.clone(),
             before_ms: snapshot.request().host().limits.deadline_ms,
-            console_login,
+            console_login, installation_readback: None,
         };
         proposed.current().await?;
         Ok(Some(proposed))
@@ -326,6 +327,21 @@ impl PrivateOriginals {
 }
 
 impl InstalledServiceTask {
+    /// Bind the installed product owner's exact checked software document to
+    /// this proposal. This supplies no policy decision or native permission.
+    /// The document must be nonsecret; the package owner verifies it again at
+    /// readback. Existing application records without it remain unsupported.
+    pub fn with_installation_readback_source(mut self, configuration: &meerkat_core::McpServerConfig,
+        document: serde_json::Value) -> Result<Self, PrivateOriginalError> {
+        if self.installation_readback.is_some() { return Err(PrivateOriginalError::Conflict); }
+        let selected = RetainedApplicationInstallation {
+            configuration: serde_json::to_value(configuration).map_err(|_| PrivateOriginalError::Conflict)?, document,
+        };
+        if selected.configuration()? != *configuration { return Err(PrivateOriginalError::Denied); }
+        self.installation_readback = Some(selected);
+        Ok(self)
+    }
+
     /// Immutable canonical setup deadline. This is a presentation bound only;
     /// current task and effect admission still require their existing checks.
     pub fn deadline_ms(&self) -> u64 { self.before_ms }

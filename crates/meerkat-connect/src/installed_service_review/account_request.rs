@@ -422,10 +422,14 @@ impl RequestTool {
             | toolkit_mobkit::private_originals::PrivateOriginalError::Denied => ToolError::access_denied(call.name),
         })?;
         if task.is_none() && proposal.tool_policy.is_some() { return Err(ToolError::access_denied(call.name)); }
+        let selection = InstalledAccountSelection {
+            agent: proposal.agent, expires_in_ms: proposal.expires_in_ms,
+            operations, tool_policy: proposal.tool_policy,
+        };
         if let Some(application) = &self.application {
             if let Some(result) = application::connector(self, application.clone(), call, &current, plan,
                 task.as_ref().ok_or_else(|| ToolError::access_denied(call.name))?, login, &target,
-                &operations, proposal.expires_in_ms, proposal.tool_policy.clone()).await? { return Ok(result); }
+                &software, &selection).await? { return Ok(result); }
             if let Some(refreshed) = current.check_tool_authorization(call, plan)? { current = refreshed; }
         }
         let entry = current.reviewed_entry_ticket(call, plan)?;
@@ -437,12 +441,7 @@ impl RequestTool {
                 job_id: proposal.job_id,
                 target,
                 software,
-                selection: InstalledAccountSelection {
-                    agent: proposal.agent,
-                    expires_in_ms: proposal.expires_in_ms,
-                    operations,
-                    tool_policy: proposal.tool_policy,
-                },
+                selection,
                 task,
                 entry,
                 current: CurrentRequest(checks),

@@ -502,8 +502,21 @@ fn review_request<T: Serialize>(
     installation: &ConnectorMcpInstallation,
     proposal: &InstalledAccessProposal<T>,
 ) -> Result<ApprovalRequest, ConnectError> {
+    let body = account_review_body(software, target, observed, installation, &proposal.selection)?;
+    account_review_request(software, proposal, body)
+}
+
+// One checked software/account projection serves either retained authority.
+// This body proposes no approval or grant and contains no credential value.
+fn account_review_body<T: Serialize>(
+    software: &InstalledSelection,
+    target: &ConnectorOAuthTarget,
+    observed: &ConnectorAuthStatus,
+    installation: &ConnectorMcpInstallation,
+    selection: &T,
+) -> Result<Value, ConnectError> {
     let account = authorized_account(target, observed).map_err(refused)?;
-    let selection = serde_json::to_value(&proposal.selection)
+    let selection = serde_json::to_value(selection)
         .map_err(|_| refused("The application access selection cannot be presented"))?;
     let body: Value = json!({"phase":"installed_account_access",
         "realm":software.realm.realm.as_str(), "realm_state_root":software.realm.state_root,
@@ -520,6 +533,11 @@ fn review_request<T: Serialize>(
             "requested_scopes":target.scopes, "client_auth_profile":target.client_auth_profile},
         "installation":installation.config(), "application_selection":selection,
         "notice":"This decision records the exact review. The installed application's native owners must still authorize access, persist or attach the server, and observe readiness."});
+    Ok(body)
+}
+
+fn account_review_request<T: Serialize>(software: &InstalledSelection,
+    proposal: &InstalledAccessProposal<T>, body: Value) -> Result<ApprovalRequest, ConnectError> {
     Ok(ApprovalRequest {
         requester: proposal.requester.clone(),
         owner: ApprovalOwnerRef::Session {
@@ -688,6 +706,8 @@ mod tests {
             review_request(&software, &target, &account, &installation, &proposal).unwrap();
         let body = request.request_body.as_ref().unwrap();
         assert_eq!(request.proposed_action.body.as_ref(), Some(body));
+        assert_eq!(&account_review_body(&software, &target, &account, &installation,
+            &proposal.selection).unwrap(), body);
         assert_eq!(body["software"]["receipt_sha256"], "1".repeat(64));
         assert_eq!(body["account"]["subject"], "account-one");
         assert_eq!(
@@ -706,6 +726,32 @@ mod tests {
             request.expires_at.map(SystemTime::from),
             Some(proposal.decision_expires_at)
         );
+    }
+
+    #[test]
+    fn application_account_body_preserves_checked_software_and_native_account() {
+        use crate::resources::installation_readback::checked_application_body_for_test as read;
+        let (mut software, target, account, installation, proposal) = fixture();
+        software.job_id = "1".repeat(32);
+        software.validation_id = "2".repeat(32);
+        software.recovery_request_sha256 = Some("4".repeat(64));
+        let body = account_review_body(&software, &target, &account, &installation,
+            &proposal.selection).unwrap();
+        let human = review_request(&software, &target, &account, &installation, &proposal).unwrap();
+        assert_eq!(human.request_body.as_ref(), Some(&body));
+        assert_eq!(read(&body, installation.config(), &software.realm).unwrap(), *installation.config());
+        for field in ["receipt_sha256", "document_sha256", "recovery_request_sha256"] {
+            let mut missing = body.clone();
+            missing["software"].as_object_mut().unwrap().remove(field);
+            assert!(read(&missing, installation.config(), &software.realm).is_err());
+        }
+        let mut changed = body.clone();
+        changed["installation"]["connector"]["account"] = json!("another-account");
+        assert!(read(&changed, installation.config(), &software.realm).is_err());
+        let mut unauthorized = account;
+        unauthorized.phase = meerkat::ConnectorAuthPhase::AuthorizationRequired;
+        assert!(account_review_body(&software, &target, &unauthorized, &installation,
+            &proposal.selection).is_err());
     }
 
     #[test]

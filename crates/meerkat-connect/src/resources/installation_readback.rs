@@ -3,7 +3,8 @@
 use super::*;
 use meerkat_core::{approval::{ApprovalDecision, ApprovalRecord, ApprovalStatus}, McpServerConfig};
 use serde_json::{Value, json};
-use toolkit_mobkit::private_originals::{PrivateOriginalError, ServiceInstallationReadback};
+use toolkit_mobkit::private_originals::{PrivateOriginalError, ServiceInstallationReadback,
+    ServiceInstallationReadbackSource};
 use crate::{connector_install::native_launch_configuration,
     service_install::{SelectedDocument, InstalledSelection, NativeConnectorEntry, RemoteSelection, ServiceCredentialSlot, public_launch_configuration, secret_launch_configuration}};
 use std::collections::BTreeSet;
@@ -22,7 +23,12 @@ fn selected_review(review: &ApprovalRecord, realm: &meerkat_core::RealmLocator)
         || !review.decision.as_ref().is_some_and(|d| d.decision == ApprovalDecision::Approve) {
         return Err(denied());
     }
-    let body = review.request_body.as_ref().ok_or_else(denied)?;
+    selected_body(review.request_body.as_ref().ok_or_else(denied)?, realm)
+}
+
+fn selected_body(body: &Value, realm: &meerkat_core::RealmLocator)
+    -> Result<(InstalledSelection, McpServerConfig, Value), PrivateOriginalError>
+{
     let software = &body["software"];
     let text = |key: &str, limit: usize| -> Result<String, PrivateOriginalError> {
         software[key].as_str().filter(|v| !v.is_empty() && v.len() <= limit
@@ -117,7 +123,12 @@ fn selected_remote_review(review: &ApprovalRecord, realm: &meerkat_core::RealmLo
 {
     if review.status != ApprovalStatus::Approved
         || !review.decision.as_ref().is_some_and(|d|d.decision==ApprovalDecision::Approve) { return Err(denied()); }
-    let body=review.request_body.as_ref().ok_or_else(denied)?;
+    selected_remote_body(review.request_body.as_ref().ok_or_else(denied)?, realm)
+}
+
+fn selected_remote_body(body: &Value, realm: &meerkat_core::RealmLocator)
+    -> Result<(RemoteSelection, McpServerConfig, Value), PrivateOriginalError>
+{
     if body["phase"]!="installed_public_service_access" || body.get("software").is_some()
         || body["realm"]!=realm.realm.as_str() || body["realm_state_root"]!=json!(realm.state_root)
         || body["authentication"]!=json!({"kind":"none"}) { return Err(denied()); }
@@ -228,8 +239,39 @@ fn checked_readback(selected: &InstalledSelection, reviewed: &McpServerConfig, v
     Ok(derived)
 }
 
+fn selected_application_body(body: &Value, configuration: &McpServerConfig,
+    realm: &meerkat_core::RealmLocator) -> Result<(McpServerConfig, Value), PrivateOriginalError> {
+    let reviewed = if body.get("remote_export").is_some() {
+        selected_remote_body(body, realm)?.1
+    } else { selected_body(body, realm)?.1 };
+    if &reviewed != configuration { return Err(denied()); }
+    Ok((reviewed, body.clone()))
+}
+
 #[async_trait::async_trait]
 impl ServiceInstallationReadback for ProductInstallationReadback {
+    async fn readback_source(&self, source: &ServiceInstallationReadbackSource)
+        -> Result<McpServerConfig, PrivateOriginalError> {
+        let ServiceInstallationReadbackSource::ApplicationPolicy(source) = source else {
+            let ServiceInstallationReadbackSource::SettledReview(review) = source else { return Err(denied()); };
+            return self.readback(review).await;
+        };
+        let (configuration, body) = selected_application_body(source.document(), &source.configuration()?, &self.storage.locator)?;
+        if body.get("remote_export").is_some() {
+            let (selected, reviewed, request) = selected_remote_body(&body, &self.storage.locator)?;
+            let resources = super::readback_process::locate_readback_resources("resources_before").await.map_err(|_| unavailable())?;
+            let value = resources.readback(&self.storage, &request).await.map_err(|_| unavailable())?;
+            if value != selected.export || reviewed != configuration { return Err(denied()); }
+            return Ok(reviewed);
+        }
+        let (selected, reviewed, request) = selected_body(&body, &self.storage.locator)?;
+        let resources = super::readback_process::locate_readback_resources("resources_before").await.map_err(|_| unavailable())?;
+        let value = resources.readback(&self.storage, &request).await.map_err(|_| unavailable())?;
+        let observed = checked_readback(&selected, &reviewed, &value, request.get("public_service"), request.get("credential_service"))?;
+        if observed != configuration { return Err(denied()); }
+        Ok(observed)
+    }
+
     async fn readback(&self, review: &ApprovalRecord) -> Result<McpServerConfig, PrivateOriginalError> {
         if review.request_body.as_ref().is_some_and(|body|body.get("remote_export").is_some()) {
             let (selected,reviewed,request)=selected_remote_review(review,&self.storage.locator)?;
@@ -244,6 +286,12 @@ impl ServiceInstallationReadback for ProductInstallationReadback {
         let value = resources.readback(&self.storage, &request).await.map_err(|_| unavailable())?;
         checked_readback(&selected, &reviewed, &value, request.get("public_service"), request.get("credential_service"))
     }
+}
+
+#[cfg(test)]
+pub(crate) fn checked_application_body_for_test(body: &Value, config: &McpServerConfig,
+    realm: &meerkat_core::RealmLocator) -> Result<McpServerConfig, PrivateOriginalError> {
+    selected_application_body(body, config, realm).map(|(config, _)| config)
 }
 
 #[cfg(test)]
@@ -481,6 +529,30 @@ mod tests {
                 "operation_tools":{"declared/read":"actual_read", "declared/other":"other_read"}});
         }
         (realm, record, result)
+    }
+
+    #[test]
+    fn application_software_body_reuses_exact_public_package_checks_without_human_record() {
+        for profile in [None, Some("python"), Some("node")] {
+            let (realm, human_fixture, result) = public_fixture(profile);
+            // Only the existing software fixture body is used below. No human
+            // decision is made or accepted by this application parser.
+            let body = human_fixture.request_body.unwrap();
+            let config: McpServerConfig = serde_json::from_value(body["installation"].clone()).unwrap();
+            let (selected_config, document) = selected_application_body(&body, &config, &realm).unwrap();
+            let (selected, reviewed, request) = selected_body(&document, &realm).unwrap();
+            assert_eq!(selected_config, reviewed);
+            assert_eq!(checked_readback(&selected, &reviewed, &result,
+                request.get("public_service"), None).unwrap(), config);
+            let mut other = config.clone(); other.name = "other-server".into();
+            assert!(selected_application_body(&body, &other, &realm).is_err());
+            for field in ["receipt_sha256", "document_sha256", "recovery_request_sha256"] {
+                let mut changed = body.clone(); changed["software"][field] = "invalid".into();
+                assert!(selected_application_body(&changed, &config, &realm).is_err(), "{field}");
+            }
+            let mut changed = result.clone(); changed["receipt_sha256"] = "f".repeat(64).into();
+            assert!(checked_readback(&selected, &reviewed, &changed, request.get("public_service"), None).is_err());
+        }
     }
 
     #[test]
