@@ -118,11 +118,14 @@ impl Drop for Endpoint {
 }
 
 const PUBLIC_READ_CALL: &str = "actual-public-attachment-read";
+const PUBLIC_READ_REPREPARE_CALL: &str = "actual-public-attachment-read-reprepared";
 
 #[derive(Default)]
 struct PublicReadScript {
     armed: AtomicBool,
     responses: AtomicUsize,
+    tool_reprepares: AtomicUsize,
+    retry_controller: Mutex<Option<meerkat_core::OperationId>>,
     expected_instruction: Mutex<Option<String>>,
     offered: Mutex<Option<ToolIdentity>>,
     feedback: Mutex<Option<ToolResult>>,
@@ -172,6 +175,7 @@ impl LlmClient for PublicReadProvider {
         // Advance only after the inner provider yields authorized output so
         // Core recovery cannot consume or replay the one public read.
         let mut response = None;
+        let mut tool_response = false;
         Box::pin(stream.map(move |event| event.map(|event| match event {
             LlmEvent::TextDelta { meta, .. } => {
                 assert!(response.is_none(), "one authorized response must have one text delta");
@@ -197,28 +201,59 @@ impl LlmClient for PublicReadProvider {
                         assert!(self.script.offered.lock().unwrap().replace(identity.clone()).is_none());
                         // Call the actual offered model-facing identity. The fixture
                         // never guesses a prefix or treats a raw operation as a name.
+                        tool_response = true;
                         LlmEvent::ToolCallComplete {
                             id: PUBLIC_READ_CALL.into(), name: identity.name.as_str().to_owned(),
                             args: serde_json::json!({}), meta: None,
                         }
                     }
-                    1 => {
+                    1 | 2 => {
                         let feedback = request.request().messages.iter().flat_map(|message| match message {
                             Message::ToolResults { results, .. } => results.as_slice(),
                             _ => &[],
-                        }).filter(|result| result.tool_use_id == PUBLIC_READ_CALL).collect::<Vec<_>>();
-                        assert_eq!(feedback.len(), 1, "the same task must receive one actual tool result");
-                        let result = (*feedback[0]).clone();
-                        assert!(!result.is_error && result.settlement_failures.is_empty(), "{result:?}");
-                        let answer = format!("Public read completed: {}", result.text_content());
-                        assert!(self.script.feedback.lock().unwrap().replace(result).is_none());
-                        LlmEvent::TextDelta { delta: answer, meta }
+                        }).filter(|result| matches!(result.tool_use_id.as_str(),
+                            PUBLIC_READ_CALL | PUBLIC_READ_REPREPARE_CALL)).collect::<Vec<_>>();
+                        assert_eq!(feedback.len(), selected, "exact attempted calls retain one result each");
+                        assert_eq!(feedback[0].tool_use_id, PUBLIC_READ_CALL);
+                        let result = (**feedback.last().unwrap()).clone();
+                        if selected == 2 {
+                            assert_eq!(self.script.tool_reprepares.load(Ordering::SeqCst), 1);
+                            assert_eq!(result.tool_use_id, PUBLIC_READ_REPREPARE_CALL);
+                        }
+                        if selected == 1 && result.is_error {
+                            // Choose one fresh call after Core's operation-local feedback.
+                            // The exact B audit below must prove ReprepareRequired and
+                            // no physical entry; this public text alone proves neither.
+                            let expected = meerkat_core::ops::terminal_tool_outcome_for_error(
+                                PUBLIC_READ_CALL, meerkat_core::ToolError::AuthorizationRefused {
+                                    refusal: meerkat_core::OperationRefused::new(
+                                        meerkat_core::OperationRefusalKind::ReprepareRequired),
+                                }).result;
+                            assert_eq!(serde_json::to_value(&result).unwrap(), serde_json::to_value(expected).unwrap(),
+                                "only the exact native operation-refused feedback may schedule this bounded choice");
+                            assert_eq!(self.script.tool_reprepares.fetch_add(1, Ordering::SeqCst), 0);
+                            let identity = self.script.offered.lock().unwrap().clone().unwrap();
+                            assert_eq!(request.request().tools.iter().filter(|tool| tool.identity() == identity).count(), 1,
+                                "retry must select the same currently offered tool identity");
+                            assert!(self.script.retry_controller.lock().unwrap().replace(
+                                request.authorization().unwrap().operation_id().clone()).is_none());
+                            tool_response = true;
+                            LlmEvent::ToolCallComplete {
+                                id: PUBLIC_READ_REPREPARE_CALL.into(), name: identity.name.as_str().to_owned(),
+                                args: serde_json::json!({}), meta: None,
+                            }
+                        } else {
+                            assert!(!result.is_error && result.settlement_failures.is_empty(), "{result:?}");
+                            let answer = format!("Public read completed: {}", result.text_content());
+                            assert!(self.script.feedback.lock().unwrap().replace(result).is_none());
+                            LlmEvent::TextDelta { delta: answer, meta }
+                        }
                     }
                     _ => panic!("the public input must not replay model work"),
                 }
             }
             LlmEvent::Done { outcome: LlmDoneOutcome::Success { .. } }
-                if response == Some(0) => LlmEvent::Done {
+                if tool_response => LlmEvent::Done {
                     outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
                 },
             other => other,
@@ -422,6 +457,85 @@ async fn assert_native_inputs(
     rows
 }
 
+/// A controller choice is accepted by this test only with the actual B audit.
+/// Historical observations grant nothing; every fresh call still uses native
+/// preparation, currentness, entry and outcome checks in the real dispatcher.
+fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::SessionId, script: &PublicReadScript) {
+    use meerkat_authorization_contracts::audit::{AuditObservation, AuditTarget, AuditModelUse,
+        StoredAuthorizationAuditObservation};
+    use meerkat_core::{OperationRefusalKind, authorization::OperationObservedOutcome,
+        exact_operation::OperationExecutionScope};
+    let value = serde_json::to_value(row).unwrap();
+    let records: Vec<StoredAuthorizationAuditObservation> =
+        serde_json::from_value(value["authorization_audit"].clone()).unwrap();
+    let run = row.seed.last_run_id.as_ref().unwrap();
+    assert!(!records.is_empty());
+    for record in &records {
+        assert_eq!(record.observation.run_id.as_ref(), Some(run));
+        assert_eq!(record.contributors.len(), 1);
+        assert_eq!(record.contributors[0].input_id, row.state.input_id);
+        assert!(matches!(&record.observation.execution_scope, OperationExecutionScope::RuntimeInput {
+            owner_session_id, canonical_input_id, submitted_input_id, ..
+        } if owner_session_id == session && canonical_input_id == &row.state.input_id
+            && submitted_input_id == &row.state.input_id));
+    }
+    let tool_records = records.iter().enumerate().filter_map(|(index, record)| {
+        let target = match &record.observation.observation {
+            AuditObservation::Prepared { target, .. } | AuditObservation::Refused { target, .. }
+                | AuditObservation::AuthorizationUnavailable { target } => target,
+            _ => return None,
+        };
+        matches!(target.as_ref(), AuditTarget::Tool { .. }).then_some((index, record, target.as_ref()))
+    }).collect::<Vec<_>>();
+    let retries = script.tool_reprepares.load(Ordering::SeqCst);
+    assert!(retries <= 1);
+    assert_eq!(tool_records.len(), 1 + retries, "one successful native read and at most one unentered refusal");
+    let (success_index, success, success_target) = tool_records[retries];
+    let AuditTarget::Tool { call_id, tool_name, arguments_digest, owners } = success_target else { unreachable!() };
+    assert_eq!(call_id, if retries == 0 { PUBLIC_READ_CALL } else { PUBLIC_READ_REPREPARE_CALL });
+    assert_eq!(tool_name, script.offered.lock().unwrap().as_ref().unwrap().name.as_str());
+    assert!(matches!(&success.observation.observation, AuditObservation::Prepared { .. }));
+    let successful = records.iter().filter(|record|
+        record.observation.operation_id == success.observation.operation_id).collect::<Vec<_>>();
+    assert_eq!(successful.len(), 3);
+    assert!(matches!(&successful[1].observation.observation, AuditObservation::Entry));
+    assert!(matches!(&successful[2].observation.observation, AuditObservation::Outcome {
+        outcome: OperationObservedOutcome::ToolDispatchReturned {
+            asynchronous_operations, result_is_error: false, terminal_error: None,
+        }
+    } if asynchronous_operations.is_empty()));
+    if retries == 0 { assert!(script.retry_controller.lock().unwrap().is_none()); }
+    if retries == 1 {
+        let (refused_index, refused, refused_target) = tool_records[0];
+        assert!(matches!(&refused.observation.observation,
+            AuditObservation::Refused { reason: OperationRefusalKind::ReprepareRequired, .. }));
+        let AuditTarget::Tool { call_id: refused_call, tool_name: refused_name,
+            arguments_digest: refused_arguments, owners: refused_owners } = refused_target else { unreachable!() };
+        assert_eq!(refused_call, PUBLIC_READ_CALL);
+        assert!(refused_name == tool_name && refused_arguments == arguments_digest && refused_owners == owners,
+            "fresh call must retain the same exact tool, arguments and selected owners");
+        assert_ne!(refused.observation.operation_id, success.observation.operation_id);
+        assert_eq!(records.iter().filter(|record| record.observation.operation_id == refused.observation.operation_id).count(), 1,
+            "the refused operation must have no entry or outcome");
+        let controller_id = script.retry_controller.lock().unwrap().clone().unwrap();
+        let controller = records[refused_index + 1..success_index].iter().find(|record|
+            record.observation.operation_id == controller_id
+                && matches!(&record.observation.observation, AuditObservation::Prepared { target, .. }
+                    if matches!(target.as_ref(), AuditTarget::Model(model)
+                        if model.usage == AuditModelUse::ControllerInference && model.hosted_capabilities.is_empty())))
+            .expect("the exact fresh native controller chooses the retry after refusal");
+        assert_ne!(controller.observation.operation_id, refused.observation.operation_id);
+        assert_ne!(controller.observation.operation_id, success.observation.operation_id);
+        let controller_steps = records[refused_index + 1..success_index].iter().filter(|record|
+            record.observation.operation_id == controller.observation.operation_id).collect::<Vec<_>>();
+        assert_eq!(controller_steps.len(), 3);
+        assert!(matches!(&controller_steps[1].observation.observation, AuditObservation::Entry));
+        assert!(matches!(&controller_steps[2].observation.observation, AuditObservation::Outcome {
+            outcome: OperationObservedOutcome::HttpResponse { status: 200 }
+        }));
+    }
+}
+
 /// Persistent input history is authoritative after consumed inputs leave the
 /// live ledger. Observe the exact B row and its run, not an input count or a
 /// provider response alone. This only reads owners and never wakes the run.
@@ -432,6 +546,7 @@ async fn assert_public_input_completed(
     input: &str,
     expected: &[(&str, &InputAuthorityAssociation)],
     expected_result: &str,
+    script: &PublicReadScript,
 ) {
     tokio::time::timeout(WAIT, async {
         loop {
@@ -465,7 +580,10 @@ async fn assert_public_input_completed(
                             else { panic!("B must complete with its actual result") };
                         assert_eq!(result.session_id, fixture.session);
                         assert_eq!(result.text, format!("Public read completed: {expected_result}"));
-                        assert_eq!(result.tool_calls, 1);
+                        // Core counts refused attempted calls too; physical success
+                        // is independently exactly one endpoint call below.
+                        assert_eq!(result.tool_calls, 1 + u32::try_from(script.tool_reprepares.load(Ordering::SeqCst)).unwrap());
+                        assert_public_tool_audit(row, &fixture.session, script);
                         let projected = fixture.source.observe_service_input_receipt(original).await.unwrap();
                         let crate::private_originals::PrivateServiceInputObservation::Admitted {
                             session_id, input_id, receipt: Some(projected),
@@ -668,9 +786,10 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                     &admission.input_id,
                     &expected,
                     &endpoint.result,
+                    script.as_ref().unwrap(),
                 )
                 .await;
-                assert_eq!(fixture.model_requests(), model_requests + 2);
+                assert_eq!(fixture.model_requests(), model_requests + 2 + script.as_ref().unwrap().tool_reprepares.load(Ordering::SeqCst));
                 let calls = endpoint.calls();
                 assert_eq!(calls.len(), 1, "one real tools/call reaches the attached process");
                 assert_eq!(calls[0]["params"]["name"], "read");
@@ -678,7 +797,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                 let script = script.as_ref().unwrap();
                 assert_ne!(script.offered.lock().unwrap().as_ref().unwrap().name.as_str(), "read",
                     "the actual catalog supplies the exposed identity, while MCP receives raw read");
-                assert_eq!(script.responses.load(Ordering::SeqCst), 2);
+                assert_eq!(script.responses.load(Ordering::SeqCst), 2 + script.tool_reprepares.load(Ordering::SeqCst));
                 let feedback = script.feedback.lock().unwrap();
                 assert_eq!(feedback.as_ref().unwrap().text_content(), endpoint.result);
             }
@@ -711,12 +830,13 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
         if public {
             assert_eq!(
                 fixture.model_requests(),
-                if cancel { model_requests } else { model_requests + 2 },
+                if cancel { model_requests } else { model_requests + 2 + script.as_ref().unwrap().tool_reprepares.load(Ordering::SeqCst) },
                 "recovery cannot replay consumed B or submit a cancelled B"
             );
             let script = script.as_ref().unwrap();
             assert_eq!(endpoint.calls().len(), if cancel { 0 } else { 1 });
-            assert_eq!(script.responses.load(Ordering::SeqCst), if cancel { 0 } else { 2 });
+            assert_eq!(script.responses.load(Ordering::SeqCst), if cancel { 0 } else { 2 + script.tool_reprepares.load(Ordering::SeqCst) });
+            if cancel { assert_eq!(script.tool_reprepares.load(Ordering::SeqCst), 0); }
             assert_eq!(script.offered.lock().unwrap().is_some(), !cancel);
             assert_eq!(script.feedback.lock().unwrap().is_some(), !cancel);
         }
@@ -736,9 +856,9 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             let admission = record.service_admission.as_ref().unwrap();
             assert_public_input_completed(&fixture, runtime_store.as_ref(), &b, &admission.input_id,
                 &[(a_input.as_str(), &a_binding), (admission.input_id.as_str(), record.final_association.as_ref().unwrap())],
-                &endpoint.result).await;
+                &endpoint.result, script.as_ref().unwrap()).await;
             assert_eq!(endpoint.calls().len(), 1);
-            assert_eq!(fixture.model_requests(), model_requests + 2);
+            assert_eq!(fixture.model_requests(), model_requests + 2 + script.as_ref().unwrap().tool_reprepares.load(Ordering::SeqCst));
         }
     })))
     .catch_unwind()
