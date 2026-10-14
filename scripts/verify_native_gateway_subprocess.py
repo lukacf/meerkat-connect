@@ -1789,6 +1789,51 @@ def acquisition_helper_targets():
     ]
 
 
+def reviewed_original_catalog_policy(proposal, catalog, session_id, prior_raw):
+    """Validate the exact complete successor before either native approval path."""
+    selection = {"tools": [], "catalog": "r2"}
+    prior = unique_json(prior_raw)
+    candidate_raw = proposal["candidate_canonical_json"].encode()
+    candidate = unique_json(candidate_raw)
+    require(set(proposal) == {"provider_id", "policy_id", "member", "selection", "catalog_session",
+                             "prior", "candidate", "candidate_canonical_json", "lifetime"}
+            and proposal["provider_id"] == prior["provider_id"] and proposal["policy_id"] == prior["policy_id"]
+            and proposal["member"] == "original" and proposal["selection"] == selection
+            and proposal["catalog_session"] == session_id
+            and proposal["lifetime"] == "until_superseded" and catalog == "original_session"
+            and proposal["prior"] == {"revision": prior["revision"],
+                "digest": installed_fixture_policy_digest(prior_raw)}
+            and proposal["candidate"] == {"revision": prior["revision"] + 1,
+                "digest": installed_fixture_policy_digest(candidate_raw)},
+            "catalog review changed the original session, selection or native policy version")
+    expected = json.loads(json.dumps(prior))
+    expected["revision"] += 1
+    original = [row for row in expected["members"] if row["member_identity"] == "original"]
+    require(len(original) == 1 and not any(row["tool_name"] in ("tool_catalog_search", "tool_catalog_load")
+            for row in original[0]["grants"]), "bootstrap original catalog selection was not absent")
+    original[0]["grants"].extend({"tool_name": name, "action": "invoke", "consequence": "r2"}
+                               for name in ("tool_catalog_search", "tool_catalog_load"))
+    original[0]["grants"].sort(key=lambda row: row["tool_name"])
+    source = candidate["source"]
+    require(set(source) == {"source_id", "source_digest"}
+            and source["source_id"] == "toolkit-application-service-decision"
+            and isinstance(source["source_digest"], str) and len(source["source_digest"]) == 71
+            and source["source_digest"].startswith("sha256:")
+            and all(c in "0123456789abcdef" for c in source["source_digest"][7:]),
+            "candidate source provenance is not the native service decision")
+    # Private source-tuple digest is native-owned; the field order is fixed.
+    expected["source"] = {"source_id": source["source_id"], "source_digest": source["source_digest"]}
+    # Core's internal policy_digest covers this ordered payload without a LF;
+    # the proposal version above covers the full canonical artifact with its LF.
+    payload = {key: expected[key] for key in ("schema_version", "provider_id", "policy_id",
+               "revision", "source", "default_deny", "members")}
+    expected["policy_digest"] = installed_fixture_policy_digest(json.dumps(
+        payload, separators=(",", ":"), ensure_ascii=False).encode())
+    require(candidate == expected and candidate_raw == json.dumps(expected,
+                separators=(",", ":"), ensure_ascii=False).encode() + b"\n",
+            "catalog approval changed permissions or native canonical bytes")
+
+
 def original_tool_notice(content, operation):
     """Recognize only the selected Core's complete two-line display forms.
 
@@ -2173,6 +2218,15 @@ class InstalledAcquisitionProvider:
         save_json(self.directory / "model-requests.json", self.requests)
 
 
+class InstalledPublicCatalogProvider(InstalledAcquisitionProvider):
+    """The public package case explicitly selects Original catalog review."""
+    original_catalog = True
+
+    def access_arguments(self, job_id, raw):
+        return {**super().access_arguments(job_id, raw),
+                "tool_policy": {"tools": [], "catalog": "r2"}}
+
+
 def installed_plan(directory, roster, *, acquisition=False, console=None):
     """Explicit fixture application inputs; native alone issues parent refs."""
     root = directory / "deployment"
@@ -2246,6 +2300,7 @@ rust_bundles = ["meerkat_toolkit.setup"]
         source["finite_service_rule"] = {"route": ACQUISITION_ROUTE, "request": ACQUISITION_REQUEST,
             "family": "agno", "profile": "hackernews", "operation": ACQUISITION_OPERATION,
             "authentication": {"kind": "none"}, "maximum_active_reservations": 1,
+            "original_tool_policy": {"tools": [], "catalog": "r2"},
             "public_read": {"operation": ACQUISITION_OPERATION, "arguments": {"num_stories": 1},
                 "fixture_maximum_calls": 1, "answer_fields": ["id", "title"]},
             "scope": "one original task, its retained fresh source and one public Hacker News read"}
@@ -2335,6 +2390,7 @@ class InstalledFixtureRule:
                 and rule["family"] == "agno" and rule["profile"] == "hackernews"
                 and rule["operation"] == ACQUISITION_OPERATION and rule["authentication"] == {"kind": "none"}
                 and rule["maximum_active_reservations"] == 1
+                and rule["original_tool_policy"] == {"tools": [], "catalog": "r2"}
                 and rule["public_read"] == {"operation": ACQUISITION_OPERATION, "arguments": {"num_stories": 1},
                     "fixture_maximum_calls": 1, "answer_fields": ["id", "title"]},
                 "trusted fixture policy does not select this one public read")
@@ -2375,6 +2431,11 @@ class InstalledFixtureRule:
                 and proposal["connector_selection"] == {"server": server, "connector": None},
                 "proposal selects another acquisition or service")
         decision = proposal["decision"]
+        # The fixture owner approves this complete successor until superseded.
+        # Its catalog visibility covers Original's conversation; native service
+        # and catalog grants remain separately bounded to this task.
+        reviewed_original_catalog_policy(proposal["tool_policy"], decision["catalog"],
+            self.admission["session_id"], f.application_tool_policy)
         permission = decision["permission"]
         destination = decision["live_attachment"]["destination"]
         require(decision["route"] == ACQUISITION_ROUTE and decision["choice"] == "approve"
@@ -2498,7 +2559,9 @@ async def run_installed_acquisition(private, finalizer, provider, directory, eve
         custody["proposal"] = proposal_pin
         reservation = rule.reserve(request)
         try:
-            attempt = request.authorize(SDK.StandingRuleDecision(reservation))
+            policy_sha256 = request.tool_policy_sha256
+            require(isinstance(policy_sha256, str), "reviewed catalog policy digest missing")
+            attempt = request.authorize_tool_policy(SDK.StandingRuleDecision(reservation), policy_sha256)
         except BaseException:
             # An interruption can arrive after SDK custody transfer but before
             # return. The retained public attempt, not return timing, decides.
@@ -2525,6 +2588,10 @@ async def run_installed_acquisition(private, finalizer, provider, directory, eve
                 and observed["source"]["original"] == fresh
                 and fresh != retained.original.original,
                 "actual parent/child/fresh source did not join successfully for this proposal")
+        require(observed.get("tool_policy") == {
+            "proposal_sha256": policy_sha256, "candidate": request.proposal["tool_policy"]["candidate"],
+            "native": "accepted", "retained_as_current": True},
+            "reviewed Original catalog policy was not natively accepted and retained")
         require(rule.releases == 1 and not rule.exclusion.locked(), "SDK did not release actual rule exclusion after Joined")
         while not provider.finished.is_set():
             require(time.monotonic() < deadline and not provider.errors,
@@ -2670,7 +2737,7 @@ async def _run_installed_product(args, candidate, package, resource_manifest, *,
     if console is not None:
         report["scope"] = console.scope
     provider = (console.provider(directory, events) if console is not None else
-                LocalProviderSentinel() if corrupt else InstalledAcquisitionProvider(directory, events))
+                LocalProviderSentinel() if corrupt else InstalledPublicCatalogProvider(directory, events))
     environment = process_env(directory)
     empty_path = directory / "empty-path"
     empty_path.mkdir(mode=0o700)

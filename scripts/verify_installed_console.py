@@ -100,53 +100,14 @@ def reviewed_original_catalog(request, decision, accepted, prior_raw, verifier):
     """Join the reviewed whole successor to the actual native bootstrap bytes."""
     wrapper = request["member_tool_policy"]
     proposal = wrapper["proposal"]
-    selection = {"tools": [], "catalog": "r2"}
     require(set(wrapper) == {"proposal", "approval_scope", "lifetime", "catalog_visibility", "native_service_scope"}
             and wrapper["approval_scope"] == "the complete successor policy, including preserved permissions for all listed members"
             and wrapper["lifetime"] == "until superseded; this member policy remains after the service task ends"
             and wrapper["catalog_visibility"] == "when selected, eligible tool metadata in the entire original conversation, not only this integration"
             and wrapper["native_service_scope"] == "the separate native service and catalog grants still expire with this task",
             "human catalog review omitted its complete policy or visibility scope")
-    prior = verifier.unique_json(prior_raw)
-    candidate_raw = proposal["candidate_canonical_json"].encode()
-    candidate = verifier.unique_json(candidate_raw)
-    require(set(proposal) == {"provider_id", "policy_id", "member", "selection", "catalog_session",
-                             "prior", "candidate", "candidate_canonical_json", "lifetime"}
-            and proposal["provider_id"] == prior["provider_id"] and proposal["policy_id"] == prior["policy_id"]
-            and proposal["member"] == "original" and proposal["selection"] == selection
-            and proposal["catalog_session"] == accepted["session_id"]
-            and proposal["lifetime"] == "until_superseded" and decision["catalog"] == "original_session"
-            and proposal["prior"] == {"revision": prior["revision"],
-                "digest": verifier.installed_fixture_policy_digest(prior_raw)}
-            and proposal["candidate"] == {"revision": prior["revision"] + 1,
-                "digest": verifier.installed_fixture_policy_digest(candidate_raw)},
-            "human catalog review changed the original session, selection or native policy version")
-    expected = json.loads(json.dumps(prior))
-    expected["revision"] += 1
-    original = [row for row in expected["members"] if row["member_identity"] == "original"]
-    require(len(original) == 1 and not any(row["tool_name"] in ("tool_catalog_search", "tool_catalog_load")
-            for row in original[0]["grants"]), "bootstrap original catalog selection was not absent")
-    original[0]["grants"].extend({"tool_name": name, "action": "invoke", "consequence": "r2"}
-                               for name in ("tool_catalog_search", "tool_catalog_load"))
-    original[0]["grants"].sort(key=lambda row: row["tool_name"])
-    source = candidate["source"]
-    require(set(source) == {"source_id", "source_digest"}
-            and source["source_id"] == "toolkit-application-service-decision"
-            and isinstance(source["source_digest"], str) and len(source["source_digest"]) == 71
-            and source["source_digest"].startswith("sha256:")
-            and all(c in "0123456789abcdef" for c in source["source_digest"][7:]),
-            "candidate source provenance is not the native service decision")
-    # Private source-tuple digest is native-owned; the field order is fixed.
-    expected["source"] = {"source_id": source["source_id"], "source_digest": source["source_digest"]}
-    # Core's internal policy_digest covers this ordered payload without a LF;
-    # the proposal version above covers the full canonical artifact with its LF.
-    payload = {key: expected[key] for key in ("schema_version", "provider_id", "policy_id",
-               "revision", "source", "default_deny", "members")}
-    expected["policy_digest"] = verifier.installed_fixture_policy_digest(json.dumps(
-        payload, separators=(",", ":"), ensure_ascii=False).encode())
-    require(candidate == expected and candidate_raw == json.dumps(expected,
-                separators=(",", ":"), ensure_ascii=False).encode() + b"\n",
-            "catalog approval changed permissions or native canonical bytes")
+    verifier.reviewed_original_catalog_policy(proposal, decision["catalog"],
+        accepted["session_id"], prior_raw)
 
 
 def public_review(review, accepted, results, operation, original_owner, route, task_scope, source_authority,

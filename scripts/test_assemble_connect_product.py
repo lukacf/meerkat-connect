@@ -1749,11 +1749,23 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
                 v.original_catalog_history(wrong, request, operation, 0)
 
     def test_original_catalog_uses_exact_native_results_before_business_call(self):
-        import threading
-        v, c = VERIFIER, self.console
-        scenario = c.ConsoleScenario(v, "http://127.0.0.1:18444")
-        with mock.patch.object(v.InstalledAcquisitionProvider, "__init__", return_value=None):
+        scenario = self.console.ConsoleScenario(VERIFIER, "http://127.0.0.1:18444")
+        with mock.patch.object(VERIFIER.InstalledAcquisitionProvider, "__init__", return_value=None):
             provider = scenario.provider(Path("unused"), None)
+        self.original_catalog_response_control(provider)
+
+    def test_installed_original_requests_reviewed_catalog_and_reads_only_after_exact_load(self):
+        with mock.patch.object(VERIFIER.InstalledAcquisitionProvider, "__init__", return_value=None):
+            provider = VERIFIER.InstalledPublicCatalogProvider(Path("unused"), None)
+            unselected = VERIFIER.InstalledAcquisitionProvider(Path("unused"), None)
+        self.assertFalse(unselected.original_catalog)
+        self.assertNotIn("tool_policy", unselected.access_arguments("job", [VERIFIER.ACQUISITION_OPERATION]))
+        self.assertTrue(provider.original_catalog)
+        self.original_catalog_response_control(provider)
+
+    def original_catalog_response_control(self, provider):
+        import threading
+        v = VERIFIER
         provider.results, provider.issued, provider.requests = {}, set(), []
         provider.events, provider.business_observation = mock.Mock(), None
         provider.business_response_prepared = threading.Event()
@@ -1762,9 +1774,9 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
             "boundary_applied(base_changed=true,visible_changed=false,revision=0)\n"
             "Tool configuration changed: boundary_applied(base_changed=true,visible_changed=false,revision=0)")
         added = ("Deferred catalog changed at turn boundary: new deferred tools available: " + operation
-            + "\nTool configuration changed: deferred_catalog_delta(added_hidden=1,removed_hidden=0,pending_sources=0)")
-        removed = ("Deferred catalog changed at turn boundary: deferred tools removed: " + operation
-            + "\nTool configuration changed: deferred_catalog_delta(added_hidden=0,removed_hidden=1,pending_sources=0)")
+            + "\nTool configuration changed: deferred catalog updated")
+        removed = ("Deferred catalog changed at turn boundary: deferred tools now available to call: " + operation
+            + "\nTool configuration changed: deferred catalog updated")
         messages = [{"role": "user", "content": v.ACQUISITION_REQUEST}]
         body = {"model": "fixture-original-model", "messages": messages,
                 "tools": [{"function": {"name": name}} for name in
