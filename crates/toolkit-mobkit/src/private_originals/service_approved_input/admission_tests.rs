@@ -124,7 +124,7 @@ pub(super) async fn approve_b_operations<S>(fixture: &ContinuationFixture<S>, sn
 pub(super) async fn approve_b_configuration<S>(fixture: &ContinuationFixture<S>, snapshot: SetupSnapshot,
     operations: std::collections::BTreeSet<Id>, config: Option<meerkat_core::McpServerConfig>) -> PrivateOriginalRef
 {
-    approve_b_call(fixture, snapshot, operations, config, "service-admission-ack", None).await
+    approve_b_call(fixture, snapshot, operations, config, "service-admission-ack").await
 }
 
 pub(super) async fn approve_b_configuration_with_tool_policy<S>(
@@ -132,11 +132,18 @@ pub(super) async fn approve_b_configuration_with_tool_policy<S>(
     operations: std::collections::BTreeSet<Id>, config: meerkat_core::McpServerConfig,
     tool_policy: ServiceToolPolicySelection,
 ) -> PrivateOriginalRef {
-    approve_b_call(fixture, snapshot, operations, Some(config), "service-admission-ack",
+    approve_b_call_with_tool_policy(fixture, snapshot, operations, Some(config), "service-admission-ack",
         Some(tool_policy)).await
 }
 
 async fn approve_b_call<S>(fixture: &ContinuationFixture<S>, snapshot: SetupSnapshot,
+    operations: std::collections::BTreeSet<Id>, config: Option<meerkat_core::McpServerConfig>,
+    call: &str) -> PrivateOriginalRef
+{
+    approve_b_call_with_tool_policy(fixture, snapshot, operations, config, call, None).await
+}
+
+async fn approve_b_call_with_tool_policy<S>(fixture: &ContinuationFixture<S>, snapshot: SetupSnapshot,
     operations: std::collections::BTreeSet<Id>, config: Option<meerkat_core::McpServerConfig>,
     call: &str, tool_policy: Option<ServiceToolPolicySelection>) -> PrivateOriginalRef
 {
