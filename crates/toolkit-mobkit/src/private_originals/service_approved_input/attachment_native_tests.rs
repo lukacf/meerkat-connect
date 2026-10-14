@@ -93,7 +93,10 @@ done"#;
         }
     }
     fn calls(&self) -> Vec<serde_json::Value> {
-        match std::fs::read_to_string(&self.called) {
+        Self::calls_at(&self.called)
+    }
+    fn calls_at(path: &Path) -> Vec<serde_json::Value> {
+        match std::fs::read_to_string(path) {
             Ok(text) => text.lines().map(|line| serde_json::from_str(line).unwrap()).collect(),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
             Err(error) => panic!("fixture invocation observation failed: {error}"),
@@ -126,6 +129,8 @@ struct PublicReadScript {
     responses: AtomicUsize,
     tool_reprepares: AtomicUsize,
     retry_controller: Mutex<Option<meerkat_core::OperationId>>,
+    endpoint_calls: Mutex<Option<PathBuf>>,
+    zero_reads_before_retry: AtomicBool,
     expected_instruction: Mutex<Option<String>>,
     offered: Mutex<Option<ToolIdentity>>,
     feedback: Mutex<Option<ToolResult>>,
@@ -134,10 +139,14 @@ impl PublicReadScript {
     fn provider(self: &Arc<Self>, inner: Arc<dyn LlmClient>) -> Arc<dyn LlmClient> {
         Arc::new(PublicReadProvider { inner, script: self.clone() })
     }
-    fn arm(&self, instruction: String) {
+    fn arm(&self, instruction: String, endpoint_calls: PathBuf) {
         assert!(!instruction.is_empty());
         assert!(self.expected_instruction.lock().unwrap().replace(instruction).is_none());
+        assert!(self.endpoint_calls.lock().unwrap().replace(endpoint_calls).is_none());
         assert!(!self.armed.swap(true, Ordering::SeqCst));
+    }
+    fn endpoint_call_count(&self) -> usize {
+        Endpoint::calls_at(self.endpoint_calls.lock().unwrap().as_ref().unwrap()).len()
     }
 }
 
@@ -222,8 +231,9 @@ impl LlmClient for PublicReadProvider {
                         }
                         if selected == 1 && result.is_error {
                             // Choose one fresh call after Core's operation-local feedback.
-                            // The exact B audit below must prove ReprepareRequired and
-                            // no physical entry; this public text alone proves neither.
+                            // The exact B audit below must prove ReprepareRequired.
+                            // Adapter Entry observations do not count physical effects;
+                            // the endpoint log independently proves no read before retry.
                             let expected = meerkat_core::ops::terminal_tool_outcome_for_error(
                                 PUBLIC_READ_CALL, meerkat_core::ToolError::AuthorizationRefused {
                                     refusal: meerkat_core::OperationRefused::new(
@@ -231,6 +241,9 @@ impl LlmClient for PublicReadProvider {
                                 }).result;
                             assert_eq!(serde_json::to_value(&result).unwrap(), serde_json::to_value(expected).unwrap(),
                                 "only the exact native operation-refused feedback may schedule this bounded choice");
+                            assert_eq!(self.script.endpoint_call_count(), 0,
+                                "the refused call must not reach the endpoint before retry");
+                            assert!(!self.script.zero_reads_before_retry.swap(true, Ordering::SeqCst));
                             assert_eq!(self.script.tool_reprepares.fetch_add(1, Ordering::SeqCst), 0);
                             let identity = self.script.offered.lock().unwrap().clone().unwrap();
                             assert_eq!(request.request().tools.iter().filter(|tool| tool.identity() == identity).count(), 1,
@@ -464,12 +477,76 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
     use meerkat_authorization_contracts::audit::{AuditObservation, AuditTarget, AuditModelUse,
         StoredAuthorizationAuditObservation};
     use meerkat_core::{OperationRefusalKind, authorization::OperationObservedOutcome,
-        exact_operation::OperationExecutionScope};
+        exact_operation::OperationExecutionScope, ops::ToolDispatchTerminalErrorKind};
+
+    // Root, policy wrapper and MCP leaf can observe the same operation. Check
+    // their ordered typed observations, not a count of adapter layers. Core's
+    // observe_tool_entry explicitly does not count physical effects.
+    fn operation_span(
+        records: &[StoredAuthorizationAuditObservation],
+        operation: &meerkat_core::OperationId,
+        target: &AuditTarget,
+        refused: bool,
+    ) -> (usize, usize) {
+        let steps = records.iter().enumerate().filter(|(_, record)|
+            &record.observation.operation_id == operation).collect::<Vec<_>>();
+        assert!(!steps.is_empty());
+        let (mut prepared, mut entered, mut saw_refusal, mut returned) = (false, false, false, false);
+        for (_, record) in &steps {
+            match &record.observation.observation {
+                AuditObservation::Prepared { target: actual, .. } => {
+                    assert!(!prepared && !entered && !saw_refusal && !returned);
+                    assert!(actual.as_ref() == target, "one operation must retain its exact target");
+                    prepared = true;
+                }
+                AuditObservation::Entry => {
+                    assert!(prepared && !saw_refusal && !returned,
+                        "adapter entry must precede refusal or returned outcome");
+                    entered = true;
+                }
+                AuditObservation::Refused { target: actual, reason } => {
+                    assert!(refused && !returned);
+                    assert!(actual.as_ref() == target, "refusal must bind the exact operation target");
+                    assert_eq!(*reason, OperationRefusalKind::ReprepareRequired);
+                    saw_refusal = true;
+                }
+                AuditObservation::Outcome { outcome } => {
+                    if refused {
+                        assert!(saw_refusal);
+                        assert!(matches!(outcome, OperationObservedOutcome::ToolDispatchError {
+                            error: ToolDispatchTerminalErrorKind::AuthorizationRefused,
+                        }), "every refused adapter outcome must retain the authorization error");
+                    } else {
+                        assert!(entered && !saw_refusal);
+                        assert!(matches!(outcome, OperationObservedOutcome::ToolDispatchReturned {
+                            asynchronous_operations, result_is_error: false, terminal_error: None,
+                        } if asynchronous_operations.is_empty()),
+                            "every successful adapter outcome must retain the synchronous read result");
+                    }
+                    returned = true;
+                }
+                _ => panic!("unexpected observation in the exact public tool operation"),
+            }
+        }
+        if refused {
+            // A prepare-time refusal can have no Entry/Outcome. A later
+            // currentness refusal can follow adapter entries and unwind with
+            // error outcomes. Neither pattern proves an endpoint effect.
+            assert!(saw_refusal);
+        } else {
+            assert!(prepared && entered && returned && !saw_refusal);
+        }
+        (steps.first().unwrap().0, steps.last().unwrap().0)
+    }
+
     let value = serde_json::to_value(row).unwrap();
     let records: Vec<StoredAuthorizationAuditObservation> =
         serde_json::from_value(value["authorization_audit"].clone()).unwrap();
     let run = row.seed.last_run_id.as_ref().unwrap();
     assert!(!records.is_empty());
+    // This is separate actual endpoint evidence, not an interpretation of
+    // native stage observations. The endpoint records tools/call before reply.
+    assert_eq!(script.endpoint_call_count(), 1, "completed B has exactly one physical endpoint read");
     for record in &records {
         assert_eq!(record.observation.run_id.as_ref(), Some(run));
         assert_eq!(record.contributors.len(), 1);
@@ -479,58 +556,51 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
         } if owner_session_id == session && canonical_input_id == &row.state.input_id
             && submitted_input_id == &row.state.input_id));
     }
-    let tool_records = records.iter().enumerate().filter_map(|(index, record)| {
+    let mut tools: Vec<(&meerkat_core::OperationId, &AuditTarget)> = Vec::new();
+    for record in &records {
         let target = match &record.observation.observation {
             AuditObservation::Prepared { target, .. } | AuditObservation::Refused { target, .. }
                 | AuditObservation::AuthorizationUnavailable { target } => target,
-            _ => return None,
+            _ => continue,
         };
-        matches!(target.as_ref(), AuditTarget::Tool { .. }).then_some((index, record, target.as_ref()))
-    }).collect::<Vec<_>>();
+        if matches!(target.as_ref(), AuditTarget::Tool { .. }) && !tools.iter().any(
+            |(operation, _)| *operation == &record.observation.operation_id) {
+            tools.push((&record.observation.operation_id, target.as_ref()));
+        }
+    }
     let retries = script.tool_reprepares.load(Ordering::SeqCst);
     assert!(retries <= 1);
-    assert_eq!(tool_records.len(), 1 + retries, "one successful native read and at most one unentered refusal");
-    let (success_index, success, success_target) = tool_records[retries];
+    assert_eq!(tools.len(), 1 + retries, "one successful operation and at most one refused operation");
+    assert_eq!(script.zero_reads_before_retry.load(Ordering::SeqCst), retries == 1);
+    let (success, success_target) = tools[retries];
     let AuditTarget::Tool { call_id, tool_name, arguments_digest, owners } = success_target else { unreachable!() };
     assert_eq!(call_id, if retries == 0 { PUBLIC_READ_CALL } else { PUBLIC_READ_REPREPARE_CALL });
     assert_eq!(tool_name, script.offered.lock().unwrap().as_ref().unwrap().name.as_str());
-    assert!(matches!(&success.observation.observation, AuditObservation::Prepared { .. }));
-    let successful = records.iter().filter(|record|
-        record.observation.operation_id == success.observation.operation_id).collect::<Vec<_>>();
-    assert_eq!(successful.len(), 3);
-    assert!(matches!(&successful[1].observation.observation, AuditObservation::Entry));
-    assert!(matches!(&successful[2].observation.observation, AuditObservation::Outcome {
-        outcome: OperationObservedOutcome::ToolDispatchReturned {
-            asynchronous_operations, result_is_error: false, terminal_error: None,
-        }
-    } if asynchronous_operations.is_empty()));
+    let (success_start, _) = operation_span(&records, success, success_target, false);
     if retries == 0 { assert!(script.retry_controller.lock().unwrap().is_none()); }
     if retries == 1 {
-        let (refused_index, refused, refused_target) = tool_records[0];
-        assert!(matches!(&refused.observation.observation,
-            AuditObservation::Refused { reason: OperationRefusalKind::ReprepareRequired, .. }));
+        let (refused, refused_target) = tools[0];
         let AuditTarget::Tool { call_id: refused_call, tool_name: refused_name,
             arguments_digest: refused_arguments, owners: refused_owners } = refused_target else { unreachable!() };
         assert_eq!(refused_call, PUBLIC_READ_CALL);
         assert!(refused_name == tool_name && refused_arguments == arguments_digest && refused_owners == owners,
             "fresh call must retain the same exact tool, arguments and selected owners");
-        assert_ne!(refused.observation.operation_id, success.observation.operation_id);
-        assert_eq!(records.iter().filter(|record| record.observation.operation_id == refused.observation.operation_id).count(), 1,
-            "the refused operation must have no entry or outcome");
+        assert_ne!(refused, success);
+        let (_, refused_end) = operation_span(&records, refused, refused_target, true);
+        assert!(refused_end < success_start);
         let controller_id = script.retry_controller.lock().unwrap().clone().unwrap();
-        let controller = records[refused_index + 1..success_index].iter().find(|record|
-            record.observation.operation_id == controller_id
-                && matches!(&record.observation.observation, AuditObservation::Prepared { target, .. }
-                    if matches!(target.as_ref(), AuditTarget::Model(model)
-                        if model.usage == AuditModelUse::ControllerInference && model.hosted_capabilities.is_empty())))
-            .expect("the exact fresh native controller chooses the retry after refusal");
-        assert_ne!(controller.observation.operation_id, refused.observation.operation_id);
-        assert_ne!(controller.observation.operation_id, success.observation.operation_id);
-        let controller_steps = records[refused_index + 1..success_index].iter().filter(|record|
-            record.observation.operation_id == controller.observation.operation_id).collect::<Vec<_>>();
-        assert_eq!(controller_steps.len(), 3);
-        assert!(matches!(&controller_steps[1].observation.observation, AuditObservation::Entry));
-        assert!(matches!(&controller_steps[2].observation.observation, AuditObservation::Outcome {
+        assert_ne!(&controller_id, refused);
+        assert_ne!(&controller_id, success);
+        let controller = records.iter().enumerate().filter(|(_, record)|
+            record.observation.operation_id == controller_id).collect::<Vec<_>>();
+        assert_eq!(controller.len(), 3, "the actual fixture controller observes prepare, entry and HTTP return");
+        assert!(controller.iter().all(|(index, _)| *index > refused_end && *index < success_start),
+            "the exact fresh controller must follow refusal and precede the new tool operation");
+        assert!(matches!(&controller[0].1.observation.observation, AuditObservation::Prepared { target, .. }
+            if matches!(target.as_ref(), AuditTarget::Model(model)
+                if model.usage == AuditModelUse::ControllerInference && model.hosted_capabilities.is_empty())));
+        assert!(matches!(&controller[1].1.observation.observation, AuditObservation::Entry));
+        assert!(matches!(&controller[2].1.observation.observation, AuditObservation::Outcome {
             outcome: OperationObservedOutcome::HttpResponse { status: 200 }
         }));
     }
@@ -648,7 +718,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
         assert!(matches!(source.observe_service_input_receipt(&b).await.unwrap(),
             crate::private_originals::PrivateServiceInputObservation::AdmissionUnresolved));
         let model_requests = fixture.model_requests();
-        if let Some(script) = &script { script.arm(instruction); }
+        if let Some(script) = &script { script.arm(instruction, endpoint.called.clone()); }
         let actor = fixture
             .service
             .live_session_actor_witness(&fixture.session)
@@ -867,6 +937,16 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
     // existing protected audit records before normal cleanup; it neither
     // authorizes an operation nor replaces the original failure or assertion.
     if public && !matches!(&outcome, Ok(Ok(()))) {
+        let endpoint_call_count = match std::fs::read_to_string(&endpoint.called) {
+            Ok(text) => Some(text.lines().count()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(0),
+            Err(_) => None,
+        };
+        eprintln!("{}", serde_json::json!({
+            "event": "attachment_control_endpoint_observation",
+            "endpoint_call_count": endpoint_call_count,
+            "zero_reads_before_retry": script.as_ref().unwrap().zero_reads_before_retry.load(Ordering::SeqCst),
+        }));
         let observed = tokio::time::timeout(WAIT,
             runtime_store.load_input_states_strict(&LogicalRuntimeId::for_session(&fixture.session))).await;
         match observed {
@@ -903,11 +983,31 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                         Some(_) => serde_json::json!({"kind": "other"}),
                         None => serde_json::Value::Null,
                     };
+                    let returned = match &observation.observation {
+                        AuditObservation::Outcome { outcome } => {
+                            use meerkat_core::authorization::OperationObservedOutcome;
+                            match outcome {
+                                OperationObservedOutcome::ToolDispatchReturned {
+                                    asynchronous_operations, result_is_error, terminal_error,
+                                } => serde_json::json!({
+                                    "kind": "tool_dispatch_returned",
+                                    "asynchronous_operation_count": asynchronous_operations.len(),
+                                    "result_is_error": result_is_error, "terminal_error": terminal_error,
+                                }),
+                                OperationObservedOutcome::ToolDispatchError { error } =>
+                                    serde_json::json!({"kind": "tool_dispatch_error", "error": error}),
+                                OperationObservedOutcome::HttpResponse { status } =>
+                                    serde_json::json!({"kind": "http_response", "status": status}),
+                                _ => serde_json::json!({"kind": "other"}),
+                            }
+                        }
+                        _ => serde_json::Value::Null,
+                    };
                     eprintln!("{}", serde_json::json!({
                         "event": "attachment_control_native_authorization_audit",
                         "input_id": row.state.input_id, "index": index,
                         "operation_id": observation.operation_id, "run_id": observation.run_id,
-                        "kind": kind, "target": target, "reason": reason,
+                        "kind": kind, "target": target, "reason": reason, "outcome": returned,
                         "publication_sequence": publication, "observed_at_ms": observed_at,
                     }));
                 }
