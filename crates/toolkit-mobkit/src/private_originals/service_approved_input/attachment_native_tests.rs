@@ -168,55 +168,63 @@ impl LlmClient for PublicReadProvider {
         if !self.script.armed.load(Ordering::SeqCst) {
             return stream;
         }
-        match self.script.responses.fetch_add(1, Ordering::SeqCst) {
-            0 => {
-                // Use the actual approved acquisition text, also checked against
-                // its retained source below. A merely offered tool is insufficient.
-                let expected = self.script.expected_instruction.lock().unwrap();
-                let actual = request.request().messages.iter().rev().find_map(|message| match message {
-                    Message::User(user) => Some(user.text_content()),
-                    _ => None,
-                });
-                assert_eq!(actual.as_deref(), expected.as_deref(),
-                    "the current B request must carry its approved task instruction");
-                let offered = request.request().tools.iter().filter(|tool|
-                    tool.provenance.as_ref().is_some_and(|source|
-                        source.kind == ToolSourceKind::Mcp && source.source_id.as_str() == "mail"))
-                    .collect::<Vec<_>>();
-                assert_eq!(offered.len(), 1, "B must see the newly attached public tool");
-                let identity = offered[0].identity();
-                assert!(self.script.offered.lock().unwrap().replace(identity.clone()).is_none());
-                // Call the actual offered model-facing identity. The fixture
-                // never guesses a prefix or treats a raw operation as a name.
-                Box::pin(stream.map(move |event| event.map(|event| match event {
-                    LlmEvent::TextDelta { .. } => LlmEvent::ToolCallComplete {
-                        id: PUBLIC_READ_CALL.into(), name: identity.name.as_str().to_owned(),
-                        args: serde_json::json!({}), meta: None,
-                    },
-                    LlmEvent::Done { outcome: LlmDoneOutcome::Success { .. } } => LlmEvent::Done {
-                        outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
-                    },
-                    other => other,
-                })))
+        // A refused prepared operation is not a scripted model response.
+        // Advance only after the inner provider yields authorized output so
+        // Core recovery cannot consume or replay the one public read.
+        let mut response = None;
+        Box::pin(stream.map(move |event| event.map(|event| match event {
+            LlmEvent::TextDelta { meta, .. } => {
+                assert!(response.is_none(), "one authorized response must have one text delta");
+                let selected = self.script.responses.fetch_add(1, Ordering::SeqCst);
+                response = Some(selected);
+                match selected {
+                    0 => {
+                        // Use the actual approved acquisition text, also checked against
+                        // its retained source below. A merely offered tool is insufficient.
+                        let expected = self.script.expected_instruction.lock().unwrap();
+                        let actual = request.request().messages.iter().rev().find_map(|message| match message {
+                            Message::User(user) => Some(user.text_content()),
+                            _ => None,
+                        });
+                        assert_eq!(actual.as_deref(), expected.as_deref(),
+                            "the current B request must carry its approved task instruction");
+                        let offered = request.request().tools.iter().filter(|tool|
+                            tool.provenance.as_ref().is_some_and(|source|
+                                source.kind == ToolSourceKind::Mcp && source.source_id.as_str() == "mail"))
+                            .collect::<Vec<_>>();
+                        assert_eq!(offered.len(), 1, "B must see the newly attached public tool");
+                        let identity = offered[0].identity();
+                        assert!(self.script.offered.lock().unwrap().replace(identity.clone()).is_none());
+                        // Call the actual offered model-facing identity. The fixture
+                        // never guesses a prefix or treats a raw operation as a name.
+                        LlmEvent::ToolCallComplete {
+                            id: PUBLIC_READ_CALL.into(), name: identity.name.as_str().to_owned(),
+                            args: serde_json::json!({}), meta: None,
+                        }
+                    }
+                    1 => {
+                        let feedback = request.request().messages.iter().flat_map(|message| match message {
+                            Message::ToolResults { results, .. } => results.as_slice(),
+                            _ => &[],
+                        }).filter(|result| result.tool_use_id == PUBLIC_READ_CALL).collect::<Vec<_>>();
+                        assert_eq!(feedback.len(), 1, "the same task must receive one actual tool result");
+                        let result = (*feedback[0]).clone();
+                        assert!(!result.is_error && result.settlement_failures.is_empty(), "{result:?}");
+                        let answer = format!("Public read completed: {}", result.text_content());
+                        assert!(self.script.feedback.lock().unwrap().replace(result).is_none());
+                        LlmEvent::TextDelta { delta: answer, meta }
+                    }
+                    _ => panic!("the public input must not replay model work"),
+                }
             }
-            1 => {
-                let feedback = request.request().messages.iter().flat_map(|message| match message {
-                    Message::ToolResults { results, .. } => results.as_slice(),
-                    _ => &[],
-                }).filter(|result| result.tool_use_id == PUBLIC_READ_CALL).collect::<Vec<_>>();
-                assert_eq!(feedback.len(), 1, "the same task must receive one actual tool result");
-                let result = (*feedback[0]).clone();
-                assert!(!result.is_error && result.settlement_failures.is_empty(), "{result:?}");
-                let answer = format!("Public read completed: {}", result.text_content());
-                assert!(self.script.feedback.lock().unwrap().replace(result).is_none());
-                Box::pin(stream.map(move |event| event.map(|event| match event {
-                    LlmEvent::TextDelta { meta, .. } => LlmEvent::TextDelta { delta: answer.clone(), meta },
-                    other => other,
-                })))
-            }
-            _ => panic!("the public input must not replay model work"),
-        }
+            LlmEvent::Done { outcome: LlmDoneOutcome::Success { .. } }
+                if response == Some(0) => LlmEvent::Done {
+                    outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
+                },
+            other => other,
+        })))
     }
+
     fn provider(&self) -> Provider { self.inner.provider() }
     async fn health_check(&self) -> Result<(), LlmError> { self.inner.health_check().await }
 }

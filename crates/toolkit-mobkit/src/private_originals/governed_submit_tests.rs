@@ -358,46 +358,32 @@ impl LlmClient for ScriptedProvider {
 
     fn stream_prepared<'a>(&'a self, request: &'a PreparedLlmRequest) -> LlmStream<'a> {
         let authorization = request.authorization().unwrap();
-        let prepared = authorization.prepare(model_facts()).unwrap_or_else(|error| {
-            // Preparation can refuse before a prepared handle exists. Keep
-            // this exact native gate and distinguish it from currentness.
-            let refusal = match error {
-                meerkat_core::OperationAuthorizationError::Refused(refusal) => Some(refusal.kind()),
-                _ => None,
-            };
-            let usage = match authorization.usage() {
-                ModelAuthorizationUse::Inference => "inference",
-                ModelAuthorizationUse::ControllerInference => "controller_inference",
-                ModelAuthorizationUse::Compaction => "compaction",
-                ModelAuthorizationUse::Live => "live",
-            };
-            panic!(
-                "fixture model prepare check failed: refusal={refusal:?}, usage={usage}, entered_requests={}",
-                self.0.load(Ordering::SeqCst),
-            );
-        });
-        let current = prepared.current().unwrap_or_else(|error| {
-            // Preserve the strict native check. Retain only safe failure
-            // scalars so a redacted refusal cannot hide this fixture's cause.
-            let refusal = match error {
-                meerkat_core::OperationAuthorizationError::Refused(refusal) => Some(refusal.kind()),
-                _ => None,
-            };
-            let usage = match authorization.usage() {
-                ModelAuthorizationUse::Inference => "inference",
-                ModelAuthorizationUse::ControllerInference => "controller_inference",
-                ModelAuthorizationUse::Compaction => "compaction",
-                ModelAuthorizationUse::Live => "live",
-            };
-            panic!(
-                "fixture model current check failed: refusal={refusal:?}, usage={usage}, validity={:?}, entered_requests={}",
-                prepared.validity(), self.0.load(Ordering::SeqCst),
-            );
-        });
-        current.observe_entry().unwrap();
-        current
+        // Return native refusals through the provider contract. Core owns the
+        // bounded reprepare/controller recovery; the fixture never retries.
+        let prepared = match authorization.prepare(model_facts()) {
+            Ok(prepared) => prepared,
+            Err(error) => return Box::pin(futures::stream::iter([
+                Err(LlmError::from_operation_authorization(error)),
+            ])),
+        };
+        let current = match prepared.current() {
+            Ok(current) => current,
+            Err(error) => return Box::pin(futures::stream::iter([
+                Err(LlmError::from_operation_authorization(error)),
+            ])),
+        };
+        if let Err(error) = current.observe_entry() {
+            return Box::pin(futures::stream::iter([
+                Err(LlmError::from_operation_observation(error)),
+            ]));
+        }
+        if let Err(error) = current
             .observe_outcome(OperationObservedOutcome::HttpResponse { status: 200 })
-            .unwrap();
+        {
+            return Box::pin(futures::stream::iter([
+                Err(LlmError::from_operation_observation(error)),
+            ]));
+        }
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(futures::stream::iter([
             Ok(LlmEvent::TextDelta {
