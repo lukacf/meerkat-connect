@@ -2964,8 +2964,9 @@ async def _run_installed_product(args, candidate, package, resource_manifest, *,
                 return transport
 
         providers = Providers()
+        # Fresh Connect prepares its resources before native init can be accepted.
         config = META_BUILDER.MetaBuilderConfig(gateway_bin=str(gateway),
-            init_deadline=INSTALLED_LIMIT, gateway_init_timeout=60.0,
+            init_deadline=INSTALLED_LIMIT, gateway_init_timeout=INSTALLED_LIMIT,
             roster_provider=providers, topology_provider=providers,
             persistent_state=plan["application"]["realm"]["state_root"],
             meerkat_config_path=str(config_path), http_listen="127.0.0.1:0",
