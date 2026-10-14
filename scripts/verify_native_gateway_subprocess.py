@@ -2227,8 +2227,10 @@ class InstalledPublicCatalogProvider(InstalledAcquisitionProvider):
                 "tool_policy": {"tools": [], "catalog": "r2"}}
 
 
-def installed_plan(directory, roster, *, acquisition=False, console=None):
+def installed_plan(directory, roster, *, acquisition=False, console=None, catalog_policy=False):
     """Explicit fixture application inputs; native alone issues parent refs."""
+    require(not catalog_policy or (acquisition and console is None),
+            "standing catalog selection belongs only to the public package case")
     root = directory / "deployment"
     root.mkdir(mode=0o700)
     # The deployment owner supplies parents for native stores and the entry fence.
@@ -2355,6 +2357,10 @@ rust_bundles = ["meerkat_toolkit.setup"]
         plan["authorities"]["agent_setup"] = [{"member": original_member, "route": ACQUISITION_ROUTE,
             "issuance_id": "original-setup-request-parent", "helper_targets": acquisition_helper_targets()}]
         plan["acquisition"]["standing_policy"] = {"installation": "checked_software", "access": "provision_task_parent"}
+        if catalog_policy:
+            # Explicitly select the existing full-candidate owner. Its separate
+            # SDK reservation still checks and approves the exact successor.
+            plan["acquisition"]["standing_policy"]["tool_policy"] = "until_superseded"
         plan["acquisition"]["proposal_ceiling"]["actions"] = [
             {"action": action, "resource": "original"} for action in ("find_and_install", "delegate")]
         plan["acquisition"]["limits"]["setup_timeout_ms"] = int(ACQUISITION_LIMIT * 1000)
@@ -2501,6 +2507,23 @@ class InstalledFixtureRule:
         self.events.add("fixture_rule_released_before_sdk_transfer")
 
 
+async def observe_installed_service_reply(observe, provider, process, deadline):
+    """Observe one retained SDK exchange; a timeout never resubmits its command."""
+    while True:
+        with provider.lock:
+            errors = list(provider.errors)
+        require(not errors, "controlled model schedule failed: " + repr(errors))
+        remaining = deadline - time.monotonic()
+        require(remaining > 0 and process.poll() is None,
+                "native service exchange did not complete before its bound")
+        try:
+            # The public SDK retains Next/result correlation across timeout.
+            # Complete each observer before inspecting failure or shutting down.
+            return await asyncio.to_thread(observe, timeout=min(0.25, remaining))
+        except TimeoutError:
+            continue
+
+
 async def run_installed_acquisition(private, finalizer, provider, directory, events, process):
     # Authenticate one actual local occurrence before the source crosses the
     # SDK. The fresh key is private to this fixture source and never sent to a
@@ -2545,12 +2568,14 @@ async def run_installed_acquisition(private, finalizer, provider, directory, eve
     events.add("authenticated_original_admitted", original=dataclasses.asdict(retained.original), outcome=admission)
     rule = None
     custody = {"transfer": "not_transferred", "retirement": "not_observed"}
-    request = await asyncio.to_thread(private.next_service_parent_administration,
-        timeout=max(1.0, deadline - time.monotonic()))
+    request = await observe_installed_service_reply(
+        private.next_service_parent_administration, provider, process, deadline)
     try:
         # Custody starts on receipt, before local observation or preparation can
         # fail. Retirement also covers a request with no rule or proposal pin.
         custody["exchange_id"] = request.exchange_id
+        with provider.lock:
+            require(not provider.errors, "controlled model schedule failed: " + repr(provider.errors))
         # The original's real tool result is independent of the helper's scheduling.
         await asyncio.to_thread(until, lambda: provider.results.get("original-request"),
                                 30.0, "original acquisition observation not returned")
@@ -2575,7 +2600,7 @@ async def run_installed_acquisition(private, finalizer, provider, directory, eve
         ack = await asyncio.to_thread(attempt.submit, timeout=30.0)
         custody["ack"] = ack
         require(ack == {"state": "answer_forwarded"}, "service-parent answer was not correlated")
-        observed = await asyncio.to_thread(attempt.result, timeout=max(1.0, deadline - time.monotonic()))
+        observed = await observe_installed_service_reply(attempt.result, provider, process, deadline)
         custody["operation_observation"] = observed
         fresh = request.proposal["decision"]["decision"]
         require(observed["outcome"] == "succeeded" and observed["custody"] == "joined"
@@ -2650,9 +2675,9 @@ async def run_installed_acquisition(private, finalizer, provider, directory, eve
                         outcome = receipt["outcome"]
                         require(outcome["completion_type"] == "completed"
                                 and outcome["session_id"] == admission["session_id"]
-                                and type(outcome["tool_calls"]) is int and outcome["tool_calls"] == 1
+                                and type(outcome["tool_calls"]) is int and outcome["tool_calls"] == 3
                                 and outcome["text"] == business["answer"],
-                                "native B result did not complete the one actual public read and answer")
+                                "native B result did not complete exact search, load, one public read and answer")
                         break
             else:
                 require(b_admission is None, "retained B admission became unresolved")
@@ -2780,7 +2805,8 @@ async def _run_installed_product(args, candidate, package, resource_manifest, *,
         specs = [META_IDENTITY.DurableAgentSpec(identity="helper", profile="research", runtime_mode_override="turn_driven")]
         if not corrupt:
             specs.append(META_IDENTITY.DurableAgentSpec(identity="original", profile="original", runtime_mode_override="turn_driven"))
-        plan, plan_pin, source_pin = installed_plan(directory, [spec.to_dict() for spec in specs], acquisition=not corrupt, console=console)
+        plan, plan_pin, source_pin = installed_plan(directory, [spec.to_dict() for spec in specs], acquisition=not corrupt, console=console,
+            catalog_policy=console is None and not corrupt)
         report["preparation_plan"] = plan_pin
         callbacks = []
 

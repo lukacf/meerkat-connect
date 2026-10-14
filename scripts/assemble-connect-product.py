@@ -637,6 +637,38 @@ def gateway_public_story(content):
     return {"id": story["id"], "title": story["title"]}
 
 
+def gateway_business_tool_count(business, messages, b_index, result_index):
+    """Count the exact selected B schedule, including native catalog controls."""
+    catalog = business.get("original_catalog")
+    if catalog is None:
+        return 1
+    operation = "get_top_hackernews_stories"
+    require(set(catalog) == {"search_call_id", "load_call_id", "search_result_history_index",
+            "load_result_history_index", "operation", "helper_catalog_scope_reused",
+            "search_result", "load_result"}
+            and catalog["search_call_id"] == "original-catalog-search"
+            and catalog["load_call_id"] == "original-catalog-load"
+            and catalog["operation"] == operation and catalog["helper_catalog_scope_reused"] is False,
+            "gateway original catalog observation differs from its exact schedule")
+    search_index, load_index = catalog["search_result_history_index"], catalog["load_result_history_index"]
+    require(type(search_index) is int and type(load_index) is int
+            and b_index < search_index < load_index < result_index,
+            "gateway original catalog results did not precede its one read")
+    for index, label in ((search_index, "search"), (load_index, "load")):
+        row = messages[index]
+        require(row.get("role") == "tool" and row.get("tool_call_id") == catalog[label + "_call_id"]
+                and json.loads(row["content"]) == catalog[label + "_result"],
+                "gateway original catalog result differs from retained model history")
+    expected = [("original-catalog-search", "tool_catalog_search", {"query": operation, "limit": 50}),
+                ("original-catalog-load", "tool_catalog_load", {"names": [operation]}),
+                ("original-public-story", operation, {"num_stories": 1})]
+    calls = [(call["id"], call["function"]["name"], json.loads(call["function"]["arguments"]))
+        for row in messages[b_index + 1:result_index] if row.get("role") == "assistant"
+        for call in row.get("tool_calls", [])]
+    require(calls == expected, "gateway B tool calls differ from exact search, load and one read")
+    return len(expected)
+
+
 def gateway_acquisition(case, events, directory):
     acquisition = case.get("acquisition")
     require(isinstance(acquisition, dict)
@@ -746,7 +778,8 @@ def gateway_acquisition(case, events, directory):
             and receipt["terminal"] == {"outcome_type": "consumed"}
             and receipt["outcome"]["completion_type"] == "completed"
             and receipt["outcome"]["session_id"] == admission["session_id"]
-            and type(receipt["outcome"]["tool_calls"]) is int and receipt["outcome"]["tool_calls"] == 1
+            and type(receipt["outcome"]["tool_calls"]) is int
+            and receipt["outcome"]["tool_calls"] == gateway_business_tool_count(business, messages, b_index, result_index)
             and receipt["outcome"]["text"] == business["answer"],
             "gateway B lacks its own finalized Completed/Consumed business result")
 

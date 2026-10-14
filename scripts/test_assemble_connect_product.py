@@ -475,6 +475,71 @@ class InertGatewayReport:
 
 class InstalledVerifierBoundaryTests(unittest.TestCase):
     """Exercise only pre-import admission and negative observation checks."""
+    def test_public_catalog_plan_explicitly_selects_whole_candidate_policy(self):
+        for selected in (False, True):
+            with self.subTest(selected=selected), tempfile.TemporaryDirectory() as scratch:
+                plan, _, _ = VERIFIER.installed_plan(Path(scratch).resolve(), [],
+                    acquisition=True, catalog_policy=selected)
+                expected = {"installation": "checked_software", "access": "provision_task_parent"}
+                if selected:
+                    expected["tool_policy"] = "until_superseded"
+                self.assertEqual(plan["acquisition"]["standing_policy"], expected)
+                original = plan["application"]["tool_policy"]["members"][1]
+                self.assertFalse(any(row["tool_name"].startswith("tool_catalog_") for row in original["grants"]))
+        with tempfile.TemporaryDirectory() as scratch:
+            with self.assertRaises(AssertionError):
+                VERIFIER.installed_plan(Path(scratch), [], catalog_policy=True)
+
+    def test_service_observer_stops_on_schedule_failure_without_replay_or_signal(self):
+        import asyncio, threading, time
+        provider = mock.Mock(lock=threading.RLock(), errors=[])
+        process = mock.Mock(); process.poll.return_value = None
+        request = object()
+        calls = []
+        def observed(*, timeout):
+            calls.append(timeout)
+            if len(calls) == 1:
+                raise TimeoutError("same SDK exchange pending")
+            return request
+        self.assertIs(asyncio.run(VERIFIER.observe_installed_service_reply(
+            observed, provider, process, time.monotonic() + 10)), request)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(0 < value <= 0.25 for value in calls))
+        def failed(*, timeout):
+            provider.errors.append("exact synthetic schedule error")
+            raise TimeoutError("same SDK exchange pending")
+        observer = mock.Mock(side_effect=failed)
+        with self.assertRaisesRegex(AssertionError, "exact synthetic schedule error"):
+            asyncio.run(VERIFIER.observe_installed_service_reply(observer, provider, process, time.monotonic() + 10))
+        observer.assert_called_once()
+        process.terminate.assert_not_called(); process.kill.assert_not_called()
+
+    def test_catalog_business_count_requires_exact_three_call_schedule(self):
+        operation = VERIFIER.ACQUISITION_OPERATION
+        messages = [{"role": "user", "content": "B"}]
+        catalog = {"operation": operation, "helper_catalog_scope_reused": False}
+        expected = [("search", "original-catalog-search", "tool_catalog_search", {"query": operation, "limit": 50}),
+                    ("load", "original-catalog-load", "tool_catalog_load", {"names": [operation]}),
+                    ("story", "original-public-story", operation, {"num_stories": 1})]
+        for label, identifier, name, args in expected:
+            messages.append({"role": "assistant", "tool_calls": [{"id": identifier,
+                "function": {"name": name, "arguments": json.dumps(args)}}]})
+            if label != "story":
+                catalog[label + "_call_id"] = identifier
+                catalog[label + "_result_history_index"] = len(messages)
+                catalog[label + "_result"] = {"exact": label}
+            messages.append({"role": "tool", "tool_call_id": identifier, "content": json.dumps({"exact": label})})
+        business = {"original_catalog": catalog}
+        self.assertEqual(ASSEMBLER.gateway_business_tool_count(business, messages, 0, 6), 3)
+        self.assertEqual(ASSEMBLER.gateway_business_tool_count({}, messages, 0, 6), 1)
+        for change in (lambda rows: rows[1]["tool_calls"][0]["function"].update(name="other"),
+                       lambda rows: rows[3]["tool_calls"][0]["function"].update(arguments='{"names":["other"]}'),
+                       lambda rows: rows[5]["tool_calls"].append(copy.deepcopy(rows[5]["tool_calls"][0])),
+                       lambda rows: rows[4].update(content='{}')):
+            wrong = copy.deepcopy(messages); change(wrong)
+            with self.assertRaises(ValueError):
+                ASSEMBLER.gateway_business_tool_count(business, wrong, 0, 6)
+
     def test_installed_plan_establishes_private_deployment_parents_before_startup(self):
         for acquisition in (False, True):
             with self.subTest(acquisition=acquisition), tempfile.TemporaryDirectory(
