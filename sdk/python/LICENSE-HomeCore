@@ -1,0 +1,80 @@
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+HomeCore-derived modules in Meerkat Toolkit
+
+Copyright (c) 2025-2026 Luka Crnkovic-Friis
+
+The nine extracted module copies listed below are licensed, at your option,
+under the MIT License in LICENSE-MIT or the Apache License, Version 2.0, in
+LICENSE-APACHE. This grant covers these copies and their Toolkit adaptations.
+It does not change the licensing of the original HomeCore repositories,
+other HomeCore files, or separately distributed dependencies.
+
+Source provenance
+
+The following modules contain source extracted from the user's HomeCore
+projects under the user's instruction to move their shared implementation
+into Meerkat Toolkit:
+
+  meerkat_toolkit/connectors/gmail_message.py
+  meerkat_toolkit/frontend/inbox.py
+  meerkat_toolkit/frontend/sender.py
+  meerkat_toolkit/frontend/egress.py
+  meerkat_toolkit/frontend/telegram.py
+  meerkat_toolkit/frontend/telegram_adapter.py
+  meerkat_toolkit/frontend/homecore_live.py
+  meerkat_toolkit/_extension_wheels.py
+  meerkat_toolkit/extension_artifacts.py
+
+The inbox.py, sender.py and egress.py modules derive from HomeCore's existing
+channel inbox and extension messaging owners. Exact captured source inventories and subsequent
+changes are retained in the Toolkit repository under docs/reviews/ and
+docs/coordination/20260930-upstream-review/frontend-egress-extraction/.
+HomeCore has no root LICENSE, COPYING or NOTICE grant in the captured source.
+
+The Telegram wire module derives from homecore-ext-telegram's provider.py at
+f187bf89f49d4a0444fd3a9bffe07a49ab662f51. That project declares its license
+as Private and has no root LICENSE, COPYING or NOTICE grant. TELEGRAM.md,
+included alongside this file, describes the extraction and host boundary.
+The exact source inventory is retained under
+docs/coordination/20260930-upstream-review/telegram-frontend-transport-extraction/.
+
+The Telegram provider adapter derives from the same private extension's
+src/homecore_ext_telegram/extension.py, captured at SHA-256
+79e41e310b63e92d63bd70f08abd5ae0cb28ef4cb798922f73f532b8a8157e42.
+Its provider interpretation and presentation are separated from the host's
+credentials, identity, admission, cursor and lifecycle owners. The exact
+baseline and successor are recorded under
+docs/coordination/20260930-upstream-review/telegram-frontend-adapter-successor/.
+
+The HomeCore live image module replaces the send-image transport embedded in
+homecore-reachy's src/reachyd/live.py at
+0418a8b4e69a84f94adccd703a6060b9c293a49a. Its surrounding image job, lease,
+channel and injection owners remain in HomeCore and Reachy. The inspected
+Reachy root and extension have no LICENSE, COPYING or NOTICE file and no
+declared package license. HOMECORE-LIVE.md, included alongside this file,
+records that internal source relationship and its scope. Exact source and
+dependency inventories are retained under
+docs/coordination/20260930-upstream-review/reachy-image-transport-adoption/.
+
+The Gmail message helper module derives from HomeCore's pure MIME composition,
+reply linkage and readable-message interpretation in src/homecore/google_mcp.py,
+captured at SHA-256
+afa3902bf64b940d45ad3af10635896d9e176cb3fd6e5e2475160a38e51ffaaf.
+The extraction separates generic formatting from HomeCore's HTML display and
+account/admission/send owners, and adds explicit
+malformed/incomplete decoding outcomes. No Google source code is copied. GMAIL.md
+records the supported profile and ownership boundary. Exact donor and successor
+files are retained under
+docs/coordination/20260930-upstream-review/gmail-message-helpers-successor/.
+
+The captured projects' private status and absent license files above describe
+the extraction history. The grant at the top of this notice applies to the
+listed Toolkit copies. Existing source attribution, copyright notices and
+third-party license terms remain in place. Historical artifacts retain their
+original notices and recorded identities.
+
+No python-telegram-bot source is included in the Toolkit distribution. Toolkit's
+optional telegram extra selects the existing python-telegram-bot==22.7 parser;
+the HomeCore extension selects that extra. This separately distributed
+dependency retains its LGPL-3.0-only metadata and existing license obligations.

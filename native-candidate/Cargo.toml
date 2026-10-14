@@ -1,0 +1,57 @@
+# Pending native integration. See README.md before selecting this workspace.
+[workspace]
+members = ["../crates/meerkat-connect", "../crates/toolkit-catalog", "../crates/meerkat-toolkit", "../crates/toolkit-mobkit"]
+resolver = "2"
+
+[workspace.package]
+version = "0.9.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+sha2 = "0.10"
+hex = "0.4"
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"
+futures = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+tempfile = "3"
+toolkit-package = { path = "../crates/toolkit-package" }
+toolkit-store = { path = "../crates/toolkit-store" }
+toolkit-catalog = { path = "../crates/toolkit-catalog" }
+meerkat-toolkit = { path = "../crates/meerkat-toolkit" }
+indexmap = "2"
+# Development integration against the isolated upstream prerequisite changes.
+# Distribution requires a published or immutable Git dependency containing them.
+meerkat = { version = "=0.9.0", default-features = false }
+meerkat-machine-dsl = { version = "=0.9.0" }
+meerkat-machine-schema = { version = "=0.9.0" }
+meerkat-machine-codegen = { path = "../vendor/core-codegen/crates/meerkat-machine-codegen" }
+meerkat-core = { version = "=0.9.0" }
+meerkat-llm-core = { version = "=0.9.0" }
+meerkat-authorization = { version = "=0.9.0" }
+meerkat-authorization-contracts = { version = "=0.9.0" }
+meerkat-runtime = { version = "=0.9.0" }
+meerkat-workgraph = { version = "=0.9.0" }
+meerkat-tools = { version = "=0.9.0" }
+
+meerkat-mob = { version = "=0.9.0" }
+meerkat-mob-mcp = { version = "=0.9.0" }
+meerkat-mobkit = { package = "meerkat-meta", version = "=0.9.0" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+todo = "deny"
+unimplemented = "deny"
+
+[profile.dev]
+debug = 1
+

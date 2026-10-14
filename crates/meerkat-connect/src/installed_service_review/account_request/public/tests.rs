@@ -1,0 +1,188 @@
+//! Consumer and protocol controls. Synthetic package responses are not live
+//! package, Console-login, native grant or original-task completion evidence.
+use super::*;
+
+#[test]
+fn public_request_requires_exact_operations_and_explicit_lifetime_without_account_fields() {
+    let base = json!({"job_id":"checked-job","operations":["read_public_feed"],"agent":"original-agent","expires_in_ms":null});
+    assert!(parse(&base.to_string()).is_ok());
+    for (field, value) in [("connector", json!({"slot_id":"invented"})),
+        ("command",json!("/bin/sh")),("credentials",json!({})),("authority",json!({})),
+        ("operations",json!(["read_public_feed","read_public_feed"])),
+        ("operations",json!([])),("expires_in_ms",json!(0)),("agent",json!(""))] {
+        let mut invalid = base.clone(); invalid[field] = value;
+        assert!(parse(&invalid.to_string()).is_err(), "{field}");
+    }
+    let mut missing = base.clone(); missing.as_object_mut().unwrap().remove("expires_in_ms");
+    assert!(parse(&missing.to_string()).is_err());
+    assert!(parse(r#"{"job_id":"one","job_id":"two","operations":["read"],"agent":"a","expires_in_ms":null}"#).is_err());
+}
+
+#[tokio::test]
+async fn public_review_keeps_selected_provenance_and_refuses_changed_or_bound_sources() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
+        "authentication":{"kind":"none"},"operation_tools":{"declared/read":"actual_read"}}))).await;
+    let selected = fixture.raw_selection().ok().unwrap();
+    let selection = PublicSelection { tool_policy: None, operations:["actual_read".to_owned()].into(),
+        agent:"waiting-agent".into(),expires_in_ms:None };
+    let config = selected.public_configuration(&selection.operations).unwrap();
+    let retained = selected.clone();
+    assert_eq!(retained.public_configuration(&selection.operations).unwrap(),config);
+    let request = public_review_request(&selected.clone().into(),&config,&selection).unwrap();
+    let body = request.request_body.as_ref().unwrap();
+    assert_eq!(body["phase"],"installed_public_service_access");
+    assert_eq!(body["authentication"],json!({"kind":"none"}));
+    assert_eq!(body["operation_basis"]["kind"],"selected_manifest_declarations");
+    assert_eq!(body["operation_basis"],selected.operation_basis());
+    assert_eq!(body["application_selection"],json!({"agent":"waiting-agent","expires_in_ms":null,"operations":["actual_read"]}));
+    assert!(body.get("account").is_none()); assert!(body.get("connector").is_none());
+    assert!(config.connector.is_none());
+    let mut changed = config.clone(); changed.access = Some(meerkat_core::McpServerAccess::allowing(["unreviewed_write".to_owned()]));
+    assert!(public_review_request(&selected.clone().into(),&changed,&selection).is_err());
+    let binding_root = tempfile::tempdir().unwrap();
+    let binding = crate::stdio::tests::selected_public_fixture(binding_root.path(), Some(json!({
+        "authentication":{"kind":"binding","owner":"process","requirement":"key","credential_audience":"service"},
+        "operation_tools":{"declared/read":"actual_read"}}))).await;
+    let binding = binding.raw_selection().ok().unwrap();
+    assert!(binding.native_connector.is_none());
+    assert!(public_review_request(&binding.clone().into(),&config,&selection).is_err(), "absent native connector cannot imply no provider authentication");
+    fixture.owner.retire();
+    assert!(public_review_request(&selected.clone().into(),&config,&selection).is_err());
+    assert!(retained.public_configuration(&selection.operations).is_err(),
+        "an owned publication predicate still consults the same retired source");
+    assert_eq!(body["operation_basis"]["kind"],"selected_manifest_declarations", "old review remains historical evidence only");
+}
+
+#[tokio::test]
+async fn public_reply_driver_joins_cancellation_and_preserves_the_presenter_for_denial() {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
+            "authentication":{"kind":"none"},"operation_tools":{"declared/read":"actual_read"}}))).await;
+        let selected = fixture.raw_selection().ok().unwrap();
+        let selection = PublicSelection { tool_policy: None, operations:["actual_read".to_owned()].into(),
+            agent:"waiting-agent".into(),expires_in_ms:None };
+        let config = selected.public_configuration(&selection.operations).unwrap();
+        let (approvals, presenter) = LocalApprovals::create(&root.path().join("approvals")).unwrap();
+        approvals.bind_session(&selected.installed.session).unwrap();
+        let mut presenter = Some(presenter);
+        // Exercise the real ApprovalService/prompt driver with the public reply
+        // type. This is transport settlement, not a verified Console Human or
+        // native task-grant fixture. The native task control lives in MobKit.
+        for cancel in [true, false] {
+            let (bridge, mut prompts, _retire) = PromptBridge::channel();
+            let (mut response, receive) = oneshot::channel::<PublicReply>();
+            let (control, cancellation) = ReviewCancellation::channel();
+            let settled = AtomicBool::new(false);
+            let request = public_review_request(&selected.clone().into(), &config, &selection).unwrap();
+            let review = async {
+                let result = approvals.review_access_cancellable(request,
+                    cancellation.cancelled(), |id| cancellation.approval_created(id)).await;
+                settled.store(true, Ordering::SeqCst);
+                let record = result?;
+                assert_eq!(record.status, ApprovalStatus::Denied);
+                Ok(PublicReply { state:PublicState::Denied,access_reviewed:true,
+                    grant_issued:false,fresh_instruction_retained:false,ready:false })
+            };
+            let refresh = || -> futures_util::future::BoxFuture<'static, Result<(), ConnectError>> {
+                Box::pin(async { Ok(()) })
+            };
+            let closed = std::future::pending();
+            tokio::pin!(closed);
+            let driver = console::drive_review_cancellable(review,&approvals,&mut presenter,
+                &bridge,&refresh,&mut response,closed.as_mut(),None,Some(control),None);
+            let answer = async {
+                let mut exchange = Some(prompts.recv().await.unwrap());
+                let prompt = &exchange.as_ref().unwrap().prompt;
+                assert_eq!(prompt["body"]["phase"],"installed_public_service_access");
+                if cancel {
+                    drop(receive);
+                    None
+                } else {
+                    let id = prompt["approval_id"].as_str().unwrap().to_owned();
+                    console::answer_retained(12,&mut exchange,&serde_json::to_vec(&json!({
+                        "review_id":12,"approval_id":id,"decision":"deny"})).unwrap()).unwrap();
+                    // join! retains the completed branch's receiver until the
+                    // real durable denied decision and driver both settle.
+                    Some(receive)
+                }
+            };
+            let (result, _retained_receiver) = tokio::join!(driver, answer);
+            assert!(settled.load(Ordering::SeqCst),"entered approval wait must be joined on caller loss");
+            if cancel {
+                assert!(result.unwrap().is_none());
+            } else {
+                let reply = serde_json::to_value(result.unwrap().unwrap()).unwrap();
+                assert_eq!(reply,json!({"state":"denied","access_reviewed":true,
+                    "grant_issued":false,"fresh_instruction_retained":false,"ready":false}));
+            }
+            assert!(presenter.is_some(),"one public request cannot consume the host presenter");
+            approvals.check_session(&selected.installed.session).unwrap();
+            assert!(!approvals.has_uncertain_dispatch());
+        }
+    }).await.expect("public approval transport failed to settle");
+}
+
+
+#[tokio::test]
+async fn remote_public_review_retains_export_research_and_exact_consumer_without_fake_software() {
+    for declaration in [false, true] {
+        let root=tempfile::tempdir().unwrap();
+        let fixture=crate::stdio::tests::remote_public_fixture_kind(root.path(), declaration).await;
+        let selected=fixture.public_remote();
+        let selection=PublicSelection { tool_policy: None, operations:["actual.lookup".to_owned()].into(),
+            agent:"original-agent".into(),expires_in_ms:Some(60000) };
+        let config=selected.public_configuration(&selection.operations).unwrap();
+        let review=public_review_request(&selected,&config,&selection).unwrap();
+        let body=review.request_body.as_ref().unwrap();
+        assert_eq!(body["operation_basis"]["kind"],"remote_recipe_declarations");
+        let metadata = &body["operation_basis"]["declared_remote_service"];
+        assert_eq!(metadata.get("selection_kind").and_then(Value::as_str), if declaration { Some("remote_declaration") } else { None });
+        assert_eq!(body["remote_export"],selected.review_source()["remote_export"]);
+        assert!(body.get("software").is_none()); assert!(body.get("account").is_none());
+        assert_eq!(body["application_selection"],json!({"agent":"original-agent","operations":["actual.lookup"],"expires_in_ms":60000}));
+        assert_eq!(body["installation"],serde_json::to_value(&config).unwrap());
+        let widened=PublicSelection { tool_policy: None, operations:["actual.lookup".to_owned(),"other.write".to_owned()].into(),
+            agent:selection.agent.clone(),expires_in_ms:selection.expires_in_ms };
+        assert!(public_review_request(&selected,&config,&widened).is_err());
+        fixture.owner.retire();
+        assert!(public_review_request(&selected,&config,&selection).is_err());
+        assert!(body.get("remote_export").is_some(),"retained review is historical evidence after disposal");
+    }
+}
+
+#[tokio::test]
+async fn public_review_retains_software_declaration_without_full_activation_or_schema_observation() {
+    let root=tempfile::tempdir().unwrap();
+    let fixture=crate::stdio::tests::selected_software_fixture(root.path()).await;
+    let selected=fixture.raw_selection().ok().unwrap();
+    let selection=PublicSelection { tool_policy: None,operations:["actual_read".to_owned()].into(),
+        agent:"waiting-agent".into(),expires_in_ms:Some(60000)};
+    let config=selected.public_configuration(&selection.operations).unwrap();
+    let request=public_review_request(&selected.clone().into(),&config,&selection).unwrap();
+    let body=request.request_body.as_ref().unwrap();
+    assert_eq!(body["phase"],"installed_public_service_access");
+    assert_eq!(body["operation_basis"],selected.operation_basis());
+    assert_eq!(body["operation_basis"]["kind"],"selected_software_declarations");
+    assert!(body["operation_basis"].get("manifest_digest").is_none());
+    assert_eq!(body["application_selection"],json!({"operations":["actual_read"],"agent":"waiting-agent","expires_in_ms":60000}));
+    assert!(config.connector.is_none());
+    assert!(body.get("account").is_none());
+    assert!(body.get("observed_schema").is_none());
+    let other=PublicSelection { tool_policy: None,operations:["unselected_write".to_owned()].into(),
+        agent:selection.agent.clone(),expires_in_ms:selection.expires_in_ms};
+    assert!(public_review_request(&selected.clone().into(),&config,&other).is_err());
+    fixture.owner.retire();
+    assert!(public_review_request(&selected.clone().into(),&config,&selection).is_err());
+}
+
+#[test]
+fn public_tool_policy_is_optional_proposal_not_candidate_or_catalog_session_authority() {
+    let mut requested = json!({"job_id":"checked","operations":["read"],"agent":"original","expires_in_ms":null});
+    assert!(parse(&requested.to_string()).unwrap().tool_policy.is_none());
+    requested["tool_policy"] = json!({"tools":[{"name":"named.alias","consequence":"r0"}],"catalog":"r1"});
+    assert!(parse(&requested.to_string()).unwrap().tool_policy.is_some());
+    requested["tool_policy"]["catalog_session"] = json!("helper-session");
+    assert!(parse(&requested.to_string()).is_err());
+}

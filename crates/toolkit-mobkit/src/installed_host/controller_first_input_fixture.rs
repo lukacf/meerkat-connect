@@ -1,0 +1,598 @@
+//! Source-only test composition from the real installed host. Provisioning uses
+//! native durable grants; it does not test an operator presenter or OS login.
+use super::*;
+use meerkat_authorization_contracts::evidence::EvidenceId;
+use meerkat_core::ControllerModelFacts;
+use meerkat_runtime::meerkat_machine::NativeGrantWorkConfiguration;
+use meerkat_toolkit::host_lifetime::policy::CompiledLocalPolicy;
+
+pub(crate) struct Host {
+    pub selection: HostBootstrapSelection,
+    pub store: Arc<SqliteStore>,
+    pub source_path: PathBuf,
+    pub source_scope: StoreScope,
+    pub tool_policy_registry: Arc<meerkat_core::ToolConsequencePolicyRegistry>,
+    pub directory: Arc<tempfile::TempDir>,
+    pub lifetime: Arc<NativeHostLifetime>,
+    pub originals: Arc<PrivateOriginals>,
+    pub configuration: NativeGrantWorkConfiguration,
+    pub registration: Arc<dyn MemberRuntimeRegistrationHook>,
+    pub acquisition_helper: Option<acquisition::InstalledSetupSelection>,
+}
+
+pub(crate) async fn open(facts: &ControllerModelFacts, select_controller: bool) -> Host {
+    open_with_probe(facts, select_controller, false).await
+}
+
+pub(crate) async fn open_with_probe(facts: &ControllerModelFacts, select_controller: bool, probe: bool) -> Host {
+    open_selected(facts, select_controller, probe, false).await
+}
+
+pub(crate) async fn open_for_service_input(facts: &ControllerModelFacts) -> Host {
+    open_selected(facts, true, true, true).await
+}
+
+async fn open_selected(facts: &ControllerModelFacts, select_controller: bool, probe: bool, local_operator: bool) -> Host {
+    open_selected_subject(facts, select_controller, probe, local_operator, false, None, false, None, false, false).await
+}
+
+pub(crate) async fn open_for_source_status(facts: &ControllerModelFacts) -> Host {
+    open_selected_subject(facts, true, true, true, true, None, false, None, false, false).await
+}
+
+pub(crate) async fn open_with_acquisition(facts: &ControllerModelFacts, tool: Arc<dyn meerkat_core::AgentToolDispatcher>) -> Host {
+    open_selected_subject(facts, true, false, false, false, Some(tool), false, None, false, false).await
+}
+
+async fn open_selected_subject(facts: &ControllerModelFacts, select_controller: bool, probe: bool, local_operator: bool, source_subject: bool,
+    acquisition: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, helper: bool,
+    report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool) -> Host {
+    open_selected_subject_with_source(facts, select_controller, probe, local_operator, source_subject,
+        acquisition, helper, report, configured_setup, configured_report, None).await
+}
+
+// Test-only storage decoration runs before the source is shared with native
+// configuration or application policy, and before any event is retained.
+pub(crate) type PrepareOriginalSource = Box<dyn FnOnce(&mut PrivateOriginals) + Send>;
+
+async fn open_selected_subject_with_source(facts: &ControllerModelFacts, select_controller: bool, probe: bool, local_operator: bool, source_subject: bool,
+    acquisition: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, helper: bool,
+    report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool,
+    prepare_source: Option<PrepareOriginalSource>) -> Host {
+    open_selected_source(facts, select_controller, probe, local_operator, source_subject,
+        acquisition, helper, report, configured_setup, configured_report, prepare_source, None, false, false).await
+}
+
+/// The fixture selects an issuer-qualified Human before constructing the host.
+/// Only the later real verifier can authenticate a token for that selection.
+pub(crate) async fn open_for_console_input(facts: &ControllerModelFacts, human: meerkat_core::PrincipalRef) -> Host {
+    assert_eq!(human.kind, meerkat_core::PrincipalKind::Human);
+    open_selected_source(facts, true, true, true, false, None, false, None, false, false,
+        None, Some(human), false, false).await
+}
+
+/// Explicit fixture administration for an actual fresh task. This does not
+/// authenticate a Human or preselect an application parent for a future session.
+pub(crate) async fn open_for_task_parent_service_input(facts: &ControllerModelFacts) -> Host {
+    open_selected_source(facts, true, true, true, false, None, false, None, false, false,
+        None, None, true, false).await
+}
+
+async fn open_selected_source(facts: &ControllerModelFacts, select_controller: bool, probe: bool,
+    local_operator: bool, source_subject: bool,
+    acquisition: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, helper: bool,
+    report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool,
+    prepare_source: Option<PrepareOriginalSource>, console_human: Option<meerkat_core::PrincipalRef>,
+    task_parent_administration: bool, private_helper_entry: bool) -> Host {
+    assert!(!private_helper_entry || (helper && report.is_none() && !configured_setup && !configured_report));
+    let (directory, mut selection) = super::tests::fixture();
+    let mut local: CompiledLocalPolicy = serde_json::from_slice(
+        &fs::read(&selection.local_policy.path).unwrap(),
+    ).unwrap();
+    let native = local.native_host.as_mut().unwrap();
+    native.members[0].member.role = "worker".into();
+    let meerkat_toolkit::host_lifetime::policy::CompiledNativeSourceOrigin::LocalConsole { member, .. }
+        = &mut native.routes[0].origin else { panic!("local fixture") };
+    member.role = "worker".into();
+    // This variant exercises the production local service review route. The
+    // native root/requester/audience are selected before owner construction;
+    // ordinary fixture modes retain their original synthetic administrator.
+    let root = if local_operator {
+        let operator = meerkat::governed_realm::stock::StockPrincipals::for_local_operator(&native.realm)
+            .unwrap().operator;
+        native.members[0].audience = meerkat_authorization_contracts::constraints::AudienceRef::Principal {
+            principal: operator.clone(),
+        };
+        let meerkat_toolkit::host_lifetime::policy::CompiledNativeSourceOrigin::LocalConsole { requester, .. }
+            = &mut native.routes[0].origin else { panic!("local fixture") };
+        *requester = operator.clone();
+        if source_subject {
+            // An explicit fixture source selection, not authentication of a
+            // Console login or a cast of its principal string.
+            native.routes[0].represented_subject = Some(operator.clone());
+        }
+        operator
+    } else { super::tests::principal("admin") };
+    if let Some(human) = console_human {
+        // Select only the Console source and audience. The initialized grant
+        // administrator remains the fixture's separate existing local root.
+        native.members[0].audience = meerkat_authorization_contracts::constraints::AudienceRef::Principal {
+            principal: human.clone(),
+        };
+        let meerkat_toolkit::host_lifetime::policy::CompiledNativeSourceOrigin::LocalConsole { requester, .. }
+            = &mut native.routes[0].origin else { panic!("local fixture") };
+        *requester = human.clone();
+        native.routes[0].represented_subject = Some(human);
+    }
+    if configured_setup || configured_report || task_parent_administration {
+        native.remote_operator = Some(root.clone());
+    }
+    if task_parent_administration {
+        native.service_parent_administration = Some(
+            meerkat_toolkit::host_lifetime::policy::ServiceParentAdministration::ApplicationPolicyTasks {
+                routes: [native.routes[0].id.clone()].into(),
+            });
+        assert!(native.routes[0].application_parent.is_none());
+    }
+    // The host explicitly selects the native comms package's five tool
+    // identities for its initial artifact surface. Visibility is not an
+    // operation grant, and the real registration hook checks built tools.
+    let mut surface: Vec<_> = ["send_message", "reply_to_peer", "send_request", "send_response", "peers"]
+        .into_iter().map(|name| meerkat_core::ToolIdentity {
+            name: name.into(), provenance: Some(meerkat_core::ToolProvenance {
+                kind: meerkat_core::ToolSourceKind::Comms, source_id: "comms".into(),
+                artifact: None,
+            }),
+        }).collect();
+    if probe {
+        surface.push(super::acquisition::ContextProbe::definition().identity());
+    }
+    // These immutable leaf bundles have no deferred catalog owner. Native mob
+    // profile mounting attributes an otherwise unowned leaf to its registered
+    // Rust bundle before the installed-surface hook; preserve explicit owners.
+    let bundle_identity = |tool: &meerkat_core::ToolDef, bundle: &str| {
+        let mut identity = tool.identity();
+        identity.provenance.get_or_insert_with(|| meerkat_core::ToolProvenance::new(
+            meerkat_core::ToolSourceKind::RustBundle, bundle,
+        ));
+        identity
+    };
+    if let Some(tool) = acquisition {
+        // Use the real bundle's catalog identities. This permits registration,
+        // not operation access; the source still selects no application parent.
+        use meerkat_core::AgentToolDispatcher;
+        let registered: Arc<dyn AgentToolDispatcher> = Arc::new(
+            meerkat_core::RegisteredToolBundleDispatcher::new(crate::FIND_AND_INSTALL_BUNDLE, tool),
+        );
+        surface.extend(registered.tools().iter().map(|tool| bundle_identity(tool, crate::FIND_AND_INSTALL_BUNDLE)));
+        // The governed factory also owns an initially empty MCP router. Its
+        // dynamic exact catalog composes these native control tools when the
+        // acquisition bundle preserves catalog exactness. Select their actual
+        // identities too; this grants no catalog or setup operation authority.
+        let catalog = meerkat_tools::CatalogControlDispatcher::new(
+            registered, Arc::new(meerkat_tools::CatalogControlVisibilityProvider::new()),
+        );
+        surface.extend(catalog.tools().iter().map(|tool| tool.identity()));
+    } else if !probe {
+        // Plain and configured governed sessions also compose native catalog
+        // controls from their initially empty MCP router. Select the native
+        // definitions in the artifact without granting operation authority.
+        use meerkat_core::AgentToolDispatcher;
+        let catalog = meerkat_tools::CatalogControlDispatcher::new(
+            Arc::new(meerkat::McpRouter::new()),
+            Arc::new(meerkat_tools::CatalogControlVisibilityProvider::new()),
+        );
+        surface.extend(catalog.tools().iter().map(|tool| tool.identity()));
+    }
+    if let Some(tool) = &report {
+        use meerkat_core::AgentToolDispatcher;
+        let registered = meerkat_core::RegisteredToolBundleDispatcher::new(
+            meerkat_toolkit::setup::SETUP_RESULTS_BUNDLE, tool.clone(),
+        );
+        surface.extend(registered.tools().iter().map(|tool| bundle_identity(tool, meerkat_toolkit::setup::SETUP_RESULTS_BUNDLE)));
+    }
+    let surface_bytes = canonical_json(&surface).unwrap();
+    let surface_artifact = &mut native.members[0].initial_surface;
+    surface_artifact.sha256 = digest(&surface_bytes);
+    fs::write(selection.local_policy.path.parent().unwrap().join(&surface_artifact.name), surface_bytes).unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(&selection.policy_manifest.path).unwrap(),
+    ).unwrap();
+    for row in manifest["artifacts"].as_array_mut().unwrap() {
+        if row["path"] == surface_artifact.name { row["sha256"] = surface_artifact.sha256.clone().into(); }
+    }
+    fs::write(&selection.policy_manifest.path, canonical_json(&manifest).unwrap()).unwrap();
+    if helper {
+        let mut selected = native.members[0].clone();
+        selected.member.member = HELPER.into();
+        if report.is_some() { selected.member.role = REPORT_PROFILE.into(); }
+        else if private_helper_entry { selected.member.role = PRIVATE_HELPER_PROFILE.into(); }
+        selected.logical_owner = super::tests::principal(HELPER);
+        native.members.push(selected);
+        // Only A may invoke the installed acquisition leaf at the application
+        // policy layer. Its separate native setup authority is still required;
+        // ordinary AA retains an independent controller-only helper. The separate
+        // report variant below selects only its helper report invocation.
+        let tool = meerkat_core::CompiledApplicationToolPolicy::new(
+            meerkat_core::PolicyProviderId::new("fixture").unwrap(),
+            meerkat_core::PolicyId::new("fixture").unwrap(),
+            meerkat_core::PolicyRevision(1),
+            meerkat_core::CompiledPolicySourceProvenance {
+                source_id: "fixture-source".into(),
+                source_digest: meerkat_core::PolicyDigest::from_canonical_bytes(b"fixture"),
+            },
+            native
+                .members
+                .iter()
+                .map(|member| meerkat_core::CompiledMemberToolGrants {
+                    member_identity: member.member.member.clone(),
+                    grants: if member.member.member == native.members[0].member.member {
+                        vec![meerkat_core::CompiledMemberToolGrant {
+                            tool_name: crate::FIND_AND_INSTALL.into(),
+                            action: meerkat_core::CompiledMemberToolAction::Invoke,
+                            consequence: meerkat_core::CompiledToolConsequence::R2,
+                        }]
+                    } else if report.is_some() && member.member.member == HELPER {
+                        // Fixture provisioning of only this helper's result
+                        // operation. No account, installation or Ready access.
+                        vec![meerkat_core::CompiledMemberToolGrant {
+                            tool_name: meerkat_toolkit::setup::SETUP_REPORT.into(),
+                            action: meerkat_core::CompiledMemberToolAction::Invoke,
+                            consequence: meerkat_core::CompiledToolConsequence::R2,
+                        }]
+                    } else {
+                        vec![]
+                    },
+                })
+                .collect(),
+        )
+        .unwrap();
+        let bytes = tool.canonical_json().unwrap();
+        native.application_tool_policy.sha256 = digest(&bytes);
+        fs::write(
+            selection
+                .local_policy
+                .path
+                .parent()
+                .unwrap()
+                .join(&native.application_tool_policy.name),
+            bytes,
+        )
+        .unwrap();
+        for row in manifest["artifacts"].as_array_mut().unwrap() {
+            if row["path"] == native.application_tool_policy.name {
+                row["sha256"] = native.application_tool_policy.sha256.clone().into();
+            }
+        }
+        fs::write(
+            &selection.policy_manifest.path,
+            canonical_json(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+    let mut acquisition_helper = None;
+    let directory_path = state_directory(&selection, native, NativeOwnerStartup::Initialize).unwrap();
+    {
+        let source = ToolkitOriginalOwner::initialize(
+            LocalGrantConfiguration {
+                root: root.clone(),
+                namespace: EvidenceId::new("controller-first-input").unwrap(), generation: 1,
+            },
+            Arc::new(FileGrantOwnerStore::new(directory_path.join("grants.jsonl"))),
+            Arc::new(HostAuthorizationClock), native.ingress_domain.clone(),
+        ).unwrap();
+        let _store = SqliteStore::open(directory_path.join("originals.sqlite3")).unwrap();
+        if select_controller {
+            let parent = source.grants().issue_root(
+                &root, EvidenceId::new("controller-parent").unwrap(),
+                native.grant_administrator.clone(), native.routes[0].represented_subject.clone(),
+                application_operations::parent_restrictions(application_operations::controller(
+                    &native.grant_administrator, &native.routes[0].logical_executor,
+                    &native.members[0].audience, &facts.route_key(),
+                    application_operations::ControllerAction::Inference,
+                )),
+            ).unwrap();
+            native.routes[0].controller_parent = Some(vec![parent]);
+        }
+        if helper {
+            let member = &native.members[1];
+            let parent = source
+                .grants()
+                .issue_root(
+                    &root,
+                    EvidenceId::new("helper-controller-parent").unwrap(),
+                    native.grant_administrator.clone(),
+                    None,
+                    application_operations::parent_restrictions(
+                        application_operations::controller(
+                            &native.grant_administrator,
+                            &member.logical_owner,
+                            &member.audience,
+                            &facts.route_key(),
+                            application_operations::ControllerAction::Inference,
+                        ),
+                    ),
+                )
+                .unwrap();
+            acquisition_helper = Some(acquisition::InstalledSetupSelection {
+                report_capability: None,
+                member: member.member.clone(), ingress_actor: native.grant_administrator.clone(),
+                logical_executor: member.logical_owner.clone(), represented_subject: None,
+                controller_parent: vec![parent],
+                operation_basis: meerkat_authorization_contracts::work_association::WorkAuthorityBasis::TargetedGrantLineages {
+                    base: None, targets: vec![],
+                },
+            });
+        }
+        assert!(native.routes[0].application_parent.is_none());
+    }
+    super::tests::replace_local(&mut selection, &local);
+    if configured_report {
+        use operator_setup::{HelperReportCapabilityRequest, OperatorSetup};
+        let helper = acquisition_helper.as_mut().expect("selected helper before runtime construction");
+        assert!(helper.report_capability.is_none());
+        assert!(matches!(&helper.operation_basis,
+            meerkat_authorization_contracts::work_association::WorkAuthorityBasis::TargetedGrantLineages {
+                base: None, targets,
+            } if targets.is_empty()));
+        let request = HelperReportCapabilityRequest {
+            account_issuance_id: Some(EvidenceId::new("configured-helper-account-parent").unwrap()),
+            public_issuance_id: Some(EvidenceId::new("configured-helper-public-parent").unwrap()),
+            member: helper.member.clone(),
+            issuance_id: EvidenceId::new("configured-helper-report-parent").unwrap(),
+        };
+        // Actual trusted producer, before a service or helper session exists.
+        // The fixture supplies its selected helper projection; it does not
+        // exercise the Connect artifact reader or Forge publication transaction.
+        let selected = helper.clone();
+        let capability = OperatorSetup::configure_application_helper_report(
+            &selection, &request, |_| Ok(selected.clone()),
+        ).unwrap();
+        assert!(OperatorSetup::configure_application_helper_report(
+            &selection, &request, |_| Ok(selected.clone()),
+        ).unwrap() == capability, "exact producer request recovers its native parent");
+        // Publish this receipt only into the existing typed helper selection.
+        // Ordinary preparation issues the qualified-origin children later.
+        helper.report_capability = Some(capability);
+    }
+    if configured_setup {
+        use operator_setup::{AgentSetupCapabilityRequest, OperatorSetup};
+        let native = local.native_host.as_ref().unwrap();
+        let request = AgentSetupCapabilityRequest { member: native.members[0].member.clone(), helper_targets: if configured_report { vec![
+                operator_setup::SetupTargetRequest { target: Some(acquisition::ConfiguredHelperReportCapability::public_target()),
+                    issuance_id: EvidenceId::new("configured-a-public-parent").unwrap() },
+                operator_setup::SetupTargetRequest { target: Some(acquisition::ConfiguredHelperReportCapability::account_target()),
+                    issuance_id: EvidenceId::new("configured-a-account-parent").unwrap() },
+                operator_setup::SetupTargetRequest { target: Some(acquisition::ConfiguredHelperReportCapability::target()),
+                    issuance_id: EvidenceId::new("configured-a-report-parent").unwrap() },
+            ] } else { vec![] },
+            route: native.routes[0].id.clone(), issuance_id: EvidenceId::new("configured-acquisition-parent").unwrap() };
+        // Actual trusted producer, same native owner restored under the stopped
+        // candidate fence. Retry the same request to test native reconciliation.
+        let selected_helper = acquisition_helper.clone();
+        let configure = |request: &AgentSetupCapabilityRequest| {
+            OperatorSetup::configure_application_agent_setup_with_helper(
+                &selection, request, |_| Ok(selected_helper.clone()),
+            )
+        };
+        let capability = configure(&request).unwrap();
+        assert_eq!(configure(&request).unwrap(), capability);
+        let mut wrong = request.clone();
+        wrong.member.member = "unselected-agent".into();
+        assert!(configure(&wrong).is_err());
+        local.native_host.as_mut().unwrap().members[0].setup_capability = Some(capability);
+        super::tests::replace_local(&mut selection, &local);
+    }
+    restore_selected(Arc::new(directory), selection, acquisition_helper, prepare_source).await
+}
+
+/// Reopen the exact installed pair after both previous owners have settled and
+/// dropped. This path restores existing grants and source rows; it issues none.
+pub(crate) async fn reopen_for_continuation(directory: Arc<tempfile::TempDir>, selection: HostBootstrapSelection) -> Host {
+    restore_selected(directory, selection, None, None).await
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ApplicationServiceSource {
+    StockOperator,
+    ApplicationService,
+}
+
+/// The persistent fixture has already created this actual session, joined
+/// shutdown and dropped its owners. Provision an exact finite native parent
+/// before restoring the same session. No guessed session or wildcard bounds.
+pub(crate) fn configure_service_parent_before_restore(
+    selection: &mut HostBootstrapSelection,
+    session: &meerkat_core::SessionId,
+    config: &meerkat_core::McpServerConfig,
+    source_kind: ApplicationServiceSource,
+) {
+    use crate::private_originals::{PrivateAccessChoice, PrivateOriginalRoute,
+        PrivateServiceMcpAccessDecision, PrivateServiceMcpLiveAttachment,
+        PrivateServiceMcpPermission, PrivateSourceEvidence, ServiceMcpSelection};
+    use meerkat_authorization_contracts::constraints::DelegationDepth;
+    use meerkat_authorization_contracts::work_association::NativeWorkTarget;
+    use meerkat_toolkit::authority::{LifetimeScope, RoleLifetime};
+    use toolkit_package::{Id, Revision};
+    let mut local: CompiledLocalPolicy = serde_json::from_slice(
+        &fs::read(&selection.local_policy.path).unwrap()).unwrap();
+    let native = local.native_host.as_mut().unwrap();
+    assert!(native.routes[0].application_parent.is_none());
+    if matches!(source_kind, ApplicationServiceSource::ApplicationService) {
+        let meerkat_toolkit::host_lifetime::policy::CompiledNativeSourceOrigin::LocalConsole { requester, .. }
+            = &mut native.routes[0].origin else { panic!("existing local fixture route") };
+        *requester = native.grant_administrator.clone();
+        native.routes[0].represented_subject = None;
+    }
+    let selected = &native.routes[0];
+    let (binding, requester, actor) = selected.source_binding_in(&local.channels).unwrap();
+    let member = native.members.iter().find(|member| &member.member == binding).unwrap();
+    let route = PrivateOriginalRoute {
+        id: selected.id.clone(), grant_caller: native.grant_administrator.clone(),
+        application_parent: None, controller_parent: selected.controller_parent.clone(),
+        grant_target: Id::new(binding.member.clone()).unwrap(), grant_audience: member.audience.clone(),
+        realm: native.realm.clone(), requester: requester.clone(), ingress_actor: actor.clone(),
+        logical_executor: selected.logical_executor.clone(), represented_subject: selected.represented_subject.clone(),
+        source_authority: selected.source_authority.clone(), authentication_domain: selected.authentication_domain.clone(),
+        event_domain: selected.event_domain.clone(),
+    };
+    let destination = NativeWorkTarget {
+        logical_owner: member.logical_owner.clone(),
+        logical_runtime: EvidenceId::new(meerkat_runtime::LogicalRuntimeId::for_session(session).to_string()).unwrap(),
+        context: EvidenceId::new(session.to_string()).unwrap(), context_generation: member.context_generation,
+        audience: member.audience.clone(),
+    };
+    let directory = state_directory(selection, native, NativeOwnerStartup::Restore).unwrap();
+    {
+        let owner = ToolkitOriginalOwner::restore(
+            Arc::new(FileGrantOwnerStore::new(directory.join("grants.jsonl"))),
+            Arc::new(HostAuthorizationClock), native.ingress_domain.clone()).unwrap();
+        let now = owner.clock().now().unwrap().unix_ms;
+        let decision = PrivateServiceMcpAccessDecision {
+            catalog: None,
+            route: route.id.clone(), decision: Id::new("stopped-service-parent").unwrap(),
+            evidence: PrivateSourceEvidence { resource_id: EvidenceId::new("stopped-service-parent").unwrap(),
+                revision: EvidenceId::new("fixture-v1").unwrap(), sha256: digest(b"stopped service fixture") },
+            choice: PrivateAccessChoice::Approve,
+            permission: PrivateServiceMcpPermission {
+                target: route.grant_target.clone(), connection: Id::new(&config.name).unwrap(),
+                resource: Id::new(&config.name).unwrap(), operations: [Id::new("read").unwrap()].into(),
+                lifetime: RoleLifetime { scope: LifetimeScope::Task { task: Id::new("stopped-service-parent").unwrap() },
+                    expires_at_ms: Some(now.checked_add(300_000).unwrap()) },
+            },
+            connection_revision: Revision::new(digest(&canonical_json(config).unwrap())).unwrap(),
+            live_attachment: Some(PrivateServiceMcpLiveAttachment { destination }),
+        };
+        let selected = match meerkat::ConnectorMcpInstallation::from_config(config) {
+            Some(connector) => ServiceMcpSelection::connector(&connector.unwrap()),
+            None => ServiceMcpSelection::no_connector(config).unwrap(),
+        };
+        let mut restrictions = selected.restrictions(&route, &decision, now).unwrap();
+        restrictions.delegation_depth = DelegationDepth::remaining(1);
+        let root = meerkat::governed_realm::stock::StockPrincipals::for_local_operator(&native.realm).unwrap().operator;
+        let parent = owner.grants().issue_root(&root, EvidenceId::new("stopped-service-parent").unwrap(),
+            native.grant_administrator.clone(), route.represented_subject.clone(), restrictions).unwrap();
+        native.routes[0].application_parent = Some(vec![parent]);
+    }
+    super::tests::replace_local(selection, &local);
+}
+
+async fn restore_selected(directory: Arc<tempfile::TempDir>, selection: HostBootstrapSelection,
+    acquisition_helper: Option<acquisition::InstalledSetupSelection>, prepare_source: Option<PrepareOriginalSource>) -> Host {
+    let (lifetime, installed) = InstalledToolkitHost::open(selection.clone(), NativeOwnerStartup::Restore)
+        .await.unwrap();
+    let lifetime = Arc::new(lifetime);
+    let store = installed.store.clone();
+    let source_scope = installed.source_scope.clone();
+    let mut originals = installed.originals;
+    if let Some(prepare_source) = prepare_source {
+        prepare_source(Arc::get_mut(&mut originals).expect("source is unshared before policy composition"));
+    }
+    originals.bind_host_lifetime(&lifetime).unwrap();
+    let tool_policy_registry = installed.tool_policy.registry();
+    let registration = Arc::new(InstalledMemberRegistration {
+        owner: lifetime.clone(), native: installed.native.clone(), surfaces: installed.surfaces,
+        tool_policy: installed.tool_policy,
+        update_associations: None,
+    });
+    let policy = Arc::new(InstalledApplicationPolicy {
+        originals: originals.clone(), lifetime: lifetime.clone(),
+        native: installed.native, selected: lifetime.selected_policy().clone(),
+    });
+    let configuration = originals.configuration(policy);
+    let directory_path = state_directory(&selection, lifetime.selected_policy().native_host.as_ref().unwrap(),
+        NativeOwnerStartup::Restore).unwrap();
+    Host { selection, store, source_path: directory_path.join("originals.sqlite3"), source_scope, tool_policy_registry, directory, lifetime, originals, configuration, registration, acquisition_helper }
+}
+
+/// Retain the real installed acquisition and its immutable leaves. This denial
+/// fixture deliberately does not claim a ready continuation/helper runtime.
+/// Native operation refusal must happen before either dependency is used.
+pub(crate) fn bind_acquisition(host: &Host, tools: acquisition::InstalledAcquisitionTools)
+    -> Arc<acquisition::InstalledAcquisition>
+{
+    use acquisition::{InstalledAcquisition, InstalledNativeContinuation, InstalledSetupDefaults, InstalledSetupLimits, InstalledSetupSelection};
+    use meerkat_authorization_contracts::work_association::WorkAuthorityBasis;
+    use meerkat_core::{service::WorkGraphNamespaceGrant, storage_durability::{DurabilityDeclaration, DurabilityResolution}};
+    use meerkat_toolkit::{authority::Ceiling, setup::{SetupWorkBackend, WorkAdmissionStepOptions}};
+    use meerkat_workgraph::{SqliteWorkGraphStore, WorkGraphService};
+    let id = |value: &str| toolkit_package::Id::new(value).unwrap();
+    let native = host.lifetime.selected_policy().native_host.as_ref().unwrap();
+    let continuation = InstalledNativeContinuation::new(host.store.clone(), host.source_scope.clone(),
+        host.originals.clone(), id("controller-only-denial"), [id("person")].into()).unwrap();
+    let workgraph = WorkGraphService::with_namespace_grant(
+        Arc::new(SqliteWorkGraphStore::open(&host.source_path.with_file_name("denial-workgraph.sqlite")).unwrap()),
+        WorkGraphNamespaceGrant::new(native.realm.as_str(), "setup").unwrap(),
+    ).unwrap();
+    let work_backend = SetupWorkBackend::new(workgraph, "fixture".into(), id("generation"), &[
+        DurabilityDeclaration::durable("workgraph", DurabilityResolution::Persistent),
+    ]).unwrap();
+    let owner = Arc::new(InstalledAcquisition::from_defaults_with_tools(
+        host.store.clone(), host.source_scope.clone(), host.originals.clone(), native,
+        InstalledSetupDefaults {
+            helper: InstalledSetupSelection {
+                report_capability: None,
+                member: native.members[0].member.clone(), ingress_actor: native.grant_administrator.clone(),
+                logical_executor: native.members[0].logical_owner.clone(), represented_subject: None,
+                controller_parent: native.routes[0].controller_parent.clone().unwrap(),
+                operation_basis: WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![] },
+            },
+            proposal_ceiling: Ceiling { actions: Default::default(), services: Default::default(),
+                frontends: Default::default(), output_audiences: [id("person")].into() },
+            continuation, work_backend, references: None, limits: InstalledSetupLimits::default(),
+            work_step: WorkAdmissionStepOptions { worker: id("worker"), lease_ms: 100,
+                owner_timeout_ms: 25, settlement_budget_ms: 25 },
+        }, tools,
+    ).unwrap());
+    owner.bind_tool_driver().unwrap();
+    owner
+}
+
+// The positive acquisition fixture selects an independent controller-only
+// helper before constructing the installed source/policy owner.
+pub(crate) const HELPER: &str = "setup-helper";
+pub(crate) const PRIVATE_HELPER_PROFILE: &str = "setup-entry-private";
+pub(crate) async fn open_for_acquisition(
+    facts: &ControllerModelFacts, tool: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    private_helper_entry: bool,
+) -> Host {
+    open_selected_source(facts, true, false, true, false, Some(tool), true, None, false, false,
+        None, None, false, private_helper_entry).await
+}
+#[path = "controller_first_input_acquisition_fixture.rs"]
+mod approved_acquisition;
+pub(crate) use approved_acquisition::{bind_approved_acquisition, prepare_approved_acquisition};
+pub(crate) const REPORT_PROFILE: &str = "setup-report-only";
+pub(crate) async fn open_for_helper_report(
+    facts: &ControllerModelFacts,
+    acquisition: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    report: Arc<dyn meerkat_core::AgentToolDispatcher>,
+) -> Host {
+    open_selected_subject(facts, true, false, true, false, Some(acquisition), true, Some(report), false, false).await
+}
+
+/// Uses actual configured capability issuance before immutable host selection.
+pub(crate) async fn open_with_configured_setup(facts: &ControllerModelFacts) -> Host {
+    open_selected_subject(facts, true, false, true, false, None, false, None, true, false).await
+}
+
+pub(crate) async fn open_with_configured_setup_probe(facts: &ControllerModelFacts) -> Host {
+    open_selected_subject(facts, true, true, true, false, None, false, None, true, false).await
+}
+
+pub(crate) async fn open_with_configured_setup_source(
+    facts: &ControllerModelFacts, prepare_source: PrepareOriginalSource,
+) -> Host {
+    open_selected_subject_with_source(facts, true, false, true, false, None, false, None, true, false,
+        Some(prepare_source)).await
+}
+
+/// Separate report-parent mode. The existing direct-child report fixture is
+/// unchanged; this mode selects only the trusted producer's parent receipt.
+pub(crate) async fn open_for_configured_helper_report(
+    facts: &ControllerModelFacts,
+    acquisition: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    report: Arc<dyn meerkat_core::AgentToolDispatcher>,
+) -> Host {
+    open_selected_subject(facts, true, false, true, false, Some(acquisition), true, Some(report), true, true).await
+}

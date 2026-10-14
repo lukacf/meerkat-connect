@@ -1,0 +1,798 @@
+// These controls import the exact embedded JavaScript, without a generated build.
+// They prove presentation/transport behavior only, not cookies or native auth.
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import { JSDOM } from "jsdom";
+const assets = new URL("../../../crates/meerkat-connect/src/application_gateway/console_setup/assets/", import.meta.url);
+const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
+const projection = moduleUrl(await readFile(new URL("projection.js", assets), "utf8"));
+const view = moduleUrl((await readFile(new URL("view.js", assets), "utf8")).replace('"./projection.js"', JSON.stringify(projection)));
+const moduleSource = (await readFile(new URL("panel.js", assets), "utf8"))
+  .replace('"./projection.js"', JSON.stringify(projection)).replace('"./view.js"', JSON.stringify(view));
+const { mountSourceStatusPanel, mountAccountReview, readSourceStatus, mountSourceStatusPage, mountApplicationAccess } = await import(moduleUrl(moduleSource));
+function fixture(t) {
+  const dom = new JSDOM("<main></main>");
+  t.after(() => dom.window.close());
+  return dom.window.document.querySelector("main");
+}
+function snapshot(text = "Pending") {
+  return { scope: "viewer", revision: 0, observedAt: "this request", announcement: text,
+    tasks: [{ id: "source", title: "Task setup", application: "Fixture", requester: "You", reason: "Reviewed task",
+      phase: { text, tone: "attention" }, nextAction: "Your agent reports completion.", roles: [], userActions: [], controls: [] }],
+    connections: [], frontends: [], packages: [] };
+}
+function deferred() { let resolve; let reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
+function review(summary = "Connect the selected inbox") {
+  return { review_id: 4, can_start: false, prompt: { kind: "approval", approval_id: "actual-prompt", summary,
+    allowed_decisions: ["approve", "deny"], body: { phase: "installed_account_access",
+      account: { issuer: "https://provider.example", subject: "selected-account" }, software: { server_name: "mail" },
+      connector: { resource: "https://api.example", requested_scopes: ["mail.read"] },
+      application_selection: { agent: "selected-agent", expires_in_ms: 60000, operations: {
+        read_inbox: { required_scopes: ["mail.read"], destination_origin: "https://api.example" } } },
+      notice: "Readiness is checked separately." } } };
+}
+test("mounted Console task status does not claim omitted inventories are empty", async t => {
+  const container = fixture(t); const rendered = [];
+  let current = snapshot();
+  const selectedReview = review();
+  const panel = mountSourceStatusPanel(container,
+    async () => ({ projection: current, review: selectedReview }),
+    { clear() {}, update(value) { rendered.push(value); } });
+  t.after(() => panel.dispose());
+  for (const empty of [false, true]) {
+    current = snapshot(); if (empty) current.tasks = [];
+    await panel.refresh();
+    assert.deepEqual([...container.querySelectorAll(".toolkit-view h2")].map(heading => heading.textContent),
+      ["Task setup status", "Setup requests"]);
+    assert.doesNotMatch(container.textContent, /No service connections|No agent frontends|No packages/);
+    assert.match(container.textContent, empty ? /No setup requests/ : /Reviewed task/);
+    assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Refresh status"]);
+  }
+  assert.deepEqual(rendered, [selectedReview, selectedReview]);
+});
+
+test("same-tab refresh shares the entered read and never starts a competing page request", async t => {
+  const container = fixture(t); const held = deferred(); let calls = 0; const rendered = [];
+  const account = { clear() { rendered.length = 0; }, update(value) { rendered.push(value.review_id); } };
+  const panel = mountSourceStatusPanel(container, () => { calls++; return held.promise; }, account);
+  t.after(() => panel.dispose());
+  const first = panel.refresh(); const same = panel.refresh();
+  assert.equal(first, same); await Promise.resolve(); assert.equal(calls, 1);
+  held.resolve({ projection:snapshot("current"), review:{review_id:1} }); await first;
+  assert.deepEqual(rendered, [1]); assert.equal(calls, 1);
+});
+test("read failure and disposal clear the account and suppress held responses", async t => {
+  const container = fixture(t); const held = deferred(); const rendered = []; let mode = 0;
+  const account = { clear() { rendered.length = 0; }, update(value) { rendered.push(value.review_id); } };
+  const panel = mountSourceStatusPanel(container, () => mode === 0 ? Promise.resolve({ projection: snapshot(), review: { review_id: 1 } }) : mode === 1 ? Promise.reject(Error("refused")) : held.promise, account);
+  await panel.refresh(); assert.deepEqual(rendered, [1]); mode = 1; await panel.refresh(); assert.deepEqual(rendered, []);
+  mode = 2; const pending = panel.first(); await Promise.resolve(); panel.dispose(); held.resolve({ projection: snapshot(), review: { review_id: 3 } }); await pending;
+  assert.deepEqual(rendered, []); assert.equal(container.textContent, "");
+});
+test("the actual approval renderer uses supplied summary and exact fields without interpreting permissions", t => {
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = review();
+  selected.prompt.body.service_instruction = { proposed_fresh_instruction: "Read this reviewed inbox", live_attachment_effect: "Attach to the original session", configuration_persistence: "Not authorized by this review" };
+  selected.prompt.body.application_selection.expires_in_ms = null;
+  selected.prompt.body = { access_request: selected.prompt.body, purpose: "operations",
+    service_access: { permission: { lifetime: { scope: { kind: "task", task: "retained-task" }, expires_at_ms: 1800000000000 } } } };
+  account.update(selected);
+  assert.equal(container.querySelector("h2").textContent, "Connect the selected inbox");
+  assert.match(container.textContent, /https:\/\/provider.example/); assert.match(container.textContent, /selected-account/);
+  assert.match(container.textContent, /mail.read/); assert.match(container.textContent, /read_inbox/);
+  assert.match(container.textContent, /This task/); assert.match(container.textContent, /2027-01-15T08:00:00.000Z/);
+  assert.doesNotMatch(container.textContent, /Until revoked/);
+  assert.match(container.textContent, /Read this reviewed inbox/); assert.match(container.textContent, /Not authorized by this review/);
+  assert.equal(container.querySelector("details").open, false);
+  assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Approve", "Deny"]);
+  account.update(review("")); assert.match(container.textContent, /No additional description was supplied/);
+  assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Approve", "Deny"]);
+});
+test("explicit start forwards only the retained review id and waits for a fresh status read", async t => {
+  const container = fixture(t); const sent = deferred(); let calls = []; let refreshes = 0;
+  const account = mountAccountReview(container, async () => { refreshes++; }, (path, options) => { calls.push({ path, options }); return sent.promise; });
+  t.after(() => account.dispose()); account.update({ review_id: 8, can_start: true, prompt: null });
+  container.querySelector("button").click(); assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, "/host/toolkit/setup/start"); assert.equal(calls[0].options.credentials, "same-origin");
+  assert.equal(calls[0].options.redirect, "error"); assert.deepEqual(JSON.parse(calls[0].options.body), { review_id: 8 });
+  assert.equal(refreshes, 0); sent.resolve(new Response("{}", { status: 202 }));
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(refreshes, 1);
+});
+test("status transport is a finite GET and does not start account work", async () => {
+  const calls = []; const expected = { projection: snapshot(), review: review() };
+  const result = await readSourceStatus(async (path, options) => { calls.push({ path, options }); return new Response(JSON.stringify(expected), { headers: { "content-type": "application/json" } }); });
+  assert.deepEqual(result, expected); assert.equal(calls.length, 1); assert.equal(calls[0].path, "/host/toolkit/setup/data");
+  assert.equal(calls[0].options.method, "GET"); assert.equal(calls[0].options.body, undefined);
+});
+
+test("software approval displays the actual checked package and preserves native decisions", t => {
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose());
+  const selected = { review_id: 9, can_start: false, prompt: { kind: "approval", approval_id: "software-review",
+    summary: "Install the exact checked software configuration once", allowed_decisions: ["approve", "deny"],
+    body: { kind: "service_software_install", scope: "software_installation_only", check_tool: "setup_selected_check",
+      selection: { profile: "python", component: "mcp" }, owner_proposal: { profile: "python", component: "mcp",
+        package: { publisher: "Selected publisher", name: "Selected MCP", version: "1.0.0" },
+        destination: "/selected/install", mcp_name: "selected-service", entrypoint: { executable: "/selected/python" }, selection_sha256: "a".repeat(64) } } } };
+  account.update(selected);
+  for (const value of ["Software installation only", "Selected publisher", "Selected MCP", "1.0.0", "/selected/install", "selected-service"])
+    assert.match(container.textContent, new RegExp(value));
+  assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Approve & Install", "Deny"]);
+  selected.prompt.allowed_decisions = ["deny"]; account.update(selected);
+  assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Deny"]);
+});
+
+test("serialized refresh clears private DOM and restores only the fresh same-review presentation", async t => {
+  const container = fixture(t); const held = deferred();
+  const responses = [{projection:snapshot(),review:review()}, held.promise]; let reads = 0; let panel;
+  const account = mountAccountReview(container, () => panel.refresh());
+  panel = mountSourceStatusPanel(container, () => { reads++; return responses.shift(); }, account);
+  t.after(() => { panel.dispose(); account.dispose(); });
+  await panel.refresh(); container.querySelector("details").open = true; container.querySelector("summary").focus();
+  const first = panel.refresh(); const same = panel.refresh(); assert.equal(first, same);
+  assert.equal(container.querySelector(".toolkit-account-review").textContent, "");
+  assert.equal(container.querySelector("details"), null);
+  held.resolve({projection:snapshot("Current"),review:review()}); await first;
+  assert.equal(reads, 2); assert.equal(container.querySelector("details").open, true);
+  assert.equal(container.ownerDocument.activeElement, container.querySelector("summary"));
+  [...container.querySelectorAll(".toolkit-account-review button")].find(button => button.textContent === "Deny").focus();
+  responses.push({projection:snapshot(),review:review()}); await panel.refresh();
+  assert.equal(container.ownerDocument.activeElement.textContent, "Deny");
+});
+
+test("changed scope or exact review identity cannot inherit presentation hints", async t => {
+  for (const change of ["scope", "review", "approval"]) {
+    const container = fixture(t); const held = deferred(); let response = { projection: snapshot(), review: review() };
+    let panel;
+    const account = mountAccountReview(container, () => panel.refresh());
+    panel = mountSourceStatusPanel(container, () => response, account);
+    t.after(() => { panel.dispose(); account.dispose(); });
+    await panel.refresh(); container.querySelector("details").open = true; container.querySelector("summary").focus();
+    response = held.promise; const pending = panel.refresh();
+    const next = { projection: snapshot(), review: review() };
+    if (change === "scope") next.projection.scope = "another-viewer";
+    if (change === "review") next.review.review_id++;
+    if (change === "approval") next.review.prompt.approval_id = "another-exact-prompt";
+    held.resolve(next); await pending;
+    assert.equal(container.querySelector("details").open, false, change);
+    assert.notEqual(container.ownerDocument.activeElement, container.querySelector("summary"), change);
+  }
+});
+
+test("a denied read or absent review discards hints before the same review returns", async t => {
+  for (const failure of ["denied", "absent"]) {
+    const container = fixture(t); let mode = 0; let panel;
+    const account = mountAccountReview(container, () => panel.refresh());
+    panel = mountSourceStatusPanel(container, () => mode === 1
+      ? (failure === "denied" ? Promise.reject(Error("unauthorized")) : { projection: snapshot(), review: null })
+      : { projection: snapshot(), review: review() }, account);
+    t.after(() => { panel.dispose(); account.dispose(); });
+    await panel.refresh(); container.querySelector("details").open = true; container.querySelector("summary").focus();
+    mode = 1; await panel.refresh();
+    assert.equal(container.querySelector(".toolkit-account-review").textContent, "");
+    mode = 2; await panel.first();
+    assert.equal(container.querySelector("details").open, false, failure);
+    assert.notEqual(container.ownerDocument.activeElement, container.querySelector("summary"), failure);
+  }
+});
+
+test("refresh does not reclaim keyboard focus after the user moved it elsewhere", async t => {
+  const container = fixture(t); const held = deferred(); let response = { projection: snapshot(), review: review() };
+  let panel;
+  const account = mountAccountReview(container, () => panel.refresh());
+  panel = mountSourceStatusPanel(container, () => response, account);
+  t.after(() => { panel.dispose(); account.dispose(); });
+  const outside = container.ownerDocument.createElement("button"); outside.textContent = "Another control"; container.append(outside);
+  await panel.refresh(); container.querySelector("details").open = true; container.querySelector("summary").focus();
+  response = held.promise; const pending = panel.refresh();
+  outside.focus(); outside.blur();
+  assert.equal(container.ownerDocument.activeElement, container.ownerDocument.body);
+  held.resolve({ projection: snapshot(), review: review() }); await pending;
+  assert.equal(container.querySelector("details").open, true);
+  assert.notEqual(container.ownerDocument.activeElement, container.querySelector("summary"));
+});
+
+test("pending answer and start POSTs stay single-entry across fresh same-review reads", async t => {
+  for (const start of [false, true]) {
+    const container = fixture(t); const sent = deferred(); const confirmation = deferred(); const calls = [];
+    const selected = start ? { review_id: 8, can_start: true, prompt: null } : review();
+    let reads = 0; let panel;
+    const account = mountAccountReview(container, () => panel.refresh(), (path, options) => {
+      calls.push({ path, options }); return sent.promise;
+    });
+    panel = mountSourceStatusPanel(container, () => ++reads <= 2
+      ? { projection: snapshot(), review: selected } : confirmation.promise, account);
+    t.after(() => { panel.dispose(); account.dispose(); });
+    await panel.refresh();
+    const original = container.querySelector(".toolkit-account-review button"); original.click();
+    assert.equal(calls.length, 1); assert.equal(original.disabled, true);
+    await panel.refresh();
+    for (const button of container.querySelectorAll(".toolkit-account-review button")) {
+      assert.equal(button.disabled, true);
+      button.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
+    }
+    original.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
+    assert.equal(calls.length, 1, "neither a new render nor a detached old button resends");
+    assert.equal(calls[0].path, start ? "/host/toolkit/setup/start" : "/host/toolkit/setup/answer");
+    assert.deepEqual(JSON.parse(calls[0].options.body), start ? { review_id: 8 }
+      : { review_id: 4, approval_id: "actual-prompt", decision: "approve" });
+    sent.resolve(new Response("{}", { status: 202 }));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads, 3);
+    assert.equal(container.querySelector(".toolkit-account-review").textContent, "");
+    confirmation.resolve({ projection: snapshot(), review: selected });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(container.querySelector(".toolkit-account-review button").disabled, false);
+    original.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
+    assert.equal(calls.length, 1, "confirmation never sends an answer");
+  }
+});
+
+test("failed post-settlement refresh leaves no actions and disposal suppresses refresh", async t => {
+  for (const dispose of [false, true]) {
+    const container = fixture(t); const sent = deferred(); let reads = 0; let posts = 0; let panel;
+    const account = mountAccountReview(container, () => panel.refresh(), () => { posts++; return sent.promise; });
+    panel = mountSourceStatusPanel(container, () => ++reads === 1
+      ? { projection: snapshot(), review: review() } : Promise.reject(Error("unauthorized")), account);
+    t.after(() => { panel.dispose(); account.dispose(); });
+    await panel.refresh(); container.querySelector(".toolkit-account-review button").click();
+    if (dispose) { account.dispose(); panel.dispose(); }
+    sent.reject(Error("unconfirmed POST"));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(posts, 1); assert.equal(reads, dispose ? 1 : 2);
+    assert.equal(container.querySelector(".toolkit-account-review button"), null);
+    if (dispose) assert.equal(container.textContent, "");
+    else assert.match(container.textContent, /status is unavailable/);
+  }
+});
+
+function pageFixture(t) {
+  const container = fixture(t);
+  const window = container.ownerDocument.defaultView;
+  const timers = new Map(); let nextTimer = 0;
+  t.mock.method(window, "setTimeout", (callback, delay) => {
+    assert.equal(delay, 3000);
+    const id = ++nextTimer; timers.set(id, callback); return id;
+  });
+  t.mock.method(window, "clearTimeout", id => { timers.delete(id); });
+  const transition = type => {
+    const event = new window.Event(type);
+    Object.defineProperty(event, "persisted", { value: true });
+    window.dispatchEvent(event);
+  };
+  return { container, timers, transition };
+}
+
+test("browser history restoration fetches fresh setup and ignores an older pending read", async t => {
+  const { container, timers, transition } = pageFixture(t);
+  const initial = deferred(); const returning = deferred(); let reads = 0;
+  const page = mountSourceStatusPage(container, () => ++reads === 1 ? initial.promise : returning.promise);
+  t.after(() => page.dispose());
+  await Promise.resolve(); assert.equal(reads, 1);
+  transition("pagehide"); assert.equal(container.textContent, "");
+  transition("pageshow"); transition("pageshow"); await Promise.resolve(); assert.equal(reads, 2);
+  const fresh = { projection: snapshot("Returned task"), review: review("Current account review") };
+  fresh.projection.scope = "current-viewer";
+  returning.resolve(fresh); await new Promise(resolve => setImmediate(resolve));
+  assert.match(container.textContent, /Current account review/);
+  assert.equal(container.querySelectorAll(".toolkit-account-review").length, 1);
+  assert.equal(timers.size, 1);
+  initial.resolve({ projection: snapshot("Old task"), review: review("Old private account") });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.doesNotMatch(container.textContent, /Old task|Old private account/);
+  assert.equal(timers.size, 1, "the old read cannot create another polling loop");
+  const delayed = [...timers.values()][0];
+  transition("pagehide"); assert.equal(timers.size, 0); assert.equal(container.textContent, "");
+  await delayed(); assert.equal(reads, 2, "a queued old timer cannot read after pagehide");
+  page.dispose(); transition("pageshow"); assert.equal(reads, 2);
+});
+
+test("restoration never replays a pending approval or retains a prior viewer's account on denial", async t => {
+  const { container, timers, transition } = pageFixture(t);
+  const sent = deferred(); const returning = deferred(); let reads = 0; let posts = 0;
+  const page = mountSourceStatusPage(container, () => ++reads === 1
+    ? Promise.resolve({ projection: snapshot(), review: review("Prior private account") })
+    : returning.promise, () => { posts++; return sent.promise; });
+  t.after(() => page.dispose());
+  await new Promise(resolve => setImmediate(resolve));
+  container.querySelector(".toolkit-account-review button").click(); assert.equal(posts, 1);
+  transition("pagehide"); transition("pageshow");
+  assert.doesNotMatch(container.textContent, /Prior private account|selected-account/);
+  returning.reject(Error("current viewer denied")); await new Promise(resolve => setImmediate(resolve));
+  assert.match(container.textContent, /status is unavailable/);
+  assert.equal(container.querySelector(".toolkit-account-review button"), null);
+  sent.resolve(new Response("{}", { status: 202 })); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(posts, 1); assert.equal(reads, 2, "the old approval cannot refresh a retired page");
+  assert.equal(timers.size, 1);
+  page.dispose(); assert.equal(timers.size, 0); assert.equal(container.textContent, "");
+});
+
+test("successful history restoration keeps answer and start submissions single-entry until settlement", async t => {
+  for (const start of [false, true]) {
+    const { container, transition } = pageFixture(t);
+    const sent = deferred(); let reads = 0; let posts = 0;
+    const selected = start ? { review_id: 8, can_start: true, prompt: null } : review();
+    const page = mountSourceStatusPage(container, async () => {
+      reads++; return { projection: snapshot(), review: selected };
+    }, () => { posts++; return sent.promise; });
+    t.after(() => page.dispose());
+    await new Promise(resolve => setImmediate(resolve));
+    const original = container.querySelector(".toolkit-account-review button");
+    original.click(); assert.equal(posts, 1);
+    transition("pagehide"); transition("pageshow");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads, 2);
+    const restored = [...container.querySelectorAll(".toolkit-account-review button")];
+    assert.ok(restored.length > 0, "the same review was successfully restored");
+    for (const button of restored) {
+      assert.equal(button.disabled, true, start ? "start" : "answer");
+      button.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
+    }
+    original.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
+    assert.equal(posts, 1, "neither a restored nor detached button resends the pending POST");
+    sent.resolve(new Response("{}", { status: 202 }));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads, 2, "settlement cannot refresh the retired view");
+    assert.equal(posts, 1);
+    [...container.querySelectorAll("button")].find(button => button.textContent === "Refresh status").click();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads, 3);
+    for (const button of container.querySelectorAll(".toolkit-account-review button"))
+      assert.equal(button.disabled, false, "the next current read can present actions after settlement");
+    assert.equal(posts, 1, "settlement and refresh never replay the user's response");
+    page.dispose();
+  }
+});
+
+
+test("public service review shows task access and declaration provenance without an invented account", async t => {
+  for (const kind of ["package_published_metadata", "selected_manifest_declarations", "selected_software_declarations",
+    "remote_recipe_declarations", "unknown", null, undefined]) {
+    const container = fixture(t); const calls = [];
+    const account = mountAccountReview(container, async () => {}, async (path, options) => {
+      calls.push({ path, body: JSON.parse(options.body) }); return new Response("{}", { status: 202 });
+    });
+    t.after(() => account.dispose());
+    account.update({ review_id: 18, can_start: true, prompt: null });
+    assert.equal(container.querySelector("button").textContent, "Start service setup");
+    assert.doesNotMatch(container.textContent, /account setup/i);
+    const selected = { review_id: 18, can_start: false, prompt: {
+      kind: "approval", approval_id: "public-service-review", summary: "Review public service access for this task",
+      allowed_decisions: ["approve", "deny"], body: {
+        access_request: { phase: "installed_public_service_access", authentication: { kind: "none" },
+          software: { profile: "public-feed", server_name: "selected-public-service" }, operation_basis: { kind },
+          application_selection: { agent: "original-agent", expires_in_ms: null, operations: ["read_public_feed"] },
+          service_instruction: { proposed_fresh_instruction: "Read the selected feed", instruction_origin: "Approved new instruction",
+            live_attachment_effect: "Publish tools to the original task", configuration_persistence: "Not authorized by this review" } },
+        service_access: { permission: { lifetime: { scope: { kind: "task", task: "retained-task" }, expires_at_ms: 1800000000000 } } },
+      } } };
+    if (kind === "remote_recipe_declarations") {
+      const body = selected.prompt.body.access_request;
+      delete body.software;
+      body.remote_export = { export: {
+        declared_remote_service: { mcp_name: "selected-remote" },
+        mcp_configuration: { mcpServers: { "selected-remote": { type: "streamable-http", url: "https://public.example/mcp" } } }
+      } };
+    }
+    account.update(selected);
+    for (const text of [kind === "remote_recipe_declarations" ? "Researched service declaration: no sign-in required" : "No account or sign-in required", "original-agent", "read_public_feed", "This task",
+      "2027-01-15T08:00:00.000Z", "Publish tools to the original task", "Not authorized by this review"])
+      assert.ok(container.textContent.includes(text), text);
+    assert.ok(container.textContent.includes(kind === "remote_recipe_declarations" ? "Researched remote recipe declarations"
+      : ["selected_manifest_declarations", "selected_software_declarations"].includes(kind) ? "Selected package declarations"
+        : kind === "package_published_metadata" ? "Package publisher metadata" : "Operation provenance is unconfirmed"));
+    if (kind !== "package_published_metadata") assert.doesNotMatch(container.textContent, /Package publisher metadata/);
+    if (kind === "remote_recipe_declarations") {
+      assert.ok(container.textContent.includes("https://public.example/mcp"));
+      assert.ok(container.textContent.includes("selected-remote"));
+      assert.doesNotMatch(container.textContent, /Package publisher metadata|anonymous|verified account/i);
+    }
+    assert.doesNotMatch(container.textContent, /selected-account|https:\/\/provider.example|Until revoked|account setup/i);
+    assert.equal(container.querySelector("a"), null);
+    const buttons = [...container.querySelectorAll("button")];
+    assert.deepEqual(buttons.map(button => button.textContent), ["Approve", "Deny"]);
+    buttons[1].click(); await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls, [{ path: "/host/toolkit/setup/answer", body: {
+      review_id: 18, approval_id: "public-service-review", decision: "deny" } }]);
+  }
+});
+
+function applicationAccess(state = "grant_issued") {
+  return { scope: "application_issued_access", offer_id: 9, rows: [{ id: "a".repeat(64), service: "mail",
+    target: "selected-agent", selected_account: "selected-account", resource: "mail", operations: ["read"],
+    lifetime: { scope: { kind: "member", member: "selected-agent" }, expires_at_ms: null },
+    state, can_revoke: state === "grant_issued" }] };
+}
+function accessResponse(state) { return new Response(JSON.stringify({ scope: "application_issued_access", state }),
+  { headers: { "content-type": "application/json" } }); }
+
+test("application-issued access is distinct from account status and unknown grants cannot be revoked", t => {
+  const container = fixture(t); const panel = mountApplicationAccess(container, async () => {});
+  t.after(() => panel.dispose());
+  panel.update(undefined, "person");
+  assert.match(container.textContent, /has not enabled access management/);
+  for (const state of ["grant_issued", "grant_unavailable", "pending_reconciliation", "approval_denied"]) {
+    panel.update(applicationAccess(state), "person");
+    assert.match(container.textContent, /Selected account/);
+    assert.match(container.textContent, /Revocation does not stop work already running/);
+    assert.equal(container.querySelectorAll("button").length, state === "grant_issued" ? 1 : 0);
+    assert.doesNotMatch(container.textContent, /Account is connected|logged out|credentials removed|was revoked/);
+  }
+  panel.update({ scope: "application_issued_access", state: "unavailable" }, "person");
+  assert.match(container.textContent, /status is unavailable/);
+  assert.equal(container.querySelectorAll("button").length, 0);
+  for (const bad of [ { ...applicationAccess(), scope: "all_accounts" },
+    { ...applicationAccess(), rows: [{ ...applicationAccess().rows[0], state: "grant_unavailable", can_revoke: true }] },
+    { ...applicationAccess(), offer_id: 0 } ]) assert.throws(() => panel.update(bad, "person"));
+});
+
+test("access POST carries only the exact offer and row and refreshes from real native outcome", async t => {
+  const container = fixture(t); const calls = []; const finished = deferred(); let refreshes = 0;
+  let panel; panel = mountApplicationAccess(container, async () => {
+    ++refreshes; panel.update(applicationAccess("grant_unavailable"), "person"); finished.resolve();
+  }, async (url, options) => { calls.push([url, options]); return accessResponse("revoked"); });
+  t.after(() => panel.dispose()); panel.update(applicationAccess(), "person");
+  container.querySelector("button").click(); await finished.promise; await Promise.resolve();
+  assert.equal(calls.length, 1); assert.equal(refreshes, 1);
+  assert.equal(calls[0][0], "/host/toolkit/setup/access/revoke");
+  assert.equal(calls[0][1].credentials, "same-origin"); assert.equal(calls[0][1].redirect, "error");
+  assert.deepEqual(JSON.parse(calls[0][1].body), { offer_id: 9, row_id: "a".repeat(64) });
+  assert.match(container.textContent, /This access was revoked/);
+  assert.match(container.textContent, /Access is unavailable/);
+  assert.equal(container.querySelectorAll("button").length, 0);
+});
+
+test("not-current access response requires a fresh view and a new explicit decision", async t => {
+  const container = fixture(t); const calls = []; const finished = [deferred(), deferred()]; let refreshes = 0;
+  // These are synthetic response values for the UI contract, not a native
+  // policy-swap control. Every subsequent action must use the refreshed offer.
+  let panel; panel = mountApplicationAccess(container, async () => {
+    ++refreshes;
+    panel.update({ ...applicationAccess(refreshes === 1 ? "grant_issued" : "grant_unavailable"), offer_id: 9 + refreshes }, "person");
+    finished[refreshes - 1].resolve();
+  }, async (url, options) => { calls.push([url, options]); return accessResponse(calls.length === 1 ? "not_current" : "revoked"); });
+  t.after(() => panel.dispose()); panel.update(applicationAccess(), "person");
+  container.querySelector("button").click(); await finished[0].promise; await Promise.resolve();
+  assert.equal(calls.length, 1); assert.equal(refreshes, 1);
+  assert.match(container.textContent, /This access view is no longer current/);
+  assert.match(container.textContent, /This request revoked nothing/);
+  assert.match(container.textContent, /Review current status before a new decision/);
+  assert.doesNotMatch(container.textContent, /could not be confirmed|This access was revoked/);
+  const fresh = container.querySelector("button"); assert.equal(fresh.disabled, false);
+  assert.deepEqual(JSON.parse(calls[0][1].body), { offer_id: 9, row_id: "a".repeat(64) });
+  await Promise.resolve(); assert.equal(calls.length, 1);
+  fresh.click(); await finished[1].promise; await Promise.resolve();
+  assert.equal(calls.length, 2); assert.equal(refreshes, 2);
+  assert.deepEqual(JSON.parse(calls[1][1].body), { offer_id: 10, row_id: "a".repeat(64) });
+  assert.match(container.textContent, /This access was revoked/);
+  assert.equal(container.querySelectorAll("button").length, 0);
+});
+
+test("lost access reply and overlapping reads never automatically replay a revoke", async t => {
+  const container = fixture(t); const post = deferred(); const refreshed = deferred(); const sending = { sending: false };
+  let calls = 0; let panel;
+  panel = mountApplicationAccess(container, async () => { panel.update(applicationAccess("pending_reconciliation"), "person"); refreshed.resolve(); },
+    () => { ++calls; return post.promise; }, sending);
+  t.after(() => panel.dispose()); panel.update(applicationAccess(), "person");
+  container.querySelector("button").click();
+  panel.update(applicationAccess(), "person");
+  assert.equal(container.querySelector("button").disabled, true);
+  container.querySelector("button").click(); assert.equal(calls, 1);
+  post.reject(Error("lost reply")); await refreshed.promise; await Promise.resolve();
+  assert.equal(calls, 1); assert.equal(sending.sending, false);
+  assert.match(container.textContent, /could not be confirmed/);
+  assert.match(container.textContent, /issuance could not be confirmed/);
+  assert.equal(container.querySelectorAll("button").length, 0);
+});
+
+test("serial page replacement removes the prior access controls and keeps only fresh results", async t => {
+  const container = fixture(t); const held = deferred(); let reads = 0;
+  const access = mountApplicationAccess(container, async () => {});
+  const panel = mountSourceStatusPanel(container, () => ++reads === 1 ? held.promise : Promise.resolve({
+    projection:snapshot(),application_access:applicationAccess("grant_unavailable")}), undefined, access);
+  t.after(() => { panel.dispose(); access.dispose(); });
+  const first = panel.refresh(); assert.equal(panel.refresh(), first);
+  held.resolve({projection:snapshot(),application_access:applicationAccess()}); await first;
+  assert.equal(reads, 1); assert.equal(container.querySelectorAll(".toolkit-application-access button").length, 1);
+  const next = panel.refresh(); assert.equal(container.querySelectorAll(".toolkit-application-access button").length, 0);
+  await next; assert.equal(reads, 2); assert.match(container.textContent, /Access is unavailable/);
+  panel.dispose(); assert.doesNotMatch(container.textContent, /selected-account/);
+});
+
+test("access refresh preserves focus only for the same person's exact row and uses the new offer", async t => {
+  const container = fixture(t); const doc = container.ownerDocument; const posts = []; const post = deferred();
+  let mode = "same"; let offer = 9; let held;
+  const access = mountApplicationAccess(container, async () => {}, (url, options) => {
+    posts.push(JSON.parse(options.body)); return post.promise;
+  });
+  const panel = mountSourceStatusPanel(container, () => held ? held.promise : mode === "failed"
+    ? Promise.reject(Error("denied")) : Promise.resolve({ projection: { ...snapshot(), scope: mode === "person" ? "other" : "viewer" },
+      application_access: { ...applicationAccess(), offer_id: offer } }), undefined, access);
+  t.after(() => { panel.dispose(); access.dispose(); });
+  await panel.refresh();
+  const old = container.querySelector(".toolkit-application-access button"); old.focus();
+  offer = 10; held = deferred(); const read = panel.refresh();
+  assert.equal(container.querySelector(".toolkit-application-access button"), null);
+  old.dispatchEvent(new doc.defaultView.Event("click")); assert.equal(posts.length, 0);
+  held.resolve({ projection: snapshot(), application_access: { ...applicationAccess(), offer_id: offer } }); await read; held = undefined;
+  const current = container.querySelector(".toolkit-application-access button");
+  assert.notEqual(current, old); assert.equal(doc.activeElement, current);
+  current.click(); assert.deepEqual(posts, [{ offer_id: 10, row_id: "a".repeat(64) }]);
+  post.resolve(accessResponse("refused")); await new Promise(resolve => setImmediate(resolve));
+  for (const change of ["person", "failed"]) {
+    mode = "same"; await panel.first(); container.querySelector(".toolkit-application-access button").focus();
+    mode = change; await panel.refresh();
+    assert.equal(doc.activeElement, doc.body, change);
+    if (change === "failed") assert.equal(container.querySelector(".toolkit-application-access button"), null);
+  }
+  mode = "same"; await panel.first(); container.querySelector(".toolkit-application-access button").focus();
+  held = deferred(); const pending = panel.refresh();
+  const outside = doc.createElement("button"); outside.textContent = "Another enabled control"; container.append(outside);
+  outside.focus(); assert.equal(doc.activeElement, outside);
+  held.resolve({ projection: snapshot(), application_access: { ...applicationAccess(), offer_id: 11 } }); await pending;
+  assert.equal(doc.activeElement, outside, "a completed read must not steal focus after it moved");
+});
+
+
+test("mounted pages replace task and access rows and send only retained read positions", async t => {
+  const container = fixture(t); const calls = []; const posts = []; const held = deferred();
+  const empty = snapshot(); empty.tasks = [];
+  const replies = [
+    {projection:snapshot("First"),review:null,page:{page_id:41,first:true,has_next:true},application_access:applicationAccess()},
+    {projection:empty,review:null,page:{page_id:42,first:false,has_next:true},application_access:{...applicationAccess(),rows:[],offer_id:42}},
+    {projection:snapshot("Last"),review:null,page:{page_id:43,first:false,has_next:false},application_access:{...applicationAccess(),offer_id:43}},
+  ];
+  const fetcher = async (path, options) => {
+    calls.push({path,options}); return new Response(JSON.stringify(replies.shift()), {headers:{"content-type":"application/json"}});
+  };
+  const access = mountApplicationAccess(container, async () => {}, (path, options) => { posts.push({path,options}); return held.promise; });
+  const panel = mountSourceStatusPanel(container, selection => readSourceStatus(fetcher, selection), undefined, access);
+  t.after(() => { panel.dispose(); access.dispose(); });
+  await panel.refresh(); const old = container.querySelector(".toolkit-application-access button");
+  await panel.next(); old.dispatchEvent(new container.ownerDocument.defaultView.Event("click")); assert.equal(posts.length, 0);
+  assert.match(container.textContent, /No matching setup requests on this page/);
+  assert.match(container.textContent, /No matching application-issued access records on this page/);
+  assert.match(container.textContent, /More history remains to inspect/);
+  await panel.refresh(); assert.doesNotMatch(container.textContent, /No matching setup requests/);
+  assert.match(container.textContent, /End of the history observed in this read/);
+  assert.deepEqual(calls.map(({options}) => options.body && JSON.parse(options.body)),
+    [undefined,{page_id:41,direction:"next"},{page_id:42,direction:"refresh"}]);
+  assert.equal([...container.querySelectorAll("button")].find(b => b.textContent === "First page").disabled, false);
+  assert.equal([...container.querySelectorAll("button")].find(b => b.textContent === "Next page").disabled, true);
+  container.querySelector(".toolkit-application-access button").click();
+  assert.deepEqual(JSON.parse(posts[0].options.body), {offer_id:43,row_id:"a".repeat(64)});
+  held.resolve(accessResponse("refused")); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(posts.length, 1);
+  for (const call of calls.slice(1)) {
+    assert.equal(call.path, "/host/toolkit/setup/data"); assert.equal(call.options.method,"POST");
+    assert.equal(call.options.credentials,"same-origin"); assert.equal(call.options.headers["Content-Type"],"application/json");
+  }
+});
+
+test("same-login tabs pause scheduled polling after replacement while another login keeps its page", async t => {
+  // Explicit presentation-only server model; real login owner identity/CAS is
+  // exercised by console_lifetime.rs, not inferred from these string keys.
+  const current = new Map(); const calls = []; let nextId = 1;
+  const read = login => async selection => {
+    calls.push({login,selection});
+    if (selection && current.get(login) !== selection.page_id) throw Error("stale page");
+    const page_id = nextId++; current.set(login,page_id);
+    return {projection:snapshot(login),page:{page_id,first:!selection,has_next:true}};
+  };
+  const a = pageFixture(t), b = pageFixture(t), other = pageFixture(t);
+  const settled = () => new Promise(resolve => setImmediate(resolve));
+  const tick = async fixture => {
+    assert.equal(fixture.timers.size,1); const callback = [...fixture.timers.values()][0];
+    fixture.timers.clear(); await callback();
+  };
+  const taskView = fixture => fixture.container.querySelector(".toolkit-view:not(.toolkit-account-review):not(.toolkit-application-access)");
+  const first = mountSourceStatusPage(a.container,read("shared")); await settled();
+  const independent = mountSourceStatusPage(other.container,read("other")); await settled();
+  const second = mountSourceStatusPage(b.container,read("shared")); await settled();
+  t.after(() => { first.dispose(); second.dispose(); independent.dispose(); });
+  await tick(a); assert.equal(taskView(a),null);
+  assert.match(a.container.textContent,/another tab may have replaced this page/);
+  const paused = calls.length; await tick(a); await tick(a); assert.equal(calls.length,paused);
+  await tick(other); assert.notEqual(taskView(other),null);
+  [...a.container.querySelectorAll("button")].find(button => button.textContent === "First page").click();
+  await settled(); assert.equal(calls.at(-1).selection,undefined); assert.notEqual(taskView(a),null);
+  await tick(b); assert.equal(taskView(b),null);
+  const again = calls.length; await tick(b); assert.equal(calls.length,again);
+  await tick(other); assert.notEqual(taskView(other),null);
+});
+
+test("invalid page metadata clears the view and does not send a supplied raw cursor", async t => {
+  const container = fixture(t); const calls = [];
+  const panel = mountSourceStatusPanel(container, async () => ({projection:snapshot(),
+    page:{page_id:1,first:true,has_next:true,after:"raw-key"}})); t.after(() => panel.dispose());
+  await panel.refresh(); assert.equal(container.querySelector(".toolkit-view"),null);
+  await assert.rejects(readSourceStatus((...args) => { calls.push(args); },
+    {page_id:1,direction:"next",after:"raw-key"}),/Invalid page selection/);
+  assert.equal(calls.length,0);
+});
+
+function providerSignIn(reviewId = 31) {
+  return { review_id: reviewId, can_start: false, prompt: { kind: "provider_browser",
+    authorization_url: "https://provider.example/authorize?state=private-attempt" } };
+}
+test("provider sign-in cancellation requires an explicit click and forwards only the exact review", async t => {
+  const container = fixture(t); const sent = deferred(); const refreshed = deferred();
+  const calls = []; let refreshes = 0;
+  const account = mountAccountReview(container, () => { refreshes++; return refreshed.promise; },
+    (path, options) => { calls.push({ path, options }); return sent.promise; });
+  t.after(() => { refreshed.resolve(); account.dispose(); });
+  account.update(providerSignIn());
+  assert.equal(calls.length, 0);
+  const cancel = [...container.querySelectorAll("button")].find(button => button.textContent === "Cancel sign-in");
+  assert.ok(cancel, "the retained provider prompt needs an explicit stop control");
+  assert.equal(container.querySelector("a").rel, "noopener noreferrer");
+  cancel.click(); cancel.click();
+  assert.equal(calls.length, 1); assert.equal(cancel.disabled, true); assert.equal(refreshes, 0);
+  assert.equal(calls[0].path, "/host/toolkit/setup/cancel-sign-in");
+  assert.equal(calls[0].options.method, "POST"); assert.equal(calls[0].options.credentials, "same-origin");
+  assert.equal(calls[0].options.redirect, "error");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { review_id: 31 });
+  assert.doesNotMatch(calls[0].options.body, /private-attempt|authorization_url|approval_id|decision|account/);
+  sent.resolve(new Response('{"state":"forwarded"}', { status: 202 }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(refreshes, 1);
+  assert.match(container.querySelector('[role="status"]').textContent, /Response forwarded/);
+  assert.doesNotMatch(container.querySelector('[role="status"]').textContent, /cancelled|completed|connected/i);
+  refreshed.resolve();
+});
+test("provider sign-in cancellation rejects detached prompts and view closure causes no request", async t => {
+  const container = fixture(t); const calls = [];
+  const account = mountAccountReview(container, async () => {}, async (path, options) => {
+    calls.push({ path, options }); return new Response("{}", { status: 202 });
+  });
+  account.update(providerSignIn(31));
+  const stale = container.querySelector("button"); assert.ok(stale);
+  account.clear(); stale.click(); assert.equal(calls.length, 0);
+  account.update(providerSignIn(32)); stale.click(); assert.equal(calls.length, 0);
+  const current = container.querySelector("button"); assert.ok(current);
+  current.click(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls.map(call => JSON.parse(call.options.body)), [{ review_id: 32 }]);
+  account.update(providerSignIn(33)); const closed = container.querySelector("button");
+  account.dispose(); closed.click(); assert.equal(calls.length, 1); assert.equal(container.textContent, "");
+});
+test("provider sign-in cancellation preserves a replacement projection and never claims completion on POST settlement", async t => {
+  for (const status of [202, 409]) {
+    const container = fixture(t); const sent = deferred(); const calls = []; let refreshes = 0;
+    const account = mountAccountReview(container, async () => { refreshes++; },
+      (path, options) => { calls.push({ path, options }); return sent.promise; });
+    t.after(() => account.dispose()); account.update(providerSignIn());
+    const cancel = container.querySelector("button"); assert.ok(cancel); cancel.click();
+    account.update(review("Current native access review"));
+    assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Approve", "Deny"]);
+    for (const button of container.querySelectorAll("button")) { assert.equal(button.disabled, true); button.click(); }
+    sent.resolve(new Response("{}", { status })); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.length, 1); assert.equal(refreshes, 1);
+    assert.match(container.textContent, /Current native access review/);
+    assert.doesNotMatch(container.querySelector('[role="status"]').textContent, /forwarded|cancelled|completed|connected/i);
+    account.update(review("Current native access review"));
+    const deny = [...container.querySelectorAll("button")].find(button => button.textContent === "Deny");
+    deny.click(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls[1].path, "/host/toolkit/setup/answer");
+    assert.deepEqual(JSON.parse(calls[1].options.body), { review_id: 4, approval_id: "actual-prompt", decision: "deny" });
+  }
+});
+
+function credentialReview() {
+  const selected = review("Save this service and enable the reviewed task");
+  selected.prompt.expires_at = new Date(Date.now() + 60000).toISOString();
+  selected.prompt.body = {
+    phase: "installed_credential_service_access", software: { server_name: "fixture-service", profile: "fixture" },
+    application_selection: { agent: "selected-agent", expires_in_ms: 60000, operations: ["read_fixture"] },
+    service_instruction: { proposed_fresh_instruction: "Enable this service for the task", configuration_persistence: {
+      kind: "requested_defining_realm_persistence", defining_realm: "fixture-owning-realm", expected_configuration_generation: 4 } },
+    notice: "Configuration or credentials can remain after a later failure. Provider authentication is not established."
+  };
+  selected.credential_input = { kind: "declared_secret_slots", slots: [
+    { slot: "FIXTURE_API_KEY", label: "api_key" }, { slot: "FIXTURE_TOKEN", label: "token" }
+  ] };
+  return selected;
+}
+
+test("credential form sends one protected response and never projects entered values", async t => {
+  const container = fixture(t); const entered = deferred(); const calls = []; let refreshes = 0;
+  const account = mountAccountReview(container, async () => { refreshes++; }, (path, options) => {
+    calls.push({ path, options }); return entered.promise;
+  });
+  t.after(() => account.dispose());
+  const selected = credentialReview(); account.update(selected, "actual-viewer");
+  const fields = [...container.querySelectorAll('input[type="password"]')];
+  assert.equal(fields.length, 2);
+  assert.match(container.textContent, /fixture-owning-realm/);
+  assert.match(container.textContent, /later step fails or setup is cancelled/);
+  const approve = [...container.querySelectorAll("button")].find(button => button.textContent === "Approve & Save");
+  approve.click(); assert.equal(calls.length, 0, "missing values must not send approval");
+  fields[0].value = "private-test-key"; fields[1].value = "private-test-token";
+  assert.doesNotMatch(container.textContent, /private-test-key|private-test-token/);
+  assert.doesNotMatch(JSON.stringify(selected), /private-test-key|private-test-token/);
+  approve.click(); approve.click();
+  assert.equal(calls.length, 1); assert.equal(refreshes, 0);
+  assert.deepEqual(fields.map(field => field.value), ["", ""], "blank the actual fields before awaiting the POST");
+  assert.equal(calls[0].path, "/host/toolkit/setup/credentials");
+  assert.equal(calls[0].options.credentials, "same-origin");
+  assert.equal(calls[0].options.redirect, "error");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { review_id: 4, approval_id: "actual-prompt", decision: "approve",
+    credentials: [{ slot: "FIXTURE_API_KEY", value: "private-test-key" }, { slot: "FIXTURE_TOKEN", value: "private-test-token" }] });
+  entered.resolve(new Response("{}", { status: 202 }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(refreshes, 1); assert.equal(calls.length, 1);
+  assert.doesNotMatch(container.textContent, /private-test-key|private-test-token|saved successfully/);
+});
+
+test("refresh replacement and retirement blank even retained old password nodes", t => {
+  for (const action of ["suspend", "clear", "update", "dispose"]) {
+    const container = fixture(t); let calls = 0;
+    const account = mountAccountReview(container, async () => {}, async () => { calls++; return new Response(); });
+    t.after(() => account.dispose()); account.update(credentialReview(), "actual-viewer");
+    const field = container.querySelector('input[type="password"]'); field.value = "private-old-node-value";
+    const oldApprove = [...container.querySelectorAll("button")].find(button => button.textContent === "Approve & Save");
+    if (action === "update") account.update(credentialReview(), "replacement-viewer"); else account[action]();
+    assert.equal(field.value, "", action); assert.equal(field.isConnected, false, action);
+    oldApprove.click(); assert.equal(calls, 0, "retired event references cannot submit a replacement review");
+    assert.doesNotMatch(container.textContent, /private-old-node-value/);
+  }
+});
+
+test("automatic polling preserves focused credential input while explicit refresh and pagehide clear it", async t => {
+  const { container, timers, transition } = pageFixture(t); let reads = 0;
+  const page = mountSourceStatusPage(container, async () => { reads++; return { projection: snapshot(), review: credentialReview() }; });
+  t.after(() => page.dispose());
+  const settled = () => new Promise(resolve => setImmediate(resolve));
+  const tick = async () => { assert.equal(timers.size, 1); const callback = [...timers.values()][0]; timers.clear(); await callback(); };
+  await settled(); assert.equal(reads, 1);
+  const field = container.querySelector('input[type="password"]'); field.focus();
+  await tick(); assert.equal(reads, 1, "an empty focused field must not disappear before typing");
+  field.value = "private-poll-value"; field.blur();
+  await tick(); assert.equal(reads, 1); assert.equal(field.value, "private-poll-value");
+  [...container.querySelectorAll("button")].find(button => button.textContent === "Refresh status").click();
+  assert.equal(field.value, "", "the detached old field is blanked synchronously");
+  await settled(); assert.equal(reads, 2);
+  const replacement = container.querySelector('input[type="password"]'); replacement.value = "private-navigation-value";
+  transition("pagehide"); assert.equal(replacement.value, ""); assert.equal(replacement.isConnected, false);
+  assert.equal(container.textContent, ""); assert.equal(timers.size, 0);
+});
+
+
+test("native review expiry resumes the existing poll and clears a focused credential form", async t => {
+  let now = Date.now(); t.mock.method(Date, "now", () => now);
+  const selected = credentialReview();
+  const { container, timers } = pageFixture(t); let reads = 0;
+  const page = mountSourceStatusPage(container, async () => { reads++; return { projection: snapshot(), review: selected }; });
+  t.after(() => page.dispose()); await new Promise(resolve => setImmediate(resolve));
+  const field = container.querySelector('input[type="password"]'); field.value = "private-expired-value"; field.focus();
+  now += 60001;
+  assert.equal(timers.size, 1); const tick = [...timers.values()][0]; timers.clear(); await tick();
+  assert.equal(reads, 2); assert.equal(field.value, ""); assert.equal(field.isConnected, false);
+  assert.equal(container.querySelector('input[type="password"]'), null);
+  assert.match(container.textContent, /review has expired/);
+  assert.equal(container.querySelector(".toolkit-account-review button"), null);
+  // The retained native expiry controls only stale-form presentation here.
+  // Actual HTTP/native refusal and fresh review ownership remain separate.
+});
+
+test("malformed or foreign credential projections clear actions without sending input", async t => {
+  for (const mutate of [
+    selected => { selected.credential_input.slots[1].slot = "FIXTURE_API_KEY"; },
+    selected => { selected.credential_input.slots[0].slot = "foreign.value"; },
+    selected => { selected.credential_input.slots[0].value = "forbidden-projection-value"; },
+    selected => { selected.credential_input.kind = "untrusted_form"; },
+    selected => { selected.prompt.body.phase = "installed_public_service_access"; },
+  ]) {
+    const container = fixture(t); let calls = 0; let panel;
+    const selected = credentialReview(); mutate(selected);
+    const account = mountAccountReview(container, () => panel.refresh(), async () => { calls++; return new Response(); });
+    panel = mountSourceStatusPanel(container, async () => ({ projection: snapshot(), review: selected }), account);
+    t.after(() => { panel.dispose(); account.dispose(); });
+    await panel.refresh();
+    assert.equal(container.querySelector('input[type="password"]'), null);
+    assert.equal(container.querySelector(".toolkit-account-review button"), null);
+    assert.doesNotMatch(container.textContent, /forbidden-projection-value/);
+    assert.match(container.textContent, /status is unavailable/);
+    assert.equal(calls, 0);
+  }
+});
