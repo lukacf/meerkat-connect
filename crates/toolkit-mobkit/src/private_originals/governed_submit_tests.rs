@@ -358,7 +358,24 @@ impl LlmClient for ScriptedProvider {
 
     fn stream_prepared<'a>(&'a self, request: &'a PreparedLlmRequest) -> LlmStream<'a> {
         let authorization = request.authorization().unwrap();
-        let prepared = authorization.prepare(model_facts()).unwrap();
+        let prepared = authorization.prepare(model_facts()).unwrap_or_else(|error| {
+            // Preparation can refuse before a prepared handle exists. Keep
+            // this exact native gate and distinguish it from currentness.
+            let refusal = match error {
+                meerkat_core::OperationAuthorizationError::Refused(refusal) => Some(refusal.kind()),
+                _ => None,
+            };
+            let usage = match authorization.usage() {
+                ModelAuthorizationUse::Inference => "inference",
+                ModelAuthorizationUse::ControllerInference => "controller_inference",
+                ModelAuthorizationUse::Compaction => "compaction",
+                ModelAuthorizationUse::Live => "live",
+            };
+            panic!(
+                "fixture model prepare check failed: refusal={refusal:?}, usage={usage}, entered_requests={}",
+                self.0.load(Ordering::SeqCst),
+            );
+        });
         let current = prepared.current().unwrap_or_else(|error| {
             // Preserve the strict native check. Retain only safe failure
             // scalars so a redacted refusal cannot hide this fixture's cause.
