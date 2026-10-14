@@ -186,7 +186,7 @@ def prepare(root, destination, stopped, *, realm_state_root=None, realm=None):
     args = SimpleNamespace(archive_dir=str((root / manifest["archive"]).parent),
         destination=str(destination), node=str(root / manifest["node"]),
         npm_cli=str(root / manifest["npm_cli"]), allow_public_pypi=True,
-        pip_zipapp=str(pip), timeout_seconds=300)
+        pip_zipapp=str(pip), timeout_seconds=300, enable_public_github_research=True)
     if npm is not None:
         args.allow_public_npm = args.enable_node_search = True
         args.selected_node = str(npm["node"])

@@ -154,7 +154,7 @@ impl GatewayHostComposition for Driver {
                 != Some(&expected.layout.state_root().to_path_buf())
         { return Err(GatewayHostError::Denied); }
         let helper = self.compilation.helper_projection().map_err(|_| GatewayHostError::Denied)?
-            .with_public_web_search_from_policy(self.compilation.prepared_tool_policy().compiled());
+            .with_public_research_from_policy(self.compilation.prepared_tool_policy().compiled());
         let spec = helper.compose(spec).map_err(|_| GatewayHostError::Denied)?;
         self.runtime.prepare_bootstrap(spec)
     }

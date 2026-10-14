@@ -899,6 +899,7 @@ PYTHON_KITS["linux-x86_64"]["sources"].update({
 })
 
 PYTHON_SOURCES = {
+    "setup/public_github.py": ("sdk/consumer-setup/public_github.py", "e8aa82576a33e0083f31b60c17d383aa3e6bde7d4e9f1f517c301a543cf72b54"),
     'setup/compose_runtime.py': ('sdk/python/src/meerkat_toolkit/compose.py', '6bd686d0d2690cb6f6b1c473b99c600fd49ec95cff89f647ae499fc2ba5d6821'),
     'setup/compose_acquisition.py': ('sdk/consumer-setup/compose_acquisition.py', '9441fdc96dbfd8eb480d6d3c5277fdaf66ad359dd2b711d3cd3b819917c2349e'),
     'setup/compose_bridge.py': ('sdk/consumer-setup/compose_bridge.py', '48bfb800c21f322ee29c50e697a07d981856365f908ecb7b52e58ec028aa1257'),

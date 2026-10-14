@@ -489,6 +489,7 @@ def controller_factory(backend, root, record, reopened):
             kwargs.update(_retained_selections=selections, _local_read_only=not live)
             if not live:
                 kwargs["allow_node_search"] = False
+                kwargs["allow_public_github_research"] = False
         if not reopened or live:
             kwargs["recovery_selection_writer"] = checkpoint
         owner = None

@@ -121,6 +121,8 @@ def start(args, *, stopped=None):
     python = runtime_pin(sys.executable, destination)
     pins = {"python": python}
     extra = []
+    if getattr(args, "enable_public_github_research", False):
+        extra += ["--enable-public-github-research"]
     families = "agno,services"
     if bool(args.node) != bool(args.npm_cli):
         raise host.PreparationError("node_and_npm_cli_required_together")
@@ -250,6 +252,8 @@ def main(argv=None):
     parser.add_argument("--pip-zipapp", help="trusted pip zipapp; required with --allow-public-pypi")
     parser.add_argument("--allow-public-npm", action="store_true", help="allow exact agent-selected npm acquisition")
     parser.add_argument("--enable-node-search", action="store_true", help="allow literal public npm research")
+    parser.add_argument("--enable-public-github-research", action="store_true",
+                        help="allow anonymous public GitHub repository research")
     parser.add_argument("--selected-node", help="trusted acquisition Node, separate from the library runtime")
     parser.add_argument("--selected-npm-cli", help="trusted npm CLI paired with the acquisition Node")
     parser.add_argument("--npm-archive", help="trusted npm distribution required by the acquisition owner")

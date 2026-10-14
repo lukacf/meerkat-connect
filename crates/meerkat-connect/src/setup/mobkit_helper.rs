@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use meerkat_core::{
     CompiledApplicationToolPolicy, CompiledMemberToolAction, McpServerConfig, MobMemberBinding,
-    ToolCategoryOverride, mcp_config::McpServerAccess,
+    mcp_config::McpServerAccess,
 };
 use meerkat_mob::{
     MobDefinition, MobError, MobId, Profile, ProfileBinding, ProfileName,
@@ -66,7 +66,7 @@ pub struct PreparedSetupHelper {
     profile_name: ProfileName,
     server: McpServerConfig,
     in_place: bool,
-    public_web_search: bool,
+    public_research_ceiling: bool,
 }
 
 impl PreparedSetupConnection {
@@ -147,28 +147,34 @@ impl PreparedSetupConnection {
             profile_name: ProfileName::from(role),
             server,
             in_place,
-            public_web_search: false,
+            public_research_ceiling: tools != SetupHelperTools::Preparation,
         })
     }
 }
 
 impl PreparedSetupHelper {
-    /// Select native public web-search construction from the host's exact
-    /// source policy. The caller must supply its validated, selected policy.
-    /// This preserves all existing tool restrictions and grants no execution:
-    /// native current authority still admits each call. Other members' grants
-    /// and similarly named tools do not opt this helper in.
-    pub fn with_public_web_search_from_policy(
+    /// Select only explicitly declared anonymous research operations on the
+    /// existing setup MCP server. No stock builtin or nested model is enabled.
+    /// This finite ceiling is not authority: native target lineage and the
+    /// compiled application policy still admit each call independently.
+    pub fn with_public_research_from_policy(
         mut self,
         policy: &CompiledApplicationToolPolicy,
     ) -> Self {
-        self.public_web_search = policy.members.iter().any(|member| {
-            member.member_identity == self.member.member
-                && member.grants.iter().any(|grant| {
-                    grant.tool_name == "web_search"
-                        && grant.action == CompiledMemberToolAction::Invoke
-                })
-        });
+        if self.public_research_ceiling {
+            let access = self.server.access.as_mut().expect("prepared helper MCP ceiling");
+            for name in ["setup_search_github", "setup_read_github"] {
+                access.allowed_operations.remove(name);
+                if policy.members.iter().any(|member| {
+                    member.member_identity == self.member.member
+                        && member.grants.iter().any(|grant| {
+                            grant.tool_name == name && grant.action == CompiledMemberToolAction::Invoke
+                        })
+                }) {
+                    access.allowed_operations.insert(name.into());
+                }
+            }
+        }
         self
     }
 
@@ -287,23 +293,11 @@ impl SelectedHelperCustomizer {
                 "reserved setup profile does not match the selected native member".into(),
             ));
         }
-        if selected.public_web_search
-            && spec.tool_category_overrides.web_search == ToolCategoryOverride::Disable
-        {
-            return Err(MobError::WiringError(
-                "selected public web search conflicts with the host's explicit disable".into(),
-            ));
-        }
         // An earlier host customizer may have resolved a per-member profile.
         // Preserve that profile and its research tools, adding only our exact
         // server. Never overwrite the spawn's global tool access policy.
         if let Some(profile) = &mut spec.override_profile {
             retain_selected_server(profile, &selected.server)?;
-        }
-        if selected.public_web_search {
-            // Core retains this category in its sealed member material. Its
-            // governed fallback needs neither general builtins nor shell.
-            spec.tool_category_overrides.web_search = ToolCategoryOverride::Enable;
         }
         Ok(())
     }

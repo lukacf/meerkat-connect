@@ -320,7 +320,7 @@ def main(argv=None):
     parser.add_argument("--target", choices=host.TARGETS, required=True)
     parser.add_argument("--timeout-seconds", type=int, default=300)
     parser.add_argument("--families", default="agno,services,activepieces")
-    for name in ("allow-public-pypi", "allow-public-npm", "enable-node-search", "allow-mcpb", "enable-package-inspection",
+    for name in ("allow-public-pypi", "allow-public-npm", "enable-node-search", "enable-public-github-research", "allow-mcpb", "enable-package-inspection",
                  "enable-plugin-inspection", "enable-acquired-inspection", "enable-mcpb-inspection",
                  "allow-remote-recipes"):
         parser.add_argument("--" + name, action="store_true")

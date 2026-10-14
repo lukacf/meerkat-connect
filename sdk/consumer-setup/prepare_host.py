@@ -36,7 +36,7 @@ COMPOSE_RUNTIME = "setup/compose_runtime.py"
 COMPOSE_PLANNER = "selected/bin/toolkit-compose-plan"
 COMPOSE_ACQUISITION = "setup/compose_acquisition.py"
 COMPOSE_BRIDGE = "setup/compose_bridge.py"
-OPTIONAL = (*NODE_FILES, *OFFICIAL_FILES, RECIPES_TOOL, MCPB_TOOL, "setup/local_session.py",
+OPTIONAL = ("setup/public_github.py", *NODE_FILES, *OFFICIAL_FILES, RECIPES_TOOL, MCPB_TOOL, "setup/local_session.py",
             "selected/bin/toolkit-package-inspect", "setup/acquired_inspection.py", MCPB_ACQUISITION,
             COMPOSE_RUNTIME, COMPOSE_PLANNER, COMPOSE_ACQUISITION, COMPOSE_BRIDGE)
 
@@ -354,7 +354,7 @@ def recovery_options(args):
     checked_hash(expected)
     if not Path(path).is_absolute():
         raise PreparationError("invalid_recovery_manifest")
-    forbidden = ("allow_public_pypi", "allow_public_npm", "enable_node_search", "allow_remote_recipes",
+    forbidden = ("allow_public_pypi", "allow_public_npm", "enable_node_search", "enable_public_github_research", "allow_remote_recipes",
                  "pip_zipapp", "pip_sha256", "npm_archive", "npm_archive_sha256",
                  "mcpb_acquisition_profile", "mcpb_acquisition_profile_sha256",
                  "prior_request", "prior_request_sha256",
@@ -482,6 +482,9 @@ def prepare(args):
     if acquire_mcpb and not inspect_mcpb:
         raise PreparationError("mcpb_acquisition_requires_inspection")
     selected_node_inputs = (args.selected_node, args.selected_node_sha256)
+    github_research = getattr(args, "enable_public_github_research", False)
+    if type(github_research) is not bool:
+        raise PreparationError("invalid_github_research_choice")
     search_node = getattr(args, "enable_node_search", False)
     if type(search_node) is not bool:
         raise PreparationError("invalid_node_search_choice")
@@ -601,6 +604,8 @@ def prepare(args):
                 or snapshot["files"][COMPOSE_PLANNER] & 0o111 == 0):
             raise PreparationError("compose_not_in_release")
     recovered_node_inspection = acquisition_only and inspect_acquired and "node" in recovery_acquisitions
+    if github_research and "setup/public_github.py" not in retained:
+        raise PreparationError("github_research_not_in_release")
     if search_node and "setup/node_acquisition.py" not in retained:
         raise PreparationError("node_search_not_in_release")
     if (all(selected_inputs) or recovered_node_inspection) and (selection.get("scope") != "retained_selected_tools"
@@ -838,6 +843,8 @@ def prepare(args):
                  "--node-acquisition-profile-sha256", digest(files["node-acquisition.json"])]
     if search_node:
         argv += ["--allow-node-search"]
+    if github_research:
+        argv += ["--allow-public-github-research"]
     if acquire_mcpb:
         files["mcpb-acquisition.json"] = mcpb_raw
         argv += ["--mcpb-acquisition-profile", str(output / "mcpb-acquisition.json"),
@@ -978,6 +985,7 @@ def prepare(args):
                    "target": args.target, "workspace": str(workspace), "runtimes": pins,
                    "public_pypi_enabled": args.allow_public_pypi,
                    "public_npm_enabled": args.allow_public_npm,
+                   "public_github_research_enabled": github_research,
                    "node_search_enabled": search_node,
                    "files": {name: digest(raw) for name, raw in files.items()}}
         if recovery:
@@ -1003,6 +1011,7 @@ def main(argv=None):
                         help="comma-separated agno, services, activepieces, official-github, official-playwright; official families require shipped target support")
     parser.add_argument("--allow-public-pypi", action="store_true")
     parser.add_argument("--allow-public-npm", action="store_true")
+    parser.add_argument("--enable-public-github-research", action="store_true")
     parser.add_argument("--enable-node-search", action="store_true",
                         help="enable bounded public npm search with pinned selected Node and npm archive; acquisition remains a separate opt-in")
     parser.add_argument("--allow-mcpb", action="store_true",

@@ -2164,6 +2164,7 @@ class Controller:
                  recover_manifest: Path | None = None, recover_manifest_sha256: str | None = None,
                  selected_node: str | None = None, selected_npm_cli: str | None = None,
                  allow_acquired_inspection: bool = False, allow_node_search: bool = False,
+                 allow_public_github_research: bool = False,
                  recovery_selection_writer=None, *, _retained_selections=(), _local_read_only=False):
         if recovery_selection_writer is not None and not callable(recovery_selection_writer):
             raise SetupError("invalid_recovery_selection_writer")
@@ -2197,6 +2198,9 @@ class Controller:
             recovery_manifest_raw, recover_workspace, recovery_entries = load_recovery_selection(
                 recover_manifest, recover_manifest_sha256)
         recovering = recover_workspace is not None or recover_request is not None or recover_request_sha256 is not None
+        if (type(allow_public_github_research) is not bool
+                or allow_public_github_research and (recovering or _local_read_only)):
+            raise SetupError("invalid_github_research_scope")
         if type(allow_node_search) is not bool or allow_node_search and (recovering or node_acquisition_profile is None):
             raise SetupError("invalid_node_search_scope")
         if type(allow_acquired_inspection) is not bool:
@@ -2629,6 +2633,15 @@ class Controller:
         self.python_acquisition = acquisition
         self.node_acquisition = node_acquisition
         self.node_search = node_search
+        self.public_github = None
+        if allow_public_github_research:
+            spec = importlib.util.spec_from_file_location("consumer_setup_public_github",
+                Path(__file__).with_name("public_github.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            io = SimpleNamespace(Error=SetupError, read_file=read_file, write_new=write_new)
+            self.public_github = module.PublicGitHub(io, self.python)
+            self.public_github.bind(workspace)
         self.compose_acquisition = compose_acquisition
         self.mcpb_acquisition = mcpb_acquisition
         self.acquisition_requests = {}
@@ -2875,6 +2888,24 @@ class Controller:
     def acquire_node(self, request):
         """Stage an explicitly chosen package using the host's trusted npm."""
         return self._acquire("node", self.node_acquisition, request)
+
+    def github_research(self, operation, request):
+        with self.lock:
+            self.admit_setup()
+            if self.public_github is None:
+                raise SetupError("github_research_unavailable", 409)
+            if not self.operation_lock.acquire(blocking=False):
+                raise SetupError("operation_in_progress", 409)
+        try:
+            return self.public_github.run(operation, request, self.runner)
+        finally:
+            self.operation_lock.release()
+
+    def search_github(self, request):
+        return self.github_research("search", request)
+
+    def read_github(self, request):
+        return self.github_research("read", request)
 
     def search_node(self, request):
         with self.lock:
@@ -5227,6 +5258,7 @@ class Controller:
                   "/api/selected_retry": self.selected_retry,
                   "/api/acquire_python": self.acquire_python, "/api/acquire_node": self.acquire_node,
                   "/api/search_node": self.search_node,
+                  "/api/search_github": self.search_github, "/api/read_github": self.read_github,
                   "/api/acquire_compose": self.acquire_compose, "/api/acquire_mcpb": self.acquire_mcpb}
         if path not in routes:
             raise SetupError("not_found", 404)
@@ -5452,6 +5484,8 @@ def main(argv=None):
     parser.add_argument("--allow-remote-recipes", action="store_true", help="explicitly allow remote recipe retention and local MCP configuration export with a retention profile")
     parser.add_argument("--allow-acquired-inspection", action="store_true", help="allow bounded inert primary archive research for completed live Python/Node acquisitions")
     parser.add_argument("--allow-node-search", action="store_true", help="explicit bounded public npm search using the pinned Node/npm profile")
+    parser.add_argument("--allow-public-github-research", action="store_true",
+                        help="explicit anonymous public GitHub repository search and bounded text reads")
     parser.add_argument("--prior-request", type=Path, help="host-designated nonsecret v1 historical configured request; never executed or treated as installation proof")
     parser.add_argument("--prior-request-sha256", help="exact digest of the host-selected historical input")
     parser.add_argument("--recover-workspace", type=Path, help="canonical prior workspace under exclusive quiescent host custody")
@@ -5496,7 +5530,8 @@ def main(argv=None):
                                 local_recipes_profile=args.local_recipes_profile,
                                 local_recipes_profile_sha256=args.local_recipes_profile_sha256,
                                 allow_remote_recipes=args.allow_remote_recipes,
-                                allow_acquired_inspection=args.allow_acquired_inspection, allow_node_search=args.allow_node_search)
+                                allow_acquired_inspection=args.allow_acquired_inspection, allow_node_search=args.allow_node_search,
+            allow_public_github_research=args.allow_public_github_research)
         server = Server(controller, args.port)
         launcher = write_launcher(server)
         print(json.dumps({"origin": server.origin, "launcher": str(launcher), "scope": controller.scope()}), flush=True)

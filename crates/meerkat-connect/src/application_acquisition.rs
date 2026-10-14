@@ -154,7 +154,7 @@ pub(crate) fn read_application_acquisition(
         &checked(&prepared.application_tool_policy)?,
     ).map_err(|_| HostLifetimeError::InvalidSelection)?;
     let helper = prepared.helper_projection().map_err(|_| HostLifetimeError::InvalidSelection)?
-        .with_public_web_search_from_policy(&policy);
+        .with_public_research_from_policy(&policy);
     Ok(Some(SelectedApplicationAcquisition { config, prepared, prepared_bytes, helper }))
 }
 
