@@ -1,5 +1,12 @@
 # Source provenance
 
+Public Connect checkpoint IDs recorded below predate a publication-only Git email
+metadata rewrite. [PUBLIC-SOURCE-COMMITS.json](PUBLIC-SOURCE-COMMITS.json) maps
+them to published commit IDs with identical trees. Names, dates and messages
+are unchanged; parent references follow the mapped history. Existing private
+Toolkit checkpoint IDs are unaffected. Selected binary, SDK and resource bytes
+are unchanged.
+
 This repository is a clean source export from the reviewed Meerkat Toolkit
 checkpoint `557c492a78145e223afc5bfa6fcea3e247b8bf4d`, with explicit release
 projections. It does not include the private repository's Git history, coordination
