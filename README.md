@@ -56,6 +56,10 @@ the original task in the same conversation. The application supplies login and
 a persistent host. The gateway archive and Rust, JSON-RPC, Python and TypeScript
 interfaces support this composition; the gateway alone does not install an app.
 
+Installed-package checks, including controlled native original-task continuation,
+passed on both supported platforms. The fresh generated-Console business example
+remains incomplete, as documented in the [release notes](docs/releases/0.9.0.md).
+
 Service connectors and agent frontends have different roles. A frontend also
 requires the application to own participant identity, audience, routing and
 reply delivery. See [host composition](docs/site/guides/host-composition.mdx).
