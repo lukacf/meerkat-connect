@@ -1,7 +1,7 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "name": "Meerkat Connect",
-  "description": "Service integration setup through Connect CLI and integrated Console, with explicit advanced and deferred host scope.",
+  "description": "Discover, configure and use service integrations with Meerkat Connect.",
   "theme": "maple",
   "colors": {
     "primary": "#607F51",
@@ -50,7 +50,7 @@
             ]
           },
           {
-            "group": "Advanced host setup",
+            "group": "Host integration",
             "pages": [
               "library/local-install",
               "acquisition/local-install",
@@ -68,7 +68,7 @@
             ]
           },
           {
-            "group": "Examples and advanced host scenarios",
+            "group": "Examples",
             "pages": [
               "examples/remembered-tool",
               "examples/slack-summary",
@@ -100,7 +100,7 @@
             "pages": [
               "sdks/typescript",
               "sdks/typescript-connectors",
-              "sdks/activepieces",
+              "sdks/service-profiles",
               "sdks/ui"
             ]
           },
@@ -146,5 +146,11 @@
         ]
       }
     ]
-  }
+  },
+  "redirects": [
+    {
+      "source": "/sdks/activepieces",
+      "destination": "/sdks/service-profiles"
+    }
+  ]
 }
