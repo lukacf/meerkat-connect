@@ -5,10 +5,11 @@ icon: "rocket"
 ---
 
 <Note>
-These are the first-release user paths. Public Connect downloads are not yet
-available. Wait for the matching release's platform assets and checksum before
-following the archive steps. Private library prereleases and verification
-prefixes do not qualify as that release. See [availability](/availability).
+Download the complete CLI archive from the
+[Connect 0.9.0 release](https://github.com/lukacf/meerkat-connect/releases/tag/v0.9.0).
+The supported platforms are Apple Silicon macOS 13.5 or later and Linux x86_64
+with glibc 2.39. Verify the accompanying checksum before running it.
+See [availability](/availability) for the separate scope of Console host components.
 </Note>
 
 ## Standalone CLI
@@ -91,6 +92,10 @@ If you deliberately used custom roots or a different model binding, follow the
 Ordinary use does not require custom directories or a separate Connect server.
 
 ## Integrated Console
+
+The release includes host components and controlled native continuation checks.
+A complete fresh real-model Console business example remains unproven; see
+[availability](/availability) for the recorded scope.
 
 Use an application release that explicitly includes Connect and the matching
 native runtime. Install and open that application through its normal supported
