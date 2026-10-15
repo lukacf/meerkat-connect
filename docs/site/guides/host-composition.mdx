@@ -7,9 +7,9 @@ icon: "cubes"
 Toolkit is optional. A host can adopt an operation library or management UI before the complete setup workflow exists. Choose the smallest component that serves the task and declare what the host continues to own.
 
 The application opts into Toolkit-owned adapters around public Meerkat and Meta
-interfaces. The Meta 0.9 consumer is present in current source; selected artifacts
-and complete native qualification remain pending. Neither Meerkat nor Meta gains
-a Toolkit dependency. The host retains its application, policy and runtime
+interfaces. The Meta 0.9 consumer is included; the release notes identify the
+qualified packages and actual application outcomes. Neither Meerkat nor Meta
+gains a Toolkit dependency. The host retains its application, policy and runtime
 composition.
 
 ## Native application lifecycle
@@ -46,6 +46,16 @@ owner. The separate [Rust `NativeSetup` API](/sdks/rust#embed-the-native-setup-c
 embeds a standalone setup conversation over its factory-created native adapter;
 it is not an application replacement API.
 
+Fresh application startup prepares the offline integration resources before the
+gateway can acknowledge `meta/init`. Set Meta's `gateway_init_timeout` explicitly
+to cover that preparation within the host's startup budget. Its 60-second default
+can expire while preparation is still making progress; the bundled bootstrap
+uses its own 300-second budget. `init_deadline` separately bounds settlement
+after native init has been accepted, while `ApplicationPreparation.timeout`
+bounds the private preparation observation. Selecting only those latter budgets
+does not extend the pre-accept request wait. Keep normal cancellation and cleanup
+handling; a timeout is an unknown outcome, not permission to retry installation.
+
 During fresh preparation, cancellation closes private admission and prevents
 publication that has not entered. An entered finalizer and native initialization
 must settle. Retain their actual outcomes and any returned native cleanup
@@ -59,6 +69,47 @@ admission, routing and delivery. These startup adapters preserve those host
 bindings; they do not supply a generic frontend host or make a one-turn realm
 session persistent. The [custom-extension path](#custom-extension-dependencies)
 keeps its host compatibility and verification limits.
+
+## Prepare a setup researcher
+
+For broad discovery beyond supported registry searches, give the dedicated
+setup researcher an explicitly authorized general public research capability
+alongside Connect's setup and acquisition tools. Exact known packages or
+candidates found through supported registry searches can still be acquired
+without that broader capability. `PreparedSetupHelper` preserves the host's
+selected inline research profile and adds the setup server; it does not supply
+or authorize research tools on the host's behalf.
+
+Connect includes `setup_search_github` and `setup_read_github` on its existing
+setup MCP server for public repository discovery and document reading. The
+agent chooses its own queries and sources. These tools use anonymous GitHub API
+requests; no provider account or separate research server is required.
+
+For a prepared application helper, give the exact native helper member explicit
+`Invoke` grants for the selected research operations. Application compilation
+selects that optional server ceiling before retaining the helper definition and
+resource owner; completion and restore require the same compiled-policy selection.
+The prepared server ceiling and current application policy must both permit each
+call. An advanced standalone
+setup host can select the same surface with `--enable-public-github-research`
+during preparation. This selection does not authorize calls by itself.
+
+The host must classify the operations' behavior explicitly; an MCP annotation or
+allowlist alone is not read-only authority. Keep the task's data, audience and
+expiry limits when composing the researcher. Public query text can still disclose
+private knowledge, so target validation is not a semantic privacy guarantee.
+
+The stock native `web_search` composition is deferred: released Core 0.9.0 does
+not supply the required builtin target and nested-model delegation path for this
+prepared helper. The included MCP research tools use the existing MCP authority
+path without widening the controller or catalog grants.
+
+Installing a complete MCP server and granting access to selected operations are
+separate decisions. Public service access selects declared raw MCP operations;
+the application policy separately grants the corresponding model-facing tools.
+Installing a package does not grant every operation it exports. Operation
+filtering does not make an unsafe selected operation or unsafe startup behavior
+safe: inspect those behaviors before installation and access approval.
 
 ## Advanced library host setup
 
@@ -76,6 +127,12 @@ Meerkat host can use the existing public `mcp_add` operation to attach it to the
 original live session. Keep setup and that session alive through the handoff.
 The native runtime applies the change at a turn boundary; actual catalog
 discovery and invocation establish whether the selected tool is usable.
+
+For deferred operations, the original session needs its own explicitly authorized
+`tool_catalog_search` and `tool_catalog_load` scope. A service `Invoke` grant alone
+does not expose a hidden tool. Select `tool_policy.catalog` for a reviewed grant
+when needed. Leaving it `null` can remain valid when the session already has the
+required catalog authority or the host exposes the operation eagerly.
 
 See [live-session attachment](/guides/native-mcp#add-tools-to-a-live-session)
 for the supported mapping and example. The demonstrated `persisted=False` path
@@ -151,7 +208,7 @@ for the user-facing steps.
 ## Advanced host composition
 
 <Warning>
-Full native acquisition remains incomplete. Private host/authority/admission implementations in this development repository are not stable integration APIs. The following native composition steps describe required ownership and evidence, not a copy-paste bootstrap sequence.
+Use the supported native application APIs above for startup. The advanced host, authority and admission composition below describes required ownership and evidence; it is not a generic bootstrap sequence for a new application.
 </Warning>
 
 <Steps>

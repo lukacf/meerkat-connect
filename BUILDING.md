@@ -23,14 +23,14 @@ prefix path and resource digest:
 
 | Platform | Complete CLI archive | SHA-256 of `libexec/meerkat-connect/resources.json` |
 | --- | --- | --- |
-| macOS arm64 | [meerkat-connect-0.9.0-macos-arm64.tar.gz](https://github.com/lukacf/meerkat-connect/releases/download/v0.9.0/meerkat-connect-0.9.0-macos-arm64.tar.gz) | `27b6d619bc05d64bd5d43b844a0d4c32a3d229c49ae8fa08576be91de5f4eec8` |
-| Linux x86_64 | [meerkat-connect-0.9.0-linux-x86_64.tar.gz](https://github.com/lukacf/meerkat-connect/releases/download/v0.9.0/meerkat-connect-0.9.0-linux-x86_64.tar.gz) | `4746bd7bfaf22b643904ea0c07207d75d1c0f68014f5f3103568c9509c9768a5` |
+| macOS arm64 | [meerkat-connect-0.9.0-macos-arm64.tar.gz](https://github.com/lukacf/meerkat-connect/releases/download/v0.9.0/meerkat-connect-0.9.0-macos-arm64.tar.gz) | `cbdc8c838413a732ebe4dbcca5e43da388d1c653beca3cfce102574401b61075` |
+| Linux x86_64 | [meerkat-connect-0.9.0-linux-x86_64.tar.gz](https://github.com/lukacf/meerkat-connect/releases/download/v0.9.0/meerkat-connect-0.9.0-linux-x86_64.tar.gz) | `3280c10bef460edb19dba38099f97a115b7d49856e9dd9a092efa2a9097d5d5d` |
 
 For example, for macOS arm64, from the source checkout:
 
 ```sh
 connect_prefix=/absolute/path/to/meerkat-connect-macos-arm64
-export MEERKAT_CONNECT_RESOURCES_SHA256=27b6d619bc05d64bd5d43b844a0d4c32a3d229c49ae8fa08576be91de5f4eec8
+export MEERKAT_CONNECT_RESOURCES_SHA256=cbdc8c838413a732ebe4dbcca5e43da388d1c653beca3cfce102574401b61075
 ./scripts/repo-cargo +1.97.0 build \
   --manifest-path native-candidate/Cargo.toml --locked --release \
   -p meerkat-connect --features console,toolkit-mobkit/native-host \
