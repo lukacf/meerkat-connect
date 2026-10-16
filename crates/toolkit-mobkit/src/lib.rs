@@ -543,7 +543,7 @@ fn unavailable() -> ToolError {
 pub fn definition() -> ToolDef {
     ToolDef::new(
         FIND_AND_INSTALL,
-        "Ask dedicated setup agents to find, reuse or connect integrations needed for this task. Preserve the user's complete wording, constraints and ambiguity; include supplied context and label your observations. The installed host checks current source, helper and continuation authority before setup can run.",
+        "Ask dedicated setup agents to find, reuse or connect integrations needed for this task. Preserve the user's complete wording, constraints and ambiguity; include supplied context and label your observations. The installed host checks current source, helper and continuation authority before setup can run. After a failed setup, do not replay its fenced replacement instruction or reuse its approval. A new find_and_install call is a separate proposal: if the original user request still covers further setup and current authority permits it, you may call again without another chat authorization solely because the prior attempt failed. Preserve the original limits and include the observed failure in caller_observations. Any new software or access still requires its ordinary separate reviews. Do not loop on an unchanged failed choice.",
         serde_json::json!({
             "type": "object", "additionalProperties": false, "required": ["request"],
             "properties": {
