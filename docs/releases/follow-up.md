@@ -65,16 +65,20 @@ passed development gateway and controlled installed checks. Published Connect
   reconciliation. A fresh Console run demonstrated an autonomous new proposal
   with this guidance delivered, without establishing wording-only causality.
 - **Retained failure feedback:** The existing source cancellation, replay and
-  continuation path can retain a bounded startup phase and fixed failure class.
-  The first committed observation is immutable, and delivery checks the exact
-  source before resuming the original agent. Missing observations preserve
-  legacy result bytes. Twelve distinct focused controls pass: nine retained
-  controls and three affected controls rerun on the corrected final source.
-  A valid old-reader regression and earlier fixture failures remain recorded.
-  Warning-level Clippy completed; strict Clippy and whole-file formatting retain
-  existing limitations, including expected growth of the stored record layout.
-  These tests inject synthetic observations; native process capture remains
-  follow-up work. Raw stderr and arbitrary server messages are excluded.
+  continuation path retains a bounded startup phase, fixed failure class and
+  optional closed-process exit. The first committed observation remains immutable;
+  delivery checks the exact source before resuming the original agent. Stage 2
+  now reads optional metadata from the exact native attempt under the remaining
+  readiness deadline. Missing or late metadata preserves a timely failure and
+  legacy bytes. Five distinct controls pass, combining four retained scripted
+  results with one corrected actual native initialize-failure control. The same
+  actual native fixture reproduces missing capture on old production source;
+  independent review confirmed the outcomes and joined cleanup. The earlier 12
+  synthetic controls and valid old-reader regression remain recorded, along with
+  fixture failures and scoped lint/format limitations. Raw stderr and arbitrary
+  server messages are excluded. Native input delivery does not establish a model
+  answer, historical failure causation or successful business recovery; installed
+  qualification remains separate.
 - **Research across setup helpers:** A fresh normal helper can inspect an
   explicitly host-selected prior acquisition after exact matched reconciliation.
   Its historical status stays unconfirmed, and current owner, profile, runtime
@@ -150,8 +154,10 @@ business answer, helper reset or the new catalog successor mode.
 Both task grants were revoked and normal Stop completed. Independent closeout
 confirmed that the exact owned processes and forwards had stopped and the ledger
 and its known sidecars were unchanged. The failed histories and installed files
-remain intact. Setup initialization diagnosis and paired launch/cleanup handling
-remain follow-up work. The native attempt-guard API is designed but has not landed.
+remain intact. Source-level initialization failure capture is qualified above;
+installed setup diagnosis and paired launch/cleanup handling remain unverified.
+The native attempt-guard change is committed upstream
+and under independent review; no consumable reviewed handoff is available yet.
 
 ## Released 0.9.0 limits
 

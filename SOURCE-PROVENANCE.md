@@ -22,6 +22,27 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Stage 2 native failure capture comes from private checkpoint
+`32c709e7cdbf0c72533eefa552920deef1c2dad5`, exported as public
+`57fbd17ddbb7175d16089d44527e8a9485a2db32`. Three source/test afterimages consume
+the exact attempt observer from
+[Core efd313d4](https://github.com/lukacf/meerkat/commit/efd313d44807d3e93f6808a127fa157be84dee05)
+and [Meta 669f54fa](https://github.com/lukacf/meerkat-meta/commit/669f54fafafd82747c8cd9022e602a774cb4559d).
+The existing native workspace and matching code generation select that Git pair;
+portable root dependencies and released 0.9.0 assets are unchanged. Optional
+finite metadata uses the remaining readiness deadline, and absence or timeout
+preserves a timely failure. Existing source cancellation, replay and original-agent
+delivery retain authority. Connect does not request or project raw stderr.
+Five distinct controls pass: four retained scripted results and one corrected
+actual native initialize-failure control. The same actual native fixture compiled and ran
+against old production capture, failing at the missing persisted observation.
+Independent source and execution review confirmed the scoped outcomes and joined
+cleanup. The initial compile failure and later live-spine fixture-oracle failure
+remain recorded; their corrections changed only tests. This qualifies actual native
+failure capture and original-agent native input delivery, not a model answer,
+service recovery or installed-host acceptance. Stage 1 below retains its original
+source, synthetic evidence and earlier native pair.
+
 Bounded attachment failure feedback comes from private checkpoint
 `fdae40d584ddceba542a7d16d1369264d8b1e645`, exported as public
 `49f072d3e4b8937d3cb4f7ee8b4a2578cc6140ad`. Eleven exact source/test
