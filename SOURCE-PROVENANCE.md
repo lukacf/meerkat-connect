@@ -23,8 +23,8 @@ dependency layout without changing its implementation source.
 ## Unreleased follow-up source
 
 The follow-up branch imports reviewed source, synthetic tests and usage guides
-from 27 private development checkpoints after the release baseline, through
-`7eece6ef2b4b71021967d3acecf4a3ac4ff99c63`. These are file patches, not imported
+from 28 private development checkpoints after the release baseline, through
+`b32f319d24943278a456039b199b91928b0b50ee`. These are file patches, not imported
 private Git history. Private plans, coordination, live-case records, accounts and
 build archives remain excluded. The public dependency layout, vendor notices,
 catalog identities and published 0.9.0 assets are unchanged.
@@ -74,7 +74,28 @@ which proves real deferred catalog loading and mapped inert invocation under the
 reviewed service input. Earlier command, compile and fixture failures remain
 recorded; production bytes were unchanged by their corrections. These are
 controlled synthetic checks, not live authentication or a successful fresh
-Console task. Combined development delivery remains pending.
+Console task. The combined credential-feedback and permission-guard gateway now
+passes normal build/assembly and the controlled installed success/corruption pair.
+The selected library, resources, released Core/Meta contracts and SDK bytes are
+unchanged. Retained transport-reader and startup-cleanup diagnostics remain
+separate from confirmed physical process settlement; no broad permission or
+independently observed readiness claim follows from pair PASS. The successor
+application also passed normal fresh startup and timely approval with complete
+permissions. Native initialization failed, the service instruction was cancelled
+before entry, and the original agent consumed the bounded failure result. No
+database query or figures followed. Normal closeout and physical cleanup are
+complete and independently reviewed. This does not establish a
+package-specific startup cause or successful business use.
+
+Private guidance checkpoint `b32f319d24943278a456039b199b91928b0b50ee` maps to
+public source `7f43bde94999f73adca35b41c0b781e5b8d0a065`. Its one tool-description
+change clarifies that a fresh setup proposal may remain within the original
+request and current authority, with ordinary separate software/access reviews.
+It does not permit replaying the failed instruction or reusing its approval.
+Retained failure-body bytes are unchanged because existing reconciliation
+compares full delivery content; this preserves that compatibility boundary.
+Source review passed, while successor delivery and model behavior remain
+pending. No schema, state, API, grant or deadline changes accompany the wording.
 
 The [follow-up inventory](docs/releases/follow-up.md) retains the broader work.
 These source changes are unreleased and do not change the evidence or claims

@@ -15,7 +15,7 @@ authority. They passed 28 affected checks, including real-expiry regressions.
 The combined development package passed its controlled installed checks and
 reached fresh application installation and healthy Console startup.
 
-The latest development run reached software installation and protected access
+The preceding development run reached software installation and protected access
 approval. When native attachment failed, the service continuation was cancelled
 before entry and a durable failure result returned to the same original agent.
 That agent autonomously selected and installed another integration. The second
@@ -34,8 +34,8 @@ expiry correction without changing any approval lifetime.
 Declared-secret-slot requests now return actionable exact raw-operation feedback
 when a current checked selection receives invalid names. All 15 targeted checks
 passed, including a regression that fails against the old source. This source
-increment was not part of the fresh Console run and is not a live authentication
-claim.
+increment was not part of that Console run. It is now included in the qualified
+combined development gateway, but remains unqualified with a live credential.
 
 Package support now includes target-bound optional npm dependencies. A pinned
 Linux test acquired `chokidar-cli@3.0.0`, then installed it offline with lifecycle
@@ -58,10 +58,26 @@ and lower-level APIs retain their contracts.
 The old-source regression failed at the intended assertion. Separately, all 28
 distinct focused checks passed across retained runs, including a real native
 catalog load and mapped inert invocation. Earlier command and fixture failures
-remain recorded. These are controlled checks. Combined development delivery and a useful answer
-through the fresh Console journey are still pending. Account onboarding,
-persistent frontends and the other areas below retain their own completion
-requirements.
+remain recorded. These are controlled checks. The combined development gateway
+now passes normal build/assembly and the installed success/corruption pair, using
+the same selected library, resources and released Core/Meta SDKs. Transport-reader
+and cleanup diagnostics remain recorded alongside confirmed physical settlement.
+The successor application passed normal fresh startup and timely approval of a
+complete permission proposal. MCP initialization then failed before a service
+instruction could enter. The same original agent consumed the bounded failure
+result and returned no figures; no database query occurred. The retained error
+establishes initialize-response closure, not a package-specific exception.
+Normal revoke/Stop and owned physical cleanup passed independent review.
+
+The existing `find_and_install` guidance now distinguishes a fresh reviewed
+proposal from replaying a failed attempt. When the original request and current
+authority still permit setup, a new proposal does not require another chat
+authorization solely because the prior attempt failed. Ordinary software/access
+reviews and original limits remain required; failed instructions and approvals
+cannot be reused. Retained failure payloads remain byte-identical to preserve
+the content used by delivery reconciliation. This is a reviewed guidance change,
+not a state or authority change. Its delivery and actual model behavior in the
+next fresh case remain pending.
 
 ## Released 0.9.0 limits
 
