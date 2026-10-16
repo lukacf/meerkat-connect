@@ -86,8 +86,13 @@ enable lifecycle scripts or establish that an installed integration will work.
 
 ## Custody and limits
 
-In a normal session, only a succeeded Python/Node acquisition job is eligible.
+In a normal session, a new Python/Node acquisition job must have succeeded.
 An earlier eligible job remains inspectable after another job becomes current.
+The host can also explicitly select a prior acquisition for a fresh normal
+setup session. That recovered job requires its own `matched` reconciliation
+before inspection and remains historically `unconfirmed`. The current matching
+acquisition owner, selected profile and pinned interpreter are still required.
+A job ID alone does not import an earlier acquisition or authorize its execution.
 The existing acquisition readback owner checks the original request, receipt
 and retained bytes before and after the worker. The current host Python bytes,
 selected installer and frozen worker are also checked. A changed or incomplete
@@ -129,7 +134,7 @@ bounded archive worker. A stale observation, wrong receipt, changed dependency
 or changed current tool refuses the read. A different job needs its own matching
 observation, including in a multi-request recovery session.
 
-The recovered job remains historically `unconfirmed`. Recovery exposes no
+The recovered job remains historically `unconfirmed`. Recovery-only mode exposes no
 acquisition, installation, stop or retry tool. Inspection is inert research, so
 continue any later installation through a separately authorized normal setup
 session using the retained staging root and explicitly authored metadata.

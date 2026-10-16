@@ -4166,7 +4166,7 @@ class Controller:
             if (not job or job["kind"] != "acquire" or job["family"] not in ("selected-python", "selected-node")
                     or job["id"] not in self.acquisition_intents):
                 raise SetupError("acquired_inspection_unavailable", 409)
-            if self.recovery_only:
+            if self.recovery_only or job.get("recovered"):
                 observation = self.observations.get(job["id"], {})
                 if (not job.get("recovered") or observation.get("status") != "matched"
                         or observation.get("scope") != ACQUISITION_READBACK
