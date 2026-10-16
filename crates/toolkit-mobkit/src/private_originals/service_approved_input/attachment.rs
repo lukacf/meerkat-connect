@@ -17,6 +17,42 @@ const MAX_ACTIVE_ATTACHMENTS_PER_ORIGINAL: usize = 64;
 const OBSERVATION_BUDGET: Duration = Duration::from_millis(250);
 type NativeCall = Pin<Box<dyn Future<Output = Result<LiveMcpAttachmentReceipt, LiveMcpAttachError>> + Send>>;
 
+// Only the final successful attachment recheck constructs this value. Its
+// private binding prevents another source or grant from borrowing the facts.
+// The existing bound Input retains its serialized observation, not this handle.
+pub(in crate::private_originals) struct ServiceInputContext {
+    original: PrivateOriginalRef,
+    grant: PrivateServiceGrantRef,
+    observation: ServiceInputObservation,
+}
+
+#[derive(Serialize)]
+struct ServiceInputObservation {
+    schema: &'static str,
+    operation: String,
+    original: String,
+    connection: Id,
+    resource: Id,
+    allowed_operations: BTreeSet<Id>,
+    expires_at_ms: u64,
+    configuration_sha256: Revision,
+    attachment: &'static str,
+    meaning: &'static str,
+}
+
+impl ServiceInputContext {
+    pub(in crate::private_originals) fn into_content(
+        self, original: &PrivateOriginalRef, grant: &PrivateServiceGrantRef,
+    ) -> Result<meerkat_core::ContentInput, PrivateOriginalError> {
+        if &self.original != original || &self.grant != grant {
+            return Err(PrivateOriginalError::Conflict);
+        }
+        let bytes = canonical_json(&self.observation).map_err(|_| PrivateOriginalError::Conflict)?;
+        let text = String::from_utf8(bytes).map_err(|_| PrivateOriginalError::Conflict)?;
+        Ok(meerkat_core::ContentInput::Text(text))
+    }
+}
+
 enum ServiceAttachmentReadiness {
     Pending,
     Ready,
@@ -440,11 +476,12 @@ impl PrivateOriginals {
         self.settle_service_attachment_observation(&held, ready?).await
     }
 
-    /// Repeat the same native observation after the final setup/content read,
-    /// immediately before the existing B submission. It creates no authority.
+    /// Repeat the same native observation after the final setup/content read.
+    /// Only a ready, current attempt yields host context for the existing B
+    /// submission. The observation creates no authority or durable ready bit.
     pub(super) async fn recheck_service_attachment(
         &self, reference: &PrivateOriginalRef, task: &ApprovedTaskLink,
-    ) -> Result<bool, PrivateOriginalError> {
+    ) -> Result<Option<ServiceInputContext>, PrivateOriginalError> {
         let held = self.held_service_attachment(reference, task)?.ok_or(PrivateOriginalError::Unavailable)?;
         let receipt = held.receipt(|| Err(PrivateOriginalError::Denied)).await?
             .map_err(|_| PrivateOriginalError::Unavailable)?;
@@ -456,7 +493,31 @@ impl PrivateOriginals {
             Ok(ServiceAttachmentReadiness::Failed { .. }) => "failed",
             Err(_) => "error",
         });
-        self.settle_service_attachment_observation(&held, ready?).await
+        if !self.settle_service_attachment_observation(&held, ready?).await? {
+            return Ok(None);
+        }
+        // The same canonical control has just passed native readiness and
+        // post-await currentness. Project only allowlisted nonsecret facts;
+        // never serialize the server, launch arguments or environment.
+        let now = self.owner.clock().now().map_err(|_| PrivateOriginalError::Unavailable)?.unix_ms;
+        let current = self.current_service_mcp_control(&held.control,
+            &held.control.effect_binding(McpAttachmentEffect::Apply), now, false)?;
+        Ok(Some(ServiceInputContext {
+            original: reference.clone(),
+            grant: task.grant.clone(),
+            observation: ServiceInputObservation {
+                schema: "toolkit.approved-service-context.v1",
+                operation: task.acquisition.id.clone(),
+                original: reference.original.as_str().to_owned(),
+                connection: current.connection,
+                resource: current.resource,
+                allowed_operations: current.operations,
+                expires_at_ms: current.expires_at_ms,
+                configuration_sha256: current.configuration_revision,
+                attachment: "observed_usable_before_input_admission",
+                meaning: "The host completed the approved integration attachment checks for this continuation. This context accompanies the unchanged reviewed user instruction. Native authorization is still checked on each use. This observation does not guarantee future readiness, extend permission, establish filesystem isolation or complete the user's task.",
+            },
+        }))
     }
 
     async fn settle_service_attachment_observation(

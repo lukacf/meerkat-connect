@@ -973,10 +973,12 @@ impl PrivateOriginals {
             None => {
                 if !self.ensure_service_attachment(store, &reference, task).await? { return Ok(()); }
                 let submission = self.service_instruction(&record, &reference).await?;
-                if !self.recheck_service_attachment(&reference, task).await? { return Ok(()); }
+                let Some(context) = self.recheck_service_attachment(&reference, task).await? else {
+                    return Ok(());
+                };
                 // Existing native submission/source custody remains the only
                 // B admission path. No attachment observation promotes B.
-                self.submit_service_original(submission, task.grant.clone()).await?
+                self.submit_ready_service_original(submission, task.grant.clone(), context).await?
             }
         };
         self.publish_service_input(stored, &record, &reference, observed).await

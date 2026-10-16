@@ -213,6 +213,7 @@ async fn held_readiness_cannot_publish_b_after_canonical_task_cancellation() {
         let record = fixture.source.decode_record(&saved, &b).unwrap();
         assert!(record.operation_cancelled);
         assert!(record.final_association.is_none() && record.service_admission.is_none());
+        assert!(record.bound_service_input.is_none(), "stale readiness cannot retain success context");
         assert_eq!(fixture.inputs().await, Ok(1));
         fixture.source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
         assert!(fixture.source.held_service_attachment(&b, &held.task).unwrap().is_none());

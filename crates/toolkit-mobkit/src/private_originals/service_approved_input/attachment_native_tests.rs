@@ -16,7 +16,7 @@ use meerkat_llm_core::{
 use meerkat_runtime::completion::CompletionOutcome;
 use meerkat_runtime::terminal_status::{InputTerminalReceiptRead, InteractionSelector};
 use meerkat_runtime::input_state::{InputLifecycleState, InputTerminalOutcome, StoredInputState};
-use meerkat_runtime::{LogicalRuntimeId, RuntimeStore};
+use meerkat_runtime::{LogicalRuntimeId, RuntimeStore, SessionServiceRuntimeExt};
 use std::{path::{Path, PathBuf}, sync::atomic::AtomicBool};
 
 type PersistentFixture =
@@ -170,6 +170,7 @@ struct PublicReadScript {
     expected_instruction: Mutex<Option<String>>,
     offered: Mutex<Option<ToolIdentity>>,
     feedback: Mutex<Option<ToolResult>>,
+    injected_contexts: Mutex<Vec<String>>,
 }
 impl PublicReadScript {
     fn provider(self: &Arc<Self>, inner: Arc<dyn LlmClient>) -> Arc<dyn LlmClient> {
@@ -253,6 +254,15 @@ impl LlmClient for PublicReadProvider {
                 });
                 assert_eq!(actual.as_deref(), expected.as_deref(),
                     "the current request must retain exact approved B");
+                let user_index = request.request().messages.iter().rposition(|message|
+                    matches!(message, Message::User(user) if !user.transcript_role.is_injected_context()))
+                    .expect("the reviewed user instruction remains a separate message");
+                let context_index = user_index.checked_sub(1).expect("host context precedes B");
+                let Message::User(context) = &request.request().messages[context_index] else {
+                    panic!("host context must be a separate typed user-channel message");
+                };
+                assert!(context.transcript_role.is_injected_context());
+                self.script.injected_contexts.lock().unwrap().push(context.text_content());
                 let offered = request.request().tools.iter().filter(|tool|
                     tool.provenance.as_ref().is_some_and(|source|
                         source.kind == ToolSourceKind::Mcp && source.source_id.as_str() == "mail"))
@@ -857,6 +867,10 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
         }
         None => PersistentFixture::for_live_attachment().await,
     };
+    if public {
+        // Exercise cold source custody with the same actual native service.
+        fixture.source.bind_controller_pin_source(fixture.service.clone()).unwrap();
+    }
     let endpoint = Endpoint::new();
     let outcome = AssertUnwindSafe(Box::pin(tokio::time::timeout(WAIT * 4, async {
         let (b, stored, task, readback, a_input, instruction) = approved_native(&fixture, &endpoint, public).await;
@@ -877,7 +891,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
         assert!(matches!(source.observe_service_input_receipt(&b).await.unwrap(),
             crate::private_originals::PrivateServiceInputObservation::AdmissionUnresolved));
         let model_requests = fixture.model_requests();
-        if let Some(script) = &script { script.arm(instruction, endpoint.called.clone()); }
+        if let Some(script) = &script { script.arm(instruction.clone(), endpoint.called.clone()); }
         let actor = fixture
             .service
             .live_session_actor_witness(&fixture.session)
@@ -982,6 +996,11 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                 McpAttachmentReadiness::ToolNotRouted { .. }
             ));
         }
+        let expected_control = if cancel { None } else {
+            Some(source.current_service_mcp_control(&held.control,
+                &held.control.effect_binding(McpAttachmentEffect::Apply),
+                source.owner.clock().now().unwrap().unix_ms, false).unwrap())
+        };
         let current = fixture.store.get(&stored.key).await.unwrap().unwrap();
         source
             .step_service_input_with_attachment(&fixture.store, &current)
@@ -992,10 +1011,32 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
         if cancel {
             assert!(record.operation_cancelled);
             assert!(record.final_association.is_none() && record.service_admission.is_none());
+            assert!(record.bound_service_input.is_none(), "cancelled setup cannot retain success context");
             assert_native_inputs(&fixture, runtime_store.as_ref(), &a_only).await;
             assert_eq!(fixture.model_requests(), model_requests);
         } else {
             assert!(record.final_association.is_some() && record.service_admission.is_some());
+            let meerkat_runtime::Input::Prompt(bound) = record.bound_service_input.as_ref().unwrap().decode().unwrap() else {
+                panic!("approved B must retain its exact prompt input");
+            };
+            assert_eq!(bound.content.text_content(), instruction);
+            assert_eq!(digest(instruction.as_bytes()), record.event.content_sha256);
+            assert_eq!(bound.injected_context.len(), 1);
+            let context = bound.injected_context[0].text_content();
+            let observed: serde_json::Value = serde_json::from_str(&context).unwrap();
+            let canonical = expected_control.as_ref().unwrap();
+            assert_eq!(observed["operation"], task.acquisition.id);
+            assert_eq!(observed["original"], b.original.as_str());
+            assert_eq!(observed["connection"], serde_json::to_value(&canonical.connection).unwrap());
+            assert_eq!(observed["resource"], serde_json::to_value(&canonical.resource).unwrap());
+            assert_eq!(observed["allowed_operations"], serde_json::to_value(&canonical.operations).unwrap());
+            assert_eq!(observed["expires_at_ms"], canonical.expires_at_ms);
+            assert_eq!(observed["configuration_sha256"], serde_json::to_value(&canonical.configuration_revision).unwrap());
+            // Positional launch values and the private fixture result are not
+            // authority facts and must not leak through the host observation.
+            assert!(!context.contains(&endpoint.result));
+            assert!(!context.contains(endpoint.started.to_str().unwrap()));
+            assert!(!context.contains("/bin/sh"));
             let admission = record.service_admission.as_ref().unwrap();
             assert_eq!(admission.session_id, fixture.session.to_string());
             assert_ne!(admission.input_id, a_input);
@@ -1027,6 +1068,11 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                 assert_ne!(script.offered.lock().unwrap().as_ref().unwrap().name.as_str(), "read",
                     "the actual catalog supplies the exposed identity, while MCP receives raw read");
                 assert_eq!(script.responses.load(Ordering::SeqCst), 1 + script.choice_count());
+                let contexts = script.injected_contexts.lock().unwrap();
+                assert_eq!(contexts.len(), script.responses.load(Ordering::SeqCst));
+                assert!(contexts.iter().all(|projected| projected == &context),
+                    "the actual provider receives the exact retained host context beside the unchanged instruction");
+                drop(contexts);
                 let feedback = script.feedback.lock().unwrap();
                 assert_eq!(feedback.as_ref().unwrap().text_content(), endpoint.result);
             }
@@ -1040,6 +1086,8 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
         let replay = source.decode_record(&replay_saved, &b).unwrap();
         assert!(replay.service_admission == record.service_admission);
         assert!(replay.final_association == record.final_association);
+        assert!(replay.bound_service_input == record.bound_service_input,
+            "acknowledgement replay cannot refresh the host observation");
         if let Some(admission) = &record.service_admission {
             assert_native_inputs(
                 &fixture,
@@ -1080,6 +1128,36 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             readbacks_before_entry + 1
         );
         if public && !cancel {
+            let admission = record.service_admission.as_ref().unwrap();
+            let association = record.final_association.as_ref().unwrap();
+            let input = record.bound_service_input.as_ref().unwrap().decode().unwrap();
+            let actual = fixture.machine.input_state(&fixture.session, input.id()).await.unwrap().unwrap();
+            let retained = source.retained.lock().unwrap().iter()
+                .find(|held| held.reference == b).unwrap().clone();
+            let mut retry = input.clone();
+            let meerkat_runtime::Input::Prompt(prompt) = &mut retry else { panic!("prompt"); };
+            prompt.header.id = InputId::new();
+            source.retain_bound_service_input(&b, &retained.original, &retry).await.unwrap();
+            meerkat_runtime::input_state::verify_exact_replay(&actual.state, &retry).unwrap();
+            let meerkat_runtime::Input::Prompt(prompt) = &mut retry else { panic!("prompt"); };
+            let mut context: serde_json::Value = serde_json::from_str(&prompt.injected_context[0].text_content()).unwrap();
+            context["expires_at_ms"] = serde_json::json!(0);
+            prompt.injected_context[0] = meerkat_core::ContentInput::Text(context.to_string());
+            assert!(matches!(source.retain_bound_service_input(&b, &retained.original, &retry).await,
+                Err(PrivateOriginalError::Conflict)));
+            assert!(meerkat_runtime::input_state::verify_exact_replay(&actual.state, &retry).is_err());
+            drop(retained);
+            // Lose only this settled B's source custody. Native admission and
+            // the existing whole-input record survive; no new input is sent.
+            source.retained.lock().unwrap().retain(|held| held.reference != b);
+            source.owner.forget_task_custody_for_test(association);
+            let restored = source.restore_service_admission(&b).await.unwrap().unwrap();
+            assert_eq!(restored.admission.input_id, admission.input_id);
+            assert_eq!(restored.admission.session_id, admission.session_id);
+            let restored_record = source.decode_record(&fixture.store.get(&stored.key).await.unwrap().unwrap(), &b).unwrap();
+            assert!(restored_record.bound_service_input == record.bound_service_input);
+            assert_eq!(endpoint.calls().len(), 1);
+            assert_eq!(fixture.model_requests(), model_requests + 1 + script.as_ref().unwrap().choice_count());
             // Revoking future operation use must not erase the exact completed
             // native fact. This read neither resubmits B nor resolves execution.
             source.cancel_original_operation(&b).await.unwrap();

@@ -24,6 +24,9 @@ struct ServiceMcpControl {
 }
 
 pub(crate) struct CurrentServiceMcpControl {
+    pub connection: Id,
+    pub resource: Id,
+    pub configuration_revision: Revision,
     pub operations: BTreeSet<Id>,
     pub parent: InputAuthorityAssociation,
     pub values: LocalOperationValues,
@@ -271,6 +274,9 @@ impl PrivateOriginals {
             .check_current()
             .map_err(|_| PrivateOriginalError::Unavailable)?;
         Ok(CurrentServiceMcpControl {
+            connection: decision.permission.connection.clone(),
+            resource: decision.permission.resource.clone(),
+            configuration_revision: decision.connection_revision.clone(),
             operations: decision.permission.operations.clone(),
             parent: held.parent.clone(),
             values,

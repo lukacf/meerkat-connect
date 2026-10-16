@@ -282,13 +282,24 @@ impl PrivateOriginals {
         self: &Arc<Self>,
         submission: PrivateOriginalSubmit,
     ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
-        self.submit_selected_original(submission, None).await
+        self.submit_selected_original(submission, None, Vec::new()).await
     }
 
+    pub(super) async fn submit_ready_service_original(
+        self: &Arc<Self>, submission: PrivateOriginalSubmit, grant: PrivateServiceGrantRef,
+        context: super::service_approved_input::attachment::ServiceInputContext,
+    ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
+        let context = context.into_content(&submission.original, &grant)?;
+        self.submit_selected_original(submission, Some(grant), vec![context]).await
+    }
+
+    // These source/admission controls deliberately have no live attachment.
+    // They must not invent its success observation to test native custody.
+    #[cfg(test)]
     pub(super) async fn submit_service_original(
         self: &Arc<Self>, submission: PrivateOriginalSubmit, grant: PrivateServiceGrantRef,
     ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
-        self.submit_selected_original(submission, Some(grant)).await
+        self.submit_selected_original(submission, Some(grant), Vec::new()).await
     }
 
     /// Reconcile only an existing in-process native submission. The exact
@@ -365,6 +376,7 @@ impl PrivateOriginals {
 
     async fn submit_selected_original(
         self: &Arc<Self>, submission: PrivateOriginalSubmit, grant: Option<PrivateServiceGrantRef>,
+        injected_context: Vec<meerkat_core::ContentInput>,
     ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
         let route = self.route(&submission.original.route)?;
         let event = self.event(&submission.original).await?;
@@ -402,7 +414,10 @@ impl PrivateOriginals {
                 None => None,
             },
         });
-        let input = Input::Prompt(PromptInput::new(submission.content, None));
+        // Preserve the reviewed user bytes. Host context is a distinct native
+        // slot, included in the final binding and retained exact replay input.
+        let input = Input::Prompt(PromptInput::new(submission.content, None)
+            .with_injected_context(injected_context));
         // The alias is the installed target, resolved and rechecked by the
         // same identity owner under its native lease. There is no fallback.
         let result = runtime
