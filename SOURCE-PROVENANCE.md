@@ -22,6 +22,22 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Retained guidance export comes from private checkpoint
+`33034db5b582fc170c4c75d6481feb731378ce0a`, projected as public
+`b1870fa0d3ebb5696830d32f8a15728106898585`. Five exact source, test and guide
+afterimages add explicit saved-source skill export through the existing CLI and
+portable writer. The final source manifest is `6d6644df`; the execution aggregate
+is `028d6c30`. The corrected final source compiled and passed 24 distinct macOS
+controls, including canonical inspection, SQLite retention, staging removal,
+fresh export/readback and an independent file reader. Three old-source runtime
+failures remain retained. Independent review rejected a formatting candidate
+with duplicate imports; the corrected source received a new compile and the
+same 24 tests. Changed-region formatting and scoped Clippy pass with the existing
+command-only `too_many_arguments` exception. There is no strict Clippy or
+whole-file formatting pass claim. No installed-host, live-provider or full
+package interoperability qualification follows from these local controls.
+Private plans, review records and runtime evidence remain outside this export.
+
 Portable guidance discovery comes from private checkpoint
 `8f3463552c1627b0503fbc12f5c5f69277fdc988`. Eleven exact source, test and guide
 afterimages plus the projected portability guide add bounded directory inventory

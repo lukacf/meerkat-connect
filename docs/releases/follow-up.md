@@ -64,6 +64,17 @@ passed development gateway and controlled installed checks. Published Connect
   reviews remain required. Retained failure payloads stay unchanged for delivery
   reconciliation. A fresh Console run demonstrated an autonomous new proposal
   with this guidance delivered, without establishing wording-only causality.
+- **Retained guidance export:** The saved-recipe CLI exports explicitly selected
+  public skill files after staging removal. It checks exact ownership, identity,
+  source and paths, preserves plugin namespaces and requirements, and adds no MCP
+  configuration, activation or execute bits. The corrected final source compiled
+  and passed 24 focused macOS controls, including retained SQLite source,
+  fresh-process export/readback and independent file-reader use. Three old-source
+  runtime failures remain retained. Review rejected a duplicate-import formatting
+  candidate; the corrected source was recompiled and retested. Changed-region
+  formatting and scoped Clippy pass with one existing lint exception. Installed
+  adoption and full package interoperability remain separate work. See the
+  [operator guide](../../crates/toolkit-package/LOCAL-RECIPES.md#export-selected-retained-guidance).
 - **Independent application roles:** A persistent Reading-host test confirms that
   the same exported service and store remain usable after frontend removal and
   management-CLI exit. Existing admission, reply and shutdown checks also pass.
