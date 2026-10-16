@@ -53,6 +53,8 @@ mod oauth_management;
 mod plain;
 mod secrets;
 
+pub use secrets::management::{ServiceCredentialCommand, run_service_credential_command};
+
 pub(crate) const TOOL: &str = "toolkit_connect_service_account";
 pub(crate) const PLAIN_TOOL: &str = "toolkit_enable_public_service";
 pub(crate) const SECRET_TOOL: &str = "toolkit_enable_secret_service";
@@ -1242,12 +1244,26 @@ async fn review<W: Write>(
             prompt=presenter.next()=> {
                 let prompt=prompt.ok_or_else(||unavailable("The access presenter ended"))?;
                 let mut caller_gone = false;
-                if !present_approval(prompt,input,output,async {
+                let (shown, completed) = {
+                    let shown = present_approval(prompt,input,output,async {
+                        tokio::select! { biased;
+                            _=caller.closed()=> { caller_gone = true; Ok(()) },
+                            result=interrupt.as_mut()=>result,
+                        }
+                    });
+                    tokio::pin!(shown);
+                    // The existing review owns its deadline while displayed.
+                    // Ready caller loss or interruption keeps precedence.
                     tokio::select! { biased;
-                        _=caller.closed()=> { caller_gone = true; Ok(()) },
-                        result=interrupt.as_mut()=>result,
+                        shown = shown.as_mut() => (Some(shown), None),
+                        result = decision.as_mut() => (None, Some(result)),
                     }
-                }).await? {
+                };
+                if let Some(result) = completed {
+                    input.check_cleanup().map_err(|error| ConnectError::native("restore credential review input", error))?;
+                    return result.map(ReviewOutcome::Decided);
+                }
+                if !shown.expect("presentation completed without the review")? {
                     return Ok(if caller_gone { ReviewOutcome::CallerGone } else { ReviewOutcome::Stopped });
                 }
             }
@@ -2153,6 +2169,34 @@ mod tests {
             assert!(!approvals.has_uncertain_dispatch());
             assert_eq!(!output.is_empty(), after_presentation);
         }
+    }
+
+    #[tokio::test]
+    async fn terminal_management_review_expires_while_shown_without_a_model_timeout() {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let root = tempfile::tempdir().unwrap();
+            let (approvals, mut presenter) = LocalApprovals::create(root.path()).unwrap();
+            let session = SessionId::new();
+            approvals.bind_session(&session).unwrap();
+            let mut request = review_request(&session, "Review exact credential removal",
+                json!({"phase":"service_credential_management","service":"cards","slots":["KEY"]})).unwrap();
+            request.expires_at = Some((SystemTime::now() + Duration::from_millis(500)).into());
+            let (mut caller, _receive) = oneshot::channel();
+            let (lines, receive_lines) = mpsc::channel(1);
+            let mut input = TerminalInput::scripted(receive_lines);
+            let mut output = Vec::new();
+            let interrupt = std::future::pending::<io::Result<()>>(); tokio::pin!(interrupt);
+            let result = review(&approvals, &mut presenter, &mut input, &mut output,
+                request, &mut caller, interrupt.as_mut()).await;
+            assert!(matches!(result, Err(ConnectError::InvalidInput(ref message))
+                if message == "The access review expired without a returned decision"));
+            assert_eq!(String::from_utf8(output).unwrap().matches("Type 'approve ").count(), 1);
+            input.check_cleanup().unwrap();
+            lines.send(Ok("input after expiry".into())).await.unwrap();
+            assert_eq!(input.recv().await.unwrap().unwrap(), "input after expiry");
+            approvals.check_session(&session).unwrap();
+            assert!(!approvals.has_uncertain_dispatch());
+        }).await.expect("displayed credential review must retain its actual deadline");
     }
 
     #[tokio::test]
