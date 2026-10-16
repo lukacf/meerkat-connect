@@ -5,6 +5,7 @@ use super::*;
 use crate::private_host::{ConsoleLoginHandle, ConsoleLoginReservation};
 use meerkat_core::mcp_attachment::{
     LiveMcpAttachError, LiveMcpAttachment, LiveMcpAttachmentReceipt, McpAttachmentReadiness,
+    McpStdioExit, McpStdioSetupFailure, McpStdioSetupFailureClass, McpStdioSetupPhase,
 };
 use meerkat_core::mcp_attachment_control::{McpAttachmentControlRequest, McpAttachmentEffect};
 use std::{collections::BTreeSet, future::Future, pin::Pin, time::Duration};
@@ -19,7 +20,44 @@ type NativeCall = Pin<Box<dyn Future<Output = Result<LiveMcpAttachmentReceipt, L
 enum ServiceAttachmentReadiness {
     Pending,
     Ready,
-    Failed(meerkat_toolkit::setup::ApprovedServiceAttachmentFailure),
+    Failed {
+        failure: meerkat_toolkit::setup::ApprovedServiceAttachmentFailure,
+        observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+    },
+}
+
+// Only this bounded projection may leave the native host. Server identifiers,
+// attempt numbers and sensitive stderr stay with the exact native attempt.
+fn project_setup_failure(
+    failure: McpStdioSetupFailure,
+) -> Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation> {
+    use meerkat_toolkit::setup::{
+        ApprovedServiceAttachmentClass as Class, ApprovedServiceAttachmentExit as Exit,
+        ApprovedServiceAttachmentObservation as Observation,
+        ApprovedServiceAttachmentPhase as Phase,
+    };
+    let phase = match failure.phase {
+        McpStdioSetupPhase::Launch => Phase::Launch,
+        McpStdioSetupPhase::Initialize => Phase::Initialize,
+        McpStdioSetupPhase::ToolDiscovery => Phase::ToolDiscovery,
+        _ => return None,
+    };
+    let class = match failure.class {
+        McpStdioSetupFailureClass::SpawnFailed => Class::SpawnFailed {},
+        McpStdioSetupFailureClass::Closed { exit } => Class::Closed {
+            exit: exit.and_then(|exit| match exit {
+                McpStdioExit::Code(value) => Some(Exit::Code(value)),
+                McpStdioExit::Signal(value) => Some(Exit::Signal(value)),
+                _ => None,
+            }),
+        },
+        McpStdioSetupFailureClass::Rejected { .. } => Class::Rejected {},
+        McpStdioSetupFailureClass::ProtocolError => Class::ProtocolError {},
+        McpStdioSetupFailureClass::TimedOut => Class::TimedOut {},
+        McpStdioSetupFailureClass::Unknown => Class::Unknown {},
+        _ => Class::Unknown {},
+    };
+    Some(Observation { phase, class })
 }
 
 // Fixed stage/outcome labels only. These observations establish neither
@@ -325,10 +363,37 @@ impl PrivateOriginals {
             }
             let connection_generation = match observed {
                 Ok(McpAttachmentReadiness::Usable { connection_generation }) => connection_generation,
-                Ok(McpAttachmentReadiness::Failed { .. }) => return Ok(ServiceAttachmentReadiness::Failed(
-                    meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Failed)),
-                Ok(McpAttachmentReadiness::Rejected { .. }) => return Ok(ServiceAttachmentReadiness::Failed(
-                    meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Rejected)),
+                Ok(
+                    terminal @ (McpAttachmentReadiness::Failed { .. }
+                    | McpAttachmentReadiness::Rejected { .. }),
+                ) => {
+                    let failure = match terminal {
+                        McpAttachmentReadiness::Failed { .. } => {
+                            meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Failed
+                        }
+                        _ => meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Rejected,
+                    };
+                    // Metadata is optional and shares the existing readiness
+                    // deadline. A slow read cannot erase a timely failure.
+                    let observation = if tokio::time::Instant::now() < deadline {
+                        let metadata =
+                            tokio::time::timeout_at(deadline, receipt.attempt.setup_failure())
+                                .await;
+                        let metadata_in_time = tokio::time::Instant::now() <= deadline;
+                        self.attachment_current_after_read(held).await?;
+                        if metadata_in_time {
+                            metadata.ok().flatten().and_then(project_setup_failure)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    return Ok(ServiceAttachmentReadiness::Failed {
+                        failure,
+                        observation,
+                    });
+                }
                 _ => return Ok(ServiceAttachmentReadiness::Pending),
             };
             if generation.is_some_and(|prior| prior != connection_generation) {
@@ -369,7 +434,7 @@ impl PrivateOriginals {
         attachment_diagnostic("readiness", match &ready {
             Ok(ServiceAttachmentReadiness::Ready) => "ready",
             Ok(ServiceAttachmentReadiness::Pending) => "not_ready",
-            Ok(ServiceAttachmentReadiness::Failed(_)) => "failed",
+            Ok(ServiceAttachmentReadiness::Failed { .. }) => "failed",
             Err(_) => "error",
         });
         self.settle_service_attachment_observation(&held, ready?).await
@@ -388,7 +453,7 @@ impl PrivateOriginals {
         attachment_diagnostic("recheck_readiness", match &ready {
             Ok(ServiceAttachmentReadiness::Ready) => "ready",
             Ok(ServiceAttachmentReadiness::Pending) => "not_ready",
-            Ok(ServiceAttachmentReadiness::Failed(_)) => "failed",
+            Ok(ServiceAttachmentReadiness::Failed { .. }) => "failed",
             Err(_) => "error",
         });
         self.settle_service_attachment_observation(&held, ready?).await
@@ -400,13 +465,22 @@ impl PrivateOriginals {
         match observed {
             ServiceAttachmentReadiness::Ready => Ok(true),
             ServiceAttachmentReadiness::Pending => Ok(false),
-            ServiceAttachmentReadiness::Failed(failure) => {
+            ServiceAttachmentReadiness::Failed {
+                failure,
+                observation,
+            } => {
                 // Native failure is not non-entry evidence. Reopen the exact
                 // source/task/grant, then let its existing cancellation writer
                 // fence B and prove no immutable binding/admission was published.
                 self.attachment_current_after_read(held).await?;
-                self.reject_failed_service_attachment(&held.reference, failure).await?;
-                self.retire_service_attachment(&held.reference, &held.task).await;
+                self.reject_failed_service_attachment_with_observation(
+                    &held.reference,
+                    failure,
+                    observation,
+                )
+                .await?;
+                self.retire_service_attachment(&held.reference, &held.task)
+                    .await;
                 Ok(false)
             }
         }
