@@ -13,6 +13,13 @@ passed development gateway and controlled installed checks. Published Connect
 - **Review expiry:** Console and terminal reviews continue polling their existing
   deadline while displayed. Focused checks and an actual expired Console review
   confirm settlement without extending approval lifetimes or changing authority.
+- **Protected action ordering:** Panel reads pause while this document has a
+  protected action pending, then refresh current state after settlement. The
+  access endpoint's stale-offer 409 now reports definite nonentry without retrying
+  the mutation. Two prior-source regressions and 36 controlled JavaScript checks
+  pass with independent review. Other tabs can still replace an offer; this adds
+  no cross-tab lock or pending-fetch timeout. Installed and browser qualification
+  remain pending, separately from the context-only package under test.
 - **Operation feedback:** Public and declared-secret-slot requests identify exact
   permitted raw tool names when a current checked selection receives invalid
   names. A controlled Console test now exercises the invalid-name feedback before

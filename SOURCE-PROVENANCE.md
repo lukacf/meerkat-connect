@@ -22,6 +22,18 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Protected Console action ordering comes from private checkpoint
+`4f30a16945c98950b11b8dafd9fc5fc2a9d838a5`, exported as public
+`e4802182cdcef2dd239c8edae1540ec85ecc7e0d`. Two exact source/test afterimages
+reuse the shared submission flag to pause panel reads during a protected POST
+and identify definite stale-offer nonentry at the access endpoint. Two matching
+prior-source controls fail as expected; all 36 embedded-panel JavaScript controls
+pass. Independent review confirmed the source and retained synthetic-transport
+receipts. No mutation retry or native authorization rule changes. Other tabs can
+still replace offers, and pending-fetch timeouts are unchanged. This qualifies
+controlled presentation/transport behavior, not installed or browser execution.
+The frozen V39 context package selects `05cc5058` below and excludes this UI source.
+
 Approved-service continuation context comes from private checkpoint
 `54bd16de7e6f256f5b18490f045c51d02afbd175`, exported as public
 `05cc5058f77196a8bb591e3e793c9e69af91a41e`. Eight exact source/test afterimages
