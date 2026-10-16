@@ -8,9 +8,11 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use toolkit_package::{
-    ActivationManifest, RemoteExportDeclaration, REMOTE_EXPORT_DECLARATION, ContentDigest, EvidenceReference, Id, IntegrationBundle, LocalRecipe,
+    ActivationManifest, ContentDigest, EvidenceReference, Id, IntegrationBundle, LocalRecipe,
     LocalRecipeError, LocalRecipeStore, LocalSelectionProfile, PackageIdentity,
-    RetainedLocalRecipe, RetainedLocalSelection, RetainedLocalSoftware, Revision, ValidationError, canonical_json,
+    REMOTE_EXPORT_DECLARATION, RemoteExportDeclaration, RetainedGuidanceSelection,
+    RetainedLocalRecipe, RetainedLocalSelection, RetainedLocalSoftware, Revision, ValidationError,
+    canonical_json,
 };
 use toolkit_store::{SqliteStore, StoreScope};
 
@@ -28,15 +30,17 @@ save: --plugin ABSOLUTE_PATH --recipes ABSOLUTE_PATH [--mcp ABSOLUTE_PATH]
       MCPB additionally requires --configuration ABSOLUTE_PATH (nonsecret JSON)
       optionally --plugin-source ABSOLUTE_PATH (exact public plugin observation)
 read: --publisher ID --name ID --version REVISION --digest LOWERCASE_SHA256
-export: read flags plus --selection ABSOLUTE_PATH or --declaration ABSOLUTE_PATH, and --destination ABSOLUTE_NEW_DIRECTORY
-check-export: the same selection/declaration flag plus --destination ABSOLUTE_PATH
+export: read flags plus exactly one of --selection ABSOLUTE_PATH, --declaration ABSOLUTE_PATH or --guidance ABSOLUTE_PATH,
+        and --destination ABSOLUTE_NEW_DIRECTORY
+check-export: the same selection/declaration/guidance flag plus --destination ABSOLUTE_PATH
 list: no additional flags
 list-page: --limit 1_TO_50 [--cursor OPAQUE_CURSOR_FROM_PREVIOUS_PAGE]
 
 Retains host-sanitized recipe documents only. It does not install, authenticate,
 activate, grant access, select a recipe or establish readiness. Scope flags are
 trusted local operator input, not remote-agent authorization. See LOCAL-RECIPES.md.
-Export emits one independent whole MCP endpoint, not an operation-filtered proxy.
+Executable export emits one independent whole MCP endpoint, not an operation-filtered proxy.
+Guidance export copies explicitly selected retained public skill text without MCP configuration or activation.
 Check-export compares current files without writing them; it is not historical success or readiness.
 List-page returns bounded historical summaries; follow next_cursor even after an empty page.
 ";
@@ -92,6 +96,7 @@ enum Action {
 enum ExportSelection {
     Activation(Box<ActivationManifest>),
     Declaration(Box<RemoteExportDeclaration>),
+    Guidance(RetainedGuidanceSelection),
 }
 
 struct Request {
@@ -188,6 +193,8 @@ fn parse(args: Vec<String>) -> Result<Request, Failure> {
             "--version",
             "--digest",
             "--selection",
+            "--declaration",
+            "--guidance",
             "--destination",
         ],
         _ => &[],
@@ -337,11 +344,26 @@ fn parse(args: Vec<String>) -> Result<Request, Failure> {
             if verb == "read" {
                 Action::Read { identity, digest }
             } else {
-                let selection = match (values.remove("--selection"), values.remove("--declaration")) {
-                    (Some(path), None) => ExportSelection::Activation(serde_json::from_slice(
-                        &document(absolute_path(path)?)?).map_err(|_| Failure::Kind("invalid_selection"))?),
-                    (None, Some(path)) => ExportSelection::Declaration(serde_json::from_slice(
-                        &document(absolute_path(path)?)?).map_err(|_| Failure::Kind("invalid_selection"))?),
+                let selection = match (
+                    values.remove("--selection"),
+                    values.remove("--declaration"),
+                    values.remove("--guidance"),
+                ) {
+                    (Some(path), None, None) => ExportSelection::Activation(
+                        serde_json::from_slice(&document(absolute_path(path)?)?)
+                            .map_err(|_| Failure::Kind("invalid_selection"))?,
+                    ),
+                    (None, Some(path), None) => ExportSelection::Declaration(
+                        serde_json::from_slice(&document(absolute_path(path)?)?)
+                            .map_err(|_| Failure::Kind("invalid_selection"))?,
+                    ),
+                    (None, None, Some(path)) => ExportSelection::Guidance(
+                        serde_json::from_value(
+                            toolkit_package::strict_mcpb_json(&document(absolute_path(path)?)?)
+                                .map_err(|_| Failure::Kind("invalid_selection"))?,
+                        )
+                        .map_err(|_| Failure::Kind("invalid_selection"))?,
+                    ),
                     _ => return Err(Failure::Kind("invalid_arguments")),
                 };
                 Action::Export {
@@ -547,50 +569,106 @@ async fn run(request: Request) -> Result<Value, Failure> {
             destination,
             inspect,
         } => {
-            let recipe = recipes
-                .load_exact(&identity, &digest)
-                .await
-                .map_err(|error| Failure::Kind(classify(&error)))?
-                .ok_or(Failure::Kind("recipe_not_found"))?;
-            let (selection_digest, selection_kind, exported) = match selection {
-                ExportSelection::Activation(selection) => {
-                    let pin = ContentDigest::of_bytes(&canonical_json(selection.as_ref())
-                        .map_err(|_| Failure::Kind("invalid_selection"))?);
-                    (pin, None, recipe.bundle().export_portable_with_selection(&digest, *selection))
+            let (
+                recipe_summary,
+                selection_digest,
+                selection_kind,
+                source_digest,
+                export,
+                declaration,
+            ) = match selection {
+                ExportSelection::Guidance(selection) => {
+                    let recipe = recipes
+                        .load_retained_exact(&identity, &digest)
+                        .await
+                        .map_err(|error| Failure::Kind(classify(&error)))?
+                        .ok_or(Failure::Kind("recipe_not_found"))?;
+                    let pin = ContentDigest::of_bytes(
+                        &canonical_json(&selection)
+                            .map_err(|_| Failure::Kind("invalid_selection"))?,
+                    );
+                    let export = recipe
+                        .export_guidance(&selection)
+                        .map_err(|_| Failure::Kind("portable_export_refused"))?;
+                    (
+                        retained_summary(&recipe)?,
+                        pin,
+                        Some("guidance_only"),
+                        Some(selection.plugin_source_digest),
+                        export,
+                        None,
+                    )
                 }
-                ExportSelection::Declaration(selection) => {
-                    let pin = ContentDigest::of_bytes(&canonical_json(selection.as_ref())
-                        .map_err(|_| Failure::Kind("invalid_selection"))?);
-                    (pin, Some(REMOTE_EXPORT_DECLARATION), recipe.bundle().export_portable_declaration(&digest, *selection))
+                selection => {
+                    // Keep the existing executable path and refusal order.
+                    // Local selection/software records do not become remote MCP exports.
+                    let recipe = recipes
+                        .load_exact(&identity, &digest)
+                        .await
+                        .map_err(|error| Failure::Kind(classify(&error)))?
+                        .ok_or(Failure::Kind("recipe_not_found"))?;
+                    let (pin, kind, exported) = match selection {
+                        ExportSelection::Activation(selection) => {
+                            let pin = ContentDigest::of_bytes(
+                                &canonical_json(selection.as_ref())
+                                    .map_err(|_| Failure::Kind("invalid_selection"))?,
+                            );
+                            (
+                                pin,
+                                None,
+                                recipe
+                                    .bundle()
+                                    .export_portable_with_selection(&digest, *selection),
+                            )
+                        }
+                        ExportSelection::Declaration(selection) => {
+                            let pin = ContentDigest::of_bytes(
+                                &canonical_json(selection.as_ref())
+                                    .map_err(|_| Failure::Kind("invalid_selection"))?,
+                            );
+                            (
+                                pin,
+                                Some(REMOTE_EXPORT_DECLARATION),
+                                recipe
+                                    .bundle()
+                                    .export_portable_declaration(&digest, *selection),
+                            )
+                        }
+                        ExportSelection::Guidance(_) => unreachable!("guidance selected above"),
+                    };
+                    let (export, declaration) =
+                        exported.map_err(|_| Failure::Kind("portable_export_refused"))?;
+                    (summary(&recipe)?, pin, kind, None, export, declaration)
                 }
             };
-            let (export, declaration) = exported.map_err(|_| Failure::Kind("portable_export_refused"))?;
             if inspect {
                 let mut result = json!({
-                    "status": "inspected", "recipe": summary(&recipe)?,
+                    "status": "inspected", "recipe": recipe_summary,
                     "selection_digest": selection_digest,
                     "destination": destination,
                     "export_check": export.inspect_existing(&destination),
                 });
-                if let Some(kind) = selection_kind { result["selection_kind"] = json!(kind); }
+                if let Some(kind) = selection_kind {
+                    result["selection_kind"] = json!(kind);
+                }
+                if let Some(digest) = source_digest {
+                    result["plugin_source_digest"] = json!(digest);
+                }
                 if let Some(declaration) = declaration {
                     result["declared_remote_service"] = json!(declaration);
                 }
                 return Ok(result);
             }
-            let mut files = BTreeMap::new();
-            for (name, bytes) in [
-                ("plugin.json", Some(export.plugin_json())),
-                ("mcp.json", export.mcp_json()),
-            ] {
-                if let Some(bytes) = bytes {
-                    files.insert(
+            let files: BTreeMap<_, _> = export
+                .file_fingerprints()
+                .into_iter()
+                .map(|(name, fingerprint)| {
+                    (
                         name,
-                        json!({"sha256": ContentDigest::of_bytes(bytes), "bytes": bytes.len()}),
-                    );
-                }
-            }
-            let recipe_summary = summary(&recipe)?;
+                        json!({"sha256": fingerprint.sha256, "bytes": fingerprint.bytes}),
+                    )
+                })
+                .collect();
             // All selection checks precede the first write. An IO failure may
             // leave an incomplete directory; never report that as an export.
             export
@@ -601,7 +679,12 @@ async fn run(request: Request) -> Result<Value, Failure> {
                 "selection_digest": selection_digest, "files": files,
                 "destination": destination,
             });
-            if let Some(kind) = selection_kind { result["selection_kind"] = json!(kind); }
+            if let Some(kind) = selection_kind {
+                result["selection_kind"] = json!(kind);
+            }
+            if let Some(digest) = source_digest {
+                result["plugin_source_digest"] = json!(digest);
+            }
             if let Some(declaration) = declaration {
                 result["declared_remote_service"] = json!(declaration);
             }

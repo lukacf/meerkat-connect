@@ -589,6 +589,47 @@ impl PortablePluginExport {
         Ok(self)
     }
 
+    /// The retained recipe owner has already validated selected text and paths.
+    /// Historical observations carry no executable intent. Files are written
+    /// without execute bits, and this export grants no execution authority.
+    #[cfg(feature = "local-recipes")]
+    pub(crate) fn with_retained_text(
+        mut self,
+        relative: &str,
+        bytes: &[u8],
+    ) -> Result<Self, ValidationError> {
+        let path = format!("./{}", relative_path(relative)?);
+        if path == PLUGIN_FILE || path == MCP_FILE || self.files.contains_key(&path) {
+            return Err(ValidationError::new(
+                "guidance export",
+                "reserved or duplicate file",
+            ));
+        }
+        self.files.insert(
+            path,
+            PortableIncludedFile {
+                bytes: bytes.to_vec(),
+                executable: false,
+            },
+        );
+        Ok(self)
+    }
+
+    /// Fingerprints of every generated document and explicitly included file.
+    /// Paths are relative to the export directory, without a leading `./`.
+    pub fn file_fingerprints(&self) -> BTreeMap<String, PortableExportFingerprint> {
+        self.documents_and_files()
+            .map(|(path, bytes, executable)| {
+                (
+                    path.strip_prefix("./")
+                        .expect("portable relative path")
+                        .to_owned(),
+                    PortableExportFingerprint::of_file(bytes, executable),
+                )
+            })
+            .collect()
+    }
+
     pub fn plugin_json(&self) -> &[u8] {
         &self.plugin_json
     }
