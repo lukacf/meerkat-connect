@@ -1351,7 +1351,7 @@ ACQUISITION_REQUEST = ("Install the supplied Agno Hacker News integration for "
 ORIGINAL_A_FINISH = "The setup worker owns acquisition. The original task is waiting for service access."
 ORIGINAL_STORY_CALL = "original-public-story"
 ACQUISITION_MCP_TOOLS = ("setup_prepare", "setup_help", "setup_check", "setup_install",
-    "setup_job", "setup_reconcile")
+    "setup_job", "setup_reconcile", "setup_inspect_schema")
 ACQUISITION_HELPER_TOOLS = ACQUISITION_MCP_TOOLS + ("setup_report", "toolkit_request_public_service")
 RESOURCE_REFUSAL = ("Installed Connect resources are unavailable or changed; "
                     "reinstall the complete product. No setup command was started.")
@@ -2247,6 +2247,21 @@ class InstalledAcquisitionProvider:
                 return job_id, call(label + "-poll-" + str(phase), "setup_job", {"job_id": job_id})
             return job_id, None
 
+        if "schema-evidence" not in results:
+            require("prepare-family" not in self.issued,
+                    "schema evidence call must precede package preparation")
+            return call("schema-evidence", "setup_inspect_schema", {"schema_json": "{}"})
+        schema = results["schema-evidence"]
+        expected_schema = {"schema_version": 1, "scope": "supplied_schema_evidence_only",
+            "schema_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "bytes": 2, "hash_algorithm": "sha256", "byte_convention": "exact_supplied_utf8",
+            "runtime_observation": "not_established", "schema_validation": "not_performed"}
+        require("schema-evidence" in self.issued and isinstance(schema, dict)
+                and set(schema) == set(expected_schema) | {"notice"}
+                and all(schema[key] == value for key, value in expected_schema.items())
+                and isinstance(schema["notice"], str) and bool(schema["notice"]),
+                "installed helper did not return exact supplied-schema evidence and limits")
+
         if "prepare-family" not in results:
             require(any(identifier.startswith("helper-catalog-search-") for identifier in results)
                     and any(identifier.startswith("helper-catalog-load-") for identifier in results),
@@ -2767,6 +2782,7 @@ async def run_installed_acquisition(private, finalizer, provider, directory, eve
             "authenticated_event": event_pin, "original": dataclasses.asdict(retained.original), "admission": admission,
             "proposal": proposal_pin, "ack": ack, "observation": observed, "custody": custody,
             "rule_releases_after_joined": rule.releases, "helper_result": provider.results["public-task-access"],
+            "schema_evidence": provider.results["schema-evidence"],
             "business": business, "fresh_original": dataclasses.asdict(b_original),
             "native_b": terminal_observation, "native_receipt_reads": receipt_reads,
             "service_readiness": "not_independently_observed",
