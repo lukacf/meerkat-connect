@@ -48,6 +48,15 @@ passed development gateway and controlled installed checks. Published Connect
   removal. Strict Clippy remains limited by two documented existing lint categories;
   scoped Clippy passes with command-only exceptions. This does not qualify
   third-party packages, Windows permissions or complete Agent Plugins support.
+- **Discoverable plugin guidance:** The existing inspection tool can list one
+  bounded package directory, letting an agent find unfamiliar skill and reference
+  names before choosing explicit text reads. Inventory carries no source custody
+  or execution authority. Eleven macOS Rust controls, 34 focused Python controls
+  and one real MCP/canonical-reader recovery test pass. The latter uses a scripted
+  client and inert installer, and recovers the same selected text after staging
+  removal. Independent review passed. Linux's non-UTF8 fixture control remains
+  unexecuted; scoped Clippy retains one existing lint exception. Installed-host
+  and full package interoperability qualification remain separate.
 - **Fresh recovery proposals:** `find_and_install` guidance permits a new reviewed
   proposal within the original request and current authority after a failed
   attempt. It does not require another chat authorization solely because setup

@@ -1421,6 +1421,9 @@ def materialize_acquired_source(raw, component_id, result):
 PLUGIN_SOURCE_SCOPE = "observed_public_plugin_files"
 PLUGIN_FILE_COUNT = 16
 PLUGIN_FILES_TOTAL = 128 * 1024
+PLUGIN_INVENTORY_COUNT = 256
+PLUGIN_INVENTORY_PATH_BYTES = 1024
+PLUGIN_INVENTORY_TOTAL_PATH_BYTES = 64 * 1024
 
 
 def plugin_files_request(value):
@@ -1434,6 +1437,27 @@ def plugin_files_request(value):
     # This only bounds the request. The canonical anchored reader owns paths,
     # file selection, portable metadata parsing and required contract versions.
     if len(encoded(value)) > MAX_BODY:
+        raise SetupError("invalid_plugin_request")
+
+
+def plugin_inventory_path(value, max_depth):
+    """Bound portable names in the envelope; the canonical reader owns traversal."""
+    if (type(value) is not str or not value.startswith("./") or ":" in value or "\\" in value
+            or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value)):
+        return False
+    try:
+        if len(value.encode("utf-8")) > PLUGIN_INVENTORY_PATH_BYTES:
+            return False
+    except UnicodeError:
+        return False
+    parts = [] if value == "./" else value[2:].split("/")
+    return len(parts) <= max_depth and all(part not in ("", ".", "..") for part in parts)
+
+
+def plugin_inventory_request(value):
+    keys(value, ("staged_id", "inventory"))
+    if (not selected_name(value["staged_id"]) or not plugin_inventory_path(value["inventory"], 15)
+            or len(encoded(value)) > MAX_BODY):
         raise SetupError("invalid_plugin_request")
 
 
@@ -1503,6 +1527,48 @@ def plugin_files_output(raw, code, files):
     except SetupError as error:
         if error.code == "plugin_metadata_rejected":
             raise
+    except (TypeError, ValueError, KeyError, RecursionError, UnicodeError):
+        pass
+    raise SetupError("plugin_inspection_unavailable")
+
+
+def plugin_inventory_output(raw, code, directory):
+    """Accept only a complete, content-free inventory of the requested directory."""
+    try:
+        if type(code) is not int or type(raw) is not bytes or len(raw) > PACKAGE_INSPECTION_OUTPUT:
+            raise ValueError()
+        # Inventory never parses file contents. A rejection, including an older
+        # inspector without this variant, says nothing about package validity.
+        if code != 0:
+            raise ValueError()
+        value = decode(raw)
+        keys(value, ("schema_version", "scope", "format", "status", "directory", "inventory", "complete"))
+        rows = value["inventory"]
+        if (code != 0 or type(value["schema_version"]) is not int or value["schema_version"] != 1
+                or value["scope"] != "metadata_only" or value["format"] != "agent-plugin-files"
+                or value["status"] != "inventoried" or value["directory"] != directory
+                or value["complete"] is not True or type(rows) is not list
+                or len(rows) > PLUGIN_INVENTORY_COUNT):
+            raise ValueError()
+        prefix = directory if directory == "./" else directory + "/"
+        paths = []
+        for row in rows:
+            if type(row) is not dict or row.get("kind") not in ("file", "directory", "symlink", "special"):
+                raise ValueError()
+            keys(row, ("path", "kind", "byte_length") if row["kind"] == "file" else ("path", "kind"))
+            path = row["path"]
+            if (not plugin_inventory_path(path, 16) or not path.startswith(prefix)
+                    or not path[len(prefix):] or "/" in path[len(prefix):]):
+                raise ValueError()
+            if row["kind"] == "file" and (type(row["byte_length"]) is not int
+                    or not 0 <= row["byte_length"] <= 2**64 - 1):
+                raise ValueError()
+            paths.append(path.encode("utf-8"))
+        if (paths != sorted(set(paths)) or sum(map(len, paths)) > PLUGIN_INVENTORY_TOTAL_PATH_BYTES):
+            raise ValueError()
+        return value
+    except SetupError:
+        pass
     except (TypeError, ValueError, KeyError, RecursionError, UnicodeError):
         pass
     raise SetupError("plugin_inspection_unavailable")
@@ -3930,7 +3996,8 @@ class Controller:
             self.operation_lock.release()
 
     def inspect_plugin(self, request):
-        plugin_files_request(request)
+        inventory = isinstance(request, dict) and "inventory" in request
+        plugin_inventory_request(request) if inventory else plugin_files_request(request)
         with self.lock:
             self.admit_setup()
             tools = self.selected_tools()
@@ -3948,7 +4015,7 @@ class Controller:
             # The canonical reader opens this host-owned root once, then reads
             # the chosen child below that handle. Do not resolve a child here.
             settings = {"root": self.selected["staging_root"], "directory": "./" + request["staged_id"],
-                        "files": request["files"]}
+                        **({"inventory": request["inventory"]} if inventory else {"files": request["files"]})}
             document = encoded(settings)
             with tempfile.TemporaryDirectory(prefix="plugin-inspection-", dir=self.workspace / "tmp") as temporary:
                 path = Path(temporary) / "request.json"
@@ -3962,6 +4029,9 @@ class Controller:
                     self.selected_tools()
                 except Exception:
                     raise SetupError("plugin_inspection_unavailable") from None
+                if inventory:
+                    # Names are observations only, never retained source provenance.
+                    return plugin_inventory_output(raw, code, request["inventory"])
                 report = plugin_files_output(raw, code, request["files"])
             retained = encoded({"schema_version": 1, "scope": PLUGIN_SOURCE_SCOPE,
                                 "staged_id": request["staged_id"],

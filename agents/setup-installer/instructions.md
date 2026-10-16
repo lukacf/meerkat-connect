@@ -101,9 +101,15 @@ contract; do not copy an example's placeholder hashes, owner names or claims.
 
 For an ordinary Agent Plugins package in host staging, use
 `setup_inspect_plugin` when exposed. Supply its direct-child `staged_id` and
-explicit public `files`, always including `./plugin.json`; add `./mcp.json`
-and known skill paths such as `./skills/name/SKILL.md` as relevant. The canonical
-reader returns exact bounded text, hashes and diagnostics. Evaluate those
+`inventory: "./"` to discover names, then inventory observed directories such
+as `./skills`, the chosen skill directory and its references. Inventory returns
+only complete direct-child names, kinds and file byte lengths, not contents or
+source provenance. Use a separate explicit public `files` request for the
+observed paths you need, always including `./plugin.json`; add `./mcp.json`,
+selected skill files and references as relevant. An unavailable inventory,
+including an older inspector that does not support it, does not establish
+package invalidity or readiness. The canonical files reader returns exact
+bounded text, hashes and diagnostics. Evaluate those
 declarations and guidance yourself, then author any missing package/activation
 contracts from evidence and the host's real references. A skill alone does not
 establish executable compatibility. No file is installed or executed by this

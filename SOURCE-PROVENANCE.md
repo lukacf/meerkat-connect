@@ -22,6 +22,19 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Portable guidance discovery comes from private checkpoint
+`8f3463552c1627b0503fbc12f5c5f69277fdc988`. Eleven exact source, test and guide
+afterimages plus the projected portability guide add bounded directory inventory
+to the existing inspection tool. The final source manifest is `215572e9`.
+Eleven macOS Rust controls, 34 focused Python controls and one actual MCP 2.2
+canonical-reader test pass. The latter recovers selected text after staging
+removal using a scripted client and inert installation fixture. Three meaningful
+old-source failures are retained. Linux's non-UTF8 filename control remains
+unexecuted after macOS refused fixture creation. Scoped Clippy uses the existing
+command-only `too_many_arguments` exception, with no strict-pass claim. Independent
+source and execution review found no blocker within this scope. This does not
+qualify installed-host adoption, service readiness or full package interoperability.
+
 Portable executable export comes from private checkpoint
 `4e388588bfb2c70457da2fa6f509dfe7ab5b2c98`, projected as public
 `d938e80300ad050a30656933ce6b27193ee563b3`. Five exact source/test afterimages

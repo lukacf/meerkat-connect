@@ -1161,6 +1161,30 @@ fn string_map(values: &BTreeMap<String, String>) -> Value {
     )
 }
 
+/// A names-only directory observation, not selected source or artifact evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginInventoryKind {
+    File,
+    Directory,
+    Symlink,
+    Special,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PluginInventoryEntry {
+    pub path: String,
+    pub kind: PluginInventoryKind,
+    /// A no-follow metadata observation, not proof of readable text or content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byte_length: Option<u64>,
+}
+
+pub const PLUGIN_INVENTORY_MAX_ENTRIES: usize = 256;
+pub const PLUGIN_INVENTORY_MAX_PATH_BYTES: usize = 1024;
+pub const PLUGIN_INVENTORY_MAX_TOTAL_PATH_BYTES: usize = 64 * 1024;
+pub const PLUGIN_INVENTORY_MAX_DIRECTORY_DEPTH: usize = 15;
+
 /// A resolved directory is a read boundary, not an executable authorization.
 /// Backends must verify selected bytes again when realizing an immutable artifact.
 #[derive(Debug)]
@@ -1197,6 +1221,87 @@ impl PluginRoot {
         self.directory.canonicalize(relative).map_err(|_| {
             ValidationError::new("package path", "path is absent or escapes the plugin root")
         })
+    }
+
+    /// List exactly one explicitly selected directory without reading file
+    /// contents or recursively visiting children. Symlinks are classified, not
+    /// followed while listing. An explicitly selected directory can resolve
+    /// inside this root under the same containment rules as other reads.
+    ///
+    /// Success means the bounded enumeration finished. It is not an immutable
+    /// snapshot of file contents or an inventory of the whole package. Callers
+    /// must select and read files separately; observed directory changes refuse
+    /// the entire listing rather than publishing a partial observation.
+    pub fn inventory(&self, relative: &str) -> Result<Vec<PluginInventoryEntry>, ValidationError> {
+        let selected = inventory_relative_path(relative, PLUGIN_INVENTORY_MAX_DIRECTORY_DEPTH)?;
+        let directory = self.directory.open_dir(selected).map_err(|_| {
+            inventory_error("directory is absent, unreadable or escapes the plugin root")
+        })?;
+        let before = directory
+            .dir_metadata()
+            .map_err(|_| inventory_error("cannot inspect selected directory"))?;
+        let mut entries = Vec::new();
+        let mut total_path_bytes = 0;
+        for entry in directory
+            .entries()
+            .map_err(|_| inventory_error("cannot enumerate selected directory"))?
+        {
+            if entries.len() >= PLUGIN_INVENTORY_MAX_ENTRIES {
+                return Err(inventory_error(
+                    "directory entry count exceeds the inventory limit",
+                ));
+            }
+            let entry =
+                entry.map_err(|_| inventory_error("directory changed or cannot be enumerated"))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| inventory_error("directory contains a non-UTF-8 entry name"))?;
+            let path = if relative == "./" {
+                format!("./{name}")
+            } else {
+                format!("{relative}/{name}")
+            };
+            inventory_relative_path(&path, PLUGIN_INVENTORY_MAX_DIRECTORY_DEPTH + 1)?;
+            total_path_bytes += path.len();
+            if total_path_bytes > PLUGIN_INVENTORY_MAX_TOTAL_PATH_BYTES {
+                return Err(inventory_error(
+                    "directory path bytes exceed the inventory limit",
+                ));
+            }
+            // cap_std's DirEntry metadata uses a no-follow stat relative to the
+            // enumerated directory. Take type and length from that one result;
+            // no file is opened and no symlink target is read or projected.
+            let metadata = entry.metadata().map_err(|_| {
+                inventory_error("directory changed or entry metadata is unavailable")
+            })?;
+            let kind = if metadata.is_file() {
+                PluginInventoryKind::File
+            } else if metadata.is_dir() {
+                PluginInventoryKind::Directory
+            } else if metadata.file_type().is_symlink() {
+                PluginInventoryKind::Symlink
+            } else {
+                PluginInventoryKind::Special
+            };
+            let byte_length = metadata.is_file().then_some(metadata.len());
+            entries.push(PluginInventoryEntry {
+                path,
+                kind,
+                byte_length,
+            });
+        }
+        let after = directory
+            .dir_metadata()
+            .map_err(|_| inventory_error("cannot inspect selected directory"))?;
+        if !same_inventory_directory_state(&before, &after) {
+            return Err(inventory_error("directory changed during inventory"));
+        }
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        if entries.windows(2).any(|pair| pair[0].path == pair[1].path) {
+            return Err(inventory_error("directory changed during inventory"));
+        }
+        Ok(entries)
     }
 
     pub fn read(&self, relative: &str, maximum_bytes: u64) -> Result<Vec<u8>, ValidationError> {
@@ -1276,6 +1381,50 @@ impl PluginRoot {
 
     pub fn read_manifest(&self) -> Result<ImportedPluginManifest, ValidationError> {
         ImportedPluginManifest::parse(&self.read("./plugin.json", 1024 * 1024)?)
+    }
+}
+
+fn inventory_error(message: &str) -> ValidationError {
+    ValidationError::new("plugin inventory", message)
+}
+
+fn inventory_relative_path(value: &str, maximum_depth: usize) -> Result<&str, ValidationError> {
+    if value == "./" {
+        return Ok(".");
+    }
+    let path = value
+        .strip_prefix("./")
+        .ok_or_else(|| inventory_error("inventory paths must start with ./"))?;
+    if value.len() > PLUGIN_INVENTORY_MAX_PATH_BYTES
+        || path.is_empty()
+        || path.contains(['\\', ':'])
+        || path.chars().any(char::is_control)
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || path.split('/').count() > maximum_depth
+    {
+        return Err(inventory_error(
+            "inventory path is invalid or exceeds its limits",
+        ));
+    }
+    Ok(path)
+}
+
+fn same_inventory_directory_state(
+    before: &cap_std::fs::Metadata,
+    after: &cap_std::fs::Metadata,
+) -> bool {
+    #[cfg(unix)]
+    {
+        same_export_file_state(before, after)
+    }
+    #[cfg(not(unix))]
+    {
+        before.is_dir()
+            && after.is_dir()
+            && before.permissions() == after.permissions()
+            && before.modified().ok() == after.modified().ok()
     }
 }
 

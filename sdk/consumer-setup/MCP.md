@@ -187,9 +187,14 @@ The agent still researches the integration and obtains actual current host
 references. Example values must not be treated as evidence or permission.
 
 For an ordinary Agent Plugins package already in host staging, the optional
-`setup_inspect_plugin` tool reads explicitly selected public files through the
-canonical anchored reader. It returns guidance and MCP declarations without
-requiring a Toolkit namespace. The agent supplies missing declarations and
+`setup_inspect_plugin` tool accepts either `inventory` or explicit `files`
+through the same canonical anchored reader. Inventory starts at `./` and walks
+observed directories one level per request, returning complete sorted names,
+kinds and file byte lengths without content or retained provenance. The agent
+then selects the discovered public files, including `./plugin.json`, to read
+exact guidance and MCP declarations without requiring a Toolkit namespace.
+Unsupported inventory is an unavailable observation, not a package validity or
+readiness result. The agent supplies missing declarations and
 passes the returned source reference to the existing selected installer.
 `setup_plugin_source` reads the retained evidence after installation or restart.
 See [selected-package setup](SELECTED.md) for the host opt-in and exact boundary.
