@@ -38,7 +38,7 @@ impl PrivateOriginals {
             prepared.controller.selection().clone(), requested).map_err(helper_error)?;
         // This durable write/read must finish before native issuance. A changed
         // actual session, model, route or intent refuses the existing row.
-        let (intent, report_intent, account_intent, public_intent) = self.owner.retain_helper_operation_intents(
+        let (intent, report_intent, account_intent, public_intent, catalog_intent) = self.owner.retain_helper_operation_intents(
             self.store.as_ref(), &prepared.admitted, candidate,
         ).await.map_err(helper_error)?;
         self.require_helper_selection(prepared.admitted.selection())?;
@@ -55,7 +55,11 @@ impl PrivateOriginals {
         let public_issuance = public_intent.map(|intent| GovernedHelperChildIssuance::from_dispatch(
             call, context, self.owner.clone(), prepared.admitted.qualified_contributors(), intent,
         )).transpose().map_err(child_error)?;
+        let catalog_issuance = catalog_intent.map(|intent| GovernedHelperChildIssuance::from_dispatch(
+            call, context, self.owner.clone(), prepared.admitted.qualified_contributors(), intent,
+        )).transpose().map_err(child_error)?;
         let report_capability = selected.helper.report_capability.clone();
+        let catalog_capability = selected.helper.catalog_capability.clone();
         let configured_basis = selected.helper.operation_basis.clone();
         let lifetime = self.host_lifetime.get().and_then(Weak::upgrade)
             .ok_or(PrivateOriginalError::Unavailable)?;
@@ -96,9 +100,16 @@ impl PrivateOriginals {
                 let report = report_issuance.as_ref().map(&append_operation).transpose()?;
                 let account = account_issuance.as_ref().map(&append_operation).transpose()?;
                 let public = public_issuance.as_ref().map(&append_operation).transpose()?;
-                Ok((controller, report, account, public))
+                let catalog = catalog_issuance.as_ref().map(&append_operation).transpose()?;
+                Ok((controller, report, account, public, catalog))
             }).map_err(child_error)
         }).await.map_err(|_| PrivateOriginalError::Unavailable)??;
+        let configured_basis = match (catalog_capability, result.4) {
+            (None, None) => configured_basis,
+            (Some(capability), Some(catalog)) => capability.project(&configured_basis, catalog.lineage().to_vec())
+                .map_err(|_| PrivateOriginalError::Conflict)?,
+            _ => return Err(PrivateOriginalError::Conflict),
+        };
         let basis = match (report_capability, result.1, result.2, result.3) {
             (None, None, None, None) => configured_basis,
             (Some(capability), Some(report), account, public) => capability.project_with_operations(&configured_basis,

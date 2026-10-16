@@ -96,6 +96,49 @@ Installing a package does not grant every operation it exports. Operation
 filtering does not make an unsafe selected operation or unsafe startup behavior
 safe: inspect those behaviors before installation and access approval.
 
+## Helper catalog access after reset
+
+<Note>
+This setting is unreleased development functionality. Published Connect 0.9.0
+does not support it.
+</Note>
+
+By default, `authorities.helper_catalog` authorizes only the helper session
+captured during preparation. A host that needs catalog access after normal helper
+resets can explicitly select:
+
+```json
+{
+  "helper_catalog": {
+    "issuance_id": "new-helper-catalog-parent",
+    "scope": "current_helper_successors"
+  }
+}
+```
+
+Connect retains this application-owned parent separately from the helper's
+operation grants. For new helper work, native dispatch binds the current helper
+and Connect derives a catalog grant for that exact session. Already retained work
+stays pinned to its original target; this does not retarget or replay it after a
+reset. Parent revocation still applies. Catalog search and loading do not
+authorize tool execution, installation or account use.
+
+The parent leaves resource-domain restrictions open because future helper
+session IDs are not yet known. The trusted Connect binder supplies the exact
+application and current-session domain for each child. Application-domain
+isolation therefore depends on that binding; the parent alone does not enforce it.
+
+If the host also selects explicit `agent_setup.helper_targets`, it must
+independently request the matching catalog target with `target: null`. That
+request authorizes catalog delegation to the selected helper, not direct catalog
+access by the original agent. Keep all other targets unchanged.
+
+Use new issuance IDs for changed selections, including an enclosing agent setup
+selection whose bounds change. Existing grants cannot be reinterpreted or renewed
+in place. Omitted scope and `exact_session` retain the previous behavior; a reset
+alone grants nothing. Host adapters must preserve and validate the new scope and
+the returned `helper.catalog_capability` before advertising this mode.
+
 ## Advanced library host setup
 
 Start with the [local installation guide](/library/local-install) for the current

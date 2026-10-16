@@ -1608,6 +1608,7 @@ async fn internal_helper_policy_stops_when_its_flattened_frontend_ancestor_close
     let member = native.members[0].clone();
     let selection = HelperAdmissionSelection {
         helper: super::acquisition::InstalledSetupSelection {
+            catalog_capability: None,
             report_capability: None,
             member: member.member.clone(), ingress_actor: super::tests::principal("helper-owner"),
             logical_executor: executor, represented_subject: None,

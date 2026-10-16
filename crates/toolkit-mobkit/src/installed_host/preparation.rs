@@ -33,7 +33,8 @@ mod authorities;
 mod helper_mcp;
 mod helper_catalog;
 pub use authorities::{PreparationAuthorities, PreparationAuthorityIntent, PreparedControllerIntent,
-    PreparedControllerRequest, PreparedControllerTarget, PreparedHelperMcpRequest, PreparedHelperCatalogRequest};
+    PreparedControllerRequest, PreparedControllerTarget, PreparedHelperMcpRequest, PreparedHelperCatalogRequest,
+    PreparedHelperCatalogScope};
 
 /// The same native pair opened before configuration has native surface outputs.
 /// All optional parent requests are explicit trusted-admin operations, retained
@@ -188,6 +189,7 @@ mod tests {
         assert!(prepared.take_configuration().is_err());
         let member = &selected.native_host.members[0];
         let mut helper = acquisition::InstalledSetupSelection {
+            catalog_capability: None,
             report_capability: None, member: member.member.clone(),
             ingress_actor: member.logical_owner.clone(), logical_executor: member.logical_owner.clone(),
             represented_subject: None, controller_parent: vec![],

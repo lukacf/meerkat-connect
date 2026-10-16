@@ -103,12 +103,26 @@ pub struct PreparedHelperMcpRequest {
     pub issuance_id: EvidenceId,
 }
 
-/// Explicit catalog-read request for the actual captured helper session. The
-/// session is supplied by the native preparation hook, never by this wire value.
+/// Explicit catalog-read request. Exact-session behavior remains the default;
+/// successor access must be selected by the trusted host administrator.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedHelperCatalogRequest {
     pub issuance_id: EvidenceId,
+    #[serde(default, skip_serializing_if = "PreparedHelperCatalogScope::is_exact_session")]
+    pub scope: PreparedHelperCatalogScope,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedHelperCatalogScope {
+    #[default]
+    ExactSession,
+    CurrentHelperSuccessors,
+}
+
+impl PreparedHelperCatalogScope {
+    fn is_exact_session(&self) -> bool { *self == Self::ExactSession }
 }
 
 impl From<PreparationAuthorities> for PreparationAuthorityIntent {

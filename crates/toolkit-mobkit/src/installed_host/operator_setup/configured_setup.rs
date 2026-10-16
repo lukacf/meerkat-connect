@@ -118,7 +118,7 @@ pub(crate) fn configure_prepared(
         let helper = helper.ok_or(HostLifetimeError::Denied)?;
         let member = native.members.iter().find(|row| row.member == helper.member)
             .ok_or(HostLifetimeError::Denied)?;
-        super::setup_targets::helper_intents(source, helper, &member.audience,
+        super::setup_targets::helper_intents(source, helper, &native.grant_administrator, &member.audience,
             request.helper_targets.iter().map(|target| target.target.clone()))?
     };
     let expected =

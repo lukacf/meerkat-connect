@@ -37,7 +37,7 @@ pub(crate) async fn open_for_service_input(facts: &ControllerModelFacts) -> Host
 /// actual human decision; this selects no standing service authority.
 pub(crate) async fn open_for_service_input_with_human_policy(facts: &ControllerModelFacts) -> Host {
     open_selected_source(facts, true, true, true, false, None, false, None, false, false,
-        None, None, false, false, true).await
+        None, None, false, false, true, false).await
 }
 
 async fn open_selected(facts: &ControllerModelFacts, select_controller: bool, probe: bool, local_operator: bool) -> Host {
@@ -68,7 +68,7 @@ async fn open_selected_subject_with_source(facts: &ControllerModelFacts, select_
     report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool,
     prepare_source: Option<PrepareOriginalSource>) -> Host {
     open_selected_source(facts, select_controller, probe, local_operator, source_subject,
-        acquisition, helper, report, configured_setup, configured_report, prepare_source, None, false, false, false).await
+        acquisition, helper, report, configured_setup, configured_report, prepare_source, None, false, false, false, false).await
 }
 
 /// The fixture selects an issuer-qualified Human before constructing the host.
@@ -76,14 +76,14 @@ async fn open_selected_subject_with_source(facts: &ControllerModelFacts, select_
 pub(crate) async fn open_for_console_input(facts: &ControllerModelFacts, human: meerkat_core::PrincipalRef) -> Host {
     assert_eq!(human.kind, meerkat_core::PrincipalKind::Human);
     open_selected_source(facts, true, true, true, false, None, false, None, false, false,
-        None, Some(human), false, false, false).await
+        None, Some(human), false, false, false, false).await
 }
 
 /// Explicit fixture administration for an actual fresh task. This does not
 /// authenticate a Human or preselect an application parent for a future session.
 pub(crate) async fn open_for_task_parent_service_input(facts: &ControllerModelFacts) -> Host {
     open_selected_source(facts, true, true, true, false, None, false, None, false, false,
-        None, None, true, false, false).await
+        None, None, true, false, false, false).await
 }
 
 async fn open_selected_source(facts: &ControllerModelFacts, select_controller: bool, probe: bool,
@@ -91,7 +91,7 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
     acquisition: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, helper: bool,
     report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool,
     prepare_source: Option<PrepareOriginalSource>, console_human: Option<meerkat_core::PrincipalRef>,
-    task_parent_administration: bool, private_helper_entry: bool, human_policy: bool) -> Host {
+    task_parent_administration: bool, private_helper_entry: bool, human_policy: bool, catalog_probe: bool) -> Host {
     assert!(!private_helper_entry || (helper && report.is_none() && !configured_setup && !configured_report));
     let (directory, mut selection) = super::tests::fixture();
     let mut local: CompiledLocalPolicy = serde_json::from_slice(
@@ -242,6 +242,13 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
                             action: meerkat_core::CompiledMemberToolAction::Invoke,
                             consequence: meerkat_core::CompiledToolConsequence::R2,
                         }]
+                    } else if catalog_probe && member.member.member == HELPER {
+                        ["tool_catalog_load", "tool_catalog_search"].into_iter().map(|name|
+                            meerkat_core::CompiledMemberToolGrant {
+                                tool_name: name.into(),
+                                action: meerkat_core::CompiledMemberToolAction::Invoke,
+                                consequence: meerkat_core::CompiledToolConsequence::R0,
+                            }).collect()
                     } else if report.is_some() && member.member.member == HELPER {
                         // Fixture provisioning of only this helper's result
                         // operation. No account, installation or Ready access.
@@ -325,6 +332,7 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
                 )
                 .unwrap();
             acquisition_helper = Some(acquisition::InstalledSetupSelection {
+                catalog_capability: None,
                 report_capability: None,
                 member: member.member.clone(), ingress_actor: native.grant_administrator.clone(),
                 logical_executor: member.logical_owner.clone(), represented_subject: None,
@@ -550,6 +558,7 @@ pub(crate) fn bind_acquisition(host: &Host, tools: acquisition::InstalledAcquisi
         host.store.clone(), host.source_scope.clone(), host.originals.clone(), native,
         InstalledSetupDefaults {
             helper: InstalledSetupSelection {
+                catalog_capability: None,
                 report_capability: None,
                 member: native.members[0].member.clone(), ingress_actor: native.grant_administrator.clone(),
                 logical_executor: native.members[0].logical_owner.clone(), represented_subject: None,
@@ -573,10 +582,10 @@ pub(crate) const HELPER: &str = "setup-helper";
 pub(crate) const PRIVATE_HELPER_PROFILE: &str = "setup-entry-private";
 pub(crate) async fn open_for_acquisition(
     facts: &ControllerModelFacts, tool: Arc<dyn meerkat_core::AgentToolDispatcher>,
-    private_helper_entry: bool,
+    private_helper_entry: bool, catalog_probe: bool,
 ) -> Host {
     open_selected_source(facts, true, false, true, false, Some(tool), true, None, false, false,
-        None, None, false, private_helper_entry, false).await
+        None, None, false, private_helper_entry, false, catalog_probe).await
 }
 #[path = "controller_first_input_acquisition_fixture.rs"]
 mod approved_acquisition;

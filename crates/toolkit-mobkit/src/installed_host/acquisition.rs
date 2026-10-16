@@ -60,6 +60,10 @@ use toolkit_store::{SqliteStore, StoreScope, ToolkitStore};
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstalledSetupSelection {
+    /// Explicit catalog-only parent for current helper successors. The current
+    /// native binder must derive a child before this supplies operation access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_capability: Option<ConfiguredHelperCatalogCapability>,
     /// Independently configured report parent. The actual helper session is
     /// selected later; this is never a permission or source-currentness claim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,6 +83,8 @@ pub struct InstalledSetupSelection {
 
 mod report;
 pub use report::ConfiguredHelperReportCapability;
+mod catalog;
+pub use catalog::ConfiguredHelperCatalogCapability;
 
 impl InstalledSetupSelection {
     pub(crate) fn selected_member(
@@ -127,6 +133,9 @@ impl InstalledSetupSelection {
         }
         if let Some(report) = &self.report_capability {
             report.validate(&self.operation_basis)?;
+        }
+        if let Some(catalog) = &self.catalog_capability {
+            catalog.validate(&self.operation_basis)?;
         }
         Ok(member.clone())
     }
@@ -409,6 +418,7 @@ mod tests {
             )
             .unwrap();
         let selected = InstalledSetupSelection {
+            catalog_capability: None,
             report_capability: None,
             member: native.members[0].member.clone(),
             ingress_actor: principal("setup-owner"),

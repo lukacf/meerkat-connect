@@ -7,21 +7,21 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
     pub(super) async fn for_approved_acquisition(
         script: Arc<acquisition_denial::Script>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
-        Self::for_acquisition_mode(script, None, false, None).await
+        Self::for_acquisition_mode(script, None, false, None, None).await
     }
 
     pub(super) async fn for_helper_report(
         script: Arc<acquisition_denial::Script>,
         report: Arc<helper_report::Report>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
-        Self::for_acquisition_mode(script, Some(report), false, None).await
+        Self::for_acquisition_mode(script, Some(report), false, None, None).await
     }
 
     pub(super) async fn for_configured_helper_report(
         script: Arc<acquisition_denial::Script>,
         report: Arc<helper_report::Report>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
-        Self::for_acquisition_mode(script, Some(report), true, None).await
+        Self::for_acquisition_mode(script, Some(report), true, None, None).await
     }
 
     pub(super) async fn for_helper_entry(
@@ -30,7 +30,14 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
         assert!(matches!(fault.mode,
             DeliveryMode::HoldHelperBeforeLookup | DeliveryMode::HoldHelperAcceptedReply));
-        Self::for_acquisition_mode(script, None, false, Some(fault)).await
+        Self::for_acquisition_mode(script, None, false, Some(fault), None).await
+    }
+
+    pub(super) async fn for_catalog_successor(
+        script: Arc<acquisition_denial::Script>,
+        catalog: Arc<helper_entry_native::CatalogProbe>,
+    ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
+        Self::for_acquisition_mode(script, None, false, None, Some(catalog)).await
     }
 
     async fn for_acquisition_mode(
@@ -38,6 +45,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         report: Option<Arc<helper_report::Report>>,
         configured_report: bool,
         fault: Option<Arc<DeliveryFault>>,
+        catalog: Option<Arc<helper_entry_native::CatalogProbe>>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
         let mut opened = None;
         let mut owners = None;
@@ -48,6 +56,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
                 report,
                 configured_report,
                 fault,
+                catalog,
                 &mut opened,
                 &mut owners,
             )),
@@ -76,6 +85,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         report: Option<Arc<helper_report::Report>>,
         configured_report: bool,
         fault: Option<Arc<DeliveryFault>>,
+        catalog: Option<Arc<helper_entry_native::CatalogProbe>>,
         opened: &mut Option<UnifiedRuntime>,
         owners: &mut Option<(Arc<tempfile::TempDir>, Arc<NativeHostLifetime>)>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
@@ -83,7 +93,8 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             meerkat_core::ControllerModelFacts::new(selection(), ENDPOINT.into(), MODEL.into());
         use crate::installed_host::controller_first_input_fixture as installed;
         assert!(!configured_report || report.is_some());
-        let private_helper_entry = fault.is_some();
+        let private_helper_entry = fault.is_some() || catalog.is_some();
+        assert!(catalog.is_none() || fault.is_none());
         assert!(!private_helper_entry || (report.is_none() && !configured_report));
         let host = match &report {
             Some(report) if configured_report => installed::open_for_configured_helper_report(
@@ -92,14 +103,14 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             Some(report) => installed::open_for_helper_report(
                 &facts, script.dispatcher(), report.dispatcher(),
             ).await,
-            None => installed::open_for_acquisition(&facts, script.dispatcher(), private_helper_entry).await,
+            None => installed::open_for_acquisition(&facts, script.dispatcher(), private_helper_entry, catalog.is_some()).await,
         };
         *owners = Some((host.directory.clone(), host.lifetime.clone()));
         // Only the original direct-grant report mode waits until spawn. The
         // configured-parent mode binds the actual installed owner now, before
         // session preparation, with no final report child in its operation basis.
-        let pending = report.as_ref().filter(|_| !configured_report)
-            .map(|_| installed::prepare_approved_acquisition(&host));
+        let pending = ((report.is_some() && !configured_report) || catalog.is_some())
+            .then(|| installed::prepare_approved_acquisition(&host));
         if configured_report {
             report.as_ref().unwrap().retain_selection(host.acquisition_helper.clone().unwrap());
         }
@@ -117,6 +128,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         let mut builder =
             FactoryAgentBuilder::new(AgentFactory::minimal().comms(true), Config::default());
         let client = script.provider(provider.clone());
+        let client = match &catalog { Some(probe) => probe.provider(client), None => client };
         builder.default_llm_client = Some(match &report {
             Some(report) => report.provider(client),
             None => client,
@@ -273,7 +285,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
                 .unwrap();
             Some(helper_session)
         };
-        if let (Some(ports), Some(report)) = (pending, &report) {
+        if let (Some(ports), Some(report)) = (&pending, &report) {
             let native = host.lifetime.selected_policy().native_host.as_ref().unwrap();
             let mut helper = host.acquisition_helper.clone().unwrap();
             let member = native.members.iter().find(|member| member.member == helper.member).unwrap();
@@ -291,6 +303,38 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             helper.operation_basis = meerkat_authorization_contracts::work_association::WorkAuthorityBasis::GrantLineage { lineage: vec![grant] };
             report.retain_selection(helper.clone());
             let owner = ports.bind(script.tools(), helper);
+            script.retain_owner(owner);
+        }
+        if let Some(probe) = &catalog {
+            use crate::installed_host::{acquisition::ConfiguredHelperCatalogCapability, application_operations};
+            let native = host.lifetime.selected_policy().native_host.as_ref().unwrap();
+            let mut helper = host.acquisition_helper.clone().unwrap();
+            let member = native.members.iter().find(|row| row.member == helper.member).unwrap();
+            let operator = meerkat::governed_realm::stock::StockPrincipals::for_local_operator(&native.realm)
+                .unwrap().operator;
+            // Both cases explicitly select catalog authority before the owner
+            // binds. The legacy case retains the actual initial session leaf;
+            // opt-in selects an application parent for exact successor children.
+            let (grantee, bounds) = if probe.successor {
+                (native.grant_administrator.clone(),
+                    application_operations::configured_catalog_parent(&helper.logical_executor, &member.audience))
+            } else {
+                let mut bounds = application_operations::parent_restrictions(application_operations::catalog_read(
+                    &native.grant_administrator, &helper.logical_executor, &member.audience,
+                    helper_session.as_ref().unwrap()));
+                bounds.delegation_depth = meerkat_authorization_contracts::constraints::DelegationDepth::remaining(0);
+                (helper.logical_executor.clone(), bounds)
+            };
+            let parent = host.originals.owner.grants().issue_root(
+                &operator, EvidenceId::new("fixture-catalog-selection").unwrap(), grantee,
+                helper.represented_subject.clone(), bounds).unwrap();
+            if probe.successor {
+                helper.catalog_capability = Some(ConfiguredHelperCatalogCapability { parent: vec![parent] });
+            } else {
+                helper.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: Some(vec![parent]), targets: vec![] };
+            }
+            assert!(probe.selected_helper.set(helper.clone()).is_ok());
+            let owner = pending.as_ref().unwrap().bind(script.tools(), helper);
             script.retain_owner(owner);
         }
         let lease_provider = Arc::new(LocalLeaseProvider::new());
