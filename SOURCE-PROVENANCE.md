@@ -22,6 +22,17 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Generic startup recovery guidance comes from private checkpoint
+`4cefacce44f38c5d7c599eb881c2fe9c6ed7704f`, exported as public
+`4b165d9b4381da642bac497e368d1513b1ed72be`. The standalone prompt and existing
+`setup_inspect_acquired` description ask agents to inspect relevant startup imports
+and API calls in the exact failed closure and acquired replacement. The integrated
+helper retains its host-selected profile. Independent review and AST comparison
+confirm one description-only Python change, unchanged schema/dispatch and no new
+capabilities or version pins; both apply checks pass. No runtime test is claimed.
+Existing installed payloads are unchanged; fresh ordinary-helper behavior and
+original-task completion remain unqualified.
+
 The V39 controlled Console API case consumed the frozen package built from public
 `05cc5058f77196a8bb591e3e793c9e69af91a41e`, excluding the separate UI change.
 Both native attachments failed during initialize with exit code 1. The original
@@ -29,9 +40,12 @@ agent returned no figures and did not reach the successful-attachment context
 path. Both observed grants were revoked; logout's 503 was followed by protected
 session refusal and exact local session cleanup. Normal Stop, owned processes and
 forwards are closed, with ledger and sidecar identities unchanged. Independent
-review accepted this finite failure and physical closeout. Attachment diagnosis
-remains open; source/native and controlled installed context evidence below remains
-valid, without real-agent business or browser UX qualification.
+review accepted this finite failure and physical closeout. A subsequent read-only
+record join found additional unpublished native issuance without a revoke record
+or the expected continuation source. That approval-preparation cleanup gap remains
+open; current usability was not evaluated. Attachment diagnosis remains open.
+Source/native and controlled installed context evidence below remains valid,
+without real-agent business or browser UX qualification.
 
 The installed context fixture correction comes from private checkpoint
 `4bae81d2da3a04caca57b5245c567356d171bc6c`, exported as public

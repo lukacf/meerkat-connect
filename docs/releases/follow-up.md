@@ -87,6 +87,14 @@ passed development gateway and controlled installed checks. Published Connect
   an actual initialize/closed/code1 observation to the original agent before its
   fresh reviewed proposal. That installed observation does not establish
   historical failure causation or successful business recovery.
+- **Startup recovery guidance:** After a known startup or attachment failure, guidance
+  asks the agent to inspect the failed closure's relevant imports and startup API
+  calls, then inspect those same edges in the exact acquired replacement before
+  proposing installation. Both the standalone prompt and existing inspection-tool
+  description carry it, preserving the integrated helper's host profile. Source
+  review and AST comparison confirm unchanged schema, dispatch and authority. No
+  package pins or capabilities are added. This is source-only evidence; refreshed
+  installed helper behavior and original-task completion remain unqualified.
 - **Approved-service continuation context:** A committed correction adds a
   checked attachment observation, approved operations and effective expiry to
   the existing native injected-context slot. The original reviewed question is
@@ -219,8 +227,10 @@ Both observed grants were revoked. Logout returned 503, then the existing protec
 session received 401 and its local session file was removed without replaying
 logout. Normal Stop and all owned-process and forward cleanup completed; ledger
 and sidecar identities were unchanged. Independent review accepted the recorded
-failure and physical closeout. Earlier failed results and released assets remain
-unchanged.
+failure and physical closeout. A later read-only record join found additional
+unpublished native issuance, with no revoke record or expected continuation source.
+That approval-preparation cleanup gap remains follow-up work; current usability
+was not evaluated. Earlier failed results and released assets remain unchanged.
 
 ## Released 0.9.0 limits
 
