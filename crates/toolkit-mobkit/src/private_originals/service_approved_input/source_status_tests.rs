@@ -745,10 +745,19 @@ async fn approved_service_reservation_during_status_read_preserves_the_current_i
         reserved.unwrap();
         let after_task = source.service_task_snapshot(&record).await.unwrap();
         assert_ne!(after_task.condition(), before_task.condition());
-        assert!(after_task.approved_service().is_some());
+        assert!(after_task.approved_service() == Some(&source.service_selection(&stored, &record).unwrap()));
+        assert!(!after_task.approved_service_was_admitted());
+        assert_eq!(after_task.state().lifecycle_phase, toolkit_catalog::AcquisitionPhase::Preparing);
         assert_eq!(after_task.request().input_digest(), before_task.request().input_digest());
         assert_eq!(during.expect("bounded released status read").unwrap(), before);
-        assert_eq!(source.service_task_status_projection(&human, &visible).await.unwrap(), before);
+        // An already captured pre-reservation snapshot remains truthful. A
+        // fresh read projects only the exact canonical reservation; identity,
+        // approved instruction and all controls remain unchanged.
+        let mut expected = before.clone();
+        expected["tasks"][0]["phase"]["text"] = serde_json::json!("Access approved; setup handoff pending");
+        expected["tasks"][0]["nextAction"] = serde_json::json!(
+            "Setup retained the approved instruction. Connection readiness and delivery to your agent are not yet confirmed.");
+        assert_eq!(source.service_task_status_projection(&human, &visible).await.unwrap(), expected);
         assert_eq!(fixture.store.get(&stored.key).await.unwrap().unwrap(), stored);
         assert_eq!(fixture.inputs().await, Ok(1), "status and reservation do not admit B");
         assert_eq!(fixture.model_requests(), requests);

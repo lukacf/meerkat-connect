@@ -292,6 +292,15 @@ fulfill them. A generic MCP client receives the whole endpoint, including tools
 not selected in either document form, and owns the child environment, launch and joined shutdown. The host
 must explicitly admit those effects and any external executable prerequisites.
 
+Connect's native protected attachment can separately enforce an approved subset
+of exact MCP tool names through the host's current grant and MCP access
+configuration. Separate write tools do not, by themselves, rule out that
+protected read subset. Metadata and installation do not create this authority.
+An operation-name allowlist does not constrain query semantics, prevent startup
+effects or provide filesystem confinement. Inspect the allowed tools' arguments
+and implementation, server startup behavior and separately supplied resource
+controls. See [operation selection and runtime enforcement](../../sdk/consumer-setup/METADATA.md#operation-selection-and-runtime-enforcement).
+
 For the Git server, Git itself is an external host-owned executable prerequisite,
 with deliberate Git configuration and access to the selected local repository.
 `--repository` supplies a repository choice; it is not an OS sandbox or a grant.

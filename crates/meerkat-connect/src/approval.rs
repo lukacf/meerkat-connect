@@ -153,6 +153,10 @@ struct ServiceReview {
 struct Attempt {
     approval_id: ApprovalId,
     input: AttemptInput,
+    // Equality-only disclosure binding, captured from the actual dispatch.
+    review_work: Option<meerkat_core::retained_work::RetainedWorkIdentity>,
+    review_scope: Option<meerkat_core::exact_operation::OperationExecutionScope>,
+    dispatch_error: Option<meerkat_core::ToolDispatchTerminalErrorKind>,
     deadline: Instant,
     custody: Custody,
     held: Option<HeldAction>,
@@ -506,6 +510,9 @@ impl LocalApprovals {
             state.attempt = Some(Attempt {
                 approval_id: record.approval_id.clone(),
                 input: AttemptInput::AccessReview(request),
+                review_work: None,
+                review_scope: None,
+                dispatch_error: None,
                 deadline,
                 custody: Custody::AwaitingDecision,
                 held: None,
@@ -647,7 +654,7 @@ impl LocalApprovals {
             None => None,
         };
         self.check_session(session).map_err(|_| refused())?;
-        self.shared.review_dispatch(call, Some(HeldAction::Service(held)), reviewed, task, policy_entry, |held| {
+        self.shared.review_dispatch(call, Some(context), Some(HeldAction::Service(held)), reviewed, task, policy_entry, |held| {
             match held {
                 HeldAction::Service(held) => owner.arm_action(held),
                 _ => Err(refused()),
@@ -701,7 +708,9 @@ impl LocalApprovals {
         outcome: LiveBridgeEffectOutcome,
         result: Result<meerkat_core::ops::ToolDispatchOutcome, ToolError>,
     ) -> Result<meerkat_core::ops::ToolDispatchOutcome, ToolError> {
-        let failure = self.shared.settle_service_dispatch(owner, call, context, outcome)
+        let dispatch_error = result.as_ref().err()
+            .map(|error| meerkat_core::ToolDispatchTerminalErrorKind::from(error.primary_error()));
+        let failure = self.shared.settle_service_dispatch(owner, call, context, outcome, dispatch_error)
             .err().map(|error| meerkat_core::ToolDispatchSettlementFailure {
                 admission_source: meerkat_core::ToolDispatchAdmissionSource::ConfiguredGate,
                 effect_kind: LiveBridgeEffectKind::ExternalIo,
@@ -715,6 +724,69 @@ impl LocalApprovals {
             }
             Err(error) => Err(error.with_settlement_failures(failure.into_iter().collect())),
         }
+    }
+
+    /// Observe only this live owner's latest retained software attempt. This
+    /// never searches approval history, renews permission or recommends retry.
+    pub(crate) async fn software_review_observation(
+        &self,
+        owner: &crate::service_install::CheckedInstalls,
+        call: ToolCallView<'_>,
+        context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
+    ) -> Result<serde_json::Value, ToolError> {
+        let refused = || ToolError::access_denied(call.name);
+        if call.name != "setup_state" { return Err(refused()); }
+        let session = context.origin_session_id().ok_or_else(refused)?;
+        self.check_session(session).map_err(|_| refused())?;
+        let (id, task) = {
+            let state = self.shared.live_state().map_err(|_| refused())?;
+            if state.closed || state.session.as_ref() != Some(session) { return Err(refused()); }
+            let Some(attempt) = state.attempt.as_ref().filter(|attempt|
+                matches!(attempt.readback, Some(ReadbackTarget::Service(_)))) else {
+                return Ok(serde_json::json!({
+                    "scope":"latest_retained_software_attempt_only", "review":null,
+                }));
+            };
+            if attempt.review_work.as_ref() != context.retained_work()
+                || attempt.review_scope.as_ref() != context.work_authorization()
+                    .map(|authorization| authorization.execution_scope())
+            { return Err(refused()); }
+            (attempt.approval_id.clone(), attempt.service.as_ref().map(|service| service.task.clone()))
+        };
+        if let Some(task) = task { task.check_setup_current().await.map_err(|_| refused())?; }
+        context.check_tool_authorization(call, plan)?;
+        let state = self.shared.live_state().map_err(|_| refused())?;
+        if state.closed || state.session.as_ref() != Some(session) { return Err(refused()); }
+        let attempt = state.attempt.as_ref().filter(|attempt| attempt.approval_id == id
+            && attempt.review_work.as_ref() == context.retained_work()
+            && attempt.review_scope.as_ref() == context.work_authorization()
+                .map(|authorization| authorization.execution_scope())).ok_or_else(refused)?;
+        let (AttemptInput::Dispatch { call_id, name, arguments }, Some(ReadbackTarget::Service(target))) =
+            (&attempt.input, &attempt.readback) else { return Err(refused()); };
+        let arguments = serde_json::value::RawValue::from_string(arguments.clone()).map_err(|_| refused())?;
+        let reviewed_call = ToolCallView { id: call_id, name, args: &arguments };
+        let native = self.shared.service.get(&id).map_err(|_| refused())?;
+        let mut review = owner.software_review_binding(target, reviewed_call, session, &native)?;
+        review["approval_id"] = serde_json::json!(id);
+        review["approval_status"] = serde_json::json!(native.status);
+        review["decision"] = serde_json::json!(native.decision.as_ref().map(|decision| decision.decision));
+        review["dispatch_custody"] = serde_json::json!(match attempt.custody {
+            Custody::AwaitingDecision => "awaiting_decision",
+            Custody::DecisionRecorded(_) => "decision_recorded",
+            Custody::DecisionReturned => "decision_returned",
+            Custody::RetiredBeforeAdmission => "retired_before_admission",
+            Custody::SpentUncertain => "spent_uncertain",
+            Custody::Settled(_) => "settled",
+        });
+        review["effect_outcome"] = match attempt.custody {
+            Custody::Settled(LiveBridgeEffectOutcome::Committed) => serde_json::json!("committed"),
+            Custody::Settled(LiveBridgeEffectOutcome::Failed) => serde_json::json!("failed"),
+            Custody::Settled(LiveBridgeEffectOutcome::Unknown) => serde_json::json!("unknown"),
+            _ => serde_json::Value::Null,
+        };
+        review["dispatch_error_kind"] = serde_json::json!(attempt.dispatch_error);
+        Ok(serde_json::json!({"scope":"latest_retained_software_attempt_only", "review":review}))
     }
 
     /// Add the process-local gate without replacing any caller authority.
@@ -1138,6 +1210,7 @@ impl Shared {
     async fn review_dispatch(
         self: &Arc<Self>,
         call: ToolCallView<'_>,
+        context: Option<&ToolDispatchContext>,
         held: Option<HeldAction>,
         reviewed: serde_json::Value,
         task: Option<toolkit_mobkit::private_originals::InstalledServiceTask>,
@@ -1202,6 +1275,10 @@ impl Shared {
                 input: AttemptInput::Dispatch {
                     call_id: call.id.into(), name: call.name.into(), arguments: call.args.get().into(),
                 },
+                review_work: context.and_then(ToolDispatchContext::retained_work).cloned(),
+                review_scope: context.and_then(ToolDispatchContext::work_authorization)
+                    .map(|authorization| authorization.execution_scope().clone()),
+                dispatch_error: None,
                 deadline,
                 custody: if policy_decided { Custody::DecisionRecorded(ApprovalDecision::Approve) }
                     else { Custody::AwaitingDecision },
@@ -1287,6 +1364,7 @@ impl Shared {
         call: ToolCallView<'_>,
         context: &ToolDispatchContext,
         outcome: LiveBridgeEffectOutcome,
+        dispatch_error: Option<meerkat_core::ToolDispatchTerminalErrorKind>,
     ) -> Result<(), ToolError> {
         let refused = || ToolError::access_denied(call.name);
         // Settlement preserves a known result even after presenter retirement.
@@ -1301,6 +1379,7 @@ impl Shared {
                     AttemptInput::Dispatch { call_id, name, arguments }
                     if call_id == call.id && name == call.name && arguments == call.args.get())
         }).ok_or_else(refused)?;
+        attempt.dispatch_error = dispatch_error;
         let policy = attempt.policy_entry.take();
         if let Some(reservation) = attempt.service_entry.take() {
             if outcome == LiveBridgeEffectOutcome::Unknown { reservation.uncertain(); }
@@ -1443,7 +1522,7 @@ impl ToolDispatchAdmission for Admission {
         };
         reviewed["tool"] = call.name.into();
         reviewed["call_id"] = call.id.into();
-        self.0.review_dispatch(call, held, reviewed, None, None, |held| match held {
+        self.0.review_dispatch(call, context, held, reviewed, None, None, |held| match held {
             HeldAction::HomeCore(held) => self.2.as_ref().ok_or_else(refused)?.arm_action(held),
             HeldAction::Forge(held) => self.4.as_ref().ok_or_else(refused)?.arm_action(held),
             HeldAction::Service(held) => self.5.as_ref().ok_or_else(refused)?.arm_action(held),
@@ -1466,6 +1545,7 @@ impl ToolDispatchAdmission for Admission {
                 call,
                 context.ok_or_else(|| ToolError::access_denied(call.name))?,
                 outcome,
+                None,
             );
         }
         let refused = || ToolError::access_denied(call.name);
@@ -1832,6 +1912,9 @@ mod tests {
                     input: AttemptInput::Dispatch {
                         call_id: "prior-submit".into(), name: HOMECORE_FRONTEND_SUBMIT.into(), arguments: "{}".into(),
                     },
+                    review_work: None,
+                    review_scope: None,
+                    dispatch_error: None,
                     deadline: Instant::now() + DECISION_LIFETIME,
                     custody: Custody::SpentUncertain,
                     held: None,

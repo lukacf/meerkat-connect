@@ -45,7 +45,16 @@ pub(super) struct ApprovedServiceReady {
     pub admission: ApprovedServiceInput,
 }
 
+/// Terminal cause reported by the exact native attachment owner. This is
+/// diagnostic provenance; it proves neither process cleanup nor B non-entry.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovedServiceAttachmentFailure { Failed, Rejected }
+
 impl SetupSnapshot {
+    pub fn service_attachment_failure(&self) -> Option<ApprovedServiceAttachmentFailure> {
+        self.record.service_attachment_failure
+    }
     pub fn approved_service(&self) -> Option<&ApprovedServiceSelection> {
         self.record.approved_service.as_ref()
     }
@@ -61,6 +70,23 @@ impl SetupStore<'_> {
     pub async fn reject_approved_service(
         &self, snapshot: &SetupSnapshot, owner: &dyn ApprovedServiceSourceOwner,
     ) -> Result<SetupSnapshot, SetupError> {
+        self.reject_service(snapshot, owner, None).await
+    }
+
+    /// The host calls this only after observing Failed/Rejected from the exact
+    /// current native attempt. Durable non-entry still comes from the source
+    /// owner, never from that failure enum or an absent admission lookup.
+    pub async fn reject_failed_service_attachment(
+        &self, snapshot: &SetupSnapshot, owner: &dyn ApprovedServiceSourceOwner,
+        failure: ApprovedServiceAttachmentFailure,
+    ) -> Result<SetupSnapshot, SetupError> {
+        self.reject_service(snapshot, owner, Some(failure)).await
+    }
+
+    async fn reject_service(
+        &self, snapshot: &SetupSnapshot, owner: &dyn ApprovedServiceSourceOwner,
+        failure: Option<ApprovedServiceAttachmentFailure>,
+    ) -> Result<SetupSnapshot, SetupError> {
         self.scope.check(&snapshot.request)?;
         let selected = snapshot.approved_service().ok_or(SetupError::Rejected)?;
         let detail = owner.observe_rejection(snapshot, selected).await?
@@ -75,6 +101,11 @@ impl SetupStore<'_> {
             expected_revision: state.revision, detail_ref: digest(&detail)?.to_string(), now,
         })?;
         record.detail = Some(detail);
+        // Existing terminal checks and the generated deadline guard still apply.
+        // Never attach this cause to another terminal outcome.
+        if record.state.lifecycle_phase == AcquisitionPhase::Unavailable {
+            record.service_attachment_failure = failure;
+        }
         self.commit(snapshot, record, effects, None).await
     }
 

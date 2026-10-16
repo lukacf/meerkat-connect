@@ -45,6 +45,13 @@ FAMILIES = {
 }
 PYTHON_GRAPH = "import importlib.metadata as m,json,sysconfig; print(json.dumps({'distributions':[[d.metadata['Name'],d.version] for d in m.distributions()],'site':sysconfig.get_path('purelib')}))"
 SELECTED_PYTHON_TARGETS = {"macos-arm64": ("darwin", "arm64"), "linux-x86_64": ("linux", "x86_64")}
+NODE_NATIVE_MANIFEST = "closure/native-payloads"
+NODE_NATIVE_SOURCE = "closure/native-source-receipt"
+NODE_NATIVE_TARGET_EXPRESSION = (
+    "JSON.stringify({node_version:process.version,node_abi:process.versions.modules,"
+    "platform:process.platform,arch:process.arch,libc:process.platform==='linux'?"
+    "{family:'glibc',version:process.report.getReport().header.glibcVersionRuntime}:null})"
+)
 
 
 class InstallError(ValueError):
@@ -406,15 +413,17 @@ def npm_archive(raw: bytes) -> dict:
         expanded = compressed.read(MAX_NPM_EXPANDED + 1)
     if len(expanded) > MAX_NPM_EXPANDED:
         raise InstallError("npm archive expansion exceeds limit")
-    files, paths, total = {}, set(), 0
+    files, paths, total, wrapper = {}, set(), 0, None
     with tarfile.open(fileobj=io.BytesIO(expanded), mode="r:") as archive:
         for index, member in enumerate(archive):
             if index >= MAX_NPM_MEMBERS:
                 raise InstallError("too many npm archive members")
             clean = member.name.rstrip("/") if member.isdir() else member.name
             parts = relative(clean)
-            if parts[0] != "package" or (not member.isdir() and len(parts) < 2):
-                raise InstallError("npm archive must stay inside package")
+            if wrapper is None:
+                wrapper = parts[0]
+            if parts[0] != wrapper or (not member.isdir() and len(parts) < 2):
+                raise InstallError("npm archive must stay inside one wrapper directory")
             if (not member.isdir() and not member.isfile()) or member.issparse():
                 raise InstallError("npm archive links and special files are unsupported")
             if clean.casefold() in paths or "node_modules" in parts[1:]:
@@ -429,7 +438,9 @@ def npm_archive(raw: bytes) -> dict:
                 data = source.read(MAX_FILE + 1)
             if len(data) != member.size:
                 raise InstallError("truncated npm archive member")
-            files[clean[len("package/"):]] = data
+            # npm removes one archive wrapper; package.json and the exact lock
+            # own package identity independently of that directory's name.
+            files["/".join(parts[1:])] = data
     metadata = unique_json(files["package.json"])
     if not re.fullmatch(r"(?:@[a-z0-9_.-]+/)?[a-z0-9_.-]+", metadata.get("name", "")):
         raise InstallError("unsupported npm package name")
@@ -463,10 +474,322 @@ def npm_location(value: str) -> str:
     return package
 
 
+def native_keys(value: object, keys: set[str]) -> dict:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise InstallError("native payload object has unexpected fields")
+    return value
+
+
+def native_hash(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
+        raise InstallError("native payload SHA-256 required")
+    return value
+
+
+def checked_node_native_target(value: object) -> dict:
+    """Validate a declared exact target; this does not establish module readiness."""
+    target = native_keys(value, {"node_sha256", "node_version", "node_abi", "platform", "arch", "libc"})
+    native_hash(target["node_sha256"])
+    if (not isinstance(target["node_version"], str)
+            or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", target["node_version"])
+            or not isinstance(target["node_abi"], str) or not re.fullmatch(r"[1-9][0-9]{0,5}", target["node_abi"])
+            or (target["platform"], target["arch"]) not in (("linux", "x64"), ("darwin", "arm64"))):
+        raise InstallError("unsupported exact native Node target")
+    if target["platform"] == "linux":
+        libc = native_keys(target["libc"], {"family", "version"})
+        if (libc["family"] != "glibc" or not isinstance(libc["version"], str)
+                or not re.fullmatch(r"[0-9]+\.[0-9]+", libc["version"])):
+            raise InstallError("native Linux payload requires an explicit glibc target")
+    elif target["libc"] is not None:
+        raise InstallError("Darwin native target must not declare Linux libc")
+    return target
+
+
+def node_native_archive(raw: bytes) -> dict[str, bytes]:
+    """Read a bounded prebuilt tar.gz without extracting or executing any member."""
+    if len(raw) > MAX_FILE:
+        raise InstallError("native archive exceeds input limit")
+    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
+        expanded = compressed.read(MAX_NPM_EXPANDED + 1)
+    if len(expanded) > MAX_NPM_EXPANDED:
+        raise InstallError("native archive expansion exceeds limit")
+    files, seen, spellings, total = {}, set(), {}, 0
+    with tarfile.open(fileobj=io.BytesIO(expanded), mode="r:") as archive:
+        for index, member in enumerate(archive):
+            if index >= MAX_NPM_MEMBERS:
+                raise InstallError("too many native archive members")
+            clean = member.name.rstrip("/") if member.isdir() else member.name
+            relative(clean)
+            if ((not member.isdir() and not member.isfile()) or member.issparse()
+                    or clean.casefold() in seen):
+                raise InstallError("native archive links, special files and aliases are unsupported")
+            seen.add(clean.casefold())
+            for prefix in [PurePosixPath(clean), *PurePosixPath(clean).parents]:
+                value = str(prefix)
+                if spellings.setdefault(value.casefold(), value) != value:
+                    raise InstallError("native archive has case-aliased directories")
+            if member.isdir():
+                continue
+            total += member.size
+            if member.size < 0 or member.size > MAX_FILE or total > MAX_NPM_EXPANDED:
+                raise InstallError("native archive payload exceeds limit")
+            with archive.extractfile(member) as source:
+                data = source.read(MAX_FILE + 1)
+            if len(data) != member.size:
+                raise InstallError("truncated native archive member")
+            files[clean] = data
+    checked_paths(list(files))
+    file_paths = {path.casefold() for path in files}
+    if any(str(parent) in file_paths for path in seen for parent in PurePosixPath(path).parents):
+        raise InstallError("native archive file and directory collide")
+    return files
+
+
+def node_native_inputs(files: dict[str, bytes]) -> tuple[dict, dict | None]:
+    """Separate explicit supplemental inputs from the unchanged original npm graph."""
+    reserved = {key for key in files if key in (NODE_NATIVE_MANIFEST, NODE_NATIVE_SOURCE)
+                or key.startswith("closure/native-asset-")}
+    if not reserved:
+        return files, None
+    if NODE_NATIVE_MANIFEST not in files or NODE_NATIVE_SOURCE not in files:
+        raise InstallError("complete native payload manifest and source receipt required")
+    if len(files[NODE_NATIVE_MANIFEST]) > MAX_CONFIGURATION or len(files[NODE_NATIVE_SOURCE]) > 4 * 1024 * 1024:
+        raise InstallError("native payload provenance exceeds document limit")
+    manifest = native_keys(unique_json(files[NODE_NATIVE_MANIFEST]),
+                           {"schema_version", "scope", "source_receipt_sha256", "target", "payloads"})
+    if (type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1
+            or manifest["scope"] != "selected_node_native_payloads"
+            or native_hash(manifest["source_receipt_sha256"]) != sha(files[NODE_NATIVE_SOURCE])):
+        raise InstallError("native payload source identity differs")
+    checked_node_native_target(manifest["target"])
+    payloads = manifest["payloads"]
+    if not isinstance(payloads, list) or not 1 <= len(payloads) <= 16:
+        raise InstallError("native payload count exceeds limit")
+    assets = set()
+    for row in payloads:
+        native_keys(row, {"package_location", "package_archive_sha256", "asset_id", "url", "files"})
+        if (not isinstance(row["asset_id"], str)
+                or not re.fullmatch(r"native-asset-[a-f0-9]{64}", row["asset_id"])):
+            raise InstallError("native asset ID must bind its digest")
+        key = "closure/" + row["asset_id"]
+        if key in assets or key not in files or sha(files[key]) != row["asset_id"][len("native-asset-"):]:
+            raise InstallError("native asset missing, duplicated or changed")
+        assets.add(key)
+        native_hash(row["package_archive_sha256"])
+        if not isinstance(row["package_location"], str):
+            raise InstallError("native payload requires an exact npm lock location")
+        npm_location(row["package_location"])
+        from urllib.parse import urlsplit
+        url = row["url"]
+        if not isinstance(url, str) or len(url) > 4096 or not url.isascii() or any(ord(c) < 33 for c in url):
+            raise InstallError("native payload requires a public source URL")
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+                or parsed.query or parsed.fragment):
+            raise InstallError("native payload requires an exact HTTPS source URL")
+    if reserved != {NODE_NATIVE_MANIFEST, NODE_NATIVE_SOURCE, *assets}:
+        raise InstallError("native supplemental inputs differ from manifest")
+    base = {key: value for key, value in files.items() if key not in reserved}
+    source = unique_json(files[NODE_NATIVE_SOURCE])
+    expected = {key: sha(raw) for key, raw in base.items() if key == "artifact.tgz" or key.startswith("closure/")}
+    if (type(source.get("schema_version")) is not int or source["schema_version"] != 1
+            or source.get("scope") != "retained_node_package_inputs" or source.get("files") != expected):
+        raise InstallError("native source receipt differs from original retained npm inputs")
+    return base, {"manifest": manifest, "source": source, "assets": {key: files[key] for key in assets},
+                  "manifest_sha256": sha(files[NODE_NATIVE_MANIFEST])}
+
+
+def compose_node_native_payloads(closure: dict, files: dict, native: dict) -> dict:
+    primary = closure["rows"][closure["component_path"]][1]
+    source = native["source"].get("primary")
+    if (not isinstance(source, dict) or source.get("sha256") != sha(files["artifact.tgz"])
+            or source.get("name") != primary["name"] or source.get("version") != primary["version"]):
+        raise InstallError("native source receipt primary differs from retained component")
+    additions, per_package, expanded = {}, {}, 0
+    original_bytes = sum(len(raw) for _, archive in closure["rows"].values() for raw in archive["files"].values())
+    for row in native["manifest"]["payloads"]:
+        package = row["package_location"]
+        if package not in closure["rows"] or sha(files[closure["rows"][package][0]]) != row["package_archive_sha256"]:
+            raise InstallError("native payload package differs from exact lock and archive")
+        archive = node_native_archive(native["assets"]["closure/" + row["asset_id"]])
+        mappings = row["files"]
+        if not isinstance(mappings, list) or not 1 <= len(mappings) <= 64:
+            raise InstallError("native payload mapping count exceeds limit")
+        used, has_addon = set(), False
+        for item in mappings:
+            native_keys(item, {"member", "destination", "sha256"})
+            if not isinstance(item["member"], str) or not isinstance(item["destination"], str):
+                raise InstallError("native payload paths must be literal text")
+            relative(item["member"])
+            parts = relative(item["destination"])
+            if ("node_modules" in (part.casefold() for part in parts)
+                    or item["member"] in used or item["member"] not in archive):
+                raise InstallError("native mapping must select one exact retained member")
+            raw = archive[item["member"]]
+            if native_hash(item["sha256"]) != sha(raw):
+                raise InstallError("native member differs from selected digest")
+            path = package + "/" + item["destination"]
+            if path in additions or path in closure["paths"]:
+                raise InstallError("native payload cannot overwrite an npm or supplemental file")
+            if (len(closure["paths"]) + len(additions) + 1 > MAX_NPM_MEMBERS
+                    or original_bytes + expanded + len(raw) > MAX_TOTAL):
+                raise InstallError("combined native npm graph exceeds limits")
+            additions[path] = raw
+            per_package.setdefault(package, {})[item["destination"]] = sha(raw)
+            expanded += len(raw)
+            has_addon |= item["destination"].endswith(".node")
+            used.add(item["member"])
+        if used != set(archive) or not has_addon:
+            raise InstallError("native mapping must consume every regular member and include a Node addon")
+    combined = list(closure["paths"]) + list(additions)
+    checked_paths(combined)
+    summary = {"manifest_sha256": native["manifest_sha256"],
+               "source_receipt_sha256": native["manifest"]["source_receipt_sha256"],
+               "target": native["manifest"]["target"],
+               "files": {path: sha(raw) for path, raw in sorted(additions.items())}}
+    return {**closure, "npm_paths": closure["paths"], "paths": set(combined),
+            "native": {"files": additions, "per_package": per_package, "summary": summary}}
+
+
+NPM_TARGET_INPUT = "closure/npm-target"
+
+
+def npm_conditional(lock: dict) -> bool:
+    return any(isinstance(row, dict) and (row.get("optional") or row.get("optionalDependencies")
+               or any(key in row for key in ("os", "cpu", "libc")))
+               for row in lock.get("packages", {}).values())
+
+
+def npm_platform_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    values = [value] if isinstance(value, str) else value
+    if (not isinstance(values, list) or not 1 <= len(values) <= 128
+            or any(not isinstance(item, str) or not re.fullmatch(r"!?[a-zA-Z0-9_.-]{1,64}", item)
+                   for item in values)):
+        raise InstallError("unsupported npm platform restriction")
+    return values
+
+
+def npm_platform_matches(value: str | None, allowed: list[str]) -> bool:
+    if not allowed:
+        return True
+    if value is None:
+        return False
+    if allowed == ["any"]:
+        return True
+    return ("!" + value not in allowed
+            and (value in allowed or all(item.startswith("!") for item in allowed)))
+
+
+def npm_target_graph(closure: dict, lock: dict, target: dict) -> dict:
+    """Select a bounded production graph; npm still owns version resolution.
+
+    Preserve and validate every archive, including platform-excluded optional
+    payloads. No download, engine, script or extraction failure permits omission.
+    Peer/workspace/shrinkwrap graphs remain outside this conditional slice.
+    """
+    checked_node_native_target(target)
+    rows, edges = closure["rows"], {}
+    incoming = {path: [] for path in rows}
+    incompatible, edge_count = set(), 0
+    actual_platform = {"os": target["platform"], "cpu": target["arch"],
+                       "libc": target["libc"]["family"] if target["libc"] else None}
+
+    def resolve(parent, name):
+        if not isinstance(name, str) or npm_location("node_modules/" + name) != name:
+            raise InstallError("unsupported npm dependency name")
+        parts = list(PurePosixPath(parent).parts)
+        while parts:
+            if parts[-1] != "node_modules":
+                candidate = "/".join([*parts, "node_modules", name])
+                if candidate in rows:
+                    return candidate
+            parts.pop()
+        candidate = "node_modules/" + name
+        if candidate in rows:
+            return candidate
+        raise InstallError("npm dependency missing from exact lock graph")
+
+    for path, (_, archive) in rows.items():
+        row = lock["packages"][path]
+        metadata = unique_json(archive["files"]["package.json"])
+        if (any(row.get(key) or metadata.get(key) for key in
+                ("peerDependencies", "peerDependenciesMeta", "workspaces"))
+                or "npm-shrinkwrap.json" in archive["files"]
+                or any(type(row.get(flag, False)) is not bool for flag in ("optional", "dev", "devOptional"))
+                or row.get("devOptional")):
+            raise InstallError("unsupported conditional npm graph")
+        dependencies = {}
+        for field, optional in (("optionalDependencies", True), ("dependencies", False)):
+            declared, locked = metadata.get(field, {}), row.get(field, {})
+            if not isinstance(declared, dict) or not isinstance(locked, dict):
+                raise InstallError("npm dependency metadata must be an object")
+            # npm may normalize away the overwritten required entry. Compare
+            # effective declarations; the optional spec owns a same-name edge.
+            if not optional:
+                declared = {name: spec for name, spec in declared.items() if name not in dependencies}
+                locked = {name: spec for name, spec in locked.items() if name not in dependencies}
+            if (declared != locked or len(declared) > MAX_NPM_MEMBERS
+                    or any(not isinstance(spec, str) or not spec for spec in declared.values())):
+                raise InstallError("npm dependency metadata differs from exact lock")
+            dependencies.update({name: optional for name in declared})
+        edge_count += len(dependencies)
+        if edge_count > MAX_NPM_MEMBERS:
+            raise InstallError("conditional npm edge count exceeds limit")
+        edges[path] = [(resolve(path, name), optional) for name, optional in dependencies.items()]
+        for child, optional in edges[path]:
+            incoming[child].append((path, optional))
+        for field, actual in actual_platform.items():
+            declared = npm_platform_list(metadata.get(field))
+            if declared != npm_platform_list(row.get(field)):
+                raise InstallError("npm platform metadata differs from exact lock")
+            if not npm_platform_matches(actual, declared):
+                incompatible.add(path)
+
+    def reachable(excluded=frozenset(), required_only=False):
+        seen, pending = set(), [closure["component_path"]]
+        while pending:
+            path = pending.pop()
+            if path in seen or path in excluded:
+                continue
+            seen.add(path)
+            pending.extend(child for child, optional in edges[path] if not required_only or not optional)
+        return seen
+
+    required = reachable(required_only=True)
+    if reachable() != set(rows):
+        raise InstallError("npm lock contains unreachable dependencies")
+    if any(bool(lock["packages"][path].get("optional")) != (path not in required) for path in rows):
+        raise InstallError("npm optional flag differs from required dependency reachability")
+    if incompatible & required:
+        raise InstallError("required npm dependency is incompatible with selected target")
+    excluded = {path: "platform_mismatch" for path in incompatible}
+    pending = list(excluded)
+    while pending:
+        for parent, optional in incoming[pending.pop()]:
+            if not optional and parent not in excluded:
+                excluded[parent] = "required_dependency_platform_mismatch"
+                pending.append(parent)
+    if set(excluded) & required:
+        raise InstallError("platform exclusion would remove a required npm dependency")
+    selected = reachable(excluded)
+    for path in rows.keys() - selected - excluded.keys():
+        excluded[path] = "only_reachable_from_excluded_optional_branch"
+    return {**closure, "rows": {path: row for path, row in rows.items() if path in selected},
+            "paths": {path + "/" + name for path in selected for name in rows[path][1]["files"]},
+            "npm_target": target, "excluded_optional_packages": dict(sorted(excluded.items()))}
+
+
 def npm_archive_closure(files: dict[str, bytes]) -> dict:
     """Bind npm's concrete lock to retained archives without choosing an entrypoint."""
+    files, native = node_native_inputs(files)
     project = unique_json(files["closure/package-json"])
     lock = unique_json(files["closure/package-lock"])
+    target_raw = files.get(NPM_TARGET_INPUT)
+    if target_raw is not None and len(target_raw) > MAX_CONFIGURATION:
+        raise InstallError("npm target exceeds document limit")
+    target = checked_node_native_target(unique_json(target_raw)) if target_raw is not None else None
     component = npm_archive(files["artifact.tgz"])
     selected = component["name"]
     expected = {selected: "file:./artifact.tgz"}
@@ -483,7 +806,7 @@ def npm_archive_closure(files: dict[str, bytes]) -> dict:
     total = component["expanded_bytes"]
     members = len(component["files"])
     for path, raw in files.items():
-        if not path.startswith("closure/") or path in ("closure/package-json", "closure/package-lock"):
+        if not path.startswith("closure/") or path in ("closure/package-json", "closure/package-lock", NPM_TARGET_INPUT):
             continue
         archive = npm_archive(raw)
         total += archive["expanded_bytes"]
@@ -545,7 +868,16 @@ def npm_archive_closure(files: dict[str, bytes]) -> dict:
             value = str(prefix)
             if spellings.setdefault(value.casefold(), value) != value:
                 raise InstallError("npm closure has case-aliased directories")
-    return {"rows": rows, "archives": archives, "component_path": component_path, "paths": all_paths}
+    closure = {"rows": rows, "archives": archives, "component_path": component_path, "paths": all_paths}
+    conditional = npm_conditional(lock) or any(npm_conditional({"packages": {"":
+        unique_json(archive["files"]["package.json"])}}) for _, archive in archives.values())
+    if conditional and target is None:
+        raise InstallError("conditional npm graph requires a bound target")
+    if target is not None:
+        closure = npm_target_graph(closure, lock, target)
+        if native and native["manifest"]["target"] != target:
+            raise InstallError("npm and native payload targets differ")
+    return compose_node_native_payloads(closure, files, native) if native else closure
 
 
 def selected_npm_closure(files: dict[str, bytes], plan: dict) -> dict:
@@ -568,6 +900,13 @@ def verify_selected_npm(destination: Path, closure: dict) -> dict:
                 raise InstallError("installed npm payload differs from retained archive")
         graph[path] = {"name": archive["name"], "version": archive["version"],
                        "integrity": archive["integrity"], "files": len(archive["files"])}
+    if native := closure.get("native"):
+        for path, raw in native["files"].items():
+            if read(destination, path) != raw:
+                raise InstallError("installed native payload differs from selected asset")
+        for package, hashes in native["per_package"].items():
+            graph[package]["native_payloads"] = hashes
+            graph[package]["files"] += len(hashes)
     actual = set()
     for root, dirs, filenames in os.walk(destination / "node_modules", followlinks=False):
         for child in dirs + filenames:
@@ -577,6 +916,44 @@ def verify_selected_npm(destination: Path, closure: dict) -> dict:
     if actual - {"node_modules/.package-lock.json"} != closure["paths"]:
         raise InstallError("installed npm file graph differs from closure")
     return graph
+
+
+def node_runtime_hash(runtime: str) -> str:
+    path = Path(runtime)
+    return sha(read(path.parent, path.name, MAX_TOTAL))
+
+
+def observe_node_native_target(runtime: str, destination: Path, env: dict) -> dict:
+    before = node_runtime_hash(runtime)
+    raw = run([runtime, "-p", NODE_NATIVE_TARGET_EXPRESSION], destination, env, "node-native-target", timeout=30)
+    if len(raw) > 65536:
+        raise InstallError("native target observation exceeds output limit")
+    value = native_keys(unique_json(raw), {"node_version", "node_abi", "platform", "arch", "libc"})
+    target = checked_node_native_target({**value, "node_sha256": before})
+    if node_runtime_hash(runtime) != before:
+        raise InstallError("selected native Node executable changed during observation")
+    return target
+
+
+def install_node_native_payloads(destination: Path, native: dict) -> None:
+    """Create only reviewed additions; no overwrite, scripts, imports or repair."""
+    for path, raw in native["files"].items():
+        handle = directory(destination)
+        try:
+            parts = relative(path)
+            for part in parts[:-1]:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=handle)
+                except FileExistsError:
+                    pass
+                child = os.open(part, DIR_FLAGS, dir_fd=handle)
+                os.close(handle)
+                handle = child
+            fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=handle)
+            with os.fdopen(fd, "wb") as output:
+                output.write(raw)
+        finally:
+            os.close(handle)
 
 
 LOCAL_SOFTWARE_DOCUMENT = "local_software_declaration"
@@ -651,6 +1028,12 @@ def install_selected_node(args: argparse.Namespace) -> dict:
     closure = selected_npm_closure(files, plan)
     observed = json.loads(run([runtime, "-p", "JSON.stringify([process.version,process.platform,process.arch])"],
                               destination, env, "node-runtime"))
+    native = closure.get("native")
+    if native or closure.get("npm_target"):
+        bound_target = native["summary"]["target"] if native else closure["npm_target"]
+        if (observe_node_native_target(runtime, destination, env) != bound_target
+                or observed != [bound_target["node_version"], bound_target["platform"], bound_target["arch"]]):
+            raise InstallError("native payload target differs from selected Node runtime")
     env = npm_environment(destination, runtime, env)
     env.update({"npm_config_engine_strict": "true", "npm_config_bin_links": "false"})
     for target, source in (("package.json", "closure/package-json"), ("package-lock.json", "closure/package-lock"),
@@ -667,7 +1050,14 @@ def install_selected_node(args: argparse.Namespace) -> dict:
         run(command + ["cache", "add", str(tarball), "--offline"], destination, env, "npm-cache-" + str(index))
     run(command + ["ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--bin-links=false"],
         destination, env, "npm-install")
+    if native:
+        original = {key: value for key, value in closure.items() if key != "native"}
+        original["paths"] = closure["npm_paths"]
+        verify_selected_npm(destination, original)
+        install_node_native_payloads(destination, native)
     graph = verify_selected_npm(destination, closure)
+    if (native or closure.get("npm_target")) and node_runtime_hash(runtime) != bound_target["node_sha256"]:
+        raise InstallError("selected native Node executable changed during installation")
     launch = [runtime, str(destination / closure["component_path"] / closure["entrypoint"]),
               *plan["entrypoint"]["arguments"]]
     configuration = {"mcpServers": {plan["mcp_name"]: {"command": launch[0], "args": launch[1:]}}}
@@ -677,6 +1067,10 @@ def install_selected_node(args: argparse.Namespace) -> dict:
                "installed_graph": graph, "command": launch, "destination": str(destination),
                "mcp_configuration": configuration,
                "launch_environment": "Owned by the consuming host; this configuration does not clear ambient environment or filter tools."}
+    if closure.get("npm_target"):
+        receipt.update({key: closure[key] for key in ("npm_target", "excluded_optional_packages")})
+    if native:
+        receipt["native_payloads"] = native["summary"]
     # No guessed command is executed against an unknown server. A successful
     # install is not protocol readiness, authorization or business completion.
     ready = destination / "pending-ready"
@@ -1528,6 +1922,21 @@ def verify_existing_selected(args: argparse.Namespace) -> dict:
         proof = {"installed_graph": graph, "verified_payload_files": sum(row["files"] for row in graph.values())}
         if receipt.get("installed_graph") != graph:
             raise InstallError("receipt npm graph differs")
+        if target := closure.get("npm_target"):
+            if (node_runtime_hash(runtime) != target["node_sha256"]
+                    or any(receipt.get(key) != closure[key] for key in ("npm_target", "excluded_optional_packages"))):
+                raise InstallError("receipt conditional npm graph or runtime differs")
+            proof.update({key: closure[key] for key in ("npm_target", "excluded_optional_packages")})
+        elif any(key in receipt for key in ("npm_target", "excluded_optional_packages")):
+            raise InstallError("unexpected conditional npm receipt")
+        native = closure.get("native")
+        if native:
+            if (receipt.get("native_payloads") != native["summary"]
+                    or node_runtime_hash(runtime) != native["summary"]["target"]["node_sha256"]):
+                raise InstallError("native payload receipt or selected Node executable differs")
+            proof["native_payloads"] = native["summary"]
+        elif "native_payloads" in receipt:
+            raise InstallError("unexpected native payload receipt")
         launch = [runtime, str(destination / closure["component_path"] / closure["entrypoint"]), *plan["entrypoint"]["arguments"]]
     configuration = {"mcpServers": {plan["mcp_name"]: {"command": launch[0], "args": launch[1:]}}}
     identity = selected_identity(plan, args)
@@ -1551,7 +1960,7 @@ def verify_existing_selected(args: argparse.Namespace) -> dict:
             **identity, "command": launch,
             "selected_runtime_path": runtime, "retained_payloads": proof,
             "historical_receipt": {"sha256": sha(receipt_raw), "recorded_scope": receipt["scope"]},
-            "excluded": ["Runtime executable bytes, versions, compatibility and historical probe claims are not verified.",
+            "excluded": ["Only explicitly selected native-payload or conditional-graph Node executable bytes are checked when present; runtime behavior, current OS/libc state, compatibility and historical probe claims are not verified.",
                          "Python bootstrap bytes and historical preservation claims are not verified. Generated file hashes establish only consistency with the mutable receipt, not provenance or safety.",
                          "npm-generated hidden lock metadata, caches and step logs are not verified.",
                          "No observed runtime, npm, pip, donor code or MCP server was executed. Authentication, account access, grants, readiness and native activation are not established."],

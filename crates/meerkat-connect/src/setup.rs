@@ -50,6 +50,7 @@ pub(crate) const ACQUISITION_TOOLS: &[&str] = &[
     "setup_acquire_python",
     "setup_search_node",
     "setup_acquire_node",
+    "setup_acquire_node_prebuilt",
     "setup_inspect_acquired",
     "setup_recipes",
     "setup_recipe",
@@ -373,6 +374,7 @@ mod tests {
             for name in [
                 "setup_acquire_python",
                 "setup_acquire_node",
+                "setup_acquire_node_prebuilt",
                 "setup_selected_check",
                 "setup_selected_install",
                 "setup_remember_remote",

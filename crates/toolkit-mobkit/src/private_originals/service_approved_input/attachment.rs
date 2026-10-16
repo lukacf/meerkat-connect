@@ -16,6 +16,12 @@ const MAX_ACTIVE_ATTACHMENTS_PER_ORIGINAL: usize = 64;
 const OBSERVATION_BUDGET: Duration = Duration::from_millis(250);
 type NativeCall = Pin<Box<dyn Future<Output = Result<LiveMcpAttachmentReceipt, LiveMcpAttachError>> + Send>>;
 
+enum ServiceAttachmentReadiness {
+    Pending,
+    Ready,
+    Failed(meerkat_toolkit::setup::ApprovedServiceAttachmentFailure),
+}
+
 // Fixed stage/outcome labels only. These observations establish neither
 // native entry nor settlement, and never authorize retry or readiness.
 fn attachment_diagnostic(stage: &'static str, outcome: &'static str) {
@@ -280,7 +286,7 @@ impl PrivateOriginals {
     /// or its retained call. It cannot authorize a replacement attachment.
     async fn service_attachment_ready(
         &self, held: &Arc<HeldServiceAttachment>, receipt: &LiveMcpAttachmentReceipt,
-    ) -> Result<bool, PrivateOriginalError> {
+    ) -> Result<ServiceAttachmentReadiness, PrivateOriginalError> {
         if !receipt.outcome.staged || receipt.outcome.persisted
             || receipt.attempt.server() != held.control.server().name
             || held.operations.is_empty()
@@ -289,7 +295,10 @@ impl PrivateOriginals {
         let mut generation = None;
         for operation in &held.operations {
             self.attachment_current_after_read(held).await?;
-            if tokio::time::Instant::now() >= deadline { return Ok(false); }
+            if tokio::time::Instant::now() >= deadline {
+                attachment_diagnostic("readiness_observation", "budget_elapsed_before_wait");
+                return Ok(ServiceAttachmentReadiness::Pending);
+            }
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let observed = tokio::time::timeout_at(deadline,
                 receipt.attempt.wait(operation.as_str(), remaining)).await;
@@ -297,14 +306,38 @@ impl PrivateOriginals {
             // The canonical source/task/grant owner is reopened after every
             // native await. A cached AccessView or ready bit is insufficient.
             self.attachment_current_after_read(held).await?;
-            if !within_deadline { return Ok(false); }
-            let Ok(McpAttachmentReadiness::Usable { connection_generation }) = observed else {
-                return Ok(false);
+            // Project only the result already observed, after the same currentness
+            // fence. Failure detail and server/tool descriptors remain private.
+            attachment_diagnostic("native_readiness", match &observed {
+                Ok(McpAttachmentReadiness::Pending) => "pending",
+                Ok(McpAttachmentReadiness::Usable { .. }) => "usable",
+                Ok(McpAttachmentReadiness::ToolNotRouted { .. }) => "tool_not_routed",
+                Ok(McpAttachmentReadiness::Rejected { .. }) => "rejected",
+                Ok(McpAttachmentReadiness::Failed { .. }) => "failed",
+                Ok(McpAttachmentReadiness::Superseded) => "superseded",
+                Ok(McpAttachmentReadiness::Retired) => "retired",
+                Ok(McpAttachmentReadiness::NotCurrent) => "not_current",
+                Err(_) => "observation_timeout",
+            });
+            if !within_deadline {
+                attachment_diagnostic("readiness_observation", "budget_elapsed_after_wait");
+                return Ok(ServiceAttachmentReadiness::Pending);
+            }
+            let connection_generation = match observed {
+                Ok(McpAttachmentReadiness::Usable { connection_generation }) => connection_generation,
+                Ok(McpAttachmentReadiness::Failed { .. }) => return Ok(ServiceAttachmentReadiness::Failed(
+                    meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Failed)),
+                Ok(McpAttachmentReadiness::Rejected { .. }) => return Ok(ServiceAttachmentReadiness::Failed(
+                    meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Rejected)),
+                _ => return Ok(ServiceAttachmentReadiness::Pending),
             };
-            if generation.is_some_and(|prior| prior != connection_generation) { return Ok(false); }
+            if generation.is_some_and(|prior| prior != connection_generation) {
+                attachment_diagnostic("readiness_generation", "mismatch");
+                return Ok(ServiceAttachmentReadiness::Pending);
+            }
             generation = Some(connection_generation);
         }
-        Ok(true)
+        Ok(ServiceAttachmentReadiness::Ready)
     }
 
     pub(super) async fn ensure_service_attachment(
@@ -334,11 +367,12 @@ impl PrivateOriginals {
         attachment_diagnostic("readiness", "entered");
         let ready = self.service_attachment_ready(&held, &receipt).await;
         attachment_diagnostic("readiness", match &ready {
-            Ok(true) => "ready",
-            Ok(false) => "not_ready",
+            Ok(ServiceAttachmentReadiness::Ready) => "ready",
+            Ok(ServiceAttachmentReadiness::Pending) => "not_ready",
+            Ok(ServiceAttachmentReadiness::Failed(_)) => "failed",
             Err(_) => "error",
         });
-        ready
+        self.settle_service_attachment_observation(&held, ready?).await
     }
 
     /// Repeat the same native observation after the final setup/content read,
@@ -352,11 +386,30 @@ impl PrivateOriginals {
         attachment_diagnostic("recheck_readiness", "entered");
         let ready = self.service_attachment_ready(&held, &receipt).await;
         attachment_diagnostic("recheck_readiness", match &ready {
-            Ok(true) => "ready",
-            Ok(false) => "not_ready",
+            Ok(ServiceAttachmentReadiness::Ready) => "ready",
+            Ok(ServiceAttachmentReadiness::Pending) => "not_ready",
+            Ok(ServiceAttachmentReadiness::Failed(_)) => "failed",
             Err(_) => "error",
         });
-        ready
+        self.settle_service_attachment_observation(&held, ready?).await
+    }
+
+    async fn settle_service_attachment_observation(
+        &self, held: &Arc<HeldServiceAttachment>, observed: ServiceAttachmentReadiness,
+    ) -> Result<bool, PrivateOriginalError> {
+        match observed {
+            ServiceAttachmentReadiness::Ready => Ok(true),
+            ServiceAttachmentReadiness::Pending => Ok(false),
+            ServiceAttachmentReadiness::Failed(failure) => {
+                // Native failure is not non-entry evidence. Reopen the exact
+                // source/task/grant, then let its existing cancellation writer
+                // fence B and prove no immutable binding/admission was published.
+                self.attachment_current_after_read(held).await?;
+                self.reject_failed_service_attachment(&held.reference, failure).await?;
+                self.retire_service_attachment(&held.reference, &held.task).await;
+                Ok(false)
+            }
+        }
     }
 
     pub(super) async fn retire_service_attachment(

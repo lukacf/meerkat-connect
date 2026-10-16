@@ -76,6 +76,11 @@ selected-package job's historical documents with its real decision and
 verification references. Retention is not an installation-success or account
 readiness claim, and the original disclosure-only scope cannot save.
 For researched integrations outside the library, the optional [selected-package workflow](SELECTED.md) accepts pinned Python, Node and self-contained MCPB inputs. MCPB check, installation and readback use the same owner CLI and appear in this session view.
+With acquired inspection enabled, `setup_inspect_acquired` lists and reads
+bounded text from the exact retained Python/Node primary archive. Its optional
+`archive_sha256` selects a dependency from the same job's `artifacts` array.
+This [archive research](ACQUIRED-INSPECTION.md) executes no package code and
+grants no additional installation or runtime authority.
 Add `--browser-port 0` to that adapter to serve this same view over its existing
 controller. See [the shared-session workflow](MCP.md#show-the-same-session-in-a-browser).
 The browser observes agent-started jobs automatically without replacing an

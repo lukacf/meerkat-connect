@@ -120,8 +120,12 @@ request to 64 KiB. The shipped `selected/contracts/METADATA.md` and
 
 Add `--enable-acquired-inspection` to expose `setup_inspect_acquired` for
 succeeded live Python/Node acquisition jobs. The agent can list the primary
-archive and read bounded UTF-8 source without executing package code. It still
-chooses the entrypoint and authors metadata. Dependency archives are excluded.
+archive and read bounded UTF-8 source without executing package code. Where the
+advertised schema includes `archive_sha256`, the same tool can inspect a retained
+dependency selected by its exact digest in that job's `artifacts` array. Omitting
+the selector preserves primary inspection. The agent still chooses the
+entrypoint and authors metadata; inspection does not build native addons or
+establish runtime compatibility.
 After restart, an explicitly enabled reader can inspect a recovered acquisition
 only after a matched reconciliation and with the original matching selected
 profile plus current trusted tools. Historical status remains unconfirmed; no
@@ -330,12 +334,25 @@ bundle and installation destination.
   </Step>
 </Steps>
 
-The client receives the **whole server**. A read operation declared in the
-selection does not hide its write tools or authorize them. The host owns
+An ordinary client importing the bare configuration receives the **whole
+server**. A read operation declared in the selection does not hide its write
+tools or authorize them. The host owns
 authentication, resource access, operation approval and process shutdown.
 The emitted configuration does not clear environment variables inherited by
 the client's child process. `ready` identifies completed installation checks,
 not protocol, account or business readiness.
+
+Connect's native protected attachment can separately restrict calls to an
+approved subset of exact MCP tool names through the host's current grant and
+MCP access configuration. A server advertising separate write tools is not,
+by itself, a reason to reject a protected read subset. Inspect the actual
+schemas and request the needed operations through the host's protected review.
+
+An operation-name allowlist does not constrain query semantics, prevent startup
+effects or provide filesystem confinement. An allowed query may still accept
+mutating SQL, and server startup may change files before any tool call. Check
+those behaviors and require the host's separate resource controls. Installation,
+tool names and effect metadata do not prove a read-only connection.
 
 For both the verified installation and restore, the official Python MCP client
 consumed the Node configuration, initialized, listed 14 tools, read a
@@ -511,8 +528,9 @@ entrypoint usability are not claimed as retained-wheel verification.
 
 The Git example requires a trusted Git executable and deliberate Git
 configuration from the launching host. `--repository` selects a repository;
-it does not establish a permission grant or an OS sandbox. The full Git server,
-including its write tools, is exposed to the client.
+it does not establish a permission grant or an OS sandbox. A bare configuration
+exposes the full Git server, including its write tools. The native protected
+operation subset described above requires the consuming host's separate review.
   </Tab>
   <Tab title="Node">
 ```text
@@ -521,15 +539,33 @@ activation.json              exact typed selection
 artifact.tgz                 selected npm server
 closure/package-json         npm project declaration
 closure/package-lock         unchanged npm lock version 3
-closure/archive-ID           each selected dependency archive
+closure/npm-target           host target for a conditional optional graph
+closure/archive-ID           every lock-referenced dependency archive
 ```
 
 The npm project's only dependency points to `file:./artifact.tgz` and its
 `private` field is `true`. The manifest's `PinnedClosure` records the exact
-project files and all archives. Nested dependency versions are supported.
-Its entrypoint is a retained JavaScript file in the primary package with literal
-arguments. The installer does not download missing dependencies or choose newer
-versions.
+project files and all archives, including optional packages excluded on the
+selected target. Nested dependency versions are supported. The current optional
+target contract also pins `npm-target` in that closure. It requires matching
+acquisition and installer versions; earlier kits listed on this page retain
+their published limits.
+
+`closure/npm-target` binds the host-observed Node executable hash, version,
+module ABI, OS, architecture and libc. The installer requires the actual
+selected Node target to match before npm runs. It validates the full lock and
+every archive before excluding an incompatible optional branch, records explicit
+omission reasons, and preserves required dependencies and shared rows.
+Every package retained in the selected graph requires its exact installed files;
+npm success alone is insufficient. Do not edit the lock or guess target facts to fit another
+host. Unconditional graphs keep their existing behavior.
+
+Conditional peer graphs, unsupported libc and native compilation remain outside
+this subset; selected prebuilt addons have a separate contract. Its entrypoint
+is a retained JavaScript file in the primary package with literal arguments.
+The installer does not download missing dependencies or choose newer versions.
+Installation and readback do not establish authentication, a native grant or
+MCP readiness; readback does not execute a probe of the current host's OS/libc.
   </Tab>
 </Tabs>
 

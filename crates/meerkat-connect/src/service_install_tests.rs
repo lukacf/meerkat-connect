@@ -14,6 +14,7 @@ use serde_json::{Value, json, value::RawValue};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 const NAMES: &[&str] = &[
+    "setup_state",
     "setup_check",
     "setup_selected_check",
     "setup_install",
@@ -135,6 +136,14 @@ impl Package {
             resolved,
         ));
         let value = match call.name {
+            "setup_state" => {
+                if self.behavior == 6 {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                self.readback_reply.lock().unwrap().clone()
+                    .unwrap_or_else(|| json!({"scope":"consumer_setup_state"}))
+            },
             "setup_check" | "setup_selected_check" => {
                 self.checks.fetch_add(1, Ordering::SeqCst);
                 if let Some(content) = self.check_blocks.lock().unwrap().clone() {
@@ -2178,7 +2187,7 @@ async fn application_policy_record_and_entry_do_not_invert_phase_and_approval_st
             let call = ToolCallView { id: "install", name: "setup_selected_install", args: &args };
             let result = match retained {
                 Some((held, reviewed, entry)) => runtime.block_on(worker_approvals.shared.review_dispatch(
-                    call, Some(HeldAction::Service(held)), reviewed, None, Some(entry), |held| match held {
+                    call, Some(&context), Some(HeldAction::Service(held)), reviewed, None, Some(entry), |held| match held {
                         HeldAction::Service(held) => owner.arm_action(held),
                         _ => Err(ToolError::access_denied(call.name)),
                     })),
@@ -2579,3 +2588,6 @@ async fn selected_human_recovery_keeps_exact_participant_and_whole_member_policy
 }
 
 }
+
+#[path = "service_install_tests/review_observation.rs"]
+mod review_observation;

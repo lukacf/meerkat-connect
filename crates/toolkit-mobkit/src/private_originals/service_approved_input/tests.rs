@@ -19,6 +19,12 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
         let parent_stored = source.store.get(&source.key(&parent).unwrap()).await.unwrap().unwrap();
         let parent_record = source.decode_record(&parent_stored, &parent).unwrap();
         let dispatch = fixture.probe.as_ref().unwrap().captured();
+        // The cancellation sweep also projects the linked setup. Retain its
+        // real canonical acquisition without reserving or authorizing B.
+        let acquisition = admission_tests::acquisition(&fixture, &dispatch).await;
+        assert!(acquisition.approved_service().is_none());
+        let original_task = acquisition.request().host().continuation.native_original
+            .as_ref().unwrap().clone();
         let event = PrivateAuthenticatedEvent {
             route: parent.route.clone(), original: EvidenceId::new("linked-b").unwrap(),
             occurrence: EvidenceId::new("linked-b").unwrap(),
@@ -30,22 +36,21 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
                 resource_id: EvidenceId::new("linked-b").unwrap(), revision: EvidenceId::new("1").unwrap(),
                 sha256: digest(b"linked-b"),
             },
-            contributors: parent_record.event.contributors.clone(), content_sha256: digest(b"proposed instruction"),
+            contributors: parent_record.event.contributors.clone(),
+            content_sha256: digest(acquisition.request().request().request.as_bytes()),
         };
         let reference = PrivateOriginalRef { route: event.route.clone(), original: event.original.clone(),
             event_sha256: digest(&canonical_json(&event).unwrap()) };
         let key = source.key(&reference).unwrap();
         let link = ApprovedTaskLink {
-            parent: parent.clone(), acquisition: StoreKey { realm: source.scope.realm.clone(), owner: source.scope.owner.clone(), id: "fixture-acquisition".into() },
-            original_task: NativeOriginalTask { origin_session_id: fixture.session.clone(),
-                retained_work: dispatch.retained_work().unwrap().clone(), member: None },
+            parent: parent.clone(), acquisition: acquisition.key().clone(), original_task,
             // Deliberately unresolved: cancellation may not require a current
             // grant, and these coordinates cannot admit or authorize B.
             grant: PrivateServiceGrantRef { route: parent.route.clone(), decision: Id::new("unissued-b").unwrap(),
                 decision_sha256: "0".repeat(64) }, before_ms: u64::MAX,
         };
         let record = SourceRecord { bound_service_input: None, setup_request: None, configured_setup: None, source: parent_record.source.clone(), event,
-            final_association: None, operation_cancelled: false, approved_task: Some(link),
+            final_association: None, operation_cancelled: false, service_attachment_failure: None, approved_task: Some(link),
             // This exercises the actual canonical admitted-field branch. It
             // does not fabricate native B acceptance or a usable B grant.
             service_admission: admitted_partial_write.is_some().then(|| ServiceInputAdmission {

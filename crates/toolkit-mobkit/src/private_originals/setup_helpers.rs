@@ -52,6 +52,9 @@ impl PreparedHelperController {
 pub(crate) struct HeldSetupHelper {
     source: RetainedHelperSource,
     unresolved: Mutex<Vec<Box<dyn GovernedSettlement>>>,
+    // Bound once from the canonical live setup before input admission. Never
+    // reconstructed from source history or refreshed by human approval.
+    operation_deadline_ms: OnceLock<u64>,
 }
 
 impl HeldSetupHelper {
@@ -61,6 +64,48 @@ impl HeldSetupHelper {
     pub(crate) fn source_record(&self) -> &Arc<StoredRecord> {
         &self.source.source_record
     }
+
+    fn bind_setup_deadline(
+        &self,
+        snapshot: &meerkat_toolkit::setup::SetupSnapshot,
+    ) -> Result<(), PrivateOriginalError> {
+        let operation = self.source.policy_source().map_err(helper_error)?.operation;
+        retain_setup_snapshot_deadline(&self.operation_deadline_ms, &operation, snapshot)
+    }
+}
+
+fn retain_setup_snapshot_deadline(
+    held: &OnceLock<u64>, operation: &HelperOperation,
+    snapshot: &meerkat_toolkit::setup::SetupSnapshot,
+) -> Result<(), PrivateOriginalError> {
+    let input = canonical_json(snapshot.request().request())
+        .map_err(|_| PrivateOriginalError::Conflict)?;
+    if operation.acquisition != *snapshot.key()
+        || operation.input_digest != ContentDigest::of_bytes(&input)
+        || snapshot.state().terminal_revision != 0
+    {
+        return Err(PrivateOriginalError::Denied);
+    }
+    retain_exact_setup_deadline(held, snapshot.request().host().limits.deadline_ms)
+}
+
+// Expose only the production data-binding check to existing canonical-store
+// controls. This cannot construct a helper or establish runtime custody.
+#[cfg(test)]
+pub(crate) fn bind_snapshot_deadline_fixture(
+    held: &OnceLock<u64>, operation: &HelperOperation,
+    snapshot: &meerkat_toolkit::setup::SetupSnapshot,
+) -> Result<(), PrivateOriginalError> {
+    retain_setup_snapshot_deadline(held, operation, snapshot)
+}
+
+// Idempotence preserves the original deadline; replay cannot extend it.
+fn retain_exact_setup_deadline(
+    held: &OnceLock<u64>, deadline_ms: u64,
+) -> Result<(), PrivateOriginalError> {
+    let retained = held.get_or_init(|| deadline_ms);
+    if *retained != deadline_ms { return Err(PrivateOriginalError::Conflict); }
+    Ok(())
 }
 
 impl PrivateOriginals {
@@ -73,10 +118,33 @@ impl PrivateOriginals {
     /// This neither promotes input custody nor installs a permissive owner.
     #[cfg(test)]
     pub(crate) fn retain_helper_policy_fixture(&self, source: RetainedHelperSource) {
+        self.retain_helper_policy_deadline_fixture(source, Some(u64::MAX));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retain_helper_policy_deadline_fixture(
+        &self, source: RetainedHelperSource, deadline_ms: Option<u64>,
+    ) {
         source.policy_source().unwrap();
+        let operation_deadline_ms = OnceLock::new();
+        if let Some(deadline) = deadline_ms { operation_deadline_ms.set(deadline).unwrap(); }
         self.helper_sources.lock().unwrap().push(Arc::new(HeldSetupHelper {
-            source, unresolved: Mutex::new(Vec::new()),
+            source, unresolved: Mutex::new(Vec::new()), operation_deadline_ms,
         }));
+    }
+
+    /// Live operation limit of this exact held helper, not a historical grant.
+    /// Missing live binding refuses helper effects; it is never synthesized.
+    pub(crate) fn helper_operation_deadline(
+        &self,
+        association: &meerkat_authorization_contracts::work_association::InputAuthorityAssociation,
+    ) -> Result<Option<u64>, PrivateOriginalError> {
+        let held = self.helper_sources.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+        let mut matches = held.iter().filter(|source| source.original().association() == association);
+        let Some(source) = matches.next() else { return Ok(None); };
+        if matches.next().is_some() { return Err(PrivateOriginalError::Conflict); }
+        source.operation_deadline_ms.get().copied().map(Some)
+            .ok_or(PrivateOriginalError::Unavailable)
     }
 
     /// Exact immutable source facts from a handle this source owner retained.
@@ -395,6 +463,7 @@ impl PrivateOriginals {
         let source = Arc::new(HeldSetupHelper {
             source,
             unresolved: Mutex::new(Vec::new()),
+            operation_deadline_ms: OnceLock::new(),
         });
         held.push(source.clone());
         Ok(source)
@@ -499,6 +568,7 @@ impl PrivateOriginals {
         self: &Arc<Self>,
         prepared: &PreparedHelperController,
         held: Arc<HeldSetupHelper>,
+        snapshot: &meerkat_toolkit::setup::SetupSnapshot,
         content: String,
     ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
         if !prepared
@@ -522,6 +592,7 @@ impl PrivateOriginals {
             .check_admitted_helper(&prepared.admitted)
             .map_err(helper_error)?;
         self.require_helper_selection(prepared.admitted.selection())?;
+        held.bind_setup_deadline(snapshot)?;
         // Capture every actual contributing login before later identity/member
         // awaits. The same handles order final native entry against retirement.
         let entry_fence = entry::for_logins(self.helper_controller_logins(&prepared.admitted)?);
@@ -820,5 +891,23 @@ fn helper_error(error: OriginalWriterError) -> PrivateOriginalError {
             PrivateOriginalError::Denied
         }
         _ => PrivateOriginalError::Unavailable,
+    }
+}
+
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn helper_review_lifetime_deadline_is_bound_once_without_replay_renewal() {
+        let held = OnceLock::new();
+        assert!(held.get().is_none());
+        retain_exact_setup_deadline(&held, 180_000).unwrap();
+        retain_exact_setup_deadline(&held, 180_000).unwrap();
+        for changed in [179_999, 180_001, u64::MAX] {
+            assert!(matches!(retain_exact_setup_deadline(&held, changed), Err(PrivateOriginalError::Conflict)));
+            assert_eq!(held.get(), Some(&180_000));
+        }
     }
 }

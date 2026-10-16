@@ -100,6 +100,12 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
         .map_err(|_| unavailable())?;
     let selection = PublicSelection { operations: proposal.operations.into_iter().collect(),
         agent: proposal.agent, expires_in_ms: proposal.expires_in_ms, tool_policy: proposal.tool_policy };
+    let permitted = selected.public_operations().map_err(|_| unavailable())?;
+    if !selection.operations.is_subset(&permitted) {
+        let names = serde_json::to_string(&permitted).map_err(|_| unavailable())?;
+        return Err(ToolError::InvalidArguments { name: call.name.into(), reason: format!(
+            "operations must contain exact raw MCP tool names from the current checked selection. Use operation_tools values, not declaration IDs from its keys. Permitted raw names: {names}. Select only the operations needed for this task, keeping the same job, agent and requested lifetime. This request has not entered access review.") });
+    }
     let config = selected.public_configuration(&selection.operations).map_err(|_| unavailable())?;
     let prepared = match &owner.tasks {
         Some(tasks) => tasks.prepare_captured_consumer(call, &current, plan).await,
@@ -155,12 +161,12 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
 
 pub fn installed_public_service_request_definition() -> ToolDef {
     ToolDef::new(SETUP_PUBLIC_SERVICE_REQUEST,
-        "Request public service access for the exact waiting task. The selected host uses its application policy or protected Console review. A requires_action result names needed human access review and is not success. Reconcile the installed package or retained remote HTTP export job first. Requires explicit authentication kind none and exact raw names from current library publisher metadata, the selected package canonical manifest, or the retained remote recipe declaration; absence of a native connector is insufficient. Supply only job id, raw operations, intended consumer agent and explicit expires_in_ms (null leaves the task deadline as the limit). Authorized access retains a new instruction and a task-scoped live attachment grant through the existing original-task owner. It never saves realm configuration, creates an account, invokes the service or establishes readiness. A separate public-request capability is required.",
+        "Request public service access for the exact waiting task. The selected host uses its application policy or protected Console review. A requires_action result names needed human access review and is not success. Reconcile the installed package or retained remote HTTP export job first. Requires explicit authentication kind none and exact raw names from current library publisher metadata, the selected package canonical manifest, or the retained remote recipe declaration; absence of a native connector is insufficient. Use operation_tools values as raw names, not its declaration-ID keys. Supply only job id, raw operations, intended consumer agent and explicit expires_in_ms (null leaves the task deadline as the limit). Authorized access retains a new instruction and a task-scoped live attachment grant through the existing original-task owner. It never saves realm configuration, creates an account, invokes the service or establishes readiness. A separate public-request capability is required.",
         json!({"type":"object","additionalProperties":false,"required":["job_id","operations","agent","expires_in_ms"],
             "properties":{"job_id":{"type":"string"},"agent":consumer_agent_schema(),
                 "expires_in_ms":{"type":["integer","null"],"minimum":1},
                 "tool_policy":tool_policy_schema(),
-                "operations":{"type":"array","minItems":1,"maxItems":128,"uniqueItems":true,
+                "operations":{"type":"array","description":"Exact raw MCP tool names: operation_tools values, not declaration-ID keys. Select only the needed subset.","minItems":1,"maxItems":128,"uniqueItems":true,
                     "items":{"type":"string","minLength":1,"maxLength":128}}}}))
 }
 

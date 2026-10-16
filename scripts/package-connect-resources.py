@@ -384,7 +384,8 @@ def runtime_compatibility(archive, resources, target, supported_host, decode, *,
 def build(destination, upstream, zstd, target="macos-arm64", *, library=None,
           library_sha256=None, library_bytes=None, starter=None, release_manifest_sha256=None,
           acquisition_node_archive=None, acquisition_node_sha256=None, acquisition_node_bytes=None,
-          npm_archive=None, npm_archive_sha256=None, npm_archive_bytes=None):
+          npm_archive=None, npm_archive_sha256=None, npm_archive_bytes=None,
+          node_prebuilt_policy=None, node_prebuilt_policy_sha256=None):
     if target not in TARGETS:
         raise ValueError("unsupported packaging target")
     fields = (library, library_sha256, library_bytes, starter, release_manifest_sha256)
@@ -395,6 +396,17 @@ def build(destination, upstream, zstd, target="macos-arm64", *, library=None,
         acquisition_node_bytes, npm_archive, npm_archive_sha256, npm_archive_bytes)
     if acquisition is not None and not explicit:
         raise ValueError("npm resources require explicit current starter and library selection")
+    prebuilt_policy_raw = None
+    if node_prebuilt_policy is not None or node_prebuilt_policy_sha256 is not None:
+        if node_prebuilt_policy is None or not node_prebuilt_policy_sha256 or acquisition is None:
+            raise ValueError("Node prebuilt policy requires an exact pair and selected npm resources")
+        with os.fdopen(os.open(node_prebuilt_policy, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source:
+            metadata = os.fstat(source.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= 65536:
+                raise ValueError("invalid Node prebuilt policy input")
+            prebuilt_policy_raw = source.read(65537)
+        if hashlib.sha256(prebuilt_policy_raw).hexdigest() != node_prebuilt_policy_sha256:
+            raise ValueError("Node prebuilt policy pin mismatch")
     selected = TARGETS[target]
     python, node = (selected[key] for key in ("python", "node"))
     selected_library, selected_starter = library, starter
@@ -455,6 +467,17 @@ def build(destination, upstream, zstd, target="macos-arm64", *, library=None,
         (resources / "runtime/npm-acquisition.tgz").write_bytes(acquisition["npm_raw"])
         acquisition["evidence"]["runtime_metadata"] = observed
         acquisition["evidence"]["scope"] = "captured_archive_metadata_only_not_runtime_qualification"
+    if prebuilt_policy_raw is not None:
+        policy = helpers["decode"](prebuilt_policy_raw)
+        if (not isinstance(policy, dict) or set(policy) != {"schema_version", "scope", "target", "allowed_origins", "allowed_redirect_origins"}
+                or type(policy["schema_version"]) is not int or policy["schema_version"] != 1
+                or policy["scope"] != "trusted_public_node_prebuilt_resources"
+                or not isinstance(policy["target"], dict)
+                or policy["target"].get("node_sha256") != digest(resources / "runtime/acquisition-node/bin/node")
+                or (policy["target"].get("platform"), policy["target"].get("arch")) !=
+                    {"linux-x86_64": ("linux", "x64"), "macos-arm64": ("darwin", "arm64")}[target]):
+            raise ValueError("Node prebuilt policy does not bind the selected target")
+        (resources / "node-prebuilt-policy.json").write_bytes(prebuilt_policy_raw)
     if explicit:
         # Compatibility and packaged payload consume the same pinned capture.
         # A changed external pathname cannot substitute metadata during review
@@ -563,6 +586,10 @@ def build(destination, upstream, zstd, target="macos-arm64", *, library=None,
                        "packager_source_sha256": source_packager_sha, "input_selection": input_selection})
     if acquisition is not None:
         result["npm_acquisition_inputs"] = acquisition["evidence"]
+    if prebuilt_policy_raw is not None:
+        result["node_prebuilt_policy_input"] = {"path": str(node_prebuilt_policy),
+            "sha256": node_prebuilt_policy_sha256, "bytes": len(prebuilt_policy_raw),
+            "scope": "explicit_target_and_origins_host_binds_selected_python_during_preparation"}
     (destination / "build.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -584,6 +611,8 @@ def main():
     parser.add_argument("--npm-archive", type=Path)
     parser.add_argument("--npm-archive-sha256")
     parser.add_argument("--npm-archive-bytes", type=int)
+    parser.add_argument("--node-prebuilt-policy", type=Path)
+    parser.add_argument("--node-prebuilt-policy-sha256")
     args = parser.parse_args()
     selected = {key: getattr(args, key) for key in (
         "library", "library_sha256", "library_bytes", "starter", "release_manifest_sha256")}
@@ -594,6 +623,9 @@ def main():
         "npm_archive", "npm_archive_sha256", "npm_archive_bytes")}
     if any(value is not None for value in acquisition.values()):
         selected.update(acquisition)
+    if args.node_prebuilt_policy is not None or args.node_prebuilt_policy_sha256 is not None:
+        selected.update(node_prebuilt_policy=args.node_prebuilt_policy,
+                        node_prebuilt_policy_sha256=args.node_prebuilt_policy_sha256)
     print(json.dumps(build(args.destination, args.upstream, args.zstd, target=args.target, **selected), sort_keys=True))
 
 

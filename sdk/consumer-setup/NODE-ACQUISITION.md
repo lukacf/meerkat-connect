@@ -1,7 +1,9 @@
 # Acquire an agent-selected Node package
 
 `setup_acquire_node` prepares a chosen public npm package and its exact archive
-closure for the existing selected Node installer. The agent researches the
+closure for the existing selected Node installer. Conditional optional closures
+require matching acquisition and installer versions; older packaged editions
+retain their own supported subset. The agent researches the
 request and chooses the package/version. npm resolves dependencies; Toolkit
 checks the resulting artifacts. No intent matching or entrypoint inference is
 performed.
@@ -126,7 +128,11 @@ protection from a malicious concurrent filesystem writer.
    The canonical inspector and existing offline installer validate the result.
 
 The prepared layout contains `artifact.tgz`, `closure/package-json`,
-`closure/package-lock` and every required dependency archive. The npm project
+`closure/package-lock` and every lock-referenced dependency archive, including
+archives that will be excluded for the selected target. Conditional closures
+also contain the host-generated `closure/npm-target`; bind its exact bytes as
+the `npm-target` entry in the selected `PinnedClosure`, alongside the project,
+lock and all archives. The npm project
 selects only `file:./artifact.tgz`; the lock bytes emitted by npm are retained
 unchanged. Toolkit's package metadata stays separate from this npm project.
 The acquisition receipt is written last and is not an installation or readiness
@@ -137,12 +143,23 @@ shape without a target field. The job retains the host-owned `probe.json` and
 `resolve.json` settings, the `preflight.json` Node observation and the matching
 `runtime.json` resolution observation. All four must agree before publication.
 
-The acquisition target does not add a target selector to the selected Node
-installer. That installer remains platform-neutral: it validates the archive
-closure, runs its existing offline npm installation with package engine checks,
-and records the actual Node version, platform and architecture. Use the acquired
-inputs on the intended installation host and inspect that installation receipt.
-Acquisition success does not establish later runtime compatibility or usability.
+For a conditional graph, `closure/npm-target` binds the observed Node executable
+SHA-256, version, module ABI, platform, architecture and libc (the observed glibc
+version on Linux, null on macOS). These facts come from the existing host-owned
+probe, not an agent-selected target. Before offline npm installation, the
+installer requires the actual selected Node runtime to match that complete
+binding. Moving the bundle to a different target requires a new acquisition;
+editing its lock or target record is not a compatibility repair.
+
+The parser checks the full lock and all archives before selecting a realizable
+graph. A platform-incompatible optional branch may be excluded with an explicit
+reason; required dependencies and shared required rows cannot be omitted.
+Dependencies within a selected subtree remain required unless their own edge is
+optional. Compatible selected optional packages must appear with their exact
+files in installed readback even if npm reports success. The receipt records
+`npm_target` and `excluded_optional_packages`. Unconditional closures retain
+their existing behavior. Acquisition success does not establish later runtime
+startup, authentication, native grants or usability.
 
 The existing setup controller owns jobs, stop, process join and request replay.
 A request ID can identify only one acquisition kind and exact argument set in
@@ -173,10 +190,14 @@ The acquisition deadline is 120 seconds; each archive is at most 64 MiB, retaine
 inputs at most 512 MiB, and there are at most 255 unique package archives. Existing
 installer expansion, path, member-count and complete graph checks still apply.
 
-The current closure subset excludes optional/platform-conditional packages,
-bundled dependencies, aliases, workspaces, links and shrinkwrap files. npm can
-silently omit forbidden optional dependencies, so success from npm alone is not
-accepted as proof of a complete supported closure. Unsupported selections fail
+The bounded optional/platform subset requires the exact target binding above.
+Conditional graphs with peer metadata or `devOptional`, unsupported libc,
+workspaces and shrinkwrap remain unsupported. Bundled dependencies, aliases and
+links remain refused. Required dependency failures and optional acquisition,
+extraction, engine or script failures do not become successful omissions. npm
+success alone is not a complete installed-graph proof. Packages requiring native
+compilation still need a separately supported backend; explicitly selected
+prebuilt addons retain their separate contract. Unsupported selections fail
 explicitly; their lock is never edited to manufacture compatibility.
 
 This is software acquisition, not native `find_and_install`, protected account
@@ -194,3 +215,7 @@ Readback verifies the target against the frozen acquisition profile, receipt and
 retained worker observations without executing the old Python, Node or npm.
 Missing or inconsistent Linux target proofs remain unconfirmed. Older Mac
 acquisitions without the new probe files retain their existing readback path.
+
+For conditional closures, readback also recomputes the selected graph and checks
+the retained target/omission record. It executes no runtime probe and does not
+establish the reader host's current OS or libc compatibility.

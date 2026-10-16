@@ -206,8 +206,14 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         continuation.bind_native(native.mob_runtime()).unwrap();
         let handle = native.mob_handle();
         let member = MemberIdentity::from(MEMBER);
+        let identity = AgentIdentity::parse(MEMBER).unwrap();
+        // Match Meta's normal bridge labels so the identity completion monitor
+        // can attribute events from these manually materialized members.
         handle
-            .spawn_spec(SpawnMemberSpec::new("worker", member.clone()))
+            .spawn_spec(SpawnMemberSpec::new("worker", member.clone()).with_labels(BTreeMap::from([
+                ("agent_identity".to_owned(), identity.as_str().to_owned()),
+                ("profile_name".to_owned(), "worker".to_owned()),
+            ])))
             .await
             .unwrap();
         let session = handle
@@ -241,6 +247,9 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         .expect("selected fixture credential publishes within its setup deadline");
         let helper_member =
             MemberIdentity::from(crate::installed_host::controller_first_input_fixture::HELPER);
+        let helper =
+            AgentIdentity::parse(crate::installed_host::controller_first_input_fixture::HELPER)
+                .unwrap();
         let helper_profile = if report.is_some() { installed::REPORT_PROFILE }
             else if private_helper_entry { installed::PRIVATE_HELPER_PROFILE } else { "worker" };
         let helper_session = if configured_report {
@@ -248,7 +257,10 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             None
         } else {
             handle
-                .spawn_spec(SpawnMemberSpec::new(helper_profile, helper_member.clone()))
+                .spawn_spec(SpawnMemberSpec::new(helper_profile, helper_member.clone()).with_labels(BTreeMap::from([
+                    ("agent_identity".to_owned(), helper.as_str().to_owned()),
+                    ("profile_name".to_owned(), helper_profile.to_owned()),
+                ])))
                 .await
                 .unwrap();
             let helper_session = handle
@@ -308,7 +320,6 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
                 meerkat_mobkit::identity_first::AgentRuntimeServices::new(handle.clone()),
             ),
         );
-        let identity = AgentIdentity::parse(MEMBER).unwrap();
         let member_spec = DurableAgentSpec {
             identity: identity.clone(),
             profile: ProfileName::from("worker"),
@@ -323,9 +334,6 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             binding: None,
             placement: None,
         };
-        let helper =
-            AgentIdentity::parse(crate::installed_host::controller_first_input_fixture::HELPER)
-                .unwrap();
         let mut helper_spec = member_spec.clone();
         helper_spec.identity = helper.clone();
         helper_spec.profile = ProfileName::from(helper_profile);

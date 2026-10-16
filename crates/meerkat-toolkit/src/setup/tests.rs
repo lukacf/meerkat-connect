@@ -1571,3 +1571,61 @@ fn legacy_admission_timestamp_is_not_reinterpreted_as_observation_time() {
     legacy["admitted_at_ms"] = value;
     assert!(serde_json::from_value::<ContinuationAdmissionEvidence>(legacy).is_err());
 }
+
+
+#[tokio::test]
+async fn absent_attachment_failure_preserves_legacy_record_and_obligation_bytes() {
+    let f = Fixture::new();
+    let terminal = terminal(&f, AcquisitionPhase::Unavailable).await;
+    let record_bytes = canonical_json(&terminal.record).unwrap();
+    let legacy: serde_json::Value = serde_json::from_slice(&record_bytes).unwrap();
+    assert!(legacy.get("service_attachment_failure").is_none());
+    let decoded: super::AcquisitionRecord = serde_json::from_value(legacy).unwrap();
+    assert!(decoded.service_attachment_failure.is_none());
+    assert_eq!(canonical_json(&decoded).unwrap(), record_bytes);
+    let obligation = super::continuation_obligation(&decoded, terminal.request()).unwrap();
+    let bytes = canonical_json(&obligation).unwrap();
+    let mut legacy = serde_json::to_value(&obligation).unwrap();
+    assert!(legacy.as_object_mut().unwrap().remove("service_attachment_failure").is_none());
+    assert_eq!(canonical_json(&legacy).unwrap(), bytes);
+    assert_eq!(obligation.digest().unwrap(), ContentDigest::of_bytes(&bytes));
+}
+
+#[tokio::test]
+async fn attachment_failure_record_requires_reserved_unavailable_without_readiness() {
+    use super::service_continuation::ApprovedServiceReady;
+    let f = Fixture::new();
+    let snapshot = f.admit().await;
+    let selected = ApprovedServiceSelection {
+        source: StoreKey { realm: f.tenant.to_string(), owner: f.deployment.to_string(), id: "b".into() },
+        original_work: meerkat_authorization_contracts::work_association::OriginalWorkRef {
+            authority: f.request.original_work().authority.clone(), work: meerkat_authorization_contracts::evidence::EvidenceId::new("different-b").unwrap() },
+        source_identity: ContentDigest::of_bytes(b"exact-b-source"),
+    };
+    // Codec controls construct generated states, not admitted source authority.
+    let (mut reserved, _) = super::apply(&snapshot, AcquisitionInput::RecordSelection {
+        operation_id: snapshot.state().operation_id.clone(), authority_digest: snapshot.state().authority_digest.clone(),
+        expected_revision: snapshot.state().revision, selection_digest: super::digest(&selected).unwrap().to_string(),
+        decision_ref: super::digest(&selected).unwrap().to_string(), now: 201,
+    }).unwrap();
+    reserved.approved_service = Some(selected.clone());
+    let mut reserved_snapshot = snapshot.clone();
+    reserved_snapshot.record = reserved.clone();
+    let (mut failed, _) = super::apply_selected_source(&reserved_snapshot, AcquisitionInput::ReportUnavailable {
+        operation_id: reserved.state.operation_id.clone(), authority_digest: reserved.state.authority_digest.clone(),
+        expected_revision: reserved.state.revision, detail_ref: super::digest(&reference("failed")).unwrap().to_string(), now: 202,
+    }).unwrap();
+    failed.detail = Some(reference("failed"));
+    failed.service_attachment_failure = Some(ApprovedServiceAttachmentFailure::Failed);
+    super::validate_record(&failed, &f.request).unwrap();
+    let mut without_selection = failed.clone();
+    without_selection.approved_service = None;
+    assert!(super::validate_record(&without_selection, &f.request).is_err());
+    reserved.service_attachment_failure = Some(ApprovedServiceAttachmentFailure::Failed);
+    assert!(super::validate_record(&reserved, &f.request).is_err());
+    let mut with_ready = failed;
+    with_ready.service_ready = Some(ApprovedServiceReady { selection_digest: super::digest(&selected).unwrap(),
+        selection_generation: 1, observed_at_ms: 202,
+        admission: ApprovedServiceInput { source_admission: reference("input"), runtime: id("runtime"), session: id("session"), input: id("input") } });
+    assert!(super::validate_record(&with_ready, &f.request).is_err());
+}

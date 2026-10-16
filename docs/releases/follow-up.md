@@ -3,6 +3,34 @@
 The first release retains the complete integration-library and agent-led
 acquisition goals while limiting supported deployment breadth.
 
+## Unreleased development progress
+
+Follow-up source improves package acquisition and setup recovery while retaining
+the same released Core/Meta 0.9.0 contracts. It does not replace the published
+Connect 0.9.0 binaries.
+
+The latest fresh Console development run completed application installation,
+startup, agent-led discovery and software installation. The helper corrected its
+consumer identifier after actionable feedback and reached protected access
+review. The review expired without approval. A separate review-polling defect
+delayed recovery until the outer ten-minute tool timeout; the helper then
+reported unavailability and the original agent returned an honest no-data
+answer. No access grant, database read or completed business task is claimed.
+
+Package support now includes target-bound optional npm dependencies. A pinned
+Linux test acquired `chokidar-cli@3.0.0`, then installed it offline with lifecycle
+scripts disabled, retained the macOS-only dependency archive while excluding it
+from installation, and verified a fresh file event using the shipped program.
+This is actual package-backend use, separate from native approval or MCP
+attachment. Optional peers, arbitrary native payloads and broader platform
+coverage remain explicit limits.
+
+The immediate priority remains a useful answer through the complete fresh
+Console journey. Account onboarding, persistent frontends and the other areas
+below retain their own completion requirements.
+
+## Released 0.9.0 limits
+
 | Area | Practical limit in 0.9.0 |
 | --- | --- |
 | Frontends and custom extensions | Source components and role contracts remain available for explicit host adoption. There is no general Telegram, Slack frontend, HomeCore, Reachy or OB3 migration promise. A persistent application must own identity, audience, routing and delivery. |

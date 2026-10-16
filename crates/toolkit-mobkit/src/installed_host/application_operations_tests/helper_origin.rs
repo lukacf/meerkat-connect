@@ -15,7 +15,23 @@ struct HelperFixture {
 }
 impl HelperFixture {
     async fn new() -> Self {
-        let installed = Fixture::new().await;
+        Self::from_installed(Fixture::new().await, SessionId::new(), Some(u64::MAX)).await
+    }
+
+    async fn with_deadline(deadline_ms: Option<u64>, grant_expiry: Option<u64>) -> Self {
+        let session = SessionId::new();
+        let helper_session = session.clone();
+        let installed = Fixture::with_operations(move |native, _| {
+            let mut bounds = memory_bounds(native, &helper_session);
+            if let Some(expiry) = grant_expiry {
+                bounds.lifetime = meerkat_authorization_contracts::constraints::LifetimeRestriction::window(0, expiry);
+            }
+            bounds
+        }).await;
+        Self::from_installed(installed, session, deadline_ms).await
+    }
+
+    async fn from_installed(installed: Fixture, session: SessionId, deadline_ms: Option<u64>) -> Self {
         let native = &installed.application.native;
         assert!(installed.association.candidate().original_work.authority != native.ingress_domain.authority);
         let controller_parent = native.routes[0].controller_parent.clone().unwrap();
@@ -45,7 +61,6 @@ impl HelperFixture {
             },
             member, grant_caller: native.grant_administrator.clone(),
         };
-        let session = SessionId::new();
         assert_ne!(session, installed.session);
         let mut target = installed.association.candidate().target.clone();
         target.context = id(&session.to_string());
@@ -72,7 +87,7 @@ impl HelperFixture {
         assert!(origin.original_authority == installed.association.candidate().original_work.authority);
         assert!(origin.source_owner == installed.association.candidate().ingress_namespace.ingress);
         let association = source.original.association().clone();
-        installed.application.originals.retain_helper_policy_fixture(source);
+        installed.application.originals.retain_helper_policy_deadline_fixture(source, deadline_ms);
         Self { installed, association, origin, session }
     }
 
@@ -185,4 +200,172 @@ fn in_bounds(bounds: &ExecutionRestrictions, values: &meerkat_authorization::pol
         action: &values.action, resource_domain: &values.resource_domain,
         processor: &values.processor, audience: &values.audience, now_ms: 0,
     }).is_ok()
+}
+
+
+// This clock controls actual native prepared authorization, not a timer sleep.
+// The durable grant owner and retained source policy remain the real fixtures.
+struct ReviewClock {
+    start: meerkat_authorization::clock::LocalAuthorizationTime,
+    elapsed: std::sync::atomic::AtomicU64,
+}
+impl ReviewClock {
+    fn new() -> Arc<Self> {
+        use meerkat_authorization::clock::LocalAuthorizationClock;
+        Arc::new(Self {
+            start: HostAuthorizationClock.now().unwrap(),
+            elapsed: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+    fn at(&self, elapsed: u64) { self.elapsed.store(elapsed, std::sync::atomic::Ordering::SeqCst); }
+    fn deadline(&self, elapsed: u64) -> u64 { self.start.unix_ms + elapsed }
+}
+impl meerkat_authorization::clock::LocalAuthorizationClock for ReviewClock {
+    fn now(&self) -> Result<meerkat_authorization::clock::LocalAuthorizationTime,
+        meerkat_authorization::clock::LocalClockError>
+    {
+        let elapsed = self.elapsed.load(std::sync::atomic::Ordering::SeqCst);
+        Ok(meerkat_authorization::clock::LocalAuthorizationTime {
+            unix_ms: self.deadline(elapsed),
+            monotonic: self.start.monotonic + std::time::Duration::from_millis(elapsed),
+        })
+    }
+}
+impl HelperFixture {
+    fn native_context(&self, clock: Arc<ReviewClock>) -> WorkAuthorizationContext {
+        WorkAuthorizationContext::new(Arc::new(meerkat_authorization::work::LocalWorkAuthorization::new(
+            Arc::new(self.association.clone()), self.installed.policy.clone(),
+            self.installed.source.publication(), clock,
+        )), scope(&self.session))
+    }
+    fn memory_binding(&self) -> PreparedAuthorizationBinding {
+        PreparedAuthorizationBinding::new(OperationAuthorizationFacts {
+            operation_id: serde_json::from_str("\"00000000-0000-0000-0000-000000000006\"").unwrap(),
+            execution_scope: scope(&self.session), run_id: None, context_revision: None,
+            operation: AuthorizationOperation::Source(SourceAuthorizationFacts {
+                usage: SourceAuthorizationUse::Read,
+                target: SourceAuthorizationTarget::Memory(MemorySearchScope::for_session(self.session.clone())),
+            }),
+        })
+    }
+}
+
+#[tokio::test]
+async fn helper_review_lifetime_keeps_same_native_preparation_current_past_sixty_seconds() {
+    let clock = ReviewClock::new();
+    let fixture = HelperFixture::with_deadline(Some(clock.deadline(180_000)), None).await;
+    let context = fixture.native_context(clock.clone());
+    let binding = fixture.memory_binding();
+    let prepared = context.authorization().prepare(&binding).unwrap();
+    clock.at(108_475); // The actual failed review wait, without sleeping or re-preparing.
+    prepared.check_current(&binding).unwrap();
+    let now = clock.deadline(108_475);
+    for purpose in [LocalPolicyPurpose::Operation, LocalPolicyPurpose::Controller] {
+        let expected = if purpose == LocalPolicyPurpose::Operation { clock.deadline(180_000) } else { now + 60_000 };
+        assert_eq!(fixture.installed.application.authorize_admitted_work(
+            &fixture.association, &binding, purpose, now,
+        ).unwrap().expires_at_ms, expected);
+    }
+    assert_eq!(fixture.installed.application.authorize_operation(
+        &fixture.association, &binding, LocalPolicyPurpose::Operation, now,
+    ).unwrap().expires_at_ms, clock.deadline(180_000));
+    clock.at(180_000);
+    denied(prepared.check_current(&binding));
+    denied(context.authorization().prepare(&binding));
+}
+
+#[tokio::test]
+async fn helper_review_lifetime_retains_shorter_setup_and_native_grant_expiry() {
+    for (setup_ms, grant_ms) in [(45_000, 180_000), (180_000, 90_000)] {
+        let clock = ReviewClock::new();
+        let fixture = HelperFixture::with_deadline(Some(clock.deadline(setup_ms)),
+            Some(clock.deadline(grant_ms))).await;
+        let context = fixture.native_context(clock.clone());
+        let binding = fixture.memory_binding();
+        let prepared = context.authorization().prepare(&binding).unwrap();
+        clock.at(setup_ms.min(grant_ms) - 1);
+        prepared.check_current(&binding).unwrap();
+        clock.at(setup_ms.min(grant_ms));
+        denied(prepared.check_current(&binding));
+        denied(context.authorization().prepare(&binding));
+    }
+}
+
+#[tokio::test]
+async fn helper_review_lifetime_missing_live_deadline_never_falls_back_to_ordinary_work() {
+    let clock = ReviewClock::new();
+    let fixture = HelperFixture::with_deadline(None, None).await;
+    let binding = fixture.memory_binding();
+    assert!(matches!(fixture.native_context(clock.clone()).authorization().prepare(&binding),
+        Err(OperationAuthorizationError::Unavailable)));
+    assert!(matches!(fixture.installed.application.authorize_admitted_work(
+        &fixture.association, &binding, LocalPolicyPurpose::Operation, clock.start.unix_ms,
+    ), Err(OperationAuthorizationError::Unavailable)));
+    // Controller custody remains separately native-owned, including during close.
+    assert_eq!(fixture.installed.application.authorize_admitted_work(
+        &fixture.association, &binding, LocalPolicyPurpose::Controller, clock.start.unix_ms,
+    ).unwrap().expires_at_ms, clock.deadline(60_000));
+    assert_eq!(fixture.installed.application.allowance_deadline(
+        &fixture.installed.association, LocalPolicyPurpose::Operation, clock.start.unix_ms,
+    ).unwrap(), clock.deadline(60_000));
+    let mut foreign = fixture.association.candidate().clone();
+    foreign.target.context = id(&SessionId::new().to_string());
+    let foreign = InputAuthorityAssociation::new(foreign).unwrap();
+    assert_eq!(fixture.installed.application.originals.helper_operation_deadline(&foreign).unwrap(), None);
+    assert!(fixture.installed.application.authorize_admitted_work(
+        &foreign, &binding, LocalPolicyPurpose::Operation, clock.start.unix_ms,
+    ).is_err());
+}
+
+#[tokio::test]
+async fn helper_review_lifetime_publication_change_still_refuses_entry_after_wait() {
+    for change in ["revoke", "close", "cancel"] {
+        let clock = ReviewClock::new();
+        let fixture = HelperFixture::with_deadline(Some(clock.deadline(180_000)), None).await;
+        let context = fixture.native_context(clock.clone());
+        let binding = fixture.memory_binding();
+        let prepared = context.authorization().prepare(&binding).unwrap();
+        clock.at(108_475);
+        prepared.check_current(&binding).unwrap();
+        match change {
+            "revoke" => {
+                let machine = meerkat_runtime::MeerkatMachine::ephemeral().with_local_grant_authorization(
+                    fixture.installed.source.configuration(
+                        ScopedInvocation::from_policy(fixture.installed.application.clone()),
+                        fixture.installed.application.clone(), None),
+                ).unwrap();
+                let mut custody = machine.try_controller_grant_mutation().unwrap();
+                fixture.installed.source.grants().revoke(
+                    &fixture.installed.application.native.grant_administrator,
+                    fixture.association.candidate().authority_basis.lineage_for(None).unwrap().last().unwrap(),
+                    &mut custody,
+                ).unwrap();
+            }
+            "close" => { fixture.installed.lifetime.begin_close_activation(HostCloseReason::OperatorDisable).unwrap(); }
+            "cancel" => {
+                // Cancel the exact canonical parent retained by its real owner.
+                // The helper policy fixture's synthetic origin locator is not
+                // the source-returned event reference used for cancellation.
+                let originals = &fixture.installed.application.originals;
+                assert_eq!(originals.binding_evidence(&fixture.installed.reference).await.unwrap(),
+                    Some(fixture.installed.association.clone()));
+                assert_eq!(fixture.installed.reference.original,
+                    fixture.installed.retained.association().candidate().original_work.work);
+                originals.record_operation_cancelled(&fixture.installed.reference).await.unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(prepared.check_current(&binding).is_err(), "{change}");
+        // Native current_tool reparses only ReprepareRequired. A new preparation
+        // must still refuse; observing a publication change is not permission.
+        let entries = std::sync::atomic::AtomicUsize::new(0);
+        let current = context.authorization().prepare(&binding);
+        if let Ok(current) = &current {
+            if current.check_current(&binding).is_ok() {
+                entries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        assert!(current.is_err(), "{change}");
+        assert_eq!(entries.load(std::sync::atomic::Ordering::SeqCst), 0, "{change}");
+    }
 }

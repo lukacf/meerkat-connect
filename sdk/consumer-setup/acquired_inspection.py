@@ -1,4 +1,4 @@
-"""Read-only primary archive research using the pinned installer's parsers.
+"""Read-only retained archive research using the pinned installer's parsers.
 
 This private worker accepts only controller-authored stdin. It never imports
 archive members, extracts files, resolves dependencies or chooses entrypoints.
@@ -19,6 +19,7 @@ CHUNK = 32 * 1024
 TEXT_LIMIT = 1024 * 1024
 OUTPUT_LIMIT = 256 * 1024
 SCOPE = "acquired_primary_archive_only"
+DEPENDENCY_SCOPE = "acquired_dependency_archive_only"
 
 
 def sha(raw):
@@ -50,6 +51,9 @@ def read_tool(path, expected):
 
 
 def inspect(request):
+    role = request.get("archive_role", "primary")
+    if role not in ("primary", "dependency"):
+        raise ValueError()
     owner_raw = read_tool(request["installer"], request["installer_sha256"])
     owner = {"__name__": "toolkit_pinned_archive_inspector"}
     exec(compile(owner_raw, request["installer"], "exec"), owner)
@@ -65,7 +69,7 @@ def inspect(request):
     else:
         raise ValueError()
     files = parsed["files"]
-    result = {"schema_version": 1, "scope": SCOPE, "profile": profile,
+    result = {"schema_version": 1, "scope": SCOPE if role == "primary" else DEPENDENCY_SCOPE, "profile": profile,
               "filename": request["filename"], "archive_sha256": sha(raw)}
     selection = request["selection"]
     if set(selection) == {"after"}:

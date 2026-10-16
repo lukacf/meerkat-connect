@@ -461,6 +461,24 @@ The rows neither read credentials nor grant permission to inject environment
 variables. Reconciliation and recovered sessions do not return a current
 reference projection or rerun the configuration validator.
 
+## Acquired archive research
+
+When the host enables acquired inspection, `setup_inspect_acquired` accepts the
+exact acquisition `job_id` and `receipt_sha256`, plus either `after` for a member
+listing or `member` and `offset` for bounded UTF-8 text. The primary archive is
+the default. To inspect a retained dependency, add `archive_sha256` using the
+exact digest from that same job's `artifacts` array. Keep that selector on
+subsequent pages and reads. No path, URL or additional tool grant is needed.
+
+The host revalidates the complete receipt and retained inputs before and after
+the read. The result identifies the selected filename and archive digest, with
+scope `acquired_primary_archive_only` or `acquired_dependency_archive_only`.
+This reads inert package contents; it does not download dependencies, run
+lifecycle scripts, install a package or validate runtime compatibility. See the
+[archive inspection contract](ACQUIRED-INSPECTION.md) for bounds and the separate
+explicitly enabled recovery behavior. Older frozen adapters retain their
+advertised schema; use the dependency selector only when it is exposed.
+
 ## Package metadata corrections
 
 `setup_inspect_package` uses the host-pinned canonical inspector on the exact

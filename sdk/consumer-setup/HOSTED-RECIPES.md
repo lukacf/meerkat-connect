@@ -113,6 +113,10 @@ Inspect actual schemas and admit only the operations needed for the task.
 The portable form supports the canonical HTTPS `streamable-http` shape without
 inline headers or URL query credentials. It exposes the **whole endpoint**;
 selected operations in metadata do not become an MCP operation filter.
+Where available, Connect's native protected attachment separately enforces the
+host-approved subset of exact tool names. That can exclude separate write tools,
+but does not constrain query semantics, prevent startup effects or provide
+filesystem confinement. See [operation selection and runtime enforcement](METADATA.md#operation-selection-and-runtime-enforcement).
 Packages needing Toolkit host services, state or custom runtime dependencies
 cannot be made independent by exporting them. Guidance-only recipes can retain
 explicit blockers, but cannot export a fictitious working endpoint.

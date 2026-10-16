@@ -356,6 +356,15 @@ ordinary whole-endpoint MCP configuration, not an operation-filtered proxy.
 Connection, TLS trust, account access, per-call permission and assessment of the
 task result remain separate host/client steps.
 
+Where the consuming host exposes Connect's native protected attachment, it can
+separately enforce an approved subset of exact MCP tool names. A server's
+separate write tools do not by themselves exclude a protected read subset.
+An operation-name allowlist does not constrain query semantics, prevent startup
+effects or provide filesystem confinement. Inspect the allowed tools and
+server behavior, and require the host's separate resource controls. Metadata
+and export do not provide that authority. See
+[operation selection and runtime enforcement](METADATA.md#operation-selection-and-runtime-enforcement).
+
 Existing callers may instead send a complete legacy `ActivationManifest` as
 `activation_json`. Supply exactly one of these fields. Legacy canonical bytes,
 manifest digests and saved requests keep their original meaning. The new form

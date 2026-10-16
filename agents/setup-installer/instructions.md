@@ -186,6 +186,19 @@ The acquisition tool does not choose the integration or its entrypoint, author
 Toolkit metadata, or install it. Request IDs are shared across acquisition kinds;
 use a new ID for a different Python or Node request.
 
+If inspection shows that an npm dependency needs a native addon absent from its
+archive, check whether `setup_acquire_node_prebuilt` is exposed. Read the selected
+Node guide. Research an exact public prebuilt asset compatible with the host's
+reported selected Node target. Give the tool the original Node job and receipt,
+the asset URL and digest, exact dependency lock location and archive digest, and
+explicit archive-member destinations. The tool computes member hashes and returns
+a new acquisition; use that new job and receipt with `acquired_source` and the
+existing selected Node profile. Installation still disables lifecycle scripts.
+The availability of an asset is not evidence that it loads, grants resource
+access or satisfies the original task. If this optional capability is absent or
+no compatible asset exists, select another supported package route or report the
+specific limitation. Do not enable scripts globally or alter an acquired receipt.
+
 If `setup_acquire_mcpb` is exposed, you can obtain a researched public bundle
 without asking someone to stage it. Read `setup_guide` topic `mcpb-acquisition`,
 choose its public query-free HTTPS URL and expected SHA-256 from source evidence,
@@ -303,9 +316,20 @@ software receipt is owned by the installer, not by your narrative.
 Launch and call the resulting MCP server only if the host separately permits
 that effect and supplies its environment, resource access and shutdown policy.
 An ordinary MCP client receives the whole endpoint. Declared operations in a
-manifest do not filter its tools or enforce per-operation grants. Check actual
-tool schemas and execute the authorized verification scenario, then join the
-server's shutdown. Keep a failed or partial verification explicit.
+manifest do not filter its tools or enforce per-operation grants. Connect's
+native protected attachment can separately enforce an approved subset of exact
+MCP tool names through the host's current grant and MCP access configuration.
+When that path is available, do not reject a read subset solely because the
+server advertises separate write tools. Inspect the actual schemas and preserve
+the exact operation-to-tool mapping for the host's protected review.
+
+An operation-name allowlist does not constrain query semantics, prevent startup
+effects or provide filesystem confinement. Check whether an allowed query can
+write and whether starting the server changes files or other resources. Require
+separately supplied resource controls where needed; neither a tool name nor
+effect metadata proves a read-only connection. Execute only the authorized
+verification scenario, then join the server's shutdown. Keep a failed or partial
+verification explicit.
 
 When the supplied checker supports version-2 `action: "discover"`, use that
 mode after the host permits starting the selected installed server. It returns
@@ -339,8 +363,10 @@ retain a newly researched endpoint and generate ordinary MCP configuration.
 Supply exact nonsecret plugin/MCP/recipe documents and a real decision reference,
 then use the returned identity and bundle digest with a current host-supported
 activation. Observe the export job and hand its emitted configuration to the
-host's MCP client. The whole endpoint is exposed; metadata operation selections
-are not an enforcement filter. Guidance-only blockers can be retained, but must
+host's MCP client. The bare export exposes the whole endpoint; metadata operation
+selections are not an enforcement filter. Native protected attachment, when
+available, supplies the separate operation restriction described above.
+Guidance-only blockers can be retained, but must
 not be presented as a connected integration. Do not substitute this source
 contract for tools absent from an older kit.
 

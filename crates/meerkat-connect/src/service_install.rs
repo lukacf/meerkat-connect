@@ -824,6 +824,63 @@ impl CheckedInstalls {
         Ok(())
     }
 
+    /// Join a retained review to this exact checked owner and proposal. Only
+    /// nonsecret correlation and a retained job locator leave this owner.
+    pub(crate) fn software_review_binding(
+        &self, target: &Readback, call: ToolCallView<'_>, session: &SessionId,
+        native: &meerkat_core::ApprovalRecord,
+    ) -> Result<Value, ToolError> {
+        let arguments = document(call.args.get())?;
+        let state = self.state.lock().map_err(|_| unavailable())?;
+        let proposal = state.proposals.get(&target.validation_id).ok_or_else(|| refused("setup_state"))?;
+        let mut reviewed = proposal.review.clone();
+        reviewed["tool"] = call.name.into();
+        reviewed["call_id"] = call.id.into();
+        if state.retired || state.realm.as_ref() != Some(&target.realm)
+            || target.session != *session || proposal.session != *session
+            || !Arc::ptr_eq(&target.binding, &self.inner)
+            || !Arc::ptr_eq(&target.operation_names, &proposal.operation_names)
+            || target.epoch != proposal.epoch
+            || target.epoch != self.inner.execution_binding_epoch(call.name)
+            || proposal.kind.install() != call.name || proposal.install != arguments
+            || target.proposal.as_ref() != &proposal.review
+            || !matches!(&native.owner, meerkat_core::ApprovalOwnerRef::Session { session_id } if session_id == session)
+            || native.resource.kind != meerkat_core::ApprovalResourceKind::ToolCall
+            || native.resource.id != meerkat_core::ApprovalResourceId::new(call.name)
+            || native.proposed_action.kind != meerkat_core::ApprovalActionKind::ToolCall
+            || native.proposed_action.body.as_ref() != Some(&reviewed)
+        { return Err(refused("setup_state")); }
+        let job = target.job.lock().map_err(|_| unavailable())?.clone();
+        Ok(json!({"call_id":call.id, "tool":call.name,
+            "arguments_sha256":format!("{:x}", Sha256::digest(call.args.get().as_bytes())),
+            "validation_id":target.validation_id, "retained_install_job_id":job}))
+    }
+
+    async fn observe_software_review(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
+    ) -> Result<ToolDispatchOutcome, ToolError> {
+        let approvals = self.software_review.as_ref().ok_or_else(|| refused(call.name))?;
+        if document(call.args.get())? != json!({}) { return Err(refused(call.name)); }
+        let refreshed = context.check_tool_authorization(call, plan)?;
+        let current = refreshed.as_ref().unwrap_or(context);
+        approvals.check_session(current.origin_session_id().ok_or_else(|| refused(call.name))?)
+            .map_err(|_| refused(call.name))?;
+        let mut outcome = self.inner_call(call, current, plan).await?;
+        let refreshed = current.check_tool_authorization(call, plan)?;
+        let current = refreshed.as_ref().unwrap_or(current);
+        let mut value = response_document(call, &outcome)?;
+        if outcome.result.is_error || value.get("error").is_some() { return Ok(outcome); }
+        // An inner server cannot substitute its own review observation.
+        if value.get("software_review_observation").is_some() { return Err(unconfirmed()); }
+        value["software_review_observation"] = approvals.software_review_observation(self, call, current, plan).await?;
+        current.check_tool_authorization(call, plan)?;
+        let text = value.to_string();
+        if text.len() > MAX_DOCUMENT { return Err(unconfirmed()); }
+        outcome.result.content = vec![ContentBlock::Text { text }];
+        Ok(outcome)
+    }
+
     pub(crate) fn permits_readback(&self, target: &Readback, call: ToolCallView<'_>) -> bool {
         if !["setup_job", "setup_reconcile", "setup_stop"].contains(&call.name)
             || target.epoch != self.inner.execution_binding_epoch(call.name)
@@ -1158,6 +1215,9 @@ impl CheckedInstalls {
         context: &ToolDispatchContext,
         plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
     ) -> Result<ToolDispatchOutcome, ToolError> {
+        if call.name == "setup_state" && self.software_review.is_some() {
+            return self.observe_software_review(call, context, plan).await;
+        }
         let Some(approvals) = self.software_review.as_ref()
             .filter(|_| INSTALL_TOOLS.contains(&call.name)) else {
             return self.delegate(call, context, self.inner_call(call, context, plan)).await;

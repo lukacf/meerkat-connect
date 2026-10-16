@@ -234,6 +234,10 @@ struct SourceRecord {
     source: SourceFacts,
     event: PrivateAuthenticatedEvent,
     operation_cancelled: bool,
+    /// Exact terminal attachment cause committed atomically with B cancellation.
+    /// It proves neither native non-entry nor eligibility to resume the parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service_attachment_failure: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentFailure>,
     /// An exact business-task link, never an authority contributor. Created only
     /// by an authenticated reviewed or application-policy access path after
     /// native task child issuance. It never replays the prior original.
@@ -638,6 +642,7 @@ impl PrivateOriginals {
             event,
             final_association: None,
             operation_cancelled: false,
+            service_attachment_failure: None,
             approved_task: None,
             service_admission: None,
             bound_service_input: None,
@@ -1170,6 +1175,10 @@ fn decode_source_record(stored: &StoredRecord) -> Result<SourceRecord, PrivateOr
         return Err(PrivateOriginalError::Conflict);
     }
     cold_service_admission::validate_retained_input(&value)?;
+    if value.service_attachment_failure.is_some()
+        && (!value.operation_cancelled || value.approved_task.is_none()
+            || value.final_association.is_some() || value.service_admission.is_some())
+    { return Err(PrivateOriginalError::Conflict); }
     Ok(value)
 }
 

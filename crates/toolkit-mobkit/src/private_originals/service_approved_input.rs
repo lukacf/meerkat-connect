@@ -61,6 +61,13 @@ impl PrivateOriginals {
         &self,
         validated: Arc<StoredRecord>,
     ) -> Result<Arc<StoredRecord>, OriginalWriterError> {
+        self.persist_source_cancellation_with_failure(validated, None).await
+    }
+
+    async fn persist_source_cancellation_with_failure(
+        &self, validated: Arc<StoredRecord>,
+        failure: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentFailure>,
+    ) -> Result<Arc<StoredRecord>, OriginalWriterError> {
         let before = self.decode_stored(&validated).map_err(|_| OriginalWriterError::Conflict)?;
         let stored = self.store.get(&validated.key).await
             .map_err(|_| OriginalWriterError::Unavailable)?
@@ -71,6 +78,13 @@ impl PrivateOriginals {
             || current.final_association != before.final_association
         { return Err(OriginalWriterError::Conflict); }
         if current.operation_cancelled { return Ok(Arc::new(stored)); }
+        // Only the exact held terminal attempt supplies `failure`. Commit it
+        // in the same CAS as cancellation, before native publication settles.
+        // A prior cancellation or any immutable B binding never acquires it.
+        if current.approved_task.is_some() && current.final_association.is_none()
+            && current.service_admission.is_none() {
+            current.service_attachment_failure = failure;
+        }
         current.operation_cancelled = true;
         let data = encode(current.clone()).map_err(|_| OriginalWriterError::Conflict)?;
         let saved = match self.store.compare_and_swap(Transition {
@@ -96,6 +110,14 @@ impl PrivateOriginals {
         &self,
         reference: &PrivateOriginalRef,
     ) -> Result<(), PrivateOriginalError> {
+        self.record_task_group_cancelled_with_failure(reference, None).await
+    }
+
+    pub(super) async fn record_task_group_cancelled_with_failure(
+        &self, reference: &PrivateOriginalRef,
+        failure: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentFailure>,
+    ) -> Result<(), PrivateOriginalError> {
+        let failed_key = failure.map(|_| self.key(reference)).transpose()?;
         self.owner.record_linked_operations_cancelled(
             || async {
                 let root = self.validate_cancellation_source(reference, None, None).await?;
@@ -149,7 +171,10 @@ impl PrivateOriginals {
                     })
                 }).collect()
             },
-            |stored| self.persist_source_cancellation(stored),
+            |stored| {
+                let selected = failed_key.as_ref().is_some_and(|key| key == &stored.key);
+                self.persist_source_cancellation_with_failure(stored, if selected { failure } else { None })
+            },
         ).await.map_err(|error| match error {
             OriginalWriterError::WrongOwner => PrivateOriginalError::Denied,
             OriginalWriterError::Conflict => PrivateOriginalError::Conflict,
@@ -667,7 +692,7 @@ impl InstalledServiceTask {
             let key = source.key(&reference).map_err(|_| E::from(PrivateOriginalError::Denied))?;
             let data = encode(SourceRecord {
                 setup_request: None, configured_setup: None,
-                source: parent_record.source, event, operation_cancelled: false, final_association: None,
+                source: parent_record.source, event, operation_cancelled: false, service_attachment_failure: None, final_association: None,
                 approved_task: Some(ApprovedTaskLink { parent: self.parent.clone(),
                     acquisition: self.acquisition.clone(), original_task: self.task.clone(), grant,
                     before_ms: self.before_ms }),

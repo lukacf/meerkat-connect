@@ -15,7 +15,7 @@ mod continuation_executor;
 mod continuation_recovery;
 pub use continuation_recovery::ContinuationRecoveryPage;
 mod service_continuation;
-pub use service_continuation::{ApprovedServiceInput, ApprovedServiceSelection, ApprovedServiceSourceOwner};
+pub use service_continuation::{ApprovedServiceAttachmentFailure, ApprovedServiceInput, ApprovedServiceSelection, ApprovedServiceSourceOwner};
 use service_continuation::ApprovedServiceReady;
 mod helper_result;
 pub use helper_result::{
@@ -166,6 +166,8 @@ struct AcquisitionRecord {
     approved_service: Option<ApprovedServiceSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     service_ready: Option<ApprovedServiceReady>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service_attachment_failure: Option<ApprovedServiceAttachmentFailure>,
     detail: Option<ContextReference>,
     continuation_receipt: Option<ContinuationAdmissionEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -392,6 +394,7 @@ impl<'a> SetupStore<'a> {
             ready: None,
             approved_service: None,
             service_ready: None,
+            service_attachment_failure: None,
             detail: None,
             continuation_receipt: None,
             helper_detail: None,
@@ -966,6 +969,10 @@ fn validate_record(
             || state.decision_ref != state.selection_digest
         { return Err(SetupError::InvalidRecord); }
     }
+    if record.service_attachment_failure.is_some()
+        && (record.approved_service.is_none() || record.service_ready.is_some()
+            || state.lifecycle_phase != AcquisitionPhase::Unavailable)
+    { return Err(SetupError::InvalidRecord); }
     if let Some(ready) = &record.service_ready {
         if record.approved_service.is_none() || record.ready.is_some()
             || state.lifecycle_phase != AcquisitionPhase::Ready
@@ -1082,6 +1089,7 @@ fn continuation_obligation(
         terminal_at_ms: state.terminal_at,
         outcome,
         approved_service: record.approved_service.clone(),
+        service_attachment_failure: record.service_attachment_failure,
         helper_detail: record
             .helper_detail
             .as_ref()

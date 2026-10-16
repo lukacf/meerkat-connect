@@ -209,7 +209,21 @@ impl PrivateOriginals {
                     .await?;
                 self.status_current(&lifetime, human, &visible_routes, current_member_access)?;
                 let status = self.source_publication_status(&reference, &record)?;
-                let (tone, text, next) = status.presentation();
+                let (tone, text, next) = if status == SourcePublicationStatus::Unobserved
+                    && snapshot.state().lifecycle_phase == toolkit_catalog::AcquisitionPhase::Preparing
+                    && !snapshot.approved_service_was_admitted()
+                    && snapshot.approved_service() == Some(&self.service_selection(&stored, &record)?)
+                {
+                    // Project the exact canonical reservation already read above.
+                    // It does not confirm connection readiness or delivery of B.
+                    (
+                        "pending",
+                        "Access approved; setup handoff pending",
+                        "Setup retained the approved instruction. Connection readiness and delivery to your agent are not yet confirmed.",
+                    )
+                } else {
+                    status.presentation()
+                };
                 tasks.push(serde_json::json!({
                     "id": digest(&canonical_json(&(link.acquisition.clone(), &link.original_task, &reference))
                         .map_err(|_| PrivateOriginalError::Conflict)?),

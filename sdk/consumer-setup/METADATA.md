@@ -26,9 +26,30 @@ No setup-host shell or metadata-file write is needed for these steps. Research,
 integration choice and source requirements remain the agent's responsibility;
 only the actual host owners can supply current host facts when required.
 
-If the agent needs evidence from an acquired primary wheel or npm archive,
+If the agent needs evidence from an acquired primary or dependency wheel or npm archive,
 [acquired archive inspection](ACQUIRED-INSPECTION.md) can expose bounded member
 listings and exact text through MCP without extracting or executing the package.
+
+## Operation selection and runtime enforcement
+
+Bare `mcp.json` exposes the server to an ordinary MCP client. Declaring read
+operations in package or selection metadata does not filter that endpoint or
+grant permission to call it.
+
+Connect's native protected attachment can instead restrict calls to an approved
+subset of exact MCP tool names. The consuming host enforces the current grant
+and MCP access configuration; installation and metadata do not create that
+authority. When that host path is available, a server advertising separate
+write tools is not, by itself, a reason to reject a read subset. Inspect the
+actual tool schemas, preserve the exact operation-to-tool mapping and request
+only the operations needed for the task through the host's protected review.
+
+An operation-name allowlist does not constrain query semantics, prevent startup
+effects or provide filesystem confinement. A permitted query tool could still
+accept mutating SQL, and starting a server could write files before any tool
+call. Verify those behaviors and the host's separately supplied resource
+controls. Do not label a connection read-only from tool names or effect metadata
+alone. If the required enforcement is unavailable, retain that concrete blocker.
 
 ## Describe the investigated package
 
@@ -436,7 +457,8 @@ Replace these fields deliberately:
 - `dependencies.artifacts` binds the exact requirements file and every retained
   dependency wheel. Stage them under `closure/`, preserving original filenames.
 - Export operations describe the actual selected API and its schema evidence.
-  A declared operation does not filter the other tools of a whole MCP endpoint.
+  A declared operation alone does not filter a whole MCP endpoint; see
+  [operation selection and runtime enforcement](#operation-selection-and-runtime-enforcement).
   Installation, schema discovery and authorization remain separate observations.
 - Keep package, strategy, component and portable MCP entry references consistent.
   The validator rejects unsupported combinations; do not remove an unresolved

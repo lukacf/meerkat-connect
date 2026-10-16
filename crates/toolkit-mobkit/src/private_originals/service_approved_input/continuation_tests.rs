@@ -1,6 +1,7 @@
 //! Real A/B admission with existing canonical-row failures. The fixture scripts
 //! the model and protected approval; physical MCP readiness remains covered by
-//! attachment_native_tests. No continuation in these controls may submit input.
+//! attachment_native_tests. Failed-attachment controls also exercise the actual
+//! retained A result owner; ordinary B/cancel controls cannot submit another input.
 use super::*;
 use meerkat_toolkit::continuation::{ContinuationStep, ContinuationStepOptions, SetupContinuationDelivery, SetupTerminalOutcome};
 use toolkit_catalog::AcquisitionPhase;
@@ -186,6 +187,7 @@ async fn b_reservation_fences_failure_writer_but_preserves_actual_cancel() {
         source.step_service_input(&row).await.unwrap();
         let terminal = source.service_task_snapshot(&record).await.unwrap();
         assert_eq!(terminal.state().lifecycle_phase, AcquisitionPhase::Cancelled);
+        assert!(terminal.service_attachment_failure().is_none());
         assert!(terminal.approved_service() == snapshot.approved_service());
         let obligation = setup.committed_continuation(&id(&snapshot.key().id)).await.unwrap().unwrap();
         assert!(obligation.approved_service().is_some());
@@ -238,6 +240,7 @@ async fn actual_pre_entry_readback_refusal_terminalizes_without_an_input() {
         assert!(record.operation_cancelled && record.final_association.is_none() && record.service_admission.is_none());
         let terminal = source.service_task_snapshot(&record).await.unwrap();
         assert_eq!(terminal.state().lifecycle_phase, AcquisitionPhase::Unavailable);
+        assert!(terminal.service_attachment_failure().is_none(), "generic denial is not a native failure cause");
         assert!(!terminal.approved_service_was_admitted());
         assert_eq!(terminal.request().authority_digest().unwrap(), snapshot.request().authority_digest().unwrap());
         let setup = source.service_setup_store().unwrap();
@@ -356,6 +359,123 @@ async fn lost_source_custody_without_durable_b_admission_is_unavailable() {
         assert_eq!(fixture.store.get(&row.key).await.unwrap().unwrap().content_digest, before);
         assert_eq!(fixture.inputs().await, Ok(2));
         assert_eq!(fixture.model_requests(), count);
+    })).catch_unwind().await;
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    if let Err(panic) = result { std::panic::resume_unwind(panic); }
+}
+
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_attachment_result_resumes_only_original_authority_once() {
+    use meerkat::{ContinuationHostBindings, ContinuationKey, ContinuationOwner, ContinuationStatus,
+        DetachedJobService, MemoryDetachedJobStore, RuntimeDeliveryOwner};
+    use meerkat::surface::SessionServiceDeliveryHost;
+    use meerkat_runtime::{RuntimeDeliveryInbox, InMemoryRuntimeStore};
+    use meerkat_toolkit::setup::ApprovedServiceAttachmentFailure;
+    let mut fixture = ContinuationFixture::for_service_input().await;
+    let native_handle = fixture.native_for_console_mut().mob_handle();
+    let mut owner_handle = None;
+    let mut owner_passes = None;
+    let result = AssertUnwindSafe(Box::pin(async {
+        let (snapshot, b) = prepared(&fixture).await;
+        let source = &fixture.source;
+        let row = fixture.store.get(&source.key(&b).unwrap()).await.unwrap().unwrap();
+        source.reserve_service_continuation(&row).await.unwrap();
+        // The other control covers exact native observation. This calls the
+        // same source-owned terminal settlement and tests its real A delivery.
+        source.reject_failed_service_attachment(&b, ApprovedServiceAttachmentFailure::Failed).await.unwrap();
+        let setup = source.service_setup_store().unwrap();
+        let obligation = setup.committed_continuation(&id(&snapshot.key().id)).await.unwrap().unwrap();
+        assert!(source.failed_service_allows_original_result(&obligation).await.unwrap());
+        let exact_digest = obligation.digest().unwrap();
+        let adapter = crate::installed_host::acquisition::InstalledNativeContinuation::for_service_continuation_test(
+            fixture.store.clone(), fixture.scope.clone(), source.clone());
+        let state = meerkat_mob_mcp::MobMcpState::new_with_runtime_adapter(fixture.service.clone(),
+            Some(fixture.machine.clone()), meerkat_mob::MobControlPrincipal::Owner).unwrap()
+            .with_host_job_source(meerkat_mob_mcp::HostJobSource::new([adapter.namespace()], adapter.clone()).unwrap())
+            .into_shared();
+        let binding = obligation.continuation().native_original.as_ref().unwrap();
+        let member = binding.member.as_ref().unwrap();
+        state.try_mob_insert_handle(meerkat_mob::MobId::from(member.mob_id.as_str()), native_handle).await.unwrap();
+        let inbox = RuntimeDeliveryInbox::new(Arc::new(InMemoryRuntimeStore::new()));
+        let bindings = Arc::new(ContinuationHostBindings::default());
+        state.bind_continuations(inbox.clone(), &bindings).unwrap();
+        let service = state.continuation_service().unwrap();
+        adapter.bind_fixture_native(service.clone(), state.clone()).unwrap();
+        let options = ContinuationStepOptions { worker: id("failed-service-result"), lease_ms: 30_000,
+            owner_timeout_ms: 1_000, settlement_budget_ms: 1_000 };
+        // The first step durably submits the existing result; no owner is
+        // armed yet, so it cannot claim native admission.
+        assert!(setup.step_continuation(obligation.operation(), adapter.as_ref(), &options).await.is_err());
+        let owner = ContinuationOwner::Member { mob_id: member.mob_id.clone(), identity: member.member.clone() };
+        let key = ContinuationKey::new(obligation.continuation().delivery_key.to_string()).unwrap();
+        let ContinuationStatus::Pending { receipt, .. } = service.continuation_status(&owner, &key).await.unwrap()
+            else { panic!("failure result must be committed before the native owner starts"); };
+        let pending = inbox.list_pending(&meerkat_runtime::LogicalRuntimeId(receipt.address), 2).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        let payload: serde_json::Value = serde_json::from_slice(pending[0].submission.payload()).unwrap();
+        let delivery: meerkat::ContinuationDelivery = serde_json::from_value(payload).unwrap();
+        let expected = String::from_utf8(toolkit_package::canonical_json(&serde_json::json!({
+            "outcome": obligation.outcome(), "service_attachment_failure": "failed",
+            "explanation": "The selected service attachment attempt failed or was rejected. Its replacement instruction was permanently fenced before admission. This is a setup failure result under your original authority, not service readiness or permission to retry. Research any corrected choice and request a separately reviewed setup.",
+        })).unwrap()).unwrap();
+        assert_eq!(delivery.body, expected.into(), "the delivered body carries only the bounded failure facts, never native detail or readiness/cleanup claims");
+        let jobs = Arc::new(MemoryDetachedJobStore::new());
+        let host = SessionServiceDeliveryHost::new(&fixture.service, &fixture.machine,
+            DetachedJobService::new(jobs.clone()), None).with_continuation_bindings(bindings.clone());
+        let handle = RuntimeDeliveryOwner::new(jobs, inbox)
+            .with_source_changes(bindings.subscribe_source_changes()).arm(Arc::new(host)).unwrap();
+        owner_passes = Some(handle.subscribe_passes());
+        owner_handle = Some(handle);
+        let status = tokio::time::timeout(WAIT, async {
+            loop {
+                let status = service.continuation_status(&owner, &key).await.unwrap();
+                if matches!(status, ContinuationStatus::Applied { .. }) { break status; }
+                owner_passes.as_mut().unwrap().changed().await.unwrap();
+            }
+        }).await.expect("failed setup result is admitted under original retained work");
+        let ContinuationStatus::Applied { session, input, .. } = status else { unreachable!() };
+        assert_eq!(session, fixture.session);
+        let stored_input = fixture.machine.input_state(&session, &input).await.unwrap().unwrap();
+        assert_eq!(stored_input.state.retained_resume.as_ref().unwrap().identity, binding.retained_work);
+        assert_eq!(fixture.inputs().await, Ok(2));
+        for _ in 0..2 {
+            assert!(matches!(setup.step_continuation(obligation.operation(), adapter.as_ref(), &options).await.unwrap(),
+                ContinuationStep::Acknowledged(_)));
+        }
+        let b_record = source.decode_stored(&fixture.store.get(&row.key).await.unwrap().unwrap()).unwrap();
+        assert!(b_record.operation_cancelled && b_record.final_association.is_none() && b_record.service_admission.is_none());
+        assert_eq!(setup.committed_continuation(obligation.operation()).await.unwrap().unwrap().digest().unwrap(), exact_digest);
+        assert_eq!(fixture.inputs().await, Ok(2), "neither reconciliation nor replay creates B or a second A result");
+    })).catch_unwind().await;
+    drop(owner_handle);
+    if let Some(mut passes) = owner_passes {
+        tokio::time::timeout(WAIT, async { while passes.changed().await.is_ok() {} }).await.unwrap();
+    }
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    if let Err(panic) = result { std::panic::resume_unwind(panic); }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admitted_b_wins_over_a_late_failed_attachment_settlement() {
+    let fixture = ContinuationFixture::for_service_input().await;
+    let result = AssertUnwindSafe(Box::pin(async {
+        let (snapshot, b) = prepared(&fixture).await;
+        let source = &fixture.source;
+        let row = fixture.store.get(&source.key(&b).unwrap()).await.unwrap().unwrap();
+        source.step_service_input(&row).await.unwrap();
+        assert_eq!(fixture.inputs().await, Ok(2));
+        source.reject_failed_service_attachment(&b,
+            meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Failed).await.unwrap();
+        let obligation = source.service_setup_store().unwrap().committed_continuation(&id(&snapshot.key().id))
+            .await.unwrap().unwrap();
+        assert!(matches!(obligation.outcome(), SetupTerminalOutcome::ApprovedServiceAdmitted { .. }));
+        assert!(obligation.service_attachment_failure().is_none());
+        assert!(!source.failed_service_allows_original_result(&obligation).await.unwrap());
+        assert!(source.observe_service_continuation(&obligation).await.unwrap().is_some());
+        assert_eq!(fixture.inputs().await, Ok(2));
     })).catch_unwind().await;
     let cleanup = fixture.shutdown().await;
     assert!(cleanup.is_ok(), "{cleanup:?}");

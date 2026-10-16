@@ -64,7 +64,9 @@ async fn public_reply_driver_joins_cancellation_and_preserves_the_presenter_for_
         let selection = PublicSelection { tool_policy: None, operations:["actual_read".to_owned()].into(),
             agent:"waiting-agent".into(),expires_in_ms:None };
         let config = selected.public_configuration(&selection.operations).unwrap();
-        let (approvals, presenter) = LocalApprovals::create(&root.path().join("approvals")).unwrap();
+        let approval_root = root.path().join("approvals");
+        std::fs::create_dir(&approval_root).unwrap();
+        let (approvals, presenter) = LocalApprovals::create(&approval_root).unwrap();
         approvals.bind_session(&selected.installed.session).unwrap();
         let mut presenter = Some(presenter);
         // Exercise the real ApprovalService/prompt driver with the public reply
@@ -185,4 +187,146 @@ fn public_tool_policy_is_optional_proposal_not_candidate_or_catalog_session_auth
     assert!(parse(&requested.to_string()).unwrap().tool_policy.is_some());
     requested["tool_policy"]["catalog_session"] = json!("helper-session");
     assert!(parse(&requested.to_string()).is_err());
+}
+
+
+// Inert work ownership for the real Core fenced dispatcher. This binds each
+// decision to its exact call, but deliberately supplies no captured task or
+// service grant. It is not an installed application or native admission proof.
+struct PublicRequestWork;
+struct PublicRequestPrepared(meerkat_core::authorization::PreparedAuthorizationBinding);
+impl meerkat_core::authorization::WorkAuthorization for PublicRequestWork {
+    fn prepare(&self, binding: &meerkat_core::authorization::PreparedAuthorizationBinding)
+        -> Result<Arc<dyn meerkat_core::authorization::PreparedOperationAuthorization>,
+            meerkat_core::authorization::OperationAuthorizationError> {
+        use meerkat_core::authorization::{AuthorizationOperation, OperationRefused, OperationRefusalKind};
+        if !matches!(&binding.facts().operation, AuthorizationOperation::Tool(tool)
+            if tool.name == SETUP_PUBLIC_SERVICE_REQUEST) {
+            return Err(OperationRefused::new(OperationRefusalKind::Denied).into());
+        }
+        Ok(Arc::new(PublicRequestPrepared(binding.clone())))
+    }
+}
+impl meerkat_core::authorization::PreparedOperationAuthorization for PublicRequestPrepared {
+    fn review_tier(&self) -> meerkat_core::authorization::OperationReviewTier {
+        meerkat_core::authorization::OperationReviewTier::R1
+    }
+    fn check_current(&self, binding: &meerkat_core::authorization::PreparedAuthorizationBinding)
+        -> Result<(), meerkat_core::authorization::OperationAuthorizationError> {
+        if !self.0.same_operation(binding) {
+            return Err(meerkat_core::authorization::OperationRefused::new(
+                meerkat_core::authorization::OperationRefusalKind::Denied).into());
+        }
+        Ok(())
+    }
+}
+
+async fn public_operation_dispatch(owner: &Arc<RequestTool>, session: meerkat_core::SessionId,
+    job: &str, operations: Value, tool_policy: Option<Value>) -> Result<ToolDispatchOutcome, ToolError> {
+    use meerkat_core::{ToolDeadlineChain, ToolDeadlineContributor, ToolDeadlineOwner,
+        ToolExecutionResolutionContext, authorization::WorkAuthorizationContext,
+        exact_operation::OperationExecutionScope, retained_work::RetainedWorkIdentity};
+    let retained = RetainedWorkIdentity::new("fixture:public-request", meerkat_core::RunId::new(),
+        Vec::new(), Default::default(), None);
+    let work = WorkAuthorizationContext::new(Arc::new(PublicRequestWork),
+        OperationExecutionScope::Domain).with_retained_work(retained);
+    let context = ToolDispatchContext::default().with_runtime_identity(session, None)
+        .with_work_authorization(Some(work));
+    let mut request = json!({"job_id":job,"operations":operations,
+        "agent":"Wrong display name","expires_in_ms":60000});
+    if let Some(policy) = tool_policy { request["tool_policy"] = policy; }
+    let args = serde_json::value::to_raw_value(&request).unwrap();
+    let call = ToolCallView { id:"public-operation-correction",name:SETUP_PUBLIC_SERVICE_REQUEST,args:&args };
+    let resolution = ToolExecutionResolutionContext::new(ToolDeadlineChain::new(vec![
+        ToolDeadlineContributor::finite(ToolDeadlineOwner::CoreToolDispatch, Duration::from_secs(2))
+    ]).unwrap());
+    let plan = meerkat_core::resolve_tool_execution_plan_fenced(owner,call,&context,&resolution).unwrap();
+    meerkat_core::dispatch_tool_execution_plan_fenced(owner,call,&context,&plan).await
+}
+
+fn public_request_owner(checked: Arc<crate::service_install::CheckedInstalls>,
+    selected: &crate::service_install::InstalledConnectorSelection)
+    -> (Arc<RequestTool>, mpsc::Receiver<InstalledPublicRequest>) {
+    let (send, receive) = mpsc::channel(1);
+    (Arc::new(RequestTool { checked,realm:selected.installed.realm.clone(),
+        session:selected.installed.session.clone(),requests:None,public_requests:Some(send),
+        credential_requests:None,tasks:None,application:None }), receive)
+}
+
+#[tokio::test]
+async fn public_operation_feedback_uses_raw_names_before_target_or_access_review() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
+        "authentication":{"kind":"none"},"operation_tools":{
+            "read-item":"actual_read","list-items":"actual_list"}}))).await;
+    let selected = fixture.raw_selection().ok().unwrap();
+    let (owner, mut requests) = public_request_owner(fixture.owner.clone(), &selected);
+    for policy in [None, Some(json!({"tools":[{"name":"actual_read","consequence":"r1"}],"catalog":null}))] {
+        for operations in [json!(["read-item"]),json!(["unknown_operation"]),json!(["actual_read","unselected_write"])] {
+            let error = public_operation_dispatch(&owner,selected.installed.session.clone(),
+                &selected.installed.job_id,operations,policy.clone()).await.unwrap_err();
+            let ToolError::InvalidArguments { name,reason } = error else {
+                panic!("a current raw-name mismatch must produce correctable argument feedback")
+            };
+            assert_eq!(name,SETUP_PUBLIC_SERVICE_REQUEST);
+            assert!(reason.contains("operation_tools values"));
+            assert!(reason.contains(r#"["actual_list","actual_read"]"#));
+            assert!(reason.contains("has not entered access review"));
+            assert!(!reason.contains("Wrong display name"));
+            assert!(requests.try_recv().is_err());
+        }
+    }
+    // A corrected subset passes operation validation and reaches the existing
+    // missing captured-task refusal. This fixture cannot issue access or fake
+    // consumer custody; the exact consumer mismatch has its separate control.
+    let error = public_operation_dispatch(&owner,selected.installed.session.clone(),
+        &selected.installed.job_id,json!(["actual_read"]),None).await.unwrap_err();
+    assert!(matches!(error,ToolError::AccessDenied { .. }));
+    assert!(requests.try_recv().is_err());
+    let config = selected.public_configuration(&["actual_read".to_owned()].into()).unwrap();
+    assert_eq!(config.access.unwrap().allowed_operations,
+        ["actual_read".to_owned()].into());
+    assert!(selected.public_configuration(&["read-item".to_owned()].into()).is_err(),
+        "feedback never translates or admits a declaration ID");
+    let target = validate_captured_consumer(SETUP_PUBLIC_SERVICE_REQUEST,
+        "Wrong display name","fixture-native-member").unwrap_err();
+    assert!(matches!(target,ToolError::InvalidArguments { reason,.. }
+        if reason.contains("fixture-native-member")));
+}
+
+#[tokio::test]
+async fn public_operation_feedback_discloses_no_names_for_unavailable_or_foreign_selection() {
+    for mode in ["retired","unknown-job","foreign-session","authentication"] {
+        let root = tempfile::tempdir().unwrap();
+        let authentication = if mode=="authentication" {
+            json!({"kind":"binding","owner":"process","requirement":"key","credential_audience":"service"})
+        } else { json!({"kind":"none"}) };
+        let fixture = crate::stdio::tests::selected_public_fixture(root.path(),Some(json!({
+            "authentication":authentication,"operation_tools":{"read-item":"private_raw_name"}}))).await;
+        let selected = fixture.raw_selection().ok().unwrap();
+        let (owner,mut requests) = public_request_owner(fixture.owner.clone(),&selected);
+        if mode=="retired" { fixture.owner.retire(); }
+        let session = if mode=="foreign-session" { meerkat_core::SessionId::new() }
+            else { selected.installed.session.clone() };
+        let job = if mode=="unknown-job" { "unknown-job" } else { &selected.installed.job_id };
+        let error = public_operation_dispatch(&owner,session,job,json!(["read-item"]),None).await.unwrap_err();
+        if mode=="foreign-session" { assert!(matches!(&error,ToolError::AccessDenied { .. })); }
+        else { assert!(matches!(&error,ToolError::Unavailable { .. }),"{mode}"); }
+        assert!(!error.to_string().contains("private_raw_name"),"{mode}");
+        assert!(requests.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
+async fn public_operation_feedback_keeps_remote_declared_ceilings() {
+    for declaration in [false,true] {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = crate::stdio::tests::remote_public_fixture_kind(root.path(),declaration).await;
+        let selected = fixture.public_remote();
+        assert_eq!(selected.public_operations().unwrap(),["actual.lookup".to_owned()].into());
+        assert!(selected.public_configuration(&["read-item".to_owned()].into()).is_err());
+        assert!(selected.public_configuration(&["actual.lookup".to_owned(),"other.write".to_owned()].into()).is_err());
+        fixture.owner.retire();
+        assert!(selected.public_operations().is_err());
+    }
 }

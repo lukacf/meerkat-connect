@@ -108,21 +108,70 @@ impl PrivateOriginals {
     pub(super) async fn reject_service_continuation(&self, reference: &PrivateOriginalRef)
         -> Result<(), PrivateOriginalError>
     {
+        self.reject_service_continuation_with_failure(reference, None).await
+    }
+
+    pub(super) async fn reject_failed_service_attachment(
+        &self, reference: &PrivateOriginalRef,
+        failure: meerkat_toolkit::setup::ApprovedServiceAttachmentFailure,
+    ) -> Result<(), PrivateOriginalError> {
+        self.reject_service_continuation_with_failure(reference, Some(failure)).await
+    }
+
+    async fn reject_service_continuation_with_failure(
+        &self, reference: &PrivateOriginalRef,
+        failure: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentFailure>,
+    ) -> Result<(), PrivateOriginalError> {
         let row = self.store.get(&self.key(reference)?).await.map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
         let record = self.decode_record(&row, reference)?;
         let snapshot = self.service_task_snapshot(&record).await?;
         let Some(selected) = snapshot.approved_service() else { return Ok(()); };
         if self.service_selection(&row, &record)? != *selected { return Err(PrivateOriginalError::Conflict); }
-        self.record_task_group_cancelled(reference).await?;
+        self.record_task_group_cancelled_with_failure(reference, failure).await?;
         let current = self.store.get(&row.key).await.map_err(store_error)?.ok_or(PrivateOriginalError::Unavailable)?;
         let current = self.decode_record(&current, reference)?;
         if current.service_admission.is_some() {
             return self.settle_service_continuation(&current).await;
         }
-        self.service_setup_store()?.reject_approved_service(&snapshot, &ServiceSource { source: self })
-            .await.map_err(|_| PrivateOriginalError::Unavailable)?;
+        let owner = ServiceSource { source: self };
+        let setup = self.service_setup_store()?;
+        // Replay uses the exact cause atomically retained by the cancellation
+        // owner, even when a prior SetupStore commit or its reply was lost.
+        match current.service_attachment_failure {
+            Some(failure) => setup.reject_failed_service_attachment(&snapshot, &owner, failure).await,
+            None => setup.reject_approved_service(&snapshot, &owner).await,
+        }.map_err(|_| PrivateOriginalError::Unavailable)?;
         Ok(())
+    }
+
+    /// Only the canonical native-failure cause plus the source owner's durable
+    /// B non-entry proof permits A's existing result path. A lost live attempt,
+    /// generic denial, cancellation or expiry cannot reconstruct this cause.
+    pub(crate) async fn failed_service_allows_original_result(
+        &self, obligation: &ContinuationObligation,
+    ) -> Result<bool, ContinuationError> {
+        let Some(failure) = obligation.service_attachment_failure() else { return Ok(false); };
+        if obligation.approved_service().is_none()
+            || !matches!(obligation.outcome(), SetupTerminalOutcome::Unavailable { .. })
+        { return Err(ContinuationError::InvalidReceipt); }
+        let setup = self.service_setup_store().map_err(|_| ContinuationError::OwnerUnavailable)?;
+        let canonical = setup.committed_continuation(obligation.operation()).await
+            .map_err(|_| ContinuationError::OwnerUnavailable)?.ok_or(ContinuationError::OwnerUnavailable)?;
+        if canonical.digest()? != obligation.digest()?
+            || canonical.service_attachment_failure() != Some(failure)
+        { return Err(ContinuationError::InvalidReceipt); }
+        let binding = obligation.continuation().native_original.as_ref().ok_or(ContinuationError::Unsupported)?;
+        let snapshot = setup.service_task_snapshot(obligation.operation(), binding).await
+            .map_err(|_| ContinuationError::OwnerUnavailable)?;
+        let (_, source) = self.selected_service_source(&snapshot, obligation.approved_service().unwrap()).await
+            .map_err(|_| ContinuationError::OwnerUnavailable)?;
+        if source.service_attachment_failure != Some(failure) { return Err(ContinuationError::InvalidReceipt); }
+        // This reads the actual source and native cancellation owner. It
+        // refuses any immutable B binding/admission, including uncertainty.
+        let rejected = self.observe_service_rejection(obligation).await?.is_some();
+        self.service_input_host_current().map_err(|_| ContinuationError::Denied)?;
+        Ok(rejected)
     }
 
     pub(crate) async fn observe_service_rejection(&self, obligation: &ContinuationObligation)

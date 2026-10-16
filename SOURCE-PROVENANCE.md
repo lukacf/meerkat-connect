@@ -20,6 +20,27 @@ The unpublished Core codegen source comes from exact Core 0.9.0 revision
 `a00bafaf1d862fb41112ff1f30312b350ad05246`; its manifest is projected to the public
 dependency layout without changing its implementation source.
 
+## Unreleased follow-up source
+
+The follow-up branch imports reviewed source, synthetic tests and usage guides
+from 23 private development checkpoints after the release baseline, through
+`44b9508c037e4a8b27886d614ec19d28902eed33`. These are file patches, not imported
+private Git history. Private plans, coordination, live-case records, accounts and
+build archives remain excluded. The public dependency layout, vendor notices,
+catalog identities and published 0.9.0 assets are unchanged.
+
+This source adds package compatibility and setup recovery improvements. Actual
+development runs verified held installation completion and automatic return to
+the original agent after an unavailable report. The latest Console case did not
+grant access or retrieve the requested data; it is not a completed user journey.
+The new optional-dependency path separately passed actual acquisition, offline
+installation and direct use of `chokidar-cli@3.0.0` on Linux. That package test
+does not qualify MCP attachment or the Console journey.
+
+The [follow-up inventory](docs/releases/follow-up.md) retains the broader work.
+These source changes are unreleased and do not change the evidence or claims
+attached to the 0.9.0 binaries.
+
 ## Catalog identity and historical references
 
 The adopted catalog, discovery catalog and frontend catalog preserve their exact
