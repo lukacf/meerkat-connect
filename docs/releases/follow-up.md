@@ -92,6 +92,13 @@ store usable. The one affected test and its existing admission, reply and shutdo
 checks passed. This is application service-role survival, not native service-grant
 or model-dispatch qualification, live frontend adoption or restart coverage.
 
+Setup agents can now compute a digest from exact supplied schema JSON using the
+optional metadata-inspection tools. The helper rejects malformed or oversized
+input and preserves the caller's permission ceiling. It reports supplied-data
+evidence only, not runtime observation, schema validation or readiness. Twenty
+affected Python checks and one native permission check passed. This source
+change still needs matching package delivery and actual agent-use verification.
+
 ## Released 0.9.0 limits
 
 | Area | Practical limit in 0.9.0 |

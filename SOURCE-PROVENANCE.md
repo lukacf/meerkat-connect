@@ -22,9 +22,19 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+The supplied-schema helper checkpoint is private Toolkit
+`9614eabe9816a7bc20a54c6e37c884a523b60f1b`, projected as public Connect
+`2e957bd1903c24fb6c73c45b70da88a5f2762a68`. The seven reviewed files add
+bounded exact-byte schema hashing under the existing metadata-inspection opt-in,
+matching installer guidance and focused controls. Independent review joined a
+meaningful old-source failure, 20 affected Python passes and one native
+caller-ceiling pass. The CLI operation-list expectation is source-reviewed only.
+No successor library, resources or binary have been emitted for this change;
+installed-agent availability and actual schema authoring remain unqualified.
+
 The follow-up branch imports reviewed source, synthetic tests and usage guides
-from 29 private development checkpoints after the release baseline, through
-`9cba4b43e8726465e315070e6a3157dd57ca2d6d`. These are file patches, not imported
+from 30 private development checkpoints after the release baseline, through
+`9614eabe9816a7bc20a54c6e37c884a523b60f1b`. These are file patches, not imported
 private Git history. Private plans, coordination, live-case records, accounts and
 build archives remain excluded. The public dependency layout, vendor notices,
 catalog identities and published 0.9.0 assets are unchanged.
