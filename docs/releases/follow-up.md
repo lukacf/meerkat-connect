@@ -53,18 +53,21 @@ success/corruption checks and fresh Console startup. The focused permission
 checks include native catalog loading and a mapped inert invocation. These
 results do not establish a completed real-model business journey.
 
-A separate controlled Console API test completed protected credential submission,
+A controlled Console API test completed protected credential submission,
 attachment and one authenticated GitHub account read by the same original agent.
-The task grant was revoked and application processes were closed. Credential
-removal remains incomplete: the cleanup CLI stopped at its setup-helper admission
-prompt. A direct credential-management entry is being added so cleanup can use
-the existing protected removal without installing a setup helper. This is not
-full browser-UX or free-form discovery qualification.
+Its task grant was revoked and application processes were closed. The new
+`credentials status` and `credentials remove` commands passed 20 focused controls
+and actual same-store `Stored` -> protected removal -> `NotStored` checks using
+the normally emitted development CLI. Removal preserved service configuration
+and grants without a model, setup helper or another credential fetch or account
+read. This resolves local credential cleanup, not provider-token revocation or
+full browser-UX and free-form discovery qualification.
 
 The latest Console journey recovered from its first MCP initialization failure,
 then encountered another initialization failure whose continuation was refused
-before admission. The Core owner accepted the repeated-resume defect; a reviewed,
-consumable fix is still pending. No database query or useful answer followed.
+before admission. The Core owner reports a reviewed fix for the repeated-resume
+defect; a consumable development handoff remains pending. No database query or
+useful answer followed.
 Normal revoke/Stop and physical cleanup passed independent review. The current
 native diagnostic establishes initialize-response closure, not a captured
 package-specific exception.

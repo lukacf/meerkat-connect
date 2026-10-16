@@ -22,6 +22,22 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Private direct-credential checkpoint `5759bf5da0744786154484ca5e44f04e47d0b82a`
+maps to public `6c2fcbc71db4493cbe33d0c205b9cd669465dd50`. Its four exact files
+add terminal credential inventory and protected removal through the existing
+defining-realm owner, without setup/model composition or new grants. Independent
+review joined 20 distinct GREEN controls and two meaningful old-source
+regressions. Two test-only fixture corrections preserve explicit status
+observation and exact launch-bound credential references; production bytes are
+unchanged by those corrections. The normally emitted Linux CLI and matching
+resources passed ordinary staging, followed by actual same-store inventory,
+freshly approved exact-slot removal and `NotStored` readback. Configuration and
+grants were unchanged; all three commands settled naturally without a model or
+setup helper. This resolves local cleanup after one controlled Console GitHub
+read, not provider-token revocation or free-form discovery qualification. Earlier
+artifact, fixture, staging and bootstrap-cleanup failures remain retained. No
+published 0.9.0 artifact changes.
+
 The supplied-schema helper checkpoint is private Toolkit
 `9614eabe9816a7bc20a54c6e37c884a523b60f1b`, projected as public Connect
 `2e957bd1903c24fb6c73c45b70da88a5f2762a68`. The seven reviewed files add
@@ -40,8 +56,8 @@ equality. Initial transport failure and retained SDK cleanup diagnostics remain
 separate from the observed natural process settlement. No release is published.
 
 The follow-up branch imports reviewed source, synthetic tests and usage guides
-from 31 private development checkpoints after the release baseline, through
-`77601b947d37f1dce0713aa2a25ecfef66466164`. These are file patches, not imported
+from 32 private development checkpoints after the release baseline, through
+`5759bf5da0744786154484ca5e44f04e47d0b82a`. These are file patches, not imported
 private Git history. Private plans, coordination, live-case records, accounts and
 build archives remain excluded. The public dependency layout, vendor notices,
 catalog identities and published 0.9.0 assets are unchanged.
@@ -117,9 +133,10 @@ also completed normal installation and healthy Console startup, then created a
 distinct setup proposal after attachment failure without replaying the failed
 approval. The second initialization also failed, and the native owner refused
 its failure continuation before admission. The repeated-resume defect is
-accepted upstream work, with no reviewed fix selected here. No business query
-or useful answer followed; normal closeout and physical cleanup passed independent review. This
-is not isolated causal proof of the wording. No schema, state, API, grant or
+accepted upstream work. The Core owner reports a reviewed fix, but a consumable
+development handoff remains pending and no correction is selected here. No
+business query or useful answer followed; normal closeout and physical cleanup
+passed independent review. This is not isolated causal proof of the wording. No schema, state, API, grant or
 deadline changes accompany the wording.
 
 Private test checkpoint `9cba4b43e8726465e315070e6a3157dd57ca2d6d` maps to
