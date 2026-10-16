@@ -177,9 +177,10 @@ def bounded_arguments(value, tool_name=None):
         "setup_remember_remote": {"plugin_json", "mcp_json", "recipes_json"},
         "setup_export_recipe": {"activation_json", "declaration_json"},
         "setup_inspect_package": {"package_json"},
+        "setup_inspect_schema": {"schema_json"},
         "setup_selected_check": {"package_json", "activation_json", "declaration_json", "configuration_json"},
     }.get(tool_name, set())
-    document_limit = (backend.SELECTED_INLINE_DOCUMENT if tool_name in ("setup_inspect_package", "setup_selected_check")
+    document_limit = (backend.SELECTED_INLINE_DOCUMENT if tool_name in ("setup_inspect_package", "setup_inspect_schema", "setup_selected_check")
                       else backend.REMOTE_RECIPE_DOCUMENT)
     remaining = value
     if document_fields and type(value) is dict:
@@ -739,6 +740,11 @@ def create_server(adapter):
                     "required": ["staged_id", "files"], "additionalProperties": False},
                 "read_only": True, "idempotent": True})
         if "package_inspector" in adapter.controller.selected:
+            items.append({"name": "setup_inspect_schema", "description": "Compute SHA-256 of exact supplied nonsecret UTF-8 JSON schema text, including whitespace, for declaration evidence. Supply schema_json as a string containing a JSON object or boolean, at most 32 KiB UTF-8; the encoded request is at most 64 KiB. Returns schema_digest and the explicit exact_supplied_utf8 byte convention. Checks bounded JSON syntax only, not JSON Schema validity; references are not resolved. This tool does not discover or observe a runtime schema, infer a package schema, execute tools, read files, grant authority or establish readiness. Retain where the supplied evidence came from. Source/manual reconstruction remains declaration evidence; hosted metadata still requires an actual admitted schema observation and its recorded hashing convention. Do not substitute this byte convention for another host's convention. No supplied text or parser prose is echoed.",
+                "inputSchema": {"type": "object", "properties": {
+                    "schema_json": {"type": "string", "minLength": 1, "maxLength": backend.SELECTED_INLINE_DOCUMENT}},
+                    "required": ["schema_json"], "additionalProperties": False},
+                "read_only": True, "idempotent": True})
             items.append({"name": "setup_inspect_package", "description": "Validate an agent-authored nonsecret IntegrationPackage JSON string with the host-pinned canonical metadata inspector. Returns its canonical package_content_digest separately from source_digest, the exact submitted UTF-8 hash. Use the canonical digest when authoring activation_json or declaration_json. The tool does not choose an integration, inspect an archive, read arbitrary paths, install software or grant authority. Each document is at most 32 KiB UTF-8 and the complete encoded request at most 64 KiB. Invalid metadata returns fixed correction guidance and, when supported, a source-bound category and safe field_path. Use setup_guide selected-metadata for the shape; preserve notices, unresolved details and setup facts when repairing a field. No provider values or parser prose are echoed.",
                 "inputSchema": {"type": "object", "properties": {
                     "package_json": {"type": "string", "minLength": 1, "maxLength": backend.SELECTED_INLINE_DOCUMENT}},

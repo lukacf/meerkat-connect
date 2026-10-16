@@ -3828,6 +3828,44 @@ class Controller:
         finally:
             self.operation_lock.release()
 
+    def inspect_schema(self, request):
+        """Hash supplied schema text without asserting its source or meaning."""
+        keys(request, ("schema_json",))
+        try:
+            document = selected_inline_document(request["schema_json"])
+            if len(encoded(request)) > MAX_BODY or document.startswith(b"\xef\xbb\xbf"):
+                raise ValueError()
+            value = decode(document)
+            if type(value) not in (dict, bool):
+                raise ValueError()
+            # A bounded JSON syntax check, not JSON Schema validation. In
+            # particular, references remain inert and no schema is fetched.
+            pending, nodes = [(value, 0)], 0
+            while pending:
+                item, depth = pending.pop()
+                nodes += 1
+                if nodes > 4096 or depth > 32:
+                    raise ValueError()
+                if type(item) is dict:
+                    pending.extend((child, depth + 1) for child in item.values())
+                elif type(item) is list:
+                    pending.extend((child, depth + 1) for child in item)
+            encoded(value)  # Reject nonfinite parsed numbers; do not hash this encoding.
+        except (SetupError, TypeError, ValueError, UnicodeError, RecursionError):
+            raise SetupError("invalid_schema_evidence") from None
+        with self.lock:
+            self.admit_setup()
+            if "package_inspector" not in self.selected_tools():
+                raise SetupError("schema_inspection_unavailable", 409)
+            return {"schema_version": 1, "scope": "supplied_schema_evidence_only",
+                "schema_digest": digest(document), "bytes": len(document),
+                "hash_algorithm": "sha256", "byte_convention": "exact_supplied_utf8",
+                "runtime_observation": "not_established", "schema_validation": "not_performed",
+                "notice": "This digest identifies the exact supplied text, including whitespace. "
+                    "It does not establish schema provenance, runtime equality, readiness or authority. "
+                    "Retain the evidence source and any host observation's hashing convention; "
+                    "do not replace an existing host convention with this one."}
+
     def plugin_source_bytes(self, reference):
         """Read this session's retained observation, never reopen the imported files."""
         plugin_source_reference(reference)
@@ -5353,6 +5391,7 @@ class Controller:
                   "/api/prepare": self.prepare, "/api/retry_prepare": self.retry_prepare, "/api/help": self.help,
                   "/api/check": self.check, "/api/install": self.install, "/api/reconcile": self.reconcile,
                   "/api/inspect_package": self.inspect_package,
+                  "/api/inspect_schema": self.inspect_schema,
                   "/api/inspect_plugin": self.inspect_plugin,
                   "/api/inspect_mcpb": self.inspect_mcpb,
                   "/api/plugin_source": self.plugin_source,

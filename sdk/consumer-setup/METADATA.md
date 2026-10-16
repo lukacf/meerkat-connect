@@ -74,6 +74,22 @@ values instead: nonblank, at most 256 UTF-8 bytes, with no control characters.
 `display_name`, descriptions, URLs and license text are not `Id` fields. Digests
 have their separate 64-character lowercase hexadecimal SHA-256 format.
 
+When available, `setup_inspect_schema` removes the need to calculate a digest
+manually. Supply the exact nonsecret JSON text for the schema evidence you have:
+
+```json
+{"schema_json":"{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}"}
+```
+
+Use its returned `schema_digest` only with the recorded `exact_supplied_utf8`
+convention and retain the supplied text and its evidence source. Whitespace and
+JSON escape spelling affect this SHA-256. The tool accepts a bounded JSON object
+or boolean; it does not validate JSON Schema, resolve references, inspect a
+package, execute a tool or establish schema equality, readiness or authority.
+Source/manual reconstruction remains declaration evidence. For hosted metadata,
+the actual admitted schema observation and its host-recorded hashing convention
+remain required; this helper does not replace that convention or observation.
+
 `package.json` is Toolkit metadata, separate from the upstream Python package.
 Record the actual immutable identity, source revision, license, changes and
 setup strategy. Leave assessments empty unless evidence supports a claim.

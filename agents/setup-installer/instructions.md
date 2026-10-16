@@ -233,6 +233,12 @@ claimed digest are not authorization.
 
 When the host exposes `setup_inspect_package`, submit the exact nonsecret
 package JSON text there to obtain the canonical `package_content_digest`.
+For a researched operation schema, `setup_inspect_schema` can hash exact supplied
+nonsecret `schema_json` text as UTF-8, including whitespace. Retain its evidence
+source and returned byte convention. Source/manual schema text remains untrusted
+declaration evidence, not an observed runtime schema. Hosted declarations still
+require the actual admitted observation and its host-recorded hashing convention;
+this helper neither creates that observation nor replaces another convention.
 Then use the inline form of `setup_selected_check`: `profile`, `staged_id`,
 `component`, `package_json` and exactly one of `declaration_json` for plain
 Python/Node software or `activation_json` for the full path. MCPB requires
