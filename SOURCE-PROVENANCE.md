@@ -22,6 +22,41 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+The helper catalog successor increment comes from private Toolkit checkpoint
+`f36ec7ca0ea97bd99289d5978282fe52a359bc89`, projected as public Connect
+`11cf211b28e4d46b1c92e2424efbe6f4d0833ade`. It contains 28 reviewed source and synthetic
+test files plus the host-composition guide section. The reviewed source manifest
+has SHA-256 `51a46ca5eead2db234d411064180da17f3e2ca6614f63d04cece1f7f69a9c796`.
+The export matches all 28 source afterimages. The latest fixture corrections are
+test-only and leave production source unchanged.
+
+The new `current_helper_successors` scope is an explicit host selection. Its
+catalog-read-only parent remains separate from operation grants; the trusted
+Connect binder supplies each child's exact application and current-session
+domain. The parent alone does not enforce application-domain isolation. Omitted
+scope retains the prior serialized request and captured-session behavior.
+Existing grants are immutable, and retained work is not retargeted after reset.
+Independent source review passed, and 57 distinct focused controls now pass,
+including an actual native helper reset. Legacy mode refuses current catalog
+authorization after reset; explicit successor mode reaches authorized Search and
+Load dispatch. The inline-only test operation returns `not_deferred_eligible`,
+so this establishes catalog authorization rather than successful deferred loading.
+Earlier fixture failures remain retained. A separate five-file host-adapter patch
+passed 188 focused controls, without installed successor qualification. Private host application source is excluded.
+
+Separately, a fresh Console run on the existing default catalog path completed
+four timely protected reviews and observed two distinct failed setup attempts.
+Independent review joined both delivered failure inputs to separate completed
+runs in the same original conversation. The original agent proposed a second
+attempt after the first failure and returned no figures after the second, without
+an operator follow-up or manual wakeup. This qualifies the second failed-attempt
+continuation on the selected development tuple, not successful attachment or a
+business answer. Both task grants were revoked. Normal Stop and exact owned
+process/forward cleanup passed independent closeout; the ledger and known
+sidecars were unchanged. This run did not consume the new successor catalog
+source. Its startup cause remains unproved, and the proposed native attempt-guard
+API has not landed. Published 0.9.0 assets remain unchanged.
+
 Private SDK metadata checkpoint `24f686d5e76b3f379862f4b9cf16b1267c52ce1e`
 maps to public `8a5728c79bb3dc19697b5c606e8d030756434052`. Three files select
 Meta 0.9.1 for the Python native-host extra and optional TypeScript peer/root
@@ -37,7 +72,7 @@ helper used supplied-schema inspection. Operator-missed software reviews
 invalidated that task. A distinct ordinary-reset successor then failed setup
 initialization and encountered catalog authority bound to the old helper session.
 The initialization cause remains unproved; no implicit successor grant is added.
-Both attempts returned no figures and are closed. Private Forge source is outside
+Both earlier attempts returned no figures and are closed. Private Forge source is outside
 this export, and no published 0.9.0 artifact is changed.
 
 Private direct-credential checkpoint `5759bf5da0744786154484ca5e44f04e47d0b82a`
@@ -74,8 +109,9 @@ operation; neither result establishes live-server schema equality or completed
 business use. Initial transport failure and retained SDK cleanup diagnostics remain
 separate from the observed natural process settlement. No release is published.
 
-The follow-up branch imports reviewed source, synthetic tests and usage guides
-from 33 private development checkpoints after the release baseline, through
+Before the catalog increment above, the follow-up branch imported reviewed source,
+synthetic tests and usage guides from 33 private development checkpoints after
+the release baseline, through
 `24f686d5e76b3f379862f4b9cf16b1267c52ce1e`. These are file patches, not imported
 private Git history. Private plans, coordination, live-case records, accounts and
 build archives remain excluded. The public dependency layout, vendor notices,

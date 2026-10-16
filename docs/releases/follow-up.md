@@ -24,6 +24,17 @@ passed development gateway and controlled installed checks. Published Connect
   This explicit selection supplies the new task's catalog authority even when
   ordinary policy already permits the tools. Grants remain separately scoped and
   finite; trusted application delegation and lower-level APIs are unchanged.
+- **Explicit helper catalog successors:** A new host opt-in retains a separate
+  catalog-read-only parent and derives a child for the actual native helper
+  session. Omitted scope retains the existing captured-session behavior. Existing
+  grants and retained work keep their original bounds and targets. Source review
+  passed, and 57 distinct focused controls now pass, including an actual native
+  helper reset. The reset control contrasts legacy authorization refusal with
+  authorized Search and Load in explicit successor mode. The inline-only test
+  operation still returns `not_deferred_eligible`; this proves catalog
+  authorization, not successful deferred loading. Host-adapter source checks
+  passed separately, without installed successor qualification. See the
+  [host guide](../site/guides/host-composition.mdx#helper-catalog-access-after-reset).
 - **Target-bound npm dependencies:** Supported optional dependency graphs retain
   the full lock and archives while selecting compatible packages for the exact
   target. A pinned Linux `chokidar-cli@3.0.0` installation, performed offline with
@@ -50,10 +61,11 @@ passed development gateway and controlled installed checks. Published Connect
   This qualifies supplied-byte hashing, not runtime observation, schema
   validation, readiness or completed business use.
 
-Delivered development changes have passed gateway assembly, controlled installed
-success/corruption checks and fresh Console startup. The focused permission
-checks include native catalog loading and a mapped inert invocation. These
-results do not establish a completed real-model business journey.
+The previously assembled development package passed gateway assembly, controlled
+installed success/corruption checks and fresh Console startup. Its focused
+permission checks include native catalog loading and a mapped inert invocation.
+Those results predate the new helper catalog successor source and do not qualify
+that mode or a completed real-model business journey.
 
 A controlled Console API test completed protected credential submission,
 attachment and one authenticated GitHub account read by the same original agent.
@@ -65,16 +77,27 @@ and grants without a model, setup helper or another credential fetch or account
 read. This resolves local credential cleanup, not provider-token revocation or
 full browser-UX and free-form discovery qualification.
 
-The real-model database journey remains incomplete. A fresh guide consumed a
-reviewed correction for an omitted helper-only schema grant and successfully
-used schema inspection, but operator-missed software reviews invalidated that
-attempt. A distinct ordinary-reset successor failed setup MCP initialization
-before review and then encountered a catalog grant still bound to its old helper
-session. The initialization cause is unproved. Successor catalog access needs
-an explicit host-authorized selection; reset alone cannot renew the old grant.
-No selected integration installation, access grant or database read occurred.
-Normal Stop and physical cleanup completed. Earlier failed cases remain failed;
-no completed free-form answer or second distinct failure continuation is claimed.
+The real-model database journey remains incomplete. Earlier fresh attempts were
+invalidated by missed software reviews. A distinct ordinary-reset successor
+failed setup initialization and encountered catalog authority still bound to its
+old helper session. Those failed outcomes remain retained; their initialization
+cause is unproved.
+
+The latest fresh Console run used the existing default catalog path. It made two
+natural setup proposals and completed both software reviews and both access
+reviews before expiry. Both attempts ended in native MCP start/reload
+unavailability. The same original agent consumed each distinct failure in a new
+native run, proposed a second attempt after the first failure, and returned a
+truthful no-figures answer after the second. No operator follow-up or manual wakeup
+was used. This qualifies continuation after a second distinct failed attempt on
+the selected development tuple. It does not qualify successful attachment, a
+business answer, helper reset or the new catalog successor mode.
+
+Both task grants were revoked and normal Stop completed. Independent closeout
+confirmed that the exact owned processes and forwards had stopped and the ledger
+and its known sidecars were unchanged. The failed histories and installed files
+remain intact. Setup initialization diagnosis and paired launch/cleanup handling
+remain follow-up work. The native attempt-guard API is designed but has not landed.
 
 ## Released 0.9.0 limits
 
