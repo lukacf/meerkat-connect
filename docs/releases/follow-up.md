@@ -40,6 +40,14 @@ passed development gateway and controlled installed checks. Published Connect
   target. A pinned Linux `chokidar-cli@3.0.0` installation, performed offline with
   lifecycle scripts disabled, produced a fresh file event. Optional peers and
   arbitrary native payloads remain out of scope; this run qualifies Linux only.
+- **Portable executables:** Explicitly included Unix scripts retain executable
+  intent through export without copying unsafe mode bits or widening the caller's
+  umask. Inspection detects permission drift even when bytes are unchanged and
+  keeps historical unrecorded mode observations distinct. Eighteen focused
+  controls pass, including use through a generic stdio client after source
+  removal. Strict Clippy remains limited by two documented existing lint categories;
+  scoped Clippy passes with command-only exceptions. This does not qualify
+  third-party packages, Windows permissions or complete Agent Plugins support.
 - **Fresh recovery proposals:** `find_and_install` guidance permits a new reviewed
   proposal within the original request and current authority after a failed
   attempt. It does not require another chat authorization solely because setup
@@ -52,6 +60,13 @@ passed development gateway and controlled installed checks. Published Connect
   management-CLI exit. Existing admission, reply and shutdown checks also pass.
   This establishes application service survival, not native service-grant or
   model-dispatch qualification, live frontend adoption or restart coverage.
+- **Closed frontend senders:** New local deliveries stop before provider cleanup
+  is awaited. Per-sender lifecycle serialization preserves independent senders,
+  replacement attachments, durable owner selection, pending output and receipts
+  from calls already in progress. Independent review and 198 affected tests pass,
+  including a two-authority activation race and failure/cancellation cases. This
+  is a shared source correction; installed host and live provider adoption remain
+  separate work.
 - **Supplied schema evidence:** The optional metadata inspector computes a digest
   of exact supplied JSON bytes and rejects malformed or oversized input within
   the caller's existing permission ceiling. Its 20 Python checks and one native

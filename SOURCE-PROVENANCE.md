@@ -22,6 +22,28 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Portable executable export comes from private checkpoint
+`4e388588bfb2c70457da2fa6f509dfe7ab5b2c98`, projected as public
+`d938e80300ad050a30656933ce6b27193ee563b3`. Five exact source/test afterimages
+and two projected guides preserve Unix executable intent, caller umask and
+historical unrecorded permission observations. Three meaningful old-source
+failures and 18 focused final controls include a generic stdio-client round trip
+after source removal. Strict Clippy encountered unchanged baseline diagnostics;
+a scoped pass used only the command exceptions `too_many_arguments` and
+`err_expect`. The original failures remain retained. This is controlled local
+interoperability, not third-party, Windows or full package-format qualification.
+
+Frontend sender retirement comes from private checkpoint
+`641302fcedc94075c492f31ca9c5322c4fefcf4e`, projected as public
+`9347a98e72e6cb777cf131ef88730c913df61619`. Its six exact afterimages fence
+local dispatch before awaited deactivation, including losing-activation cleanup,
+and serialize lifecycle work per independently owned sender. Durable selection,
+pending output and receipts from already-entered calls remain with their existing
+owners. Thirteen meaningful old-source regressions are retained; the final seven
+affected suites pass 198 tests. Independent source and retained-result review
+found no blocking issue. Installed host adoption and live provider behavior are
+not qualified by these local tests. Neither increment changes released assets.
+
 The helper catalog successor increment comes from private Toolkit checkpoint
 `f36ec7ca0ea97bd99289d5978282fe52a359bc89`, projected as public Connect
 `11cf211b28e4d46b1c92e2424efbe6f4d0833ade`. It contains 28 reviewed source and synthetic
