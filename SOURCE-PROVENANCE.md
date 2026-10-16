@@ -22,6 +22,24 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Bounded attachment failure feedback comes from private checkpoint
+`fdae40d584ddceba542a7d16d1369264d8b1e645`, exported as public
+`49f072d3e4b8937d3cb4f7ee8b4a2578cc6140ad`. Eleven exact source/test
+afterimages add an optional finite observation to the existing source
+cancellation, setup result and original-agent continuation. The final source
+manifest is `9102d3ba`; twelve distinct controls combine nine unchanged R3 passes
+with three affected R4 passes. A corrected valid old-reader regression rejects
+the added field. Earlier fixture and command failures remain recorded. Source
+review preserves first-commit ownership, cancellation/admission precedence,
+replay and exact delivery checks. The tests inject synthetic observations; at
+this checkpoint the production native capture file is unchanged and supplies
+no diagnostic. This is storage/delivery qualification on the prior development
+tuple, not real-process diagnostic capture or business recovery.
+Two-library Clippy completed at warning level with 95 visible diagnostics at
+baseline source contexts. Existing aggregate variants may grow with the added
+record field; no unchanged-size claim is made. Strict Clippy and whole-file
+formatting remain failed with their scoped qualifications retained.
+
 Normal-helper retained acquisition inspection comes from private checkpoint
 `144a115ce0c7262378ce5809e84b4b8f9804000a`, exported as public
 `157bad3faf0e1017008221e813f4e33cbc38f340`. Two exact source/test afterimages

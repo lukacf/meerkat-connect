@@ -64,6 +64,17 @@ passed development gateway and controlled installed checks. Published Connect
   reviews remain required. Retained failure payloads stay unchanged for delivery
   reconciliation. A fresh Console run demonstrated an autonomous new proposal
   with this guidance delivered, without establishing wording-only causality.
+- **Retained failure feedback:** The existing source cancellation, replay and
+  continuation path can retain a bounded startup phase and fixed failure class.
+  The first committed observation is immutable, and delivery checks the exact
+  source before resuming the original agent. Missing observations preserve
+  legacy result bytes. Twelve distinct focused controls pass: nine retained
+  controls and three affected controls rerun on the corrected final source.
+  A valid old-reader regression and earlier fixture failures remain recorded.
+  Warning-level Clippy completed; strict Clippy and whole-file formatting retain
+  existing limitations, including expected growth of the stored record layout.
+  These tests inject synthetic observations; native process capture remains
+  follow-up work. Raw stderr and arbitrary server messages are excluded.
 - **Research across setup helpers:** A fresh normal helper can inspect an
   explicitly host-selected prior acquisition after exact matched reconciliation.
   Its historical status stays unconfirmed, and current owner, profile, runtime
