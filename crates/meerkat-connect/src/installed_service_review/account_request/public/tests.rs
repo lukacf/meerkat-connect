@@ -2,6 +2,10 @@
 //! package, Console-login, native grant or original-task completion evidence.
 use super::*;
 
+fn console_policy(name: &str) -> Option<ServiceToolPolicySelection> {
+    Some(serde_json::from_value(json!({"tools":[{"name":name,"consequence":"r0"}],"catalog":"r0"})).unwrap())
+}
+
 #[test]
 fn public_request_requires_exact_operations_and_explicit_lifetime_without_account_fields() {
     let base = json!({"job_id":"checked-job","operations":["read_public_feed"],"agent":"original-agent","expires_in_ms":null});
@@ -24,7 +28,7 @@ async fn public_review_keeps_selected_provenance_and_refuses_changed_or_bound_so
     let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
         "authentication":{"kind":"none"},"operation_tools":{"declared/read":"actual_read"}}))).await;
     let selected = fixture.raw_selection().ok().unwrap();
-    let selection = PublicSelection { tool_policy: None, operations:["actual_read".to_owned()].into(),
+    let selection = PublicSelection { tool_policy: console_policy("actual_read"), operations:["actual_read".to_owned()].into(),
         agent:"waiting-agent".into(),expires_in_ms:None };
     let config = selected.public_configuration(&selection.operations).unwrap();
     let retained = selected.clone();
@@ -35,7 +39,7 @@ async fn public_review_keeps_selected_provenance_and_refuses_changed_or_bound_so
     assert_eq!(body["authentication"],json!({"kind":"none"}));
     assert_eq!(body["operation_basis"]["kind"],"selected_manifest_declarations");
     assert_eq!(body["operation_basis"],selected.operation_basis());
-    assert_eq!(body["application_selection"],json!({"agent":"waiting-agent","expires_in_ms":null,"operations":["actual_read"]}));
+    assert_eq!(body["application_selection"],json!({"agent":"waiting-agent","expires_in_ms":null,"operations":["actual_read"],"tool_policy":selection.tool_policy}));
     assert!(body.get("account").is_none()); assert!(body.get("connector").is_none());
     assert!(config.connector.is_none());
     let mut changed = config.clone(); changed.access = Some(meerkat_core::McpServerAccess::allowing(["unreviewed_write".to_owned()]));
@@ -61,7 +65,7 @@ async fn public_reply_driver_joins_cancellation_and_preserves_the_presenter_for_
         let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
             "authentication":{"kind":"none"},"operation_tools":{"declared/read":"actual_read"}}))).await;
         let selected = fixture.raw_selection().ok().unwrap();
-        let selection = PublicSelection { tool_policy: None, operations:["actual_read".to_owned()].into(),
+        let selection = PublicSelection { tool_policy: console_policy("actual_read"), operations:["actual_read".to_owned()].into(),
             agent:"waiting-agent".into(),expires_in_ms:None };
         let config = selected.public_configuration(&selection.operations).unwrap();
         let approval_root = root.path().join("approvals");
@@ -134,7 +138,7 @@ async fn public_reply_driver_polls_expiry_while_shown_and_preserves_the_next_rev
         let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
             "authentication":{"kind":"none"},"operation_tools":{"declared/read":"actual_read"}}))).await;
         let selected = fixture.raw_selection().ok().unwrap();
-        let selection = PublicSelection { tool_policy: None, operations:["actual_read".to_owned()].into(),
+        let selection = PublicSelection { tool_policy: console_policy("actual_read"), operations:["actual_read".to_owned()].into(),
             agent:"waiting-agent".into(),expires_in_ms:None };
         let config = selected.public_configuration(&selection.operations).unwrap();
         let approval_root = root.path().join("approvals");
@@ -208,7 +212,7 @@ async fn remote_public_review_retains_export_research_and_exact_consumer_without
         let root=tempfile::tempdir().unwrap();
         let fixture=crate::stdio::tests::remote_public_fixture_kind(root.path(), declaration).await;
         let selected=fixture.public_remote();
-        let selection=PublicSelection { tool_policy: None, operations:["actual.lookup".to_owned()].into(),
+        let selection=PublicSelection { tool_policy: console_policy("actual.lookup"), operations:["actual.lookup".to_owned()].into(),
             agent:"original-agent".into(),expires_in_ms:Some(60000) };
         let config=selected.public_configuration(&selection.operations).unwrap();
         let review=public_review_request(&selected,&config,&selection).unwrap();
@@ -218,7 +222,7 @@ async fn remote_public_review_retains_export_research_and_exact_consumer_without
         assert_eq!(metadata.get("selection_kind").and_then(Value::as_str), if declaration { Some("remote_declaration") } else { None });
         assert_eq!(body["remote_export"],selected.review_source()["remote_export"]);
         assert!(body.get("software").is_none()); assert!(body.get("account").is_none());
-        assert_eq!(body["application_selection"],json!({"agent":"original-agent","operations":["actual.lookup"],"expires_in_ms":60000}));
+        assert_eq!(body["application_selection"],json!({"agent":"original-agent","operations":["actual.lookup"],"expires_in_ms":60000,"tool_policy":selection.tool_policy}));
         assert_eq!(body["installation"],serde_json::to_value(&config).unwrap());
         let widened=PublicSelection { tool_policy: None, operations:["actual.lookup".to_owned(),"other.write".to_owned()].into(),
             agent:selection.agent.clone(),expires_in_ms:selection.expires_in_ms };
@@ -234,7 +238,7 @@ async fn public_review_retains_software_declaration_without_full_activation_or_s
     let root=tempfile::tempdir().unwrap();
     let fixture=crate::stdio::tests::selected_software_fixture(root.path()).await;
     let selected=fixture.raw_selection().ok().unwrap();
-    let selection=PublicSelection { tool_policy: None,operations:["actual_read".to_owned()].into(),
+    let selection=PublicSelection { tool_policy: console_policy("actual_read"),operations:["actual_read".to_owned()].into(),
         agent:"waiting-agent".into(),expires_in_ms:Some(60000)};
     let config=selected.public_configuration(&selection.operations).unwrap();
     let request=public_review_request(&selected.clone().into(),&config,&selection).unwrap();
@@ -243,7 +247,7 @@ async fn public_review_retains_software_declaration_without_full_activation_or_s
     assert_eq!(body["operation_basis"],selected.operation_basis());
     assert_eq!(body["operation_basis"]["kind"],"selected_software_declarations");
     assert!(body["operation_basis"].get("manifest_digest").is_none());
-    assert_eq!(body["application_selection"],json!({"operations":["actual_read"],"agent":"waiting-agent","expires_in_ms":60000}));
+    assert_eq!(body["application_selection"],json!({"operations":["actual_read"],"agent":"waiting-agent","expires_in_ms":60000,"tool_policy":selection.tool_policy}));
     assert!(config.connector.is_none());
     assert!(body.get("account").is_none());
     assert!(body.get("observed_schema").is_none());
@@ -404,4 +408,50 @@ async fn public_operation_feedback_keeps_remote_declared_ceilings() {
         fixture.owner.retire();
         assert!(selected.public_operations().is_err());
     }
+}
+
+
+#[tokio::test]
+async fn console_service_policy_refuses_omitted_or_partial_proposals_before_public_review() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
+        "authentication":{"kind":"none"},"operation_tools":{"declared/read":"actual_read"}}))).await;
+    let selected: PublicServiceSelection = fixture.raw_selection().ok().unwrap().into();
+    let mut selection = PublicSelection { tool_policy: None,
+        operations:["actual_read".to_owned()].into(),agent:"waiting-agent".into(),expires_in_ms:None };
+    let config = selected.public_configuration(&selection.operations).unwrap();
+    for policy in [None, Some(json!({"tools":[{"name":"actual_read","consequence":"r0"}],"catalog":null})),
+        Some(json!({"tools":[],"catalog":"r0"})),
+        Some(json!({"tools":[{"name":"declared/read","consequence":"r0"}],"catalog":"r0"}))] {
+        selection.tool_policy = policy.map(|value| serde_json::from_value(value).unwrap());
+        assert!(public_review_request(&selected, &config, &selection).is_err(),
+            "an incomplete Console permission proposal must not create an access review");
+    }
+    selection.tool_policy = console_policy("actual_read");
+    let request = public_review_request(&selected, &config, &selection).unwrap();
+    assert_eq!(request.request_body.unwrap()["application_selection"]["tool_policy"],
+        serde_json::to_value(&selection.tool_policy).unwrap());
+    // The trusted application body is not the protected Console request.
+    selection.tool_policy = None;
+    assert!(public_review_body(&selected, &config, &selection).is_ok());
+    fixture.owner.retire();
+    selection.tool_policy = console_policy("actual_read");
+    assert!(public_review_request(&selected, &config, &selection).is_err());
+}
+
+#[test]
+fn console_service_policy_feedback_uses_exact_checked_exposed_names_and_preserves_proposal() {
+    let mut config = McpServerConfig::stdio("fixture", "/unused", vec![], Default::default());
+    config.tool_names.insert("raw_read".into(), "visible_read".into());
+    let operations = ["raw_read".to_owned(), "unmapped".to_owned()].into();
+    let mut policy = console_policy("raw_read");
+    let error = require_console_tool_policy(SETUP_PUBLIC_SERVICE_REQUEST, &config, &operations, policy.as_ref()).unwrap_err();
+    assert!(matches!(error, ToolError::InvalidArguments { reason, .. }
+        if reason.contains("visible_read") && reason.contains("unmapped")
+            && reason.contains("has not entered access review")));
+    policy = Some(serde_json::from_value(json!({"tools":[
+        {"name":"visible_read","consequence":"r1"},{"name":"unmapped","consequence":"r2"}],"catalog":"r0"})).unwrap());
+    let retained = policy.clone();
+    require_console_tool_policy(SETUP_PUBLIC_SERVICE_REQUEST, &config, &operations, policy.as_ref()).unwrap();
+    assert_eq!(policy, retained, "preflight never changes proposed consequences or permissions");
 }

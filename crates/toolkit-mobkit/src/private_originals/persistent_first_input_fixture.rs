@@ -199,9 +199,11 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         let provider = Arc::new(ScriptedProvider::default());
         let mut builder =
             FactoryAgentBuilder::new(AgentFactory::minimal().comms(true), Config::default());
-        let probe = Some(Arc::new(
-            crate::installed_host::acquisition::ContextProbe::default(),
-        ));
+        let probe = Some(Arc::new(if human_policy {
+            crate::installed_host::acquisition::ContextProbe::with_exact_catalog()
+        } else {
+            crate::installed_host::acquisition::ContextProbe::default()
+        }));
         let client: Arc<dyn LlmClient> = match &probe {
             Some(_) => Arc::new(crate::installed_host::acquisition::ProbeProvider::new(
                 provider.clone(),

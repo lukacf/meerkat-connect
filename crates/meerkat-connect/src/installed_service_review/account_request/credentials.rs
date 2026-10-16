@@ -88,6 +88,8 @@ fn credential_review_request(selected: &InstalledConnectorSelection, config: &Mc
     if checked != *config {
         return Err(refused("The checked credential configuration changed"));
     }
+    require_console_tool_policy(SETUP_ACCOUNT_REQUEST, config, &selection.operations, selection.tool_policy.as_ref())
+        .map_err(|error| refused(error.to_string()))?;
     let software = &selected.installed;
     let body = json!({
         "phase": "installed_credential_service_access",
@@ -208,6 +210,7 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
     if task.console_login().is_none()
         || checked_configuration(&selected, &selection).ok().as_ref().map(|value| &value.0) != Some(&config)
     { return Err(ToolError::access_denied(call.name)); }
+    require_console_tool_policy(call.name, &config, &selection.operations, selection.tool_policy.as_ref())?;
     let entry = current.reviewed_entry_ticket(call, plan)?;
     let (checks, mut requests) = mpsc::channel::<oneshot::Sender<bool>>(1);
     let (response, receive) = oneshot::channel();

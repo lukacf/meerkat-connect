@@ -42,7 +42,7 @@ impl Endpoint {
             _directory: directory,
         }
     }
-    fn config(&self, realm: &str) -> meerkat_core::McpServerConfig {
+    fn config(&self, realm: &str, deferred: bool) -> meerkat_core::McpServerConfig {
         // The existing native fixture uses this same line-oriented protocol.
         // Positional arguments keep temporary paths out of shell source.
         let script = r#"printf 'start\n' >> "$1"
@@ -53,7 +53,7 @@ while IFS= read -r line; do
     *'"method":"tools/list"'*)
       printf 'list\n' >> "$2"
       while [ ! -e "$3" ]; do sleep 0.02; done
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"read","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"read","inputSchema":%s}]}}\n' "$id" "$6" ;;
     *'"method":"tools/call"'*)
       printf '%s\n' "$line" >> "$4"
       case "$line" in
@@ -76,6 +76,10 @@ done"#;
                 self.released.to_str().unwrap().into(),
                 self.called.to_str().unwrap().into(),
                 self.result.clone(),
+                if deferred {
+                    // Real schema volume selects native deferred catalog mode.
+                    serde_json::json!({"type":"object","description":"A harmless read whose exact schema is intentionally large enough for native deferred discovery. The native catalog must load this tool before it can be offered to the Original model."}).to_string()
+                } else { serde_json::json!({"type":"object"}).to_string() },
             ],
             Default::default(),
         );
@@ -121,6 +125,7 @@ impl Drop for Endpoint {
 }
 
 const PUBLIC_READ_CALL: &str = "actual-public-attachment-read";
+const PUBLIC_CATALOG_CALL: &str = "actual-public-attachment-catalog";
 // A fixture bound on fresh model choices, never an authorization allowance.
 const MAX_PUBLIC_READ_CHOICES: usize = 3;
 
@@ -141,6 +146,8 @@ struct PublicReadScript {
     armed: AtomicBool,
     responses: AtomicUsize,
     choices: Mutex<Vec<PublicReadChoice>>,
+    catalog_choices: Mutex<Vec<PublicReadChoice>>,
+    catalog_feedback: Mutex<Option<ToolResult>>,
     answer_controller: Mutex<Option<meerkat_core::OperationId>>,
     endpoint_calls: Mutex<Option<PathBuf>>,
     expected_instruction: Mutex<Option<String>>,
@@ -160,7 +167,24 @@ impl PublicReadScript {
     fn endpoint_call_count(&self) -> usize {
         Endpoint::calls_at(self.endpoint_calls.lock().unwrap().as_ref().unwrap()).len()
     }
-    fn choice_count(&self) -> usize { self.choices.lock().unwrap().len() }
+    fn choice_count(&self) -> usize {
+        self.choices.lock().unwrap().len() + self.catalog_choices.lock().unwrap().len()
+    }
+}
+
+
+fn public_failure(result: &ToolResult) -> PublicReadFailure {
+    [PublicReadFailure::ReprepareRequired, PublicReadFailure::AuthorizationUnavailable]
+        .into_iter().find(|kind| {
+            let error = match kind {
+                PublicReadFailure::ReprepareRequired => meerkat_core::ToolError::AuthorizationRefused {
+                    refusal: meerkat_core::OperationRefused::new(meerkat_core::OperationRefusalKind::ReprepareRequired),
+                },
+                PublicReadFailure::AuthorizationUnavailable => meerkat_core::ToolError::OperationAuthorizationUnavailable,
+            };
+            let expected = meerkat_core::ops::terminal_tool_outcome_for_error(result.tool_use_id.clone(), error).result;
+            serde_json::to_value(result).unwrap() == serde_json::to_value(expected).unwrap()
+        }).expect("only exact native operation refusal or unavailable feedback permits a fresh choice")
 }
 
 struct PublicReadProvider {
@@ -216,6 +240,40 @@ impl LlmClient for PublicReadProvider {
                     tool.provenance.as_ref().is_some_and(|source|
                         source.kind == ToolSourceKind::Mcp && source.source_id.as_str() == "mail"))
                     .collect::<Vec<_>>();
+                // A real deferred catalog withholds the MCP tool until the
+                // actual catalog-load call succeeds under this same B input.
+                let catalog = self.script.catalog_choices.lock().unwrap();
+                let catalog_feedback = catalog.last().and_then(|choice| request.request().messages.iter()
+                    .flat_map(|message| match message { Message::ToolResults { results, .. } => results.as_slice(), _ => &[] })
+                    .find(|result| result.tool_use_id == choice.call_id)).cloned();
+                if offered.is_empty() {
+                    assert!(request.request().tools.iter().any(|tool| tool.name.as_str() == "tool_catalog_load"),
+                        "B must receive the real catalog control before its deferred MCP tool");
+                    let prior_feedback = catalog_feedback.as_ref().map(public_failure);
+                    assert!(catalog.len() < MAX_PUBLIC_READ_CHOICES, "bounded catalog choices exhausted");
+                    let call_id = format!("{PUBLIC_CATALOG_CALL}-{}", catalog.len() + 1);
+                    let controller = request.authorization().unwrap().operation_id().clone();
+                    assert!(catalog.iter().all(|choice| choice.controller != controller));
+                    drop(catalog);
+                    assert_eq!(self.script.endpoint_call_count(), 0);
+                    self.script.catalog_choices.lock().unwrap().push(PublicReadChoice {
+                        call_id: call_id.clone(), controller, prior_feedback, endpoint_calls_before: 0,
+                    });
+                    tool_response = true;
+                    return LlmEvent::ToolCallComplete { id: call_id, name: "tool_catalog_load".into(),
+                        args: serde_json::json!({"names":["attachment_public_read"]}), meta: None };
+                }
+                assert!(!catalog.is_empty(), "the real schema must defer this MCP tool until catalog load");
+                if self.script.catalog_feedback.lock().unwrap().is_none() {
+                    let result = catalog_feedback.expect("actual catalog result must precede the exposed MCP tool");
+                    assert!(!result.is_error && result.settlement_failures.is_empty(), "{result:?}");
+                    let loaded: serde_json::Value = serde_json::from_str(&result.text_content()).unwrap();
+                    assert_eq!(loaded["catalog_exact"], true);
+                    assert_eq!(loaded["accepted_names"], serde_json::json!(["attachment_public_read"]));
+                    assert_eq!(loaded["noop_names"], serde_json::json!([]));
+                    *self.script.catalog_feedback.lock().unwrap() = Some(result);
+                }
+                drop(catalog);
                 assert_eq!(offered.len(), 1, "B must see the newly attached public tool");
                 let identity = offered[0].identity();
                 let mut retained = self.script.offered.lock().unwrap();
@@ -243,22 +301,7 @@ impl LlmClient for PublicReadProvider {
                     }
                 } else {
                     let prior_feedback = feedback.map(|result| {
-                        let kind = [PublicReadFailure::ReprepareRequired, PublicReadFailure::AuthorizationUnavailable]
-                            .into_iter().find(|kind| {
-                                let error = match kind {
-                                    PublicReadFailure::ReprepareRequired => meerkat_core::ToolError::AuthorizationRefused {
-                                        refusal: meerkat_core::OperationRefused::new(
-                                            meerkat_core::OperationRefusalKind::ReprepareRequired),
-                                    },
-                                    PublicReadFailure::AuthorizationUnavailable => meerkat_core::ToolError::OperationAuthorizationUnavailable,
-                                };
-                                let expected = meerkat_core::ops::terminal_tool_outcome_for_error(
-                                    result.tool_use_id.clone(), error).result;
-                                serde_json::to_value(&result).unwrap() == serde_json::to_value(expected).unwrap()
-                            }).expect("only exact native operation refusal or unavailable feedback permits a fresh choice");
-                        // The public refusal projection does not prove its kind.
-                        // The final typed native audit must establish this value.
-                        kind
+                        public_failure(&result)
                     });
                     assert!(choices.len() < MAX_PUBLIC_READ_CHOICES, "bounded public read choices exhausted");
                     let endpoint_calls_before = self.script.endpoint_call_count();
@@ -366,7 +409,7 @@ async fn approved_native(
     );
     let snapshot = acquisition(fixture, &dispatch).await;
     let instruction = snapshot.request().request().request.clone();
-    let mut config = endpoint.config(&fixture.scope.realm);
+    let mut config = endpoint.config(&fixture.scope.realm, public);
     if public {
         // Select the existing native NoConnector review branch explicitly.
         // The exact read ceiling remains in the reviewed MCP configuration.
@@ -377,9 +420,9 @@ async fn approved_native(
     }
     let b = if public {
         // Raw MCP access and model-facing application invocation are separate.
-        // Review only this mapped read, retaining the empty bootstrap policy.
-        // The fixture checks the actual offered identity before calling it;
-        // it does not request or use native catalog controls.
+        // Preserve find_and_install from bootstrap and explicitly review both
+        // catalog controls and the mapped invocation. Native task catalog
+        // authority is separate from the durable ordinary member policy.
         approve_b_configuration_with_tool_policy(
             fixture, snapshot, [Id::new("read").unwrap()].into(), config.clone(),
             ServiceToolPolicySelection {
@@ -387,7 +430,7 @@ async fn approved_native(
                     name: config.tool_names.get("read").unwrap().clone(),
                     consequence: meerkat_core::CompiledToolConsequence::R0,
                 }],
-                catalog: None,
+                catalog: Some(meerkat_core::CompiledToolConsequence::R0),
             },
         ).await
     } else {
@@ -590,12 +633,57 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
             tools.push((&record.observation.operation_id, target.as_ref()));
         }
     }
+    let catalog_choices = script.catalog_choices.lock().unwrap();
+    assert!(!catalog_choices.is_empty() && catalog_choices.len() <= MAX_PUBLIC_READ_CHOICES);
+    let catalog_tools = tools.iter().filter(|(_, target)| matches!(target,
+        AuditTarget::Tool { tool_name, .. } if tool_name == "tool_catalog_load")).copied().collect::<Vec<_>>();
+    assert_eq!(catalog_tools.len(), catalog_choices.len());
+    let mut catalog_final_run_calls = 0;
+    let mut catalog_end = 0;
+    for (index, ((operation, target), choice)) in catalog_tools.iter().zip(catalog_choices.iter()).enumerate() {
+        let AuditTarget::Tool { call_id, arguments_digest, owners, .. } = target else { unreachable!() };
+        assert_eq!(call_id, &choice.call_id);
+        assert_eq!(choice.endpoint_calls_before, 0);
+        if let AuditTarget::Tool { arguments_digest: first, owners: first_owners, .. } = catalog_tools[0].1 {
+            assert!(arguments_digest == first && owners == first_owners);
+        }
+        let failure = if index + 1 == catalog_choices.len() { None } else {
+            let mut failures = records.iter().filter(|record| &record.observation.operation_id == *operation)
+                .filter_map(|record| match &record.observation.observation {
+                    AuditObservation::Refused { reason: OperationRefusalKind::ReprepareRequired, .. } => Some(PublicReadFailure::ReprepareRequired),
+                    AuditObservation::AuthorizationUnavailable { .. } => Some(PublicReadFailure::AuthorizationUnavailable),
+                    _ => None,
+                });
+            let first = failures.next().expect("an earlier catalog choice needs an exact typed native failure");
+            assert!(failures.all(|kind| kind == first));
+            if let Some(feedback) = catalog_choices[index + 1].prior_feedback { assert_eq!(feedback, first); }
+            Some(first)
+        };
+        let (start, end) = operation_span(&records, operation, target, failure);
+        let operation_run = records[start].observation.run_id.as_ref().unwrap();
+        let controller = records.iter().enumerate().filter(|(_, record)| record.observation.operation_id == choice.controller)
+            .collect::<Vec<_>>();
+        assert_eq!(controller.len(), 3);
+        assert!(controller.iter().all(|(i, record)| *i < start && *i >= catalog_end
+            && record.observation.run_id.as_ref() == Some(operation_run)));
+        assert!(matches!(&controller[0].1.observation.observation, AuditObservation::Prepared { target, .. }
+            if matches!(target.as_ref(), AuditTarget::Model(model) if model.usage == AuditModelUse::ControllerInference)));
+        assert!(matches!(&controller[1].1.observation.observation, AuditObservation::Entry));
+        assert!(matches!(&controller[2].1.observation.observation, AuditObservation::Outcome {
+            outcome: OperationObservedOutcome::HttpResponse { status: 200 }
+        }));
+        if operation_run == run { catalog_final_run_calls += 1; }
+        catalog_end = end;
+    }
+    assert_eq!(script.catalog_feedback.lock().unwrap().as_ref().unwrap().tool_use_id,
+        catalog_choices.last().unwrap().call_id);
+    tools.retain(|(_, target)| !matches!(target, AuditTarget::Tool { tool_name, .. } if tool_name == "tool_catalog_load"));
     let choices = script.choices.lock().unwrap();
     assert!(!choices.is_empty() && choices.len() <= MAX_PUBLIC_READ_CHOICES);
     assert_eq!(tools.len(), choices.len(), "every actual scripted choice has one exact native tool operation");
     let expected_identity = script.offered.lock().unwrap();
     let mut previous: Option<(usize, &meerkat_core::RunId, PublicReadFailure)> = None;
-    let mut final_run_calls = 0;
+    let mut final_run_calls = catalog_final_run_calls;
     for (index, ((operation, target), choice)) in tools.iter().zip(choices.iter()).enumerate() {
         let AuditTarget::Tool { call_id, tool_name, arguments_digest, owners } = target else { unreachable!() };
         assert_eq!(call_id, &choice.call_id);
@@ -619,6 +707,7 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
             Some(first)
         };
         let (tool_start, tool_end) = operation_span(&records, operation, target, failure);
+        assert!(tool_start > catalog_end, "mapped invocation follows actual catalog admission");
         let controller = records.iter().enumerate().filter(|(_, record)|
             record.observation.operation_id == choice.controller).collect::<Vec<_>>();
         assert_eq!(controller.len(), 3, "the actual fixture controller observes prepare, entry and HTTP return");
@@ -962,6 +1051,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             if cancel { assert_eq!(script.choice_count(), 0); }
             assert_eq!(script.offered.lock().unwrap().is_some(), !cancel);
             assert_eq!(script.feedback.lock().unwrap().is_some(), !cancel);
+            assert_eq!(script.catalog_feedback.lock().unwrap().is_some(), !cancel);
         }
         assert_eq!(
             endpoint.starts(),
@@ -1104,9 +1194,10 @@ async fn actual_pending_attachment_cannot_admit_b_after_parent_cancellation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn actual_public_attachment_calls_read_and_completes_exact_b_once_with_cancellation() {
-    // Real native approval, Apply, readiness, invocation and exact completion;
-    // the controlled local MCP/model do not establish live provider acceptance.
+async fn actual_public_attachment_loads_catalog_calls_mapped_read_and_completes_exact_b_once_with_cancellation() {
+    // Real captured A with find_and_install only, reviewed complete successor,
+    // native catalog scope, Apply, catalog load, mapped invocation and exact B
+    // completion. Controlled MCP/model IO is not live provider acceptance.
     for cancel in [false, true] {
         actual_attachment_case(cancel, true).await;
     }

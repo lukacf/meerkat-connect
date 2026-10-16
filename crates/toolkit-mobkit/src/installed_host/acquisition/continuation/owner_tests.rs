@@ -38,20 +38,34 @@ fn revision(value: &str) -> Revision { Revision::new(value).unwrap() }
 /// Uses the existing native pre-execution resolver, which receives the actual
 /// staged context. It grants no operation and never enters a tool body.
 #[derive(Default)]
-pub(crate) struct ContextProbe(Mutex<Option<ToolDispatchContext>>);
+pub(crate) struct ContextProbe {
+    captured: Mutex<Option<ToolDispatchContext>>,
+    exact_catalog: bool,
+}
 impl ContextProbe {
+    pub(crate) fn with_exact_catalog() -> Self {
+        // This probe owns one immutable definition and the default catalog
+        // mirrors that complete list. It never supplies a deferred entry.
+        Self { captured: Mutex::new(None), exact_catalog: true }
+    }
     pub(crate) fn definition() -> ToolDef {
         ToolDef::new(PROBE, "Capture the staged continuation fixture context", serde_json::json!({
             "type": "object", "additionalProperties": false,
         }))
     }
     pub(crate) fn captured(&self) -> ToolDispatchContext {
-        self.0.lock().unwrap().clone().expect("native plan resolver captured the staged context")
+        self.captured.lock().unwrap().clone().expect("native plan resolver captured the staged context")
     }
 }
 #[async_trait]
 impl AgentToolDispatcher for ContextProbe {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> { Arc::from([Arc::new(Self::definition())]) }
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        meerkat_core::ToolCatalogCapabilities {
+            exact_catalog: self.exact_catalog,
+            may_require_catalog_control_plane: false,
+        }
+    }
     fn resolve_execution_plan(&self, call: ToolCallView<'_>, context: &ToolDispatchContext,
         _: &meerkat_core::ToolExecutionResolutionContext)
         -> Result<meerkat_core::ResolvedToolExecutionPlan, meerkat_core::ToolExecutionResolutionError>
@@ -59,7 +73,7 @@ impl AgentToolDispatcher for ContextProbe {
         assert_eq!(call.name, PROBE);
         assert!(context.retained_work().is_some());
         assert!(context.work_authorization().is_some());
-        assert!(self.0.lock().unwrap().replace(context.clone()).is_none(), "probe runs once");
+        assert!(self.captured.lock().unwrap().replace(context.clone()).is_none(), "probe runs once");
         Err(meerkat_core::ToolExecutionResolutionError::NotFound { tool_name: call.name.into() })
     }
     async fn dispatch(&self, _: ToolCallView<'_>)

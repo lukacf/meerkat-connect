@@ -185,14 +185,24 @@ async fn approve_b_call_with_tool_policy<S>(fixture: &ContinuationFixture<S>, sn
             .application_tool_policy;
         assert_eq!(proposal.member, member.member);
         assert_eq!(&proposal.selection, selection);
-        assert!(proposal.catalog_session.is_none() && selection.catalog.is_none());
+        assert_eq!(proposal.catalog_session, selection.catalog.as_ref().map(|_| fixture.session.to_string()));
         assert_eq!(proposal.prior.revision, meerkat_core::PolicyRevision(1));
         assert_eq!(proposal.prior.digest.as_str(), format!("sha256:{}", initial.sha256));
         assert_eq!(proposal.candidate.revision, meerkat_core::PolicyRevision(2));
         assert!(candidate.default_deny);
+        // This captured Original begins with installation discovery only.
+        // The real owner must preserve it in the complete reviewed successor.
+        let bootstrap_grant = meerkat_core::CompiledMemberToolGrant {
+            tool_name: crate::FIND_AND_INSTALL.into(),
+            action: meerkat_core::CompiledMemberToolAction::Invoke,
+            consequence: meerkat_core::CompiledToolConsequence::R2,
+        };
+        let mut expected_grants = selection.grants().unwrap();
+        expected_grants.push(bootstrap_grant);
+        expected_grants.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
         assert_eq!(candidate.members, vec![meerkat_core::CompiledMemberToolGrants {
-            member_identity: member.member.clone(), grants: selection.grants().unwrap(),
-        }], "the full reviewed successor adds only the selected member invocation");
+            member_identity: member.member.clone(), grants: expected_grants,
+        }], "the full reviewed successor preserves bootstrap and adds only the selected permissions");
         assert!(!fixture.source.service_tool_policy.get().unwrap()
             .is_observed_current(proposal.candidate_canonical_json.as_bytes()).unwrap(),
             "the proposed policy is not current before the human decision");

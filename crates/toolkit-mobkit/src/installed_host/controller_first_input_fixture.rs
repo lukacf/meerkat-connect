@@ -181,9 +181,9 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
             registered, Arc::new(meerkat_tools::CatalogControlVisibilityProvider::new()),
         );
         surface.extend(catalog.tools().iter().map(|tool| tool.identity()));
-    } else if !probe {
-        // Plain and configured governed sessions also compose native catalog
-        // controls from their initially empty MCP router. Select the native
+    } else if !probe || human_policy {
+        // Plain, configured and exact human-policy fixtures compose native
+        // catalog controls from their initially empty MCP router. Select the native
         // definitions in the artifact without granting operation authority.
         use meerkat_core::AgentToolDispatcher;
         let catalog = meerkat_tools::CatalogControlDispatcher::new(
@@ -217,6 +217,8 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
         else if private_helper_entry { selected.member.role = PRIVATE_HELPER_PROFILE.into(); }
         selected.logical_owner = super::tests::principal(HELPER);
         native.members.push(selected);
+    }
+    if helper || human_policy {
         // Only A may invoke the installed acquisition leaf at the application
         // policy layer. Its separate native setup authority is still required;
         // ordinary AA retains an independent controller-only helper. The separate
@@ -637,6 +639,15 @@ mod human_policy_recovery {
         let native = local.native_host.as_ref().unwrap();
         let bytes = read_bundle_artifact(selection, &native.application_tool_policy).unwrap();
         let bootstrap = CompiledApplicationToolPolicy::parse_canonical_json(&bytes).unwrap();
+        // Check the actual immutable bootstrap artifact before any review.
+        assert_eq!(bootstrap.members, vec![meerkat_core::CompiledMemberToolGrants {
+            member_identity: native.members[0].member.member.clone(),
+            grants: vec![meerkat_core::CompiledMemberToolGrant {
+                tool_name: crate::FIND_AND_INSTALL.into(),
+                action: meerkat_core::CompiledMemberToolAction::Invoke,
+                consequence: meerkat_core::CompiledToolConsequence::R2,
+            }],
+        }], "captured A starts with no catalog or MCP invocation permission");
         Arc::new(Selected { owner: native.grant_administrator.clone(), realm: native.realm.to_string(),
             deployment: local.deployment.to_string(), bootstrap })
     }

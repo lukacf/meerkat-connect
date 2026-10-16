@@ -35,7 +35,8 @@ async fn credential_review_uses_exact_checked_slots_and_launch_and_refuses_retir
         "environment_secret_slots":["FIXTURE_KEY","FIXTURE_TOKEN"]}))).await;
     let selected = fixture.raw_selection().ok().unwrap();
     let selection = CredentialSelection { operations:["actual_read".to_owned()].into(),
-        agent:"original-agent".into(),expires_in_ms:None,tool_policy:None };
+        agent:"original-agent".into(),expires_in_ms:None,tool_policy:Some(serde_json::from_value(json!({
+            "tools":[{"name":"actual_read","consequence":"r0"}],"catalog":"r0"})).unwrap()) };
     let (config, slots) = checked_configuration(&selected, &selection).unwrap();
     assert_eq!(slots.iter().map(|slot| slot.environment_variable().to_owned()).collect::<BTreeSet<_>>(),
         ["FIXTURE_KEY".to_owned(),"FIXTURE_TOKEN".to_owned()].into());
@@ -73,7 +74,8 @@ async fn credential_review_round_trips_the_installation_reader_without_losing_ch
     let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(declaration.clone())).await;
     let selected = fixture.raw_selection().ok().unwrap();
     let selection = CredentialSelection { operations:["actual_read".to_owned()].into(),
-        agent:"original-agent".into(),expires_in_ms:None,tool_policy:None };
+        agent:"original-agent".into(),expires_in_ms:None,tool_policy:Some(serde_json::from_value(json!({
+            "tools":[{"name":"actual_read","consequence":"r0"}],"catalog":"r0"})).unwrap()) };
     let (config, slots) = checked_configuration(&selected, &selection).unwrap();
     let request = credential_review_request(&selected, &config, &selection).unwrap();
     let approvals = ApprovalService::new();
@@ -318,4 +320,31 @@ async fn credential_operation_feedback_preserves_argument_and_native_currentness
     assert!(!error.to_string().contains("private_raw_name"));
     assert!(!error.to_string().contains("PRIVATE_FIXTURE_KEY"));
     assert!(requests.try_recv().is_err());
+}
+
+
+#[tokio::test]
+async fn console_service_policy_refuses_incomplete_credential_review_without_touching_values() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
+        "authentication":{"kind":"binding","owner":"process","requirement":"key","credential_audience":"service"},
+        "operation_tools":{"declared/read":"actual_read"},"environment_secret_slots":["FIXTURE_KEY"]}))).await;
+    let selected = fixture.raw_selection().ok().unwrap();
+    let mut selection = CredentialSelection { operations:["actual_read".to_owned()].into(),
+        agent:"original-agent".into(),expires_in_ms:None,tool_policy:None };
+    let (config, _) = checked_configuration(&selected, &selection).unwrap();
+    for policy in [None, Some(json!({"tools":[{"name":"actual_read","consequence":"r0"}],"catalog":null})),
+        Some(json!({"tools":[{"name":"declared/read","consequence":"r0"}],"catalog":"r0"}))] {
+        selection.tool_policy = policy.map(|value| serde_json::from_value(value).unwrap());
+        assert!(credential_review_request(&selected, &config, &selection).is_err(),
+            "an incomplete Console permission proposal must not create a credential review");
+    }
+    selection.tool_policy = Some(serde_json::from_value(json!({
+        "tools":[{"name":"actual_read","consequence":"r0"}],"catalog":"r0"})).unwrap());
+    let request = credential_review_request(&selected, &config, &selection).unwrap();
+    let body = request.request_body.unwrap();
+    assert_eq!(body["application_selection"]["tool_policy"], serde_json::to_value(&selection.tool_policy).unwrap());
+    assert!(body.get("credential_values").is_none());
+    fixture.owner.retire();
+    assert!(credential_review_request(&selected, &config, &selection).is_err());
 }

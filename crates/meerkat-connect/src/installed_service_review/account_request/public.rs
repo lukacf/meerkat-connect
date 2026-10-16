@@ -135,6 +135,7 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
     if task.console_login().is_none() || selected.public_configuration(&selection.operations).ok().as_ref() != Some(&config) {
         return Err(ToolError::access_denied(call.name));
     }
+    require_console_tool_policy(call.name, &config, &selection.operations, selection.tool_policy.as_ref())?;
     let entry = current.reviewed_entry_ticket(call, plan)?;
     let (checks, mut requests) = mpsc::channel::<oneshot::Sender<bool>>(1);
     let (response, receive) = oneshot::channel();
@@ -161,7 +162,7 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
 
 pub fn installed_public_service_request_definition() -> ToolDef {
     ToolDef::new(SETUP_PUBLIC_SERVICE_REQUEST,
-        "Request public service access for the exact waiting task. The selected host uses its application policy or protected Console review. A requires_action result names needed human access review and is not success. Reconcile the installed package or retained remote HTTP export job first. Requires explicit authentication kind none and exact raw names from current library publisher metadata, the selected package canonical manifest, or the retained remote recipe declaration; absence of a native connector is insufficient. Use operation_tools values as raw names, not its declaration-ID keys. Supply only job id, raw operations, intended consumer agent and explicit expires_in_ms (null leaves the task deadline as the limit). Authorized access retains a new instruction and a task-scoped live attachment grant through the existing original-task owner. It never saves realm configuration, creates an account, invokes the service or establishes readiness. A separate public-request capability is required.",
+        "Request public service access for the exact waiting task. The selected host uses its application policy or protected Console review. A requires_action result names needed human access review and is not success. Reconcile the installed package or retained remote HTTP export job first. Requires explicit authentication kind none and exact raw names from current library publisher metadata, the selected package canonical manifest, or the retained remote recipe declaration; absence of a native connector is insufficient. Use operation_tools values as raw names, not its declaration-ID keys. Supply job id, raw operations, intended consumer agent and explicit expires_in_ms (null leaves the task deadline as the limit). If trusted application delegation does not handle the request, protected Console review requires explicit tool_policy with a non-null catalog consequence and coverage of every selected exposed tool name. These are proposals for the same protected review, not authority. Authorized access retains a new instruction and a task-scoped live attachment grant through the existing original-task owner. It never saves realm configuration, creates an account, invokes the service or establishes readiness. A separate public-request capability is required.",
         json!({"type":"object","additionalProperties":false,"required":["job_id","operations","agent","expires_in_ms"],
             "properties":{"job_id":{"type":"string"},"agent":consumer_agent_schema(),
                 "expires_in_ms":{"type":["integer","null"],"minimum":1},
@@ -325,6 +326,8 @@ fn public_review_request(selected: &PublicServiceSelection, config: &McpServerCo
     selection: &PublicSelection,
 ) -> Result<ApprovalRequest, ConnectError> {
     let body = public_review_body(selected, config, selection)?;
+    require_console_tool_policy(SETUP_PUBLIC_SERVICE_REQUEST, config, &selection.operations, selection.tool_policy.as_ref())
+        .map_err(|error| refused(error.to_string()))?;
     Ok(ApprovalRequest {
         requester: ApprovalPrincipalId::new("connect-installed-setup-agent").map_err(|error| refused(error.to_string()))?,
         owner: ApprovalOwnerRef::Session { session_id: selected.session().clone() },
