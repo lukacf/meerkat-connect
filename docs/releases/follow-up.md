@@ -5,9 +5,10 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
-Development source improves acquisition, protected setup and recovery on the
-released Core/Meta 0.9.0 contracts. It does not replace the published Connect
-0.9.0 binaries.
+Development source improves acquisition, protected setup and recovery. The
+reviewed Core retained-resume correction with compatible Meta 0.9.1 and SDKs has
+passed development gateway and controlled installed checks. Published Connect
+0.9.0 binaries are unchanged.
 
 - **Review expiry:** Console and terminal reviews continue polling their existing
   deadline while displayed. Focused checks and an actual expired Console review
@@ -45,8 +46,9 @@ released Core/Meta 0.9.0 contracts. It does not replace the published Connect
   the caller's existing permission ceiling. Its 20 Python checks and one native
   permission check pass. The matching Linux package also passes the installed
   success/corruption pair, including an actual controlled helper invocation after
-  native catalog loading. This qualifies supplied-byte hashing, not runtime
-  observation, schema validation, readiness or free-form schema authoring.
+  native catalog loading. A fresh free-form helper also used it successfully.
+  This qualifies supplied-byte hashing, not runtime observation, schema
+  validation, readiness or completed business use.
 
 Delivered development changes have passed gateway assembly, controlled installed
 success/corruption checks and fresh Console startup. The focused permission
@@ -63,14 +65,16 @@ and grants without a model, setup helper or another credential fetch or account
 read. This resolves local credential cleanup, not provider-token revocation or
 full browser-UX and free-form discovery qualification.
 
-The latest Console journey recovered from its first MCP initialization failure,
-then encountered another initialization failure whose continuation was refused
-before admission. The Core owner reports a reviewed fix for the repeated-resume
-defect; a consumable development handoff remains pending. No database query or
-useful answer followed.
-Normal revoke/Stop and physical cleanup passed independent review. The current
-native diagnostic establishes initialize-response closure, not a captured
-package-specific exception.
+The real-model database journey remains incomplete. A fresh guide consumed a
+reviewed correction for an omitted helper-only schema grant and successfully
+used schema inspection, but operator-missed software reviews invalidated that
+attempt. A distinct ordinary-reset successor failed setup MCP initialization
+before review and then encountered a catalog grant still bound to its old helper
+session. The initialization cause is unproved. Successor catalog access needs
+an explicit host-authorized selection; reset alone cannot renew the old grant.
+No selected integration installation, access grant or database read occurred.
+Normal Stop and physical cleanup completed. Earlier failed cases remain failed;
+no completed free-form answer or second distinct failure continuation is claimed.
 
 ## Released 0.9.0 limits
 

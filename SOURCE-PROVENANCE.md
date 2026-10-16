@@ -22,6 +22,24 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Private SDK metadata checkpoint `24f686d5e76b3f379862f4b9cf16b1267c52ce1e`
+maps to public `8a5728c79bb3dc19697b5c606e8d030756434052`. Three files select
+Meta 0.9.1 for the Python native-host extra and optional TypeScript peer/root
+lock; Toolkit and its separate Core TypeScript peer remain 0.9.0. Development
+qualification selects Core `fa84878cfe1c0c3bc42ff77ea68ff649ca999c47` with Meta
+`16cf534277c63f5a684abb62206fa690ccf74d72`. Source, resolved-graph, SDK build,
+gateway assembly and controlled installed success/corruption checks passed.
+The rebuilt Python wheel includes previously committed license and notice changes,
+with no executable module delta from the prior qualified wheel. Those changes
+retain their existing licensing provenance. The corrected fresh Forge guide
+passed generated-policy checks, installation and startup, and its free-form
+helper used supplied-schema inspection. Operator-missed software reviews
+invalidated that task. A distinct ordinary-reset successor then failed setup
+initialization and encountered catalog authority bound to the old helper session.
+The initialization cause remains unproved; no implicit successor grant is added.
+Both attempts returned no figures and are closed. Private Forge source is outside
+this export, and no published 0.9.0 artifact is changed.
+
 Private direct-credential checkpoint `5759bf5da0744786154484ca5e44f04e47d0b82a`
 maps to public `6c2fcbc71db4493cbe33d0c205b9cd669465dd50`. Its four exact files
 add terminal credential inventory and protected removal through the existing
@@ -51,13 +69,14 @@ invocation returned the exact supplied-byte digest after native catalog loading;
 the existing acquisition, original-agent read and corruption checks also passed.
 Private test checkpoint `77601b947d37f1dce0713aa2a25ecfef66466164` maps to public
 `9ed84fa53b09749695b90dc7fe44b2d30a74d0d1`. This qualifies installed helper
-availability and hashing, not free-form schema authoring or live-server schema
-equality. Initial transport failure and retained SDK cleanup diagnostics remain
+availability and hashing. A later free-form helper successfully used the same
+operation; neither result establishes live-server schema equality or completed
+business use. Initial transport failure and retained SDK cleanup diagnostics remain
 separate from the observed natural process settlement. No release is published.
 
 The follow-up branch imports reviewed source, synthetic tests and usage guides
-from 32 private development checkpoints after the release baseline, through
-`5759bf5da0744786154484ca5e44f04e47d0b82a`. These are file patches, not imported
+from 33 private development checkpoints after the release baseline, through
+`24f686d5e76b3f379862f4b9cf16b1267c52ce1e`. These are file patches, not imported
 private Git history. Private plans, coordination, live-case records, accounts and
 build archives remain excluded. The public dependency layout, vendor notices,
 catalog identities and published 0.9.0 assets are unchanged.
@@ -132,9 +151,8 @@ passed on unchanged library/resource/SDK selections. A fresh successor applicati
 also completed normal installation and healthy Console startup, then created a
 distinct setup proposal after attachment failure without replaying the failed
 approval. The second initialization also failed, and the native owner refused
-its failure continuation before admission. The repeated-resume defect is
-accepted upstream work. The Core owner reports a reviewed fix, but a consumable
-development handoff remains pending and no correction is selected here. No
+its failure continuation before admission. This historical V33 result predates the reviewed Core correction selected
+above; it is not superseded by a later controlled pass. No
 business query or useful answer followed; normal closeout and physical cleanup
 passed independent review. This is not isolated causal proof of the wording. No schema, state, API, grant or
 deadline changes accompany the wording.
