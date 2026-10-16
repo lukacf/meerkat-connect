@@ -23,8 +23,8 @@ dependency layout without changing its implementation source.
 ## Unreleased follow-up source
 
 The follow-up branch imports reviewed source, synthetic tests and usage guides
-from 26 private development checkpoints after the release baseline, through
-`c4c19b25d2fed6396b30139f7582374584230c53`. These are file patches, not imported
+from 27 private development checkpoints after the release baseline, through
+`7eece6ef2b4b71021967d3acecf4a3ac4ff99c63`. These are file patches, not imported
 private Git history. Private plans, coordination, live-case records, accounts and
 build archives remain excluded. The public dependency layout, vendor notices,
 catalog identities and published 0.9.0 assets are unchanged.
@@ -60,6 +60,21 @@ current checked declared-secret-slot requests. Its old-source regression failed
 as intended and all 15 targeted checks passed. The export preserves those exact
 source files and synthetic controls; it does not include credentials or claim
 live authenticated use.
+
+The next ten-file source increment validates complete permission proposals at
+the captured-original Console boundary. Private checkpoint
+`7eece6ef2b4b71021967d3acecf4a3ac4ff99c63` maps to public source commit
+`82206554644b9ed75896009e311b8e1366668020`, with the same reviewed afterimages.
+It requires explicit catalog scope and exact exposed-tool coverage before the
+existing protected whole-policy review. It does not create grants or change
+trusted application and lower-level contracts. Independent review joined the
+meaningful old-source failure and 28 distinct passing controls across retained
+runs. Checked-request builder rejection is separate from the native positive,
+which proves real deferred catalog loading and mapped inert invocation under the
+reviewed service input. Earlier command, compile and fixture failures remain
+recorded; production bytes were unchanged by their corrections. These are
+controlled synthetic checks, not live authentication or a successful fresh
+Console task. Combined development delivery remains pending.
 
 The [follow-up inventory](docs/releases/follow-up.md) retains the broader work.
 These source changes are unreleased and do not change the evidence or claims

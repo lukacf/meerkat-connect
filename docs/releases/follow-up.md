@@ -45,9 +45,23 @@ This is actual package-backend use, separate from native approval or MCP
 attachment. Optional peers, arbitrary native payloads and broader platform
 coverage remain explicit limits.
 
-The immediate priority is to reject incomplete Console permission proposals
-before approval, then obtain a useful answer through the complete fresh journey. Account onboarding, persistent frontends and the other areas
-below retain their own completion requirements.
+The Console fallback for a waiting original task now rejects incomplete
+permission proposals before protected review. It requires explicit catalog scope
+and coverage of each selected exposed tool name, with actionable feedback for
+missing coverage. The human still reviews the whole resulting member policy
+until superseded and catalog metadata for the original conversation, not only
+the integration. This explicit review remains necessary even when the ordinary
+policy already permits the tools, because the new task grant needs its own
+catalog scope. Nothing is granted automatically; trusted application delegation
+and lower-level APIs retain their contracts.
+
+The old-source regression failed at the intended assertion. Separately, all 28
+distinct focused checks passed across retained runs, including a real native
+catalog load and mapped inert invocation. Earlier command and fixture failures
+remain recorded. These are controlled checks. Combined development delivery and a useful answer
+through the fresh Console journey are still pending. Account onboarding,
+persistent frontends and the other areas below retain their own completion
+requirements.
 
 ## Released 0.9.0 limits
 
