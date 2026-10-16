@@ -11,7 +11,7 @@ function checkedPage(value) {
 /** One current page, replaced after every authenticated read. Page positions
  * carry no principal, grant or approval and are discarded on view retirement.
  */
-export function mountSourceStatusPanel(container, read, account = { clear() {}, update() {} }, access = { clear() {}, update() {} }) {
+export function mountSourceStatusPanel(container, read, account = { clear() {}, update() {} }, access = { clear() {}, update() {} }, submission = { sending: false }) {
     const doc = container.ownerDocument;
     const status = doc.createElement("p");
     status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
@@ -35,6 +35,14 @@ export function mountSourceStatusPanel(container, read, account = { clear() {}, 
     };
     function update(direction = "refresh") {
         if (disposed) return Promise.resolve();
+        // The same-login read replaces the server's current access offer.
+        // Keep it until an entered protected POST settles, including manual
+        // navigation and history restoration. This flag grants no authority.
+        if (submission.sending) {
+            status.textContent = "Waiting for the current setup response before refreshing status.";
+            buttons(true);
+            return Promise.resolve();
+        }
         if (pending) return pending; // Poll/manual navigation share one entered read.
         if (needsFirst && direction !== "first") return Promise.resolve();
         if (direction === "next" && page?.has_next !== true) return Promise.resolve();
@@ -472,14 +480,20 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
                             const response = await fetcher("/host/toolkit/setup/access/revoke", { method: "POST", credentials: "same-origin",
                                 cache: "no-store", redirect: "error", headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({ offer_id: value.offer_id, row_id: row.id }) });
-                            if (!response.ok || !response.headers.get("content-type")?.startsWith("application/json")) throw new Error("Response unavailable");
-                            const result = await response.json();
-                            const outcomes = { revoked: "This access was revoked. Work already running was not stopped.",
-                                not_current: "This access view is no longer current. This request revoked nothing. Review current status before a new decision.",
-                                controller_in_use: "This access is required by unfinished controller work.",
-                                refused: "This revocation was refused.", unavailable: text };
-                            if (result.scope !== "application_issued_access" || !Object.hasOwn(outcomes, result.state)) throw new Error("Unknown result");
-                            text = outcomes[result.state];
+                            const notCurrent = "This access view is no longer current. This request revoked nothing. Review current status before a new decision.";
+                            // This endpoint returns 409 only before entering the
+                            // native revoke owner: the selected offer is gone.
+                            if (response.status === 409) text = notCurrent;
+                            else {
+                                if (!response.ok || !response.headers.get("content-type")?.startsWith("application/json")) throw new Error("Response unavailable");
+                                const result = await response.json();
+                                const outcomes = { revoked: "This access was revoked. Work already running was not stopped.",
+                                    not_current: notCurrent,
+                                    controller_in_use: "This access is required by unfinished controller work.",
+                                    refused: "This revocation was refused.", unavailable: text };
+                                if (result.scope !== "application_issued_access" || !Object.hasOwn(outcomes, result.state)) throw new Error("Unknown result");
+                                text = outcomes[result.state];
+                            }
                         } catch { /* No retry: an entered native mutation may have completed. */ }
                         submission.sending = false;
                         if (!disposed) {
@@ -523,7 +537,7 @@ export function mountSourceStatusPage(container, read, fetcher = fetch) {
         let panel;
         const account = mountAccountReview(container, () => panel.refresh(), fetcher, submission);
         const access = mountApplicationAccess(container, () => panel.refresh(), fetcher, submission);
-        panel = mountSourceStatusPanel(container, read, account, access);
+        panel = mountSourceStatusPanel(container, read, account, access, submission);
         const mounted = { panel, account, access, timer: undefined };
         current = mounted;
         const poll = async () => {

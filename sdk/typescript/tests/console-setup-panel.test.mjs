@@ -299,18 +299,24 @@ test("restoration never replays a pending approval or retains a prior viewer's a
   container.querySelector(".toolkit-account-review button").click(); assert.equal(posts, 1);
   transition("pagehide"); transition("pageshow");
   assert.doesNotMatch(container.textContent, /Prior private account|selected-account/);
-  returning.reject(Error("current viewer denied")); await new Promise(resolve => setImmediate(resolve));
-  assert.match(container.textContent, /status is unavailable/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 1, "history restoration cannot replace the pending action's offer");
+  assert.match(container.textContent, /Waiting for the current setup response/);
   assert.equal(container.querySelector(".toolkit-account-review button"), null);
   sent.resolve(new Response("{}", { status: 202 })); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(posts, 1); assert.equal(reads, 2, "the old approval cannot refresh a retired page");
+  assert.equal(posts, 1); assert.equal(reads, 1, "the old approval cannot refresh a retired page");
+  const tick = [...timers.values()][0]; timers.clear(); const refreshed = tick();
+  await Promise.resolve(); returning.reject(Error("current viewer denied")); await refreshed;
+  assert.match(container.textContent, /status is unavailable/);
+  assert.equal(container.querySelector(".toolkit-account-review button"), null);
+  assert.equal(reads, 2, "the restored page reads normally after settlement");
   assert.equal(timers.size, 1);
   page.dispose(); assert.equal(timers.size, 0); assert.equal(container.textContent, "");
 });
 
-test("successful history restoration keeps answer and start submissions single-entry until settlement", async t => {
+test("successful history restoration waits for answer and start settlement without replay", async t => {
   for (const start of [false, true]) {
-    const { container, transition } = pageFixture(t);
+    const { container, transition, timers } = pageFixture(t);
     const sent = deferred(); let reads = 0; let posts = 0;
     const selected = start ? { review_id: 8, can_start: true, prompt: null } : review();
     const page = mountSourceStatusPage(container, async () => {
@@ -322,22 +328,17 @@ test("successful history restoration keeps answer and start submissions single-e
     original.click(); assert.equal(posts, 1);
     transition("pagehide"); transition("pageshow");
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(reads, 2);
-    const restored = [...container.querySelectorAll(".toolkit-account-review button")];
-    assert.ok(restored.length > 0, "the same review was successfully restored");
-    for (const button of restored) {
-      assert.equal(button.disabled, true, start ? "start" : "answer");
-      button.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
-    }
+    assert.equal(reads, 1);
+    assert.equal(container.querySelectorAll(".toolkit-account-review button").length, 0);
+    assert.match(container.textContent, /Waiting for the current setup response/);
     original.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
-    assert.equal(posts, 1, "neither a restored nor detached button resends the pending POST");
+    assert.equal(posts, 1, "a detached button cannot resend the pending POST");
     sent.resolve(new Response("{}", { status: 202 }));
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(reads, 2, "settlement cannot refresh the retired view");
+    assert.equal(reads, 1, "settlement cannot refresh the retired view");
     assert.equal(posts, 1);
-    [...container.querySelectorAll("button")].find(button => button.textContent === "Refresh status").click();
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(reads, 3);
+    const tick = [...timers.values()][0]; timers.clear(); await tick();
+    assert.equal(reads, 2);
     for (const button of container.querySelectorAll(".toolkit-account-review button"))
       assert.equal(button.disabled, false, "the next current read can present actions after settlement");
     assert.equal(posts, 1, "settlement and refresh never replay the user's response");
@@ -794,5 +795,66 @@ test("malformed or foreign credential projections clear actions without sending 
     assert.doesNotMatch(container.textContent, /forbidden-projection-value/);
     assert.match(container.textContent, /status is unavailable/);
     assert.equal(calls, 0);
+  }
+});
+
+
+test("pending protected action keeps its offer through automatic and manual status reads", async t => {
+  for (const action of ["revoke", "answer", "start"]) {
+    const { container, timers } = pageFixture(t);
+    const entered = deferred(); let reads = 0; const calls = []; let currentOffer;
+    const selectedReview = action === "start" ? { review_id: 8, can_start: true, prompt: null }
+      : action === "answer" ? review() : undefined;
+    const page = mountSourceStatusPage(container, async () => {
+      const page_id = ++reads; currentOffer = page_id;
+      return { projection: snapshot(), review: selectedReview,
+        page: { page_id, first: true, has_next: true },
+        application_access: { ...applicationAccess(), offer_id: page_id } };
+    }, (url, options) => { calls.push({ url, body: JSON.parse(options.body) }); return entered.promise; });
+    t.after(() => { entered.resolve(new Response("{}", { status: 202 })); page.dispose(); });
+    const settled = () => new Promise(resolve => setImmediate(resolve));
+    await settled(); assert.equal(reads, 1);
+    const selector = action === "revoke" ? ".toolkit-application-access button" : ".toolkit-account-review button";
+    const clicked = container.querySelector(selector); clicked.click();
+    assert.equal(calls.length, 1); assert.equal(clicked.disabled, true);
+    const tick = [...timers.values()][0]; timers.clear(); await tick();
+    for (const label of ["Refresh status", "First page", "Next page"]) {
+      [...container.querySelectorAll("button")].find(button => button.textContent === label)
+        .dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
+      await settled();
+    }
+    assert.equal(reads, 1, `${action}: no status request may retire the offer before POST settlement`);
+    assert.equal(currentOffer, 1);
+    clicked.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
+    assert.equal(calls.length, 1, "blocked reads never repeat the protected action");
+    if (action === "revoke") {
+      assert.equal(calls[0].body.offer_id, currentOffer, "the delayed POST still reaches its actual selected offer");
+      entered.resolve(accessResponse("revoked"));
+    } else entered.resolve(new Response("{}", { status: 202 }));
+    await settled();
+    assert.equal(reads, 2, "settlement performs the normal current status read");
+    assert.equal(calls.length, 1);
+    page.dispose();
+  }
+});
+
+test("stale access offer 409 is definite nonentry while a lost reply remains uncertain", async t => {
+  for (const stale of [true, false]) {
+    const container = fixture(t); let posts = 0; let refreshes = 0; let panel;
+    panel = mountApplicationAccess(container, async () => {
+      ++refreshes; panel.update({ ...applicationAccess(), offer_id: 10 }, "person");
+    }, async () => {
+      ++posts;
+      if (!stale) throw Error("lost reply");
+      return new Response(JSON.stringify({ error: "Protected setup is unavailable" }), {
+        status: 409, headers: { "Content-Type": "application/json" } });
+    });
+    t.after(() => panel.dispose()); panel.update(applicationAccess(), "person");
+    container.querySelector("button").click(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(posts, 1); assert.equal(refreshes, 1);
+    assert.match(container.textContent, stale ? /This request revoked nothing/ : /could not be confirmed/);
+    assert.doesNotMatch(container.textContent, stale ? /could not be confirmed/ : /This request revoked nothing/);
+    assert.equal(container.querySelector("button").disabled, false, "a fresh explicit decision is available");
+    await Promise.resolve(); assert.equal(posts, 1, "neither failure class automatically retries");
   }
 });
