@@ -187,10 +187,15 @@ impl InstalledNativeContinuation {
             // This is the exact committed result, not the original user content
             // or a claim that the original task itself has completed.
             body: String::from_utf8(if let Some(failure) = obligation.service_attachment_failure() {
-                canonical_json(&serde_json::json!({
+                let mut body = serde_json::json!({
                     "outcome": obligation.outcome(), "service_attachment_failure": failure,
                     "explanation": "The selected service attachment attempt failed or was rejected. Its replacement instruction was permanently fenced before admission. This is a setup failure result under your original authority, not service readiness or permission to retry. Research any corrected choice and request a separately reviewed setup.",
-                }))?
+                });
+                if let Some(observation) = obligation.service_attachment_observation() {
+                    body["service_attachment_observation"] = serde_json::to_value(observation)
+                        .map_err(|_| ContinuationError::Unsupported)?;
+                }
+                canonical_json(&body)?
             } else { match obligation.helper_detail() {
                 Some(detail) => canonical_json(&serde_json::json!({
                     "outcome": obligation.outcome(), "explanation": detail,

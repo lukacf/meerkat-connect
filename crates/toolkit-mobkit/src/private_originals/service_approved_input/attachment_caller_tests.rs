@@ -499,8 +499,27 @@ async fn terminal_attachment_failure_after_cancellation_cannot_stamp_failure_pro
         let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
         let record = fixture.source.decode_stored(&saved).unwrap();
         assert!(record.operation_cancelled && record.final_association.is_none() && record.service_admission.is_none());
+        fixture
+            .source
+            .reject_failed_service_attachment_with_observation(
+                &b,
+                meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Failed,
+                Some(
+                    serde_json::from_value(serde_json::json!({
+                        "phase": "initialize", "class": {"kind": "unknown"},
+                    }))
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.store.get(&stored.key).await.unwrap().unwrap(),
+            saved
+        );
         let task = fixture.source.service_task_snapshot(&record).await.unwrap();
         assert!(task.service_attachment_failure().is_none());
+        assert!(task.service_attachment_observation().is_none());
         fixture.source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
         let task = fixture.source.service_task_snapshot(&record).await.unwrap();
         assert!(task.service_attachment_failure().is_none());
@@ -524,9 +543,26 @@ async fn terminal_attachment_failure_cannot_use_an_unsettled_cancellation_as_non
              WHEN NEW.id = '{}' AND json_extract(NEW.data, '$.body.operation_cancelled') = 1 \
              BEGIN SELECT RAISE(FAIL, 'cancellation not durable'); END;", stored.key.id)).unwrap();
         assert!(fixture.source.step_service_input_with_attachment(&fixture.store, &stored).await.is_err());
+        assert!(
+            fixture
+                .source
+                .reject_failed_service_attachment_with_observation(
+                    &b,
+                    meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Failed,
+                    Some(
+                        serde_json::from_value(serde_json::json!({
+                            "phase": "initialize", "class": {"kind": "protocol_error"},
+                        }))
+                        .unwrap()
+                    )
+                )
+                .await
+                .is_err()
+        );
         let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
         let record = fixture.source.decode_stored(&saved).unwrap();
         assert!(!record.operation_cancelled && record.final_association.is_none() && record.service_admission.is_none());
+        assert!(record.service_attachment_observation.is_none());
         let task = fixture.source.service_task_snapshot(&record).await.unwrap();
         assert!(task.service_attachment_failure().is_none());
         assert!(fixture.source.service_setup_store().unwrap().committed_continuation(
@@ -542,6 +578,19 @@ async fn terminal_attachment_failure_cannot_use_an_unsettled_cancellation_as_non
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn terminal_attachment_failure_replays_after_cancel_commit_before_result_commit() {
+    attachment_failure_replay(None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_attachment_observation_replays_from_exact_cancellation_cas() {
+    attachment_failure_replay(Some(serde_json::from_value(serde_json::json!({
+        "phase": "tool_discovery", "class": {"kind": "closed", "exit": {"kind": "signal", "value": 15}},
+    })).unwrap())).await;
+}
+
+async fn attachment_failure_replay(
+    observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+) {
     use meerkat_toolkit::setup::ApprovedServiceAttachmentFailure;
     let fixture = ContinuationFixture::for_service_input().await;
     let result = AssertUnwindSafe(Box::pin(async {
@@ -563,9 +612,22 @@ async fn terminal_attachment_failure_replays_after_cancel_commit_before_result_c
             "CREATE TRIGGER fail_setup_result BEFORE UPDATE OF data ON toolkit_records \
              WHEN NEW.id = '{}' AND json_extract(NEW.data, '$.body.service_attachment_failure') IS NOT NULL \
              BEGIN SELECT RAISE(FAIL, 'setup result write unavailable'); END;", task.key().id)).unwrap();
-        assert!(fixture.source.step_service_input_with_attachment(&fixture.store, &stored).await.is_err());
+        let result = if observation.is_some() {
+            // This tests the new host writer with synthetic typed metadata;
+            // the selected old native observer still returns only readiness.
+            let reply = held.receipt(|| Ok(())).await.unwrap().unwrap();
+            let ServiceAttachmentReadiness::Failed(failure) = fixture.source
+                .service_attachment_ready(&held, &reply).await.unwrap()
+                else { panic!("scripted native readiness must fail"); };
+            fixture.source.attachment_current_after_read(&held).await.unwrap();
+            fixture.source.reject_failed_service_attachment_with_observation(&b, failure, observation).await
+        } else {
+            fixture.source.step_service_input_with_attachment(&fixture.store, &stored).await
+        };
+        assert!(result.is_err());
         let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
         let cancelled = fixture.source.decode_stored(&saved).unwrap();
+        assert_eq!(cancelled.service_attachment_observation, observation);
         assert!(cancelled.operation_cancelled && cancelled.service_attachment_failure == Some(ApprovedServiceAttachmentFailure::Failed));
         assert!(cancelled.final_association.is_none() && cancelled.service_admission.is_none());
         assert!(fixture.source.service_task_snapshot(&cancelled).await.unwrap().service_attachment_failure().is_none());
@@ -576,10 +638,22 @@ async fn terminal_attachment_failure_replays_after_cancel_commit_before_result_c
         fixture.source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
         let terminal = fixture.source.service_task_snapshot(&cancelled).await.unwrap();
         assert!(terminal.service_attachment_failure() == Some(ApprovedServiceAttachmentFailure::Failed));
+        assert_eq!(terminal.service_attachment_observation(), observation);
         assert_eq!(terminal.state().lifecycle_phase, toolkit_catalog::AcquisitionPhase::Unavailable);
         let obligation = fixture.source.service_setup_store().unwrap().committed_continuation(
             &Id::new(task.key().id.clone()).unwrap()).await.unwrap().unwrap();
         assert!(fixture.source.failed_service_allows_original_result(&obligation).await.unwrap());
+        assert_eq!(obligation.service_attachment_observation(), observation);
+        let digest = obligation.digest().unwrap();
+        // Repeated settlement cannot enrich or replace the first committed
+        // observation, including a legacy None, after cancellation/retirement.
+        fixture.source.reject_failed_service_attachment_with_observation(&b,
+            ApprovedServiceAttachmentFailure::Rejected,
+            Some(serde_json::from_value(serde_json::json!({
+                "phase": "launch", "class": {"kind": "spawn_failed"},
+            })).unwrap())).await.unwrap();
+        assert_eq!(fixture.source.service_setup_store().unwrap().committed_continuation(
+            obligation.operation()).await.unwrap().unwrap().digest().unwrap(), digest);
         fixture.source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
         assert_eq!(fixture.store.get(&stored.key).await.unwrap().unwrap(), saved,
             "generic cancellation replay keeps the atomically retained cause and evidence");

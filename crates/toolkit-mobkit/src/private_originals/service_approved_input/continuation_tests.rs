@@ -368,6 +368,21 @@ async fn lost_source_custody_without_durable_b_admission_is_unavailable() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_attachment_result_resumes_only_original_authority_once() {
+    attachment_failure_delivery(None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_attachment_observation_reaches_original_delivery_once() {
+    attachment_failure_delivery(Some(serde_json::from_value(serde_json::json!({
+        "phase": "initialize", "class": {"kind": "closed", "exit": {"kind": "code", "value": 1}},
+    })).unwrap())).await;
+}
+
+// Exercise the actual source writer, outbox and native A delivery. Optional
+// host observations are synthetic fixture data, not native process capture.
+async fn attachment_failure_delivery(
+    host_observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+) {
     use meerkat::{ContinuationHostBindings, ContinuationKey, ContinuationOwner, ContinuationStatus,
         DetachedJobService, MemoryDetachedJobStore, RuntimeDeliveryOwner};
     use meerkat::surface::SessionServiceDeliveryHost;
@@ -382,9 +397,24 @@ async fn failed_attachment_result_resumes_only_original_authority_once() {
         let source = &fixture.source;
         let row = fixture.store.get(&source.key(&b).unwrap()).await.unwrap().unwrap();
         source.reserve_service_continuation(&row).await.unwrap();
+        if let Some(observation) = host_observation {
+            let mut invalid = row.clone();
+            invalid.data.body["service_attachment_observation"] = serde_json::to_value(observation).unwrap();
+            assert!(source.decode_stored(&invalid).is_err(), "observation alone is not a terminal failure");
+        }
         // The other control covers exact native observation. This calls the
         // same source-owned terminal settlement and tests its real A delivery.
-        source.reject_failed_service_attachment(&b, ApprovedServiceAttachmentFailure::Failed).await.unwrap();
+        if host_observation.is_some() {
+            // Explicit synthetic host observation exercises the real writer;
+            // it is not capture from the unchanged native attachment API.
+            source.reject_failed_service_attachment_with_observation(
+                &b, ApprovedServiceAttachmentFailure::Failed, host_observation).await.unwrap();
+        } else {
+            source.reject_failed_service_attachment(&b, ApprovedServiceAttachmentFailure::Failed).await.unwrap();
+        }
+        let observation = serde_json::json!({
+            "phase": "initialize", "class": {"kind": "closed", "exit": {"kind": "code", "value": 1}},
+        });
         let setup = source.service_setup_store().unwrap();
         let obligation = setup.committed_continuation(&id(&snapshot.key().id)).await.unwrap().unwrap();
         assert!(source.failed_service_allows_original_result(&obligation).await.unwrap());
@@ -416,10 +446,15 @@ async fn failed_attachment_result_resumes_only_original_authority_once() {
         assert_eq!(pending.len(), 1);
         let payload: serde_json::Value = serde_json::from_slice(pending[0].submission.payload()).unwrap();
         let delivery: meerkat::ContinuationDelivery = serde_json::from_value(payload).unwrap();
-        let expected = String::from_utf8(toolkit_package::canonical_json(&serde_json::json!({
+        let mut expected = serde_json::json!({
             "outcome": obligation.outcome(), "service_attachment_failure": "failed",
             "explanation": "The selected service attachment attempt failed or was rejected. Its replacement instruction was permanently fenced before admission. This is a setup failure result under your original authority, not service readiness or permission to retry. Research any corrected choice and request a separately reviewed setup.",
-        })).unwrap()).unwrap();
+        });
+        if host_observation.is_some() {
+            expected["service_attachment_observation"] = observation.clone();
+            assert_eq!(serde_json::to_value(&obligation).unwrap()["service_attachment_observation"], observation);
+        }
+        let expected = String::from_utf8(toolkit_package::canonical_json(&expected).unwrap()).unwrap();
         assert_eq!(delivery.body, expected.into(), "the delivered body carries only the bounded failure facts, never native detail or readiness/cleanup claims");
         let jobs = Arc::new(MemoryDetachedJobStore::new());
         let host = SessionServiceDeliveryHost::new(&fixture.service, &fixture.machine,
@@ -446,8 +481,37 @@ async fn failed_attachment_result_resumes_only_original_authority_once() {
         }
         let b_record = source.decode_stored(&fixture.store.get(&row.key).await.unwrap().unwrap()).unwrap();
         assert!(b_record.operation_cancelled && b_record.final_association.is_none() && b_record.service_admission.is_none());
+        if host_observation.is_some() {
+            let mut invalid = fixture.store.get(&row.key).await.unwrap().unwrap();
+            invalid.data.body["operation_cancelled"] = false.into();
+            assert!(source.decode_stored(&invalid).is_err(), "observation cannot bypass cancellation");
+        }
         assert_eq!(setup.committed_continuation(obligation.operation()).await.unwrap().unwrap().digest().unwrap(), exact_digest);
         assert_eq!(fixture.inputs().await, Ok(2), "neither reconciliation nor replay creates B or a second A result");
+        if host_observation.is_some() {
+            // A different valid observation is not interchangeable with the
+            // exact source/obligation pair, even under the same failure enum.
+            let current = fixture.store.get(&row.key).await.unwrap().unwrap();
+            let original = current.data.clone();
+            let mut changed = original.clone();
+            changed.body["service_attachment_observation"]["phase"] = "launch".into();
+            let changed = fixture.store.compare_and_swap(Transition {
+                key: current.key, expected_revision: current.revision,
+                expected_digest: Some(current.content_digest), claim: None,
+                data: changed, events: vec![], effects: vec![],
+            }).await.unwrap();
+            assert!(matches!(source.failed_service_allows_original_result(&obligation).await,
+                Err(meerkat_toolkit::continuation::ContinuationError::InvalidReceipt)));
+            fixture.store.compare_and_swap(Transition {
+                key: changed.key, expected_revision: changed.revision,
+                expected_digest: Some(changed.content_digest), claim: None,
+                data: original, events: vec![], effects: vec![],
+            }).await.unwrap();
+            // Restoring bytes does not restore the source revision retained
+            // by the actual cancellation owner. No new authority is published.
+            assert!(matches!(source.failed_service_allows_original_result(&obligation).await,
+                Err(meerkat_toolkit::continuation::ContinuationError::OwnerUnavailable)));
+        }
     })).catch_unwind().await;
     drop(owner_handle);
     if let Some(mut passes) = owner_passes {
@@ -469,9 +533,23 @@ async fn admitted_b_wins_over_a_late_failed_attachment_settlement() {
         assert_eq!(fixture.inputs().await, Ok(2));
         source.reject_failed_service_attachment(&b,
             meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Failed).await.unwrap();
+        source
+            .reject_failed_service_attachment_with_observation(
+                &b,
+                meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Failed,
+                Some(
+                    serde_json::from_value(serde_json::json!({
+                        "phase": "initialize", "class": {"kind": "timed_out"},
+                    }))
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
         let obligation = source.service_setup_store().unwrap().committed_continuation(&id(&snapshot.key().id))
             .await.unwrap().unwrap();
         assert!(matches!(obligation.outcome(), SetupTerminalOutcome::ApprovedServiceAdmitted { .. }));
+        assert!(obligation.service_attachment_observation().is_none());
         assert!(obligation.service_attachment_failure().is_none());
         assert!(!source.failed_service_allows_original_result(&obligation).await.unwrap());
         assert!(source.observe_service_continuation(&obligation).await.unwrap().is_some());

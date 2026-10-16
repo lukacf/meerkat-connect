@@ -15,7 +15,12 @@ mod continuation_executor;
 mod continuation_recovery;
 pub use continuation_recovery::ContinuationRecoveryPage;
 mod service_continuation;
-pub use service_continuation::{ApprovedServiceAttachmentFailure, ApprovedServiceInput, ApprovedServiceSelection, ApprovedServiceSourceOwner};
+pub use service_continuation::{
+    ApprovedServiceAttachmentClass, ApprovedServiceAttachmentExit,
+    ApprovedServiceAttachmentFailure, ApprovedServiceAttachmentObservation,
+    ApprovedServiceAttachmentPhase, ApprovedServiceInput, ApprovedServiceSelection,
+    ApprovedServiceSourceOwner,
+};
 use service_continuation::ApprovedServiceReady;
 mod helper_result;
 pub use helper_result::{
@@ -168,6 +173,8 @@ struct AcquisitionRecord {
     service_ready: Option<ApprovedServiceReady>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     service_attachment_failure: Option<ApprovedServiceAttachmentFailure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service_attachment_observation: Option<ApprovedServiceAttachmentObservation>,
     detail: Option<ContextReference>,
     continuation_receipt: Option<ContinuationAdmissionEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -395,6 +402,7 @@ impl<'a> SetupStore<'a> {
             approved_service: None,
             service_ready: None,
             service_attachment_failure: None,
+            service_attachment_observation: None,
             detail: None,
             continuation_receipt: None,
             helper_detail: None,
@@ -969,6 +977,11 @@ fn validate_record(
             || state.decision_ref != state.selection_digest
         { return Err(SetupError::InvalidRecord); }
     }
+    if record.service_attachment_observation.is_some()
+        && record.service_attachment_failure.is_none()
+    {
+        return Err(SetupError::InvalidRecord);
+    }
     if record.service_attachment_failure.is_some()
         && (record.approved_service.is_none() || record.service_ready.is_some()
             || state.lifecycle_phase != AcquisitionPhase::Unavailable)
@@ -1090,6 +1103,7 @@ fn continuation_obligation(
         outcome,
         approved_service: record.approved_service.clone(),
         service_attachment_failure: record.service_attachment_failure,
+        service_attachment_observation: record.service_attachment_observation,
         helper_detail: record
             .helper_detail
             .as_ref()

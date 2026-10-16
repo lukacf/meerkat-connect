@@ -50,7 +50,7 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
                 decision_sha256: "0".repeat(64) }, before_ms: u64::MAX,
         };
         let record = SourceRecord { bound_service_input: None, setup_request: None, configured_setup: None, source: parent_record.source.clone(), event,
-            final_association: None, operation_cancelled: false, service_attachment_failure: None, approved_task: Some(link),
+            final_association: None, operation_cancelled: false, service_attachment_failure: None, service_attachment_observation: None, approved_task: Some(link),
             // This exercises the actual canonical admitted-field branch. It
             // does not fabricate native B acceptance or a usable B grant.
             service_admission: admitted_partial_write.is_some().then(|| ServiceInputAdmission {

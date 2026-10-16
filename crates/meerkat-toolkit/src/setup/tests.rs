@@ -1580,13 +1580,22 @@ async fn absent_attachment_failure_preserves_legacy_record_and_obligation_bytes(
     let record_bytes = canonical_json(&terminal.record).unwrap();
     let legacy: serde_json::Value = serde_json::from_slice(&record_bytes).unwrap();
     assert!(legacy.get("service_attachment_failure").is_none());
+    assert!(legacy.get("service_attachment_observation").is_none());
     let decoded: super::AcquisitionRecord = serde_json::from_value(legacy).unwrap();
     assert!(decoded.service_attachment_failure.is_none());
+    assert!(decoded.service_attachment_observation.is_none());
     assert_eq!(canonical_json(&decoded).unwrap(), record_bytes);
     let obligation = super::continuation_obligation(&decoded, terminal.request()).unwrap();
     let bytes = canonical_json(&obligation).unwrap();
     let mut legacy = serde_json::to_value(&obligation).unwrap();
     assert!(legacy.as_object_mut().unwrap().remove("service_attachment_failure").is_none());
+    assert!(
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("service_attachment_observation")
+            .is_none()
+    );
     assert_eq!(canonical_json(&legacy).unwrap(), bytes);
     assert_eq!(obligation.digest().unwrap(), ContentDigest::of_bytes(&bytes));
 }
@@ -1616,8 +1625,40 @@ async fn attachment_failure_record_requires_reserved_unavailable_without_readine
         expected_revision: reserved.state.revision, detail_ref: super::digest(&reference("failed")).unwrap().to_string(), now: 202,
     }).unwrap();
     failed.detail = Some(reference("failed"));
+    for failure in [
+        ApprovedServiceAttachmentFailure::Failed,
+        ApprovedServiceAttachmentFailure::Rejected,
+    ] {
+        failed.service_attachment_failure = Some(failure);
+        super::validate_record(&failed, &f.request).unwrap();
+        let bytes = canonical_json(&failed).unwrap();
+        let legacy: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(legacy.get("service_attachment_observation").is_none());
+        let decoded: super::AcquisitionRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(canonical_json(&decoded).unwrap(), bytes);
+        let obligation = super::continuation_obligation(&decoded, &f.request).unwrap();
+        let mut legacy = serde_json::to_value(&obligation).unwrap();
+        assert!(
+            legacy
+                .as_object_mut()
+                .unwrap()
+                .remove("service_attachment_observation")
+                .is_none()
+        );
+        assert_eq!(
+            canonical_json(&legacy).unwrap(),
+            canonical_json(&obligation).unwrap()
+        );
+    }
     failed.service_attachment_failure = Some(ApprovedServiceAttachmentFailure::Failed);
+    failed.service_attachment_observation = Some(ApprovedServiceAttachmentObservation {
+        phase: ApprovedServiceAttachmentPhase::Initialize,
+        class: ApprovedServiceAttachmentClass::Closed { exit: None },
+    });
     super::validate_record(&failed, &f.request).unwrap();
+    let mut without_failure = failed.clone();
+    without_failure.service_attachment_failure = None;
+    assert!(super::validate_record(&without_failure, &f.request).is_err());
     let mut without_selection = failed.clone();
     without_selection.approved_service = None;
     assert!(super::validate_record(&without_selection, &f.request).is_err());
@@ -1628,4 +1669,124 @@ async fn attachment_failure_record_requires_reserved_unavailable_without_readine
         selection_generation: 1, observed_at_ms: 202,
         admission: ApprovedServiceInput { source_admission: reference("input"), runtime: id("runtime"), session: id("session"), input: id("input") } });
     assert!(super::validate_record(&with_ready, &f.request).is_err());
+}
+
+#[test]
+fn attachment_observation_codec_rejects_unbounded_or_invalid_fields() {
+    let cases = [
+        serde_json::json!({"phase": "launch", "class": {"kind": "spawn_failed"}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "closed"}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "closed", "exit": {"kind": "code", "value": 1}}}),
+        serde_json::json!({"phase": "tool_discovery", "class": {"kind": "closed", "exit": {"kind": "signal", "value": 15}}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "rejected"}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "protocol_error"}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "timed_out"}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "unknown"}}),
+    ];
+    for value in &cases {
+        let decoded: ApprovedServiceAttachmentObservation =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), *value);
+    }
+    for value in [
+        serde_json::json!({"phase": "future", "class": {"kind": "unknown"}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "future"}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "unknown"}, "server": "private-marker"}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "unknown", "detail": "private-marker"}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "rejected", "code": -32601}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "timed_out", "exit": {"kind": "code", "value": 1}}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "closed", "exit": {"kind": "future", "value": 1}}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "closed", "exit": {"kind": "code", "value": 2147483648_i64}}}),
+        serde_json::json!({"phase": "initialize", "class": {"kind": "closed", "exit": {"kind": "code", "value": 1, "detail": "private-marker"}}}),
+    ] {
+        assert!(serde_json::from_value::<ApprovedServiceAttachmentObservation>(value).is_err());
+    }
+}
+
+#[tokio::test]
+async fn retained_attachment_observation_decodes_generated_snapshot() {
+    let f = Fixture::new();
+    let snapshot = f.admit().await;
+    let selected = ApprovedServiceSelection {
+        source: StoreKey {
+            realm: f.tenant.to_string(),
+            owner: f.deployment.to_string(),
+            id: "b".into(),
+        },
+        original_work: meerkat_authorization_contracts::work_association::OriginalWorkRef {
+            authority: f.request.original_work().authority.clone(),
+            work: meerkat_authorization_contracts::evidence::EvidenceId::new("different-b")
+                .unwrap(),
+        },
+        source_identity: ContentDigest::of_bytes(b"exact-b-source"),
+    };
+    // This is a retained snapshot/reader control, not admitted B authority.
+    // Use generated transitions and commit the approved-service reservation
+    // before adding synthetic historical metadata to the terminal write.
+    let (mut reserved, effects) = super::apply(
+        &snapshot,
+        AcquisitionInput::RecordSelection {
+            operation_id: snapshot.state().operation_id.clone(),
+            authority_digest: snapshot.state().authority_digest.clone(),
+            expected_revision: snapshot.state().revision,
+            selection_digest: super::digest(&selected).unwrap().to_string(),
+            decision_ref: super::digest(&selected).unwrap().to_string(),
+            now: 201,
+        },
+    )
+    .unwrap();
+    reserved.approved_service = Some(selected);
+    let reserved = f
+        .bridge()
+        .commit(&snapshot, reserved, effects, None)
+        .await
+        .unwrap();
+    let (mut failed, effects) = super::apply_selected_source(
+        &reserved,
+        AcquisitionInput::ReportUnavailable {
+            operation_id: reserved.state().operation_id.clone(),
+            authority_digest: reserved.state().authority_digest.clone(),
+            expected_revision: reserved.state().revision,
+            detail_ref: super::digest(&reference("failed")).unwrap().to_string(),
+            now: 202,
+        },
+    )
+    .unwrap();
+    failed.detail = Some(reference("failed"));
+    failed.service_attachment_failure = Some(ApprovedServiceAttachmentFailure::Failed);
+    super::validate_record(&failed, &f.request).unwrap();
+    let observation = serde_json::json!({
+        "phase": "initialize", "class": {"kind": "closed", "exit": {"kind": "code", "value": 1}},
+    });
+    let mut data = super::encode_record(&failed).unwrap();
+    data.body["service_attachment_observation"] = observation.clone();
+    let (events, effects) = super::handoffs(&failed, effects).unwrap();
+    let stored = f
+        .store
+        .compare_and_swap(Transition {
+            key: reserved.stored.key.clone(),
+            expected_revision: reserved.stored.revision,
+            expected_digest: Some(reserved.stored.content_digest.clone()),
+            claim: None,
+            data,
+            events,
+            effects,
+        })
+        .await
+        .unwrap();
+    assert_eq!(stored.revision, failed.state.revision);
+    assert_eq!(failed.state.terminal_revision, failed.state.revision);
+    // The old reader refuses the new field here. The new reader must retain it
+    // without changing the stored row; actual native delivery has its own test.
+    let obligation = f
+        .bridge()
+        .committed_continuation(&id(&snapshot.key().id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&obligation).unwrap()["service_attachment_observation"],
+        observation
+    );
+    assert_eq!(f.store.get(snapshot.key()).await.unwrap().unwrap(), stored);
 }
