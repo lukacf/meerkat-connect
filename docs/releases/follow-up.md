@@ -5,99 +5,69 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
-Follow-up source improves package acquisition and setup recovery while retaining
-the same released Core/Meta 0.9.0 contracts. It does not replace the published
-Connect 0.9.0 binaries.
+Development source improves acquisition, protected setup and recovery on the
+released Core/Meta 0.9.0 contracts. It does not replace the published Connect
+0.9.0 binaries.
 
-The Console and terminal corrections keep the existing review future polled
-during presentation without extending approval lifetimes or changing grant
-authority. They passed 28 affected checks, including real-expiry regressions.
-The combined development package passed its controlled installed checks and
-reached fresh application installation and healthy Console startup.
+- **Review expiry:** Console and terminal reviews continue polling their existing
+  deadline while displayed. Focused checks and an actual expired Console review
+  confirm settlement without extending approval lifetimes or changing authority.
+- **Operation feedback:** Public and declared-secret-slot requests identify exact
+  permitted raw tool names when a current checked selection receives invalid
+  names. A controlled Console test now exercises the invalid-name feedback before
+  credential review.
+- **Usable permission proposals:** The Console fallback for a waiting original
+  task rejects missing catalog scope or selected-tool coverage before protected
+  review. Approval still covers the complete successor member policy until
+  superseded and eligible catalog metadata throughout the original conversation.
+  This explicit selection supplies the new task's catalog authority even when
+  ordinary policy already permits the tools. Grants remain separately scoped and
+  finite; trusted application delegation and lower-level APIs are unchanged.
+- **Target-bound npm dependencies:** Supported optional dependency graphs retain
+  the full lock and archives while selecting compatible packages for the exact
+  target. A pinned Linux `chokidar-cli@3.0.0` installation, performed offline with
+  lifecycle scripts disabled, produced a fresh file event. Optional peers and
+  arbitrary native payloads remain out of scope; this run qualifies Linux only.
+- **Fresh recovery proposals:** `find_and_install` guidance permits a new reviewed
+  proposal within the original request and current authority after a failed
+  attempt. It does not require another chat authorization solely because setup
+  failed, permit approval replay or force repeated attempts. Software and access
+  reviews remain required. Retained failure payloads stay unchanged for delivery
+  reconciliation. A fresh Console run demonstrated an autonomous new proposal
+  with this guidance delivered, without establishing wording-only causality.
+- **Independent application roles:** A persistent Reading-host test confirms that
+  the same exported service and store remain usable after frontend removal and
+  management-CLI exit. Existing admission, reply and shutdown checks also pass.
+  This establishes application service survival, not native service-grant or
+  model-dispatch qualification, live frontend adoption or restart coverage.
+- **Supplied schema evidence:** The optional metadata inspector computes a digest
+  of exact supplied JSON bytes and rejects malformed or oversized input within
+  the caller's existing permission ceiling. Its 20 Python checks and one native
+  permission check pass. The matching Linux package also passes the installed
+  success/corruption pair, including an actual controlled helper invocation after
+  native catalog loading. This qualifies supplied-byte hashing, not runtime
+  observation, schema validation, readiness or free-form schema authoring.
 
-The preceding development run reached software installation and protected access
-approval. When native attachment failed, the service continuation was cancelled
-before entry and a durable failure result returned to the same original agent.
-That agent autonomously selected and installed another integration. The second
-attachment became usable and resumed the same original agent, but loading its
-tools was refused before any database query. The access proposal lacked catalog
-permission, and the application policy lacked the selected tool-call permissions.
-The agent returned no figures. Both grants were revoked and owned test processes
-were cleaned up. The business task remains incomplete; attachment and automatic
-continuation now have actual successful evidence. Earlier failed attempts and
-the published 0.9.0 binaries remain unchanged.
+Delivered development changes have passed gateway assembly, controlled installed
+success/corruption checks and fresh Console startup. The focused permission
+checks include native catalog loading and a mapped inert invocation. These
+results do not establish a completed real-model business journey.
 
-The same run also observed an unapproved review settling just after its displayed
-expiry, followed by a new request from the helper. This supports the Console
-expiry correction without changing any approval lifetime.
+A separate controlled Console API test completed protected credential submission,
+attachment and one authenticated GitHub account read by the same original agent.
+The task grant was revoked and application processes were closed. Credential
+removal remains incomplete: the cleanup CLI stopped at its setup-helper admission
+prompt. A direct credential-management entry is being added so cleanup can use
+the existing protected removal without installing a setup helper. This is not
+full browser-UX or free-form discovery qualification.
 
-Declared-secret-slot requests now return actionable exact raw-operation feedback
-when a current checked selection receives invalid names. All 15 targeted checks
-passed, including a regression that fails against the old source. This source
-increment was not part of that Console run. It is now included in the qualified
-combined development gateway, but remains unqualified with a live credential.
-
-Package support now includes target-bound optional npm dependencies. A pinned
-Linux test acquired `chokidar-cli@3.0.0`, then installed it offline with lifecycle
-scripts disabled, retained the macOS-only dependency archive while excluding it
-from installation, and verified a fresh file event using the shipped program.
-This is actual package-backend use, separate from native approval or MCP
-attachment. Optional peers, arbitrary native payloads and broader platform
-coverage remain explicit limits.
-
-The Console fallback for a waiting original task now rejects incomplete
-permission proposals before protected review. It requires explicit catalog scope
-and coverage of each selected exposed tool name, with actionable feedback for
-missing coverage. The human still reviews the whole resulting member policy
-until superseded and catalog metadata for the original conversation, not only
-the integration. This explicit review remains necessary even when the ordinary
-policy already permits the tools, because the new task grant needs its own
-catalog scope. Nothing is granted automatically; trusted application delegation
-and lower-level APIs retain their contracts.
-
-The old-source regression failed at the intended assertion. Separately, all 28
-distinct focused checks passed across retained runs, including a real native
-catalog load and mapped inert invocation. Earlier command and fixture failures
-remain recorded. These are controlled checks. The combined development gateway
-now passes normal build/assembly and the installed success/corruption pair, using
-the same selected library, resources and released Core/Meta SDKs. Transport-reader
-and cleanup diagnostics remain recorded alongside confirmed physical settlement.
-The successor application passed normal fresh startup and timely approval of a
-complete permission proposal. MCP initialization then failed before a service
-instruction could enter. The same original agent consumed the bounded failure
-result and returned no figures; no database query occurred. The retained error
-establishes initialize-response closure, not a package-specific exception.
-Normal revoke/Stop and owned physical cleanup passed independent review.
-
-The existing `find_and_install` guidance now distinguishes a fresh reviewed
-proposal from replaying a failed attempt. When the original request and current
-authority still permit setup, a new proposal does not require another chat
-authorization solely because the prior attempt failed. Ordinary software/access
-reviews and original limits remain required; failed instructions and approvals
-cannot be reused. Retained failure payloads remain byte-identical to preserve
-the content used by delivery reconciliation. This is a reviewed guidance change,
-not a state or authority change. Normal delivery and controlled installed checks
-now pass. After fresh startup and an attachment failure, the original agent
-created a distinct setup proposal within the original request without replaying
-the failed approval. The second initialization also failed, and its failure
-continuation was refused before admission. The native owner accepted a
-repeated-resume defect; a reviewed fix is not yet available. No query or useful
-answer followed, and normal closeout and physical cleanup passed independent review. This
-observes fresh recovery with the guidance delivered, not its isolated causal
-effect or a successful business journey.
-
-A controlled persistent Reading-host test now confirms that removing its frontend
-and exiting the management CLI leaves the same exported application service and
-store usable. The one affected test and its existing admission, reply and shutdown
-checks passed. This is application service-role survival, not native service-grant
-or model-dispatch qualification, live frontend adoption or restart coverage.
-
-Setup agents can now compute a digest from exact supplied schema JSON using the
-optional metadata-inspection tools. The helper rejects malformed or oversized
-input and preserves the caller's permission ceiling. It reports supplied-data
-evidence only, not runtime observation, schema validation or readiness. Twenty
-affected Python checks and one native permission check passed. This source
-change still needs matching package delivery and actual agent-use verification.
+The latest Console journey recovered from its first MCP initialization failure,
+then encountered another initialization failure whose continuation was refused
+before admission. The Core owner accepted the repeated-resume defect; a reviewed,
+consumable fix is still pending. No database query or useful answer followed.
+Normal revoke/Stop and physical cleanup passed independent review. The current
+native diagnostic establishes initialize-response closure, not a captured
+package-specific exception.
 
 ## Released 0.9.0 limits
 

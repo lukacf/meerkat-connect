@@ -29,12 +29,19 @@ bounded exact-byte schema hashing under the existing metadata-inspection opt-in,
 matching installer guidance and focused controls. Independent review joined a
 meaningful old-source failure, 20 affected Python passes and one native
 caller-ceiling pass. The CLI operation-list expectation is source-reviewed only.
-No successor library, resources or binary have been emitted for this change;
-installed-agent availability and actual schema authoring remain unqualified.
+The matching Linux library, resources and gateway passed normal build/assembly
+and the controlled installed success/corruption pair. One actual setup-helper
+invocation returned the exact supplied-byte digest after native catalog loading;
+the existing acquisition, original-agent read and corruption checks also passed.
+Private test checkpoint `77601b947d37f1dce0713aa2a25ecfef66466164` maps to public
+`9ed84fa53b09749695b90dc7fe44b2d30a74d0d1`. This qualifies installed helper
+availability and hashing, not free-form schema authoring or live-server schema
+equality. Initial transport failure and retained SDK cleanup diagnostics remain
+separate from the observed natural process settlement. No release is published.
 
 The follow-up branch imports reviewed source, synthetic tests and usage guides
-from 30 private development checkpoints after the release baseline, through
-`9614eabe9816a7bc20a54c6e37c884a523b60f1b`. These are file patches, not imported
+from 31 private development checkpoints after the release baseline, through
+`77601b947d37f1dce0713aa2a25ecfef66466164`. These are file patches, not imported
 private Git history. Private plans, coordination, live-case records, accounts and
 build archives remain excluded. The public dependency layout, vendor notices,
 catalog identities and published 0.9.0 assets are unchanged.
