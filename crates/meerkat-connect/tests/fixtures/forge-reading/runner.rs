@@ -232,7 +232,7 @@ impl NativeOwner {
         assert_eq!(format!("{:x}", Sha256::digest(fs::read(fixture.join("native_console_auth.py")).unwrap())),
                    "15c66c4097aa0e1ffcf5569cf46d40295e80c49ed3741ad2dffef3ee0786e317");
         assert_eq!(format!("{:x}", Sha256::digest(fs::read(fixture.join("native_owner.py")).unwrap())),
-                   "893298922f82358d17441ee86f1cac20be3f5473127f8200b6a557d01c902fcc");
+                   "11b15358dd699bf51f46b0d38061a2f7e5f5b11d2cdc73fd2d6f15d240aab485");
         let root = tempfile::Builder::new().prefix("connect-reading-native-cli-").tempdir().unwrap().keep();
         fs::create_dir(root.join("tmp")).unwrap();
         fs::write(root.join("selected-input.json"), input_bytes).unwrap();

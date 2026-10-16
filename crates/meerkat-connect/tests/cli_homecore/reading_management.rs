@@ -268,11 +268,24 @@ async fn actual_cli_manages_the_same_native_reading_owner() {
     assert!(result["management"]["unrelated_identity_before"] == result["management"]["unrelated_identity_after"],
         "Reading management changed the unrelated native identity");
     assert_eq!(result["management"]["shared_private_field_preserved"], true);
+    let service = &result["service_role"];
+    assert_eq!(service["selection"]["name"], "collection_snapshot");
+    assert_eq!(service["arguments"], json!({}));
+    assert_eq!(service["application_service_calls"], 2);
+    assert_eq!(service["frontend_state"], "removed");
+    for retained in ["same_instance", "same_store", "same_database", "same_export"] {
+        assert_eq!(service[retained], true, "Reading service ownership changed");
+    }
+    assert_eq!(service["before_frontend_setup"]["books"].as_array().unwrap().len(), 1);
+    assert_eq!(service["after_frontend_removal"], service["before_frontend_setup"]);
+    // The ordinary exported service handler reads its actual retained Store.
+    // This proves application service-role survival, not native tool dispatch.
     // Actual ticket, same-DM provider receipts, stopped work and close receipt
     // are validated by the one persistent owner, not manufactured by this pipe.
     fs::write(owner.root.join("cli-management-result.json"), serde_json::to_vec_pretty(&json!({
         "status":"passed","scope":"actual CLI management with controlled native/provider Reading owner",
         "setup_cli_pid":setup_pid,"management_cli_pid":management_pid,
         "same_owner_survived":true,"approved_submissions":5,
+        "service_role":"same application export and Store callable after frontend removal; not native tool dispatch",
         "reading_result":"native/result.json","model_requests":"cli-model-requests.json"})).unwrap()).unwrap();
 }
