@@ -22,6 +22,18 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Normal-helper retained acquisition inspection comes from private checkpoint
+`144a115ce0c7262378ce5809e84b4b8f9804000a`, exported as public
+`157bad3faf0e1017008221e813f4e33cbc38f340`. Two exact source/test afterimages
+and the operator guide correct eligibility for explicitly host-selected historical
+jobs after matched reconciliation. Source manifest `f5a6f6a3` and execution
+aggregate `ec42d7da` join 34 distinct passing local controls and one old-source
+regression with Python and Node subcases. Actual MCP inspection uses authored
+fixture acquisitions. Independent review found no blocking issue. Historical
+status remains unconfirmed; current runtime/profile custody and before/after
+readbacks are unchanged. No automatic cross-helper import, installed-host
+adoption, native attachment or business recovery is qualified.
+
 Retained guidance export comes from private checkpoint
 `33034db5b582fc170c4c75d6481feb731378ce0a`, projected as public
 `b1870fa0d3ebb5696830d32f8a15728106898585`. Five exact source, test and guide

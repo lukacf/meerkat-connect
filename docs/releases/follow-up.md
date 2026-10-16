@@ -64,6 +64,14 @@ passed development gateway and controlled installed checks. Published Connect
   reviews remain required. Retained failure payloads stay unchanged for delivery
   reconciliation. A fresh Console run demonstrated an autonomous new proposal
   with this guidance delivered, without establishing wording-only causality.
+- **Research across setup helpers:** A fresh normal helper can inspect an
+  explicitly host-selected prior acquisition after exact matched reconciliation.
+  Its historical status stays unconfirmed, and current owner, profile, runtime
+  and retained-file checks remain required. One old-source regression and 34
+  passing local controls include actual MCP inspection with fixture archives.
+  This does not replay installation or qualify automatic cross-helper import,
+  installed-host adoption or the complete business recovery journey. See the
+  [inspection guide](../../sdk/consumer-setup/ACQUIRED-INSPECTION.md#custody-and-limits).
 - **Retained guidance export:** The saved-recipe CLI exports explicitly selected
   public skill files after staging removal. It checks exact ownership, identity,
   source and paths, preserves plugin namespaces and requirements, and adds no MCP
