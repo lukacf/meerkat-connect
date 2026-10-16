@@ -398,6 +398,101 @@ async def test_sender_lifecycle_during_policy_invalidates_borrow_before_reservat
     assert rows(owner.path)[0][1:4] == ("pending", 0, 0)
 
 
+@pytest.mark.parametrize("mode", ["legacy", "enforced"])
+async def test_closed_sender_retains_pending_work_until_explicit_reactivation(tmp_path, mode):
+    calls = []
+
+    class Sender:
+        async def activate(self):
+            pass
+
+        async def deactivate(self):
+            raise RuntimeError("provider cleanup uncertain")
+
+        async def __call__(self, **kwargs):
+            calls.append(kwargs)
+            return {"outcome": "sent", "provider_message_id": "recovered-receipt"}
+
+    authority = SenderAuthority(path=tmp_path / "senders")
+    sender = Sender()
+    handle = authority.stage_activation(sender_id="sender", to_owner_id="active", sender=sender)
+    await authority.commit_activation(handle)
+    owner = engine(
+        tmp_path / "outbox", lambda **_: pytest.fail("fallback sender used"),
+        (lambda _: Decision.ALLOWED) if mode == "enforced" else None,
+        authorization_mode=mode, sender_authority=authority,
+    )
+    output = commit(owner)
+    before = rows(owner.path)
+    with pytest.raises(RuntimeError, match="cleanup uncertain"):
+        await authority.close_activation(handle)
+    summary = await owner.run_recovery_pass(respect_grace=False)
+    assert summary["skipped_detached"] == 1 and summary["dispatched"] == 0
+    assert calls == [] and rows(owner.path) == before
+    assert owner.status(output_id=output).part_states == ("pending",)
+    assert not owner.status(output_id=output).cancel_requested
+    await authority.commit_activation(handle)
+    summary = await owner.run_recovery_pass(respect_grace=False)
+    assert summary["dispatched"] == 1
+    assert len(calls) == 1 and calls[0]["part_index"] == 0
+    assert rows(owner.path)[0][1:5] == ("sent", 1, 0, "recovered-receipt")
+    assert owner.status(output_id=output).delivery_state == "provider_accepted"
+
+
+@pytest.mark.parametrize("mode", ["legacy", "enforced"])
+@pytest.mark.parametrize("outcome,unknown", [("sent", 0), ("unknown", 1)])
+async def test_close_preserves_entered_receipt_and_leaves_later_parts_pending(
+    tmp_path, mode, outcome, unknown
+):
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    class Sender:
+        async def activate(self):
+            pass
+
+        async def deactivate(self):
+            pass
+
+        async def __call__(self, **kwargs):
+            calls.append(kwargs)
+            entered.set()
+            await release.wait()
+            return {"outcome": outcome, "provider_message_id": "entered-receipt"}
+
+    authority = SenderAuthority(path=tmp_path / "senders")
+    sender = Sender()
+    handle = authority.stage_activation(sender_id="sender", to_owner_id="active", sender=sender)
+    await authority.commit_activation(handle)
+    owner = engine(
+        tmp_path / "outbox", lambda **_: pytest.fail("fallback sender used"),
+        (lambda _: Decision.ALLOWED) if mode == "enforced" else None,
+        authorization_mode=mode, sender_authority=authority, normalize_parts=lambda parts: parts,
+    )
+    output = commit(owner, parts=({"text": "entered"}, {"text": "later"}))
+    pending = owner.spawn_dispatch(output)
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        await authority.close_activation(handle)
+        assert not pending.done()
+        release.set()
+        await asyncio.wait_for(pending, timeout=2)
+        assert [call["part_index"] for call in calls] == [0]
+        stored = rows(owner.path)
+        assert stored[0][2:5] == (1, unknown, "entered-receipt")
+        assert stored[0][-1] == ("provider_accepted" if outcome == "sent" else "unknown")
+        assert stored[1][1:5] == ("pending", 0, 0, None)
+        assert not owner.status(output_id=output).cancel_requested
+        summary = await owner.run_recovery_pass(respect_grace=False)
+        assert summary["skipped_detached"] == 1 and summary["dispatched"] == 0
+        assert rows(owner.path) == stored
+        assert len(calls) == 1
+    finally:
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+
 async def test_missing_part_payload_is_deferred_as_invalid_context(tmp_path):
     path = tmp_path / "outbox"
     calls, contexts, health = [], [], []
