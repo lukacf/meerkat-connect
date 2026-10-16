@@ -406,6 +406,13 @@ impl InstalledConnectorSelection {
         secret_launch_configuration(&self.installed, &self.configuration, operations, &references)
     }
 
+    /// Disclose the declared raw-name ceiling only for a current, checked
+    /// credential launch. This neither translates IDs nor authorizes access.
+    pub(crate) fn secret_operations(&self) -> Result<std::collections::BTreeSet<String>, &'static str> {
+        self.secret_configuration(&self.raw_operations)?;
+        Ok(self.raw_operations.clone())
+    }
+
     pub(crate) fn secret_slots(&self) -> Result<Vec<ServiceCredentialSlot>, &'static str> {
         if let Some(inputs) = self.selected_inputs() {
             let names = inputs.environment_secret_slots.as_ref().ok_or("checked_credential_references_required")?;
