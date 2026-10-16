@@ -128,6 +128,81 @@ async fn public_reply_driver_joins_cancellation_and_preserves_the_presenter_for_
 
 
 #[tokio::test]
+async fn public_reply_driver_polls_expiry_while_shown_and_preserves_the_next_review() {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
+            "authentication":{"kind":"none"},"operation_tools":{"declared/read":"actual_read"}}))).await;
+        let selected = fixture.raw_selection().ok().unwrap();
+        let selection = PublicSelection { tool_policy: None, operations:["actual_read".to_owned()].into(),
+            agent:"waiting-agent".into(),expires_in_ms:None };
+        let config = selected.public_configuration(&selection.operations).unwrap();
+        let approval_root = root.path().join("approvals");
+        std::fs::create_dir(&approval_root).unwrap();
+        let (approvals, presenter) = LocalApprovals::create(&approval_root).unwrap();
+        approvals.bind_session(&selected.installed.session).unwrap();
+        let mut presenter = Some(presenter);
+        for expires in [true, false] {
+            let (bridge, mut prompts, _retire) = PromptBridge::channel();
+            let (mut response, receive) = oneshot::channel::<PublicReply>();
+            let (control, cancellation) = ReviewCancellation::channel();
+            let settled = AtomicBool::new(false);
+            let mut request = public_review_request(&selected.clone().into(), &config, &selection).unwrap();
+            if expires {
+                request.expires_at = Some((SystemTime::now() + Duration::from_millis(500)).into());
+            }
+            let review = async {
+                let result = approvals.review_access_cancellable(request,
+                    cancellation.cancelled(), |id| cancellation.approval_created(id)).await;
+                settled.store(true, Ordering::SeqCst);
+                result
+            };
+            let refresh = || -> futures_util::future::BoxFuture<'static, Result<(), ConnectError>> {
+                Box::pin(async { Ok(()) })
+            };
+            let closed = std::future::pending();
+            tokio::pin!(closed);
+            let driver = console::drive_review_cancellable(review,&approvals,&mut presenter,
+                &bridge,&refresh,&mut response,closed.as_mut(),None,Some(control),None);
+            let presentation = async {
+                let mut exchange = Some(prompts.recv().await.unwrap());
+                let prompt = &exchange.as_ref().unwrap().prompt;
+                assert_eq!(prompt["body"]["phase"],"installed_public_service_access");
+                if !expires {
+                    let id = prompt["approval_id"].as_str().unwrap().to_owned();
+                    console::answer_retained(124,&mut exchange,&serde_json::to_vec(&json!({
+                        "review_id":124,"approval_id":id,"decision":"deny"})).unwrap()).unwrap();
+                }
+                // Keep both channels alive without answering the first prompt.
+                // Only the actual approval future's deadline can settle it.
+                (exchange, receive)
+            };
+            let (result, (mut exchange, _retained_receiver)) = tokio::join!(driver, presentation);
+            assert!(settled.load(Ordering::SeqCst),"the actual approval future must finish");
+            if expires {
+                assert!(matches!(result, Err(ConnectError::InvalidInput(ref message))
+                    if message == "The access review expired without a returned decision"));
+                let shown = exchange.as_ref().expect("the expired prompt was actually displayed");
+                assert!(shown.response.is_closed(),"expiry must retire the displayed answer channel");
+                let id = shown.prompt["approval_id"].as_str().unwrap().to_owned();
+                assert!(console::answer_retained(124,&mut exchange,&serde_json::to_vec(&json!({
+                    "review_id":124,"approval_id":id,"decision":"approve"})).unwrap()).is_err(),
+                    "a late answer cannot enter the expired review");
+            } else {
+                assert_eq!(result.unwrap().unwrap().status,ApprovalStatus::Denied,
+                    "the same presenter must still serve the next real review");
+                assert!(exchange.is_none());
+            }
+            assert!(prompts.try_recv().is_err(),"one review must not display a duplicate prompt");
+            assert!(presenter.is_some(),"expiry belongs to the request, not the host presenter");
+            approvals.check_session(&selected.installed.session).unwrap();
+            assert!(!approvals.has_uncertain_dispatch());
+        }
+    }).await.expect("displayed public review did not settle at its actual approval deadline");
+}
+
+
+#[tokio::test]
 async fn remote_public_review_retains_export_research_and_exact_consumer_without_fake_software() {
     for declaration in [false, true] {
         let root=tempfile::tempdir().unwrap();

@@ -17,6 +17,11 @@ delayed recovery until the outer ten-minute tool timeout; the helper then
 reported unavailability and the original agent returned an honest no-data
 answer. No access grant, database read or completed business task is claimed.
 
+The Console and terminal corrections keep that same review future polled during
+presentation without extending approval lifetimes or changing grant authority.
+They passed 28 affected checks, including real-expiry regressions. A corrected
+installed package and fresh user task remain to be verified.
+
 Package support now includes target-bound optional npm dependencies. A pinned
 Linux test acquired `chokidar-cli@3.0.0`, then installed it offline with lifecycle
 scripts disabled, retained the macOS-only dependency archive while excluding it

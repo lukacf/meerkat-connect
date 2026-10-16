@@ -23,8 +23,8 @@ dependency layout without changing its implementation source.
 ## Unreleased follow-up source
 
 The follow-up branch imports reviewed source, synthetic tests and usage guides
-from 23 private development checkpoints after the release baseline, through
-`44b9508c037e4a8b27886d614ec19d28902eed33`. These are file patches, not imported
+from 25 private development checkpoints after the release baseline, through
+`d0496506e0b005447f8095289214cbb533de70ea`. These are file patches, not imported
 private Git history. Private plans, coordination, live-case records, accounts and
 build archives remain excluded. The public dependency layout, vendor notices,
 catalog identities and published 0.9.0 assets are unchanged.
@@ -36,6 +36,12 @@ grant access or retrieve the requested data; it is not a completed user journey.
 The new optional-dependency path separately passed actual acquisition, offline
 installation and direct use of `chokidar-cli@3.0.0` on Linux. That package test
 does not qualify MCP attachment or the Console journey.
+
+The Console and terminal expiry corrections keep the existing review future
+polled during presentation without extending approval lifetimes or changing
+grant authority. The old drivers failed the real-expiry regressions; 28 affected
+checks, including those regressions, passed across the corrected scoped runs.
+Normal package delivery and a fresh Console outcome remain to be verified.
 
 The [follow-up inventory](docs/releases/follow-up.md) retains the broader work.
 These source changes are unreleased and do not change the evidence or claims
