@@ -22,6 +22,17 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+The V39 controlled Console API case consumed the frozen package built from public
+`05cc5058f77196a8bb591e3e793c9e69af91a41e`, excluding the separate UI change.
+Both native attachments failed during initialize with exit code 1. The original
+agent returned no figures and did not reach the successful-attachment context
+path. Both observed grants were revoked; logout's 503 was followed by protected
+session refusal and exact local session cleanup. Normal Stop, owned processes and
+forwards are closed, with ledger and sidecar identities unchanged. Independent
+review accepted this finite failure and physical closeout. Attachment diagnosis
+remains open; source/native and controlled installed context evidence below remains
+valid, without real-agent business or browser UX qualification.
+
 The installed context fixture correction comes from private checkpoint
 `4bae81d2da3a04caca57b5245c567356d171bc6c`, exported as public
 `2e941711a343145f8f85d6f14206cc0b9916eb23`. It changes only the verifier and its
@@ -39,8 +50,9 @@ finalization or sentinel connection. Both gateways exit naturally, success with
 without forced cleanup. The combined log retains an untagged Meta transport-reader
 Future diagnostic, without assignment to a particular case. This qualifies that
 controlled installed path, not general service readiness, scoped execution,
-live authentication, browser UX or free-form business completion. V39 is in
-preparation; published assets and earlier failed results remain unchanged.
+live authentication, browser UX or free-form business completion. The later V39
+failure did not exercise the context path; published assets and earlier failed
+results remain unchanged.
 
 Protected Console action ordering comes from private checkpoint
 `4f30a16945c98950b11b8dafd9fc5fc2a9d838a5`, exported as public

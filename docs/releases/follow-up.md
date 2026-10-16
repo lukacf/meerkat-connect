@@ -101,8 +101,9 @@ passed development gateway and controlled installed checks. Published Connect
   rejects resource corruption before model entry. Its first installed run failed
   an obsolete fixture predicate; a strict fixture-only repair reran the same
   product bytes successfully. Both cases exited naturally with joined cleanup.
-  An untagged Meta transport-reader diagnostic remains recorded. A fresh
-  real-agent answer and browser UX remain unqualified; V39 is in preparation.
+  An untagged Meta transport-reader diagnostic remains recorded. V39 then failed
+  both attachments before the context path; a real-agent answer and browser UX
+  remain unqualified.
 - **Research across setup helpers:** A fresh normal helper can inspect an
   explicitly host-selected prior acquisition after exact matched reconciliation.
   Its historical status stays unconfirmed, and current owner, profile, runtime
@@ -176,7 +177,7 @@ agent consumed each distinct failure without an operator follow-up or manual
 wake, then returned no figures. Its failed result and closed cleanup remain
 recorded; it qualified a second distinct failure continuation only.
 
-The latest fresh case used the selected diagnostic development package and the
+The V38 case used the selected diagnostic development package and the
 existing default catalog path. The unchanged question was submitted once, with
 no package, SQL or answer hints and no manual wake. All four protected reviews
 were timely. The first attachment failed during initialize with a finite closed
@@ -205,6 +206,21 @@ browser navigation was blocked by the client, so this controlled Console API
 case does not qualify browser UX. Paired launch/cleanup handling remains pending:
 the native attempt-guard change is committed upstream and under independent
 review, with no consumable reviewed handoff yet.
+
+The later V39 controlled Console API case used the corrected context package,
+excluding the separate UI correction. After one unchanged question and timely
+reviews, both attachments failed during initialize with exit code 1. The original agent returned
+no figures and declined another attempt; it never reached the successful-attachment
+context path. Attachment causation remains under investigation. This preserves the
+separate controlled installed qualification, without establishing business use or
+browser UX.
+
+Both observed grants were revoked. Logout returned 503, then the existing protected
+session received 401 and its local session file was removed without replaying
+logout. Normal Stop and all owned-process and forward cleanup completed; ledger
+and sidecar identities were unchanged. Independent review accepted the recorded
+failure and physical closeout. Earlier failed results and released assets remain
+unchanged.
 
 ## Released 0.9.0 limits
 
