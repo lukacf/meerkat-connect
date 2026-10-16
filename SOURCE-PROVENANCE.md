@@ -23,8 +23,8 @@ dependency layout without changing its implementation source.
 ## Unreleased follow-up source
 
 The follow-up branch imports reviewed source, synthetic tests and usage guides
-from 28 private development checkpoints after the release baseline, through
-`b32f319d24943278a456039b199b91928b0b50ee`. These are file patches, not imported
+from 29 private development checkpoints after the release baseline, through
+`9cba4b43e8726465e315070e6a3157dd57ca2d6d`. These are file patches, not imported
 private Git history. Private plans, coordination, live-case records, accounts and
 build archives remain excluded. The public dependency layout, vendor notices,
 catalog identities and published 0.9.0 assets are unchanged.
@@ -94,8 +94,28 @@ request and current authority, with ordinary separate software/access reviews.
 It does not permit replaying the failed instruction or reusing its approval.
 Retained failure-body bytes are unchanged because existing reconciliation
 compares full delivery content; this preserves that compatibility boundary.
-Source review passed, while successor delivery and model behavior remain
-pending. No schema, state, API, grant or deadline changes accompany the wording.
+Source review, normal gateway emission/assembly and the controlled installed pair
+passed on unchanged library/resource/SDK selections. A fresh successor application
+also completed normal installation and healthy Console startup, then created a
+distinct setup proposal after attachment failure without replaying the failed
+approval. The second initialization also failed, and the native owner refused
+its failure continuation before admission. The repeated-resume defect is
+accepted upstream work, with no reviewed fix selected here. No business query
+or useful answer followed; normal closeout and physical cleanup passed independent review. This
+is not isolated causal proof of the wording. No schema, state, API, grant or
+deadline changes accompany the wording.
+
+Private test checkpoint `9cba4b43e8726465e315070e6a3157dd57ca2d6d` maps to
+public `cc50658d55f0b9e4046c9f09a941ccf7f673ea8c`. Four test/fixture files extend
+the existing persistent Reading management control and correct its stale exact
+setup-operation expectation. The one ignored control passed against a truthfully
+selected, normally staged CLI, with all existing native admission, reply and
+shutdown assertions intact. The same exported application handler, service
+instance, Store and database returned the nonempty stored result after frontend
+removal and management-CLI exit. The first expectation failure and later old-CLI
+identity refusal remain separate from this pass. This is controlled application
+service survival, not native service-grant/model dispatch, live frontend use or
+restart coverage. No production implementation or published artifact changes.
 
 The [follow-up inventory](docs/releases/follow-up.md) retains the broader work.
 These source changes are unreleased and do not change the evidence or claims

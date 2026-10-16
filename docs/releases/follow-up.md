@@ -76,8 +76,21 @@ authorization solely because the prior attempt failed. Ordinary software/access
 reviews and original limits remain required; failed instructions and approvals
 cannot be reused. Retained failure payloads remain byte-identical to preserve
 the content used by delivery reconciliation. This is a reviewed guidance change,
-not a state or authority change. Its delivery and actual model behavior in the
-next fresh case remain pending.
+not a state or authority change. Normal delivery and controlled installed checks
+now pass. After fresh startup and an attachment failure, the original agent
+created a distinct setup proposal within the original request without replaying
+the failed approval. The second initialization also failed, and its failure
+continuation was refused before admission. The native owner accepted a
+repeated-resume defect; a reviewed fix is not yet available. No query or useful
+answer followed, and normal closeout and physical cleanup passed independent review. This
+observes fresh recovery with the guidance delivered, not its isolated causal
+effect or a successful business journey.
+
+A controlled persistent Reading-host test now confirms that removing its frontend
+and exiting the management CLI leaves the same exported application service and
+store usable. The one affected test and its existing admission, reply and shutdown
+checks passed. This is application service-role survival, not native service-grant
+or model-dispatch qualification, live frontend adoption or restart coverage.
 
 ## Released 0.9.0 limits
 
