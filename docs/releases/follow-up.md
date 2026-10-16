@@ -126,9 +126,14 @@ passed development gateway and controlled installed checks. Published Connect
   is awaited. Per-sender lifecycle serialization preserves independent senders,
   replacement attachments, durable owner selection, pending output and receipts
   from calls already in progress. Independent review and 198 affected tests pass,
-  including a two-authority activation race and failure/cancellation cases. This
-  is a shared source correction; installed host and live provider adoption remain
-  separate work.
+  including a two-authority activation race and failure/cancellation cases. A
+  separate, independently reviewed installed Python SDK consumer now qualifies
+  two inert senders: A detaches before cleanup, entered work keeps its receipt,
+  pending work spends no attempts, and B remains usable. The same nonempty Reading
+  service fixture, store, export and database bytes stay unchanged; all owned
+  tasks and the process are joined. Two fixture-only preparation refusals remain
+  recorded. Actual HomeCore or Reading frontend adoption and live provider
+  delivery remain pending.
 - **Supplied schema evidence:** The optional metadata inspector computes a digest
   of exact supplied JSON bytes and rejects malformed or oversized input within
   the caller's existing permission ceiling. Its 20 Python checks and one native
