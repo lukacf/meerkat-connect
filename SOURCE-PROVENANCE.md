@@ -22,6 +22,32 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Approved-service continuation context comes from private checkpoint
+`54bd16de7e6f256f5b18490f045c51d02afbd175`, exported as public
+`05cc5058f77196a8bb591e3e793c9e69af91a41e`. Eight exact source/test afterimages
+use the existing injected-context and whole-input binding mechanisms on the
+unchanged Core `efd313d44807d3e93f6808a127fa157be84dee05` / Meta
+`669f54fafafd82747c8cd9022e602a774cb4559d` pair. Four focused native controls
+pass, covering actual controlled-provider projection, unchanged question, exact
+replay, source-custody restoration and failure/cancellation boundaries. The
+comparison retains the same corrected fixture and additive canonical-control
+metadata with the prior continuation projection; it reaches native admission and
+model entry, then fails the missing-context assertions. It is not untouched old
+production or a permission refusal. The first compile failed before tests due to
+a missing test trait import; R2 repairs only that import. Independent source and
+execution review passed with joined owners. This does not qualify full process
+restart, installed context use or a live-model business answer. Compiler warnings
+remain recorded; no strict Clippy or whole-workspace formatting pass is claimed.
+
+Before that correction, the fresh V38 controlled Console API case consumed the
+Stage 2 diagnostic package below. It delivered an actual initialization failure,
+then reached successful attachment after a fresh reviewed proposal. Original
+resumed and searched its catalog, but returned no figures because the input
+lacked separate model-facing completion and permission context. Both grants and
+all owned processes were closed, with ledger and three sidecar identities
+unchanged. This failed business outcome remains historical; blocked browser
+navigation does not qualify browser UX. Published 0.9.0 assets remain unchanged.
+
 Stage 2 native failure capture comes from private checkpoint
 `32c709e7cdbf0c72533eefa552920deef1c2dad5`, exported as public
 `57fbd17ddbb7175d16089d44527e8a9485a2db32`. Three source/test afterimages consume

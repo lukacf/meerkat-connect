@@ -76,9 +76,21 @@ passed development gateway and controlled installed checks. Published Connect
   independent review confirmed the outcomes and joined cleanup. The earlier 12
   synthetic controls and valid old-reader regression remain recorded, along with
   fixture failures and scoped lint/format limitations. Raw stderr and arbitrary
-  server messages are excluded. Native input delivery does not establish a model
-  answer, historical failure causation or successful business recovery; installed
-  qualification remains separate.
+  server messages are excluded. The latest controlled Console case now delivers
+  an actual initialize/closed/code1 observation to the original agent before its
+  fresh reviewed proposal. That installed observation does not establish
+  historical failure causation or successful business recovery.
+- **Approved-service continuation context:** A committed correction adds a
+  checked attachment observation, approved operations and effective expiry to
+  the existing native injected-context slot. The original reviewed question is
+  unchanged; native authorization and exact-input replay keep their existing owners.
+  Four focused native controls and independent source/execution review pass.
+  The prior-projection comparison retains additive fixture-compatibility metadata
+  and fails after native admission at missing-context assertions. The initial
+  missing-import compile failure remains recorded. Restoration covers source
+  custody, not full process restart. The observation promises neither future
+  readiness nor filesystem isolation. Installed consumption and live-model task
+  completion remain pending.
 - **Research across setup helpers:** A fresh normal helper can inspect an
   explicitly host-selected prior acquisition after exact matched reconciliation.
   Its historical status stays unconfirmed, and current owner, profile, runtime
@@ -141,23 +153,41 @@ failed setup initialization and encountered catalog authority still bound to its
 old helper session. Those failed outcomes remain retained; their initialization
 cause is unproved.
 
-The latest fresh Console run used the existing default catalog path. It made two
-natural setup proposals and completed both software reviews and both access
-reviews before expiry. Both attempts ended in native MCP start/reload
-unavailability. The same original agent consumed each distinct failure in a new
-native run, proposed a second attempt after the first failure, and returned a
-truthful no-figures answer after the second. No operator follow-up or manual wakeup
-was used. This qualifies continuation after a second distinct failed attempt on
-the selected development tuple. It does not qualify successful attachment, a
-business answer, helper reset or the new catalog successor mode.
+The preceding fresh Console run made two natural setup proposals with timely
+software and access reviews. Both native attachments failed. The same original
+agent consumed each distinct failure without an operator follow-up or manual
+wake, then returned no figures. Its failed result and closed cleanup remain
+recorded; it qualified a second distinct failure continuation only.
 
-Both task grants were revoked and normal Stop completed. Independent closeout
-confirmed that the exact owned processes and forwards had stopped and the ledger
-and its known sidecars were unchanged. The failed histories and installed files
-remain intact. Source-level initialization failure capture is qualified above;
-installed setup diagnosis and paired launch/cleanup handling remain unverified.
-The native attempt-guard change is committed upstream
-and under independent review; no consumable reviewed handoff is available yet.
+The latest fresh case used the selected diagnostic development package and the
+existing default catalog path. The unchanged question was submitted once, with
+no package, SQL or answer hints and no manual wake. All four protected reviews
+were timely. The first attachment failed during initialize with a finite closed
+process / code 1 observation delivered to the original agent. The helper then
+inferred an MCP compatibility issue from source and selected a corrected
+dependency closure. Its second reviewed attachment succeeded. This records an
+agent inference and subsequent success, not a controlled diagnosis of every
+historical failure.
+
+The same original agent resumed automatically and searched its catalog, but
+stopped before loading or invoking either read tool because setup completion and
+approved scope were not visible to it. It returned no figures, and a further
+60-second normal observation interval produced no new frames. Exact retained
+input inspection found the unchanged reviewed question and native authority
+binding, without separate model-facing context. The correction above addresses
+that handoff gap; the business journey remains incomplete. The case does not
+qualify helper reset or the new catalog successor mode.
+
+Both grants were revoked through fresh sequential protected actions, logout and
+normal Stop completed, and all owned process and forward handles were joined.
+The first revoke 409 remains recorded as a concurrent harness poll replacing a
+page offer before native mutation. Both later revokes returned 200 with exact
+unavailable/nonrevocable row readbacks. The ledger and three sidecar paths were
+unchanged; failed histories and installed files remain intact. The official
+browser navigation was blocked by the client, so this controlled Console API
+case does not qualify browser UX. Paired launch/cleanup handling remains pending:
+the native attempt-guard change is committed upstream and under independent
+review, with no consumable reviewed handoff yet.
 
 ## Released 0.9.0 limits
 
