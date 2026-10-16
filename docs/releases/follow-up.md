@@ -9,18 +9,33 @@ Follow-up source improves package acquisition and setup recovery while retaining
 the same released Core/Meta 0.9.0 contracts. It does not replace the published
 Connect 0.9.0 binaries.
 
-The latest fresh Console development run completed application installation,
-startup, agent-led discovery and software installation. The helper corrected its
-consumer identifier after actionable feedback and reached protected access
-review. The review expired without approval. A separate review-polling defect
-delayed recovery until the outer ten-minute tool timeout; the helper then
-reported unavailability and the original agent returned an honest no-data
-answer. No access grant, database read or completed business task is claimed.
+The Console and terminal corrections keep the existing review future polled
+during presentation without extending approval lifetimes or changing grant
+authority. They passed 28 affected checks, including real-expiry regressions.
+The combined development package passed its controlled installed checks and
+reached fresh application installation and healthy Console startup.
 
-The Console and terminal corrections keep that same review future polled during
-presentation without extending approval lifetimes or changing grant authority.
-They passed 28 affected checks, including real-expiry regressions. A corrected
-installed package and fresh user task remain to be verified.
+The latest development run reached software installation and protected access
+approval. When native attachment failed, the service continuation was cancelled
+before entry and a durable failure result returned to the same original agent.
+That agent autonomously selected and installed another integration. The second
+attachment became usable and resumed the same original agent, but loading its
+tools was refused before any database query. The access proposal lacked catalog
+permission, and the application policy lacked the selected tool-call permissions.
+The agent returned no figures. Both grants were revoked and owned test processes
+were cleaned up. The business task remains incomplete; attachment and automatic
+continuation now have actual successful evidence. Earlier failed attempts and
+the published 0.9.0 binaries remain unchanged.
+
+The same run also observed an unapproved review settling just after its displayed
+expiry, followed by a new request from the helper. This supports the Console
+expiry correction without changing any approval lifetime.
+
+Declared-secret-slot requests now return actionable exact raw-operation feedback
+when a current checked selection receives invalid names. All 15 targeted checks
+passed, including a regression that fails against the old source. This source
+increment was not part of the fresh Console run and is not a live authentication
+claim.
 
 Package support now includes target-bound optional npm dependencies. A pinned
 Linux test acquired `chokidar-cli@3.0.0`, then installed it offline with lifecycle
@@ -30,8 +45,8 @@ This is actual package-backend use, separate from native approval or MCP
 attachment. Optional peers, arbitrary native payloads and broader platform
 coverage remain explicit limits.
 
-The immediate priority remains a useful answer through the complete fresh
-Console journey. Account onboarding, persistent frontends and the other areas
+The immediate priority is to reject incomplete Console permission proposals
+before approval, then obtain a useful answer through the complete fresh journey. Account onboarding, persistent frontends and the other areas
 below retain their own completion requirements.
 
 ## Released 0.9.0 limits

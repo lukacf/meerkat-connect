@@ -23,16 +23,23 @@ dependency layout without changing its implementation source.
 ## Unreleased follow-up source
 
 The follow-up branch imports reviewed source, synthetic tests and usage guides
-from 25 private development checkpoints after the release baseline, through
-`d0496506e0b005447f8095289214cbb533de70ea`. These are file patches, not imported
+from 26 private development checkpoints after the release baseline, through
+`c4c19b25d2fed6396b30139f7582374584230c53`. These are file patches, not imported
 private Git history. Private plans, coordination, live-case records, accounts and
 build archives remain excluded. The public dependency layout, vendor notices,
 catalog identities and published 0.9.0 assets are unchanged.
 
 This source adds package compatibility and setup recovery improvements. Actual
 development runs verified held installation completion and automatic return to
-the original agent after an unavailable report. The latest Console case did not
-grant access or retrieve the requested data; it is not a completed user journey.
+the original agent after an unavailable report. A later fresh Console run reached
+protected access approval, then native attachment failed. Its service input was
+cancelled before admission and the same original agent durably received the
+failure result and opened a new setup. Its second selected integration reached
+usable attachment and resumed the same original agent. Tool loading then failed
+because the approved proposal lacked catalog permission, while the application
+policy also lacked the selected tool-call grants. No database query or figures
+followed. Grants and owned processes were cleaned up. These results establish
+attachment and automatic continuation, not a completed business task.
 The new optional-dependency path separately passed actual acquisition, offline
 installation and direct use of `chokidar-cli@3.0.0` on Linux. That package test
 does not qualify MCP attachment or the Console journey.
@@ -41,7 +48,18 @@ The Console and terminal expiry corrections keep the existing review future
 polled during presentation without extending approval lifetimes or changing
 grant authority. The old drivers failed the real-expiry regressions; 28 affected
 checks, including those regressions, passed across the corrected scoped runs.
-Normal package delivery and a fresh Console outcome remain to be verified.
+The combined development package passed normal production and its controlled
+installed success/corruption checks, with retained transport and cleanup
+diagnostics qualified by actual physical settlement. Fresh application startup
+also passed. These are development results, not a new published artifact or a
+completed business task. The actual fresh Console run also observed timely
+settlement of an unapproved displayed review and an autonomous new request.
+
+A separate three-file source increment adds exact raw-operation feedback to
+current checked declared-secret-slot requests. Its old-source regression failed
+as intended and all 15 targeted checks passed. The export preserves those exact
+source files and synthetic controls; it does not include credentials or claim
+live authenticated use.
 
 The [follow-up inventory](docs/releases/follow-up.md) retains the broader work.
 These source changes are unreleased and do not change the evidence or claims
