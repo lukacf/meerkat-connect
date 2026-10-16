@@ -347,7 +347,13 @@ impl PortableMcpServer {
 pub struct PortablePluginExport {
     plugin_json: Vec<u8>,
     mcp_json: Option<Vec<u8>>,
-    files: BTreeMap<String, Vec<u8>>,
+    files: BTreeMap<String, PortableIncludedFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PortableIncludedFile {
+    bytes: Vec<u8>,
+    executable: bool,
 }
 
 /// Current filesystem observations only, never an export or readiness receipt.
@@ -365,13 +371,25 @@ pub enum PortableExportCheckState {
 pub struct PortableExportFingerprint {
     pub sha256: ContentDigest,
     pub bytes: u64,
+    /// Unix execute-bit observation, independent of read/write permissions.
+    /// Absent in older observations that did not inspect executable intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<bool>,
 }
 
 impl PortableExportFingerprint {
-    fn of_bytes(bytes: &[u8]) -> Self {
+    fn of_file(bytes: &[u8], executable: bool) -> Self {
+        #[cfg(unix)]
+        let executable = Some(executable);
+        #[cfg(not(unix))]
+        let executable = {
+            let _ = executable;
+            None
+        };
         Self {
             sha256: ContentDigest::of_bytes(bytes),
             bytes: bytes.len() as u64,
+            executable,
         }
     }
 }
@@ -550,8 +568,10 @@ impl PortablePluginExport {
         })
     }
 
-    /// Include an inert file, such as a skill document, read through the
-    /// anchored plugin root. Its bytes are copied exactly and never parsed.
+    /// Include an inert file, such as a skill document or bundled executable,
+    /// read through the anchored plugin root. Bytes and Unix executable intent
+    /// come from the same opened regular file. No executable is ever run here;
+    /// other source permissions, ownership and special mode bits are not copied.
     pub fn with_file(
         mut self,
         root: &PluginRoot,
@@ -564,8 +584,8 @@ impl PortablePluginExport {
                 UnsupportedPortableExport::ReservedFile,
             ));
         }
-        let bytes = root.read(&path, MAX_EXPORT_FILE_BYTES)?;
-        self.files.insert(path, bytes);
+        let file = root.read_export_file(&path, MAX_EXPORT_FILE_BYTES)?;
+        self.files.insert(path, file);
         Ok(self)
     }
 
@@ -580,7 +600,21 @@ impl PortablePluginExport {
     pub fn files(&self) -> impl Iterator<Item = (&str, &[u8])> {
         self.files
             .iter()
-            .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+            .map(|(path, file)| (path.as_str(), file.bytes.as_slice()))
+    }
+
+    fn documents_and_files(&self) -> impl Iterator<Item = (&str, &[u8], bool)> {
+        [
+            (PLUGIN_FILE, Some(self.plugin_json())),
+            (MCP_FILE, self.mcp_json()),
+        ]
+        .into_iter()
+        .filter_map(|(path, bytes)| bytes.map(|bytes| (path, bytes, false)))
+        .chain(
+            self.files
+                .iter()
+                .map(|(path, file)| (path.as_str(), file.bytes.as_slice(), file.executable)),
+        )
     }
 
     /// Compare existing files with these exact canonical bytes without writing.
@@ -591,32 +625,27 @@ impl PortablePluginExport {
     /// custody and control its ancestors; this is not an atomic snapshot against
     /// external writers, proof of historical export, or endpoint readiness.
     pub fn inspect_existing(&self, destination: impl AsRef<Path>) -> PortableExportCheck {
-        let expected: BTreeMap<_, _> = [
-            (PLUGIN_FILE, Some(self.plugin_json())),
-            (MCP_FILE, self.mcp_json()),
-        ]
-        .into_iter()
-        .filter_map(|(path, bytes)| bytes.map(|bytes| (path, bytes)))
-        .chain(self.files())
-        .map(|(path, bytes)| {
-            (
-                path.strip_prefix("./")
-                    .expect("portable relative path")
-                    .to_owned(),
-                bytes,
-            )
-        })
-        .collect();
+        let expected: BTreeMap<_, _> = self
+            .documents_and_files()
+            .map(|(path, bytes, executable)| {
+                (
+                    path.strip_prefix("./")
+                        .expect("portable relative path")
+                        .to_owned(),
+                    (bytes, executable),
+                )
+            })
+            .collect();
         let check = PortableExportCheck {
             state: PortableExportCheckState::Unavailable,
             files: expected
                 .iter()
-                .map(|(path, bytes)| {
+                .map(|(path, (bytes, executable))| {
                     (
                         path.clone(),
                         PortableExportFileCheck {
                             state: PortableExportCheckState::Unavailable,
-                            expected: PortableExportFingerprint::of_bytes(bytes),
+                            expected: PortableExportFingerprint::of_file(bytes, *executable),
                             observed: None,
                         },
                     )
@@ -641,6 +670,8 @@ impl PortablePluginExport {
 
     /// Write into a new directory. Writes stay anchored to that directory and
     /// never replace an existing file; an existing destination is refused.
+    /// Unix file creation uses 0755 for executable files and 0644 otherwise,
+    /// filtered by the caller's umask. No chmod widens the resulting access.
     pub fn write_new(&self, destination: impl AsRef<Path>) -> Result<(), ValidationError> {
         use std::io::Write;
         std::fs::create_dir(destination.as_ref()).map_err(|_| {
@@ -651,15 +682,7 @@ impl PortablePluginExport {
                 .map_err(|_| {
                     ValidationError::new("export destination", "cannot open destination")
                 })?;
-        let documents = [
-            (PLUGIN_FILE, Some(self.plugin_json.as_slice())),
-            (MCP_FILE, self.mcp_json.as_deref()),
-        ];
-        let files = documents
-            .into_iter()
-            .filter_map(|(path, bytes)| bytes.map(|bytes| (path, bytes)))
-            .chain(self.files());
-        for (path, bytes) in files {
+        for (path, bytes, executable) in self.documents_and_files() {
             let relative = relative_path(path)?;
             if let Some(parent) = Path::new(relative)
                 .parent()
@@ -671,6 +694,13 @@ impl PortablePluginExport {
             }
             let mut options = cap_std::fs::OpenOptions::new();
             options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use cap_std::fs::OpenOptionsExt;
+                options.mode(if executable { 0o755 } else { 0o644 });
+            }
+            #[cfg(not(unix))]
+            let _ = executable;
             directory
                 .open_with(relative, &options)
                 .and_then(|mut file| file.write_all(bytes))
@@ -774,6 +804,7 @@ mod export_inspection {
         root: &Dir,
         path: &Path,
         expected: &[u8],
+        expected_executable: bool,
         remaining: &mut u64,
     ) -> io::Result<(State, Option<PortableExportFingerprint>)> {
         let mut directory = root.try_clone()?;
@@ -809,12 +840,15 @@ mod export_inspection {
                 *remaining -= bytes.len() as u64;
                 read?;
                 (
-                    if bytes == expected {
+                    if bytes == expected && (before.mode() & 0o111 != 0) == expected_executable {
                         State::Matches
                     } else {
                         State::Mismatch
                     },
-                    Some(PortableExportFingerprint::of_bytes(&bytes)),
+                    Some(PortableExportFingerprint::of_file(
+                        &bytes,
+                        before.mode() & 0o111 != 0,
+                    )),
                 )
             };
             if stamp(&before) != stamp(&file.metadata()?)
@@ -829,7 +863,7 @@ mod export_inspection {
 
     pub(super) fn inspect(
         destination: &Path,
-        expected: &BTreeMap<String, &[u8]>,
+        expected: &BTreeMap<String, (&[u8], bool)>,
         mut check: PortableExportCheck,
     ) -> PortableExportCheck {
         // Path components normalize away trailing separators and dots. Inspect
@@ -920,9 +954,15 @@ mod export_inspection {
             unexpected_entries: unexpected,
         };
         let mut remaining = MAX_TOTAL_BYTES;
-        for (name, expected) in expected {
+        for (name, (expected, executable)) in expected {
             let file = check.files.get_mut(name).expect("canonical expected file");
-            match read_expected(&root, Path::new(name), expected, &mut remaining) {
+            match read_expected(
+                &root,
+                Path::new(name),
+                expected,
+                *executable,
+                &mut remaining,
+            ) {
                 Ok((state, observed)) => {
                     file.state = state;
                     file.observed = observed;
@@ -1160,7 +1200,39 @@ impl PluginRoot {
     }
 
     pub fn read(&self, relative: &str, maximum_bytes: u64) -> Result<Vec<u8>, ValidationError> {
-        use std::io::Read;
+        read_package_file(&self.open_regular_file(relative)?, maximum_bytes)
+    }
+
+    fn read_export_file(
+        &self,
+        relative: &str,
+        maximum_bytes: u64,
+    ) -> Result<PortableIncludedFile, ValidationError> {
+        let file = self.open_regular_file(relative)?;
+        let before = file
+            .metadata()
+            .map_err(|_| ValidationError::new("package path", "cannot inspect package file"))?;
+        let bytes = read_package_file(&file, maximum_bytes)?;
+        let after = file
+            .metadata()
+            .map_err(|_| ValidationError::new("package path", "cannot inspect package file"))?;
+        if !same_export_file_state(&before, &after) {
+            return Err(ValidationError::new(
+                "package path",
+                "package file changed during export read",
+            ));
+        }
+        #[cfg(unix)]
+        let executable = {
+            use cap_std::fs::MetadataExt;
+            before.mode() & 0o111 != 0
+        };
+        #[cfg(not(unix))]
+        let executable = false;
+        Ok(PortableIncludedFile { bytes, executable })
+    }
+
+    fn open_regular_file(&self, relative: &str) -> Result<cap_std::fs::File, ValidationError> {
         let relative = relative_path(relative)?;
         // Reject special files before opening them. The descriptor check below
         // also handles replacement between this check and the anchored open.
@@ -1199,21 +1271,52 @@ impl PluginRoot {
                 "package path is not a regular file",
             ));
         }
-        let mut bytes = Vec::new();
-        file.take(maximum_bytes.saturating_add(1))
-            .read_to_end(&mut bytes)
-            .map_err(|_| ValidationError::new("package path", "cannot read package file"))?;
-        if bytes.len() as u64 > maximum_bytes {
-            return Err(ValidationError::new(
-                "package path",
-                "package metadata exceeds the read limit",
-            ));
-        }
-        Ok(bytes)
+        Ok(file)
     }
 
     pub fn read_manifest(&self) -> Result<ImportedPluginManifest, ValidationError> {
         ImportedPluginManifest::parse(&self.read("./plugin.json", 1024 * 1024)?)
+    }
+}
+
+fn read_package_file(
+    file: &cap_std::fs::File,
+    maximum_bytes: u64,
+) -> Result<Vec<u8>, ValidationError> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.take(maximum_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| ValidationError::new("package path", "cannot read package file"))?;
+    if bytes.len() as u64 > maximum_bytes {
+        return Err(ValidationError::new(
+            "package path",
+            "package metadata exceeds the read limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn same_export_file_state(before: &cap_std::fs::Metadata, after: &cap_std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::MetadataExt;
+        before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.mode() == after.mode()
+            && before.len() == after.len()
+            && before.mtime() == after.mtime()
+            && before.mtime_nsec() == after.mtime_nsec()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec()
+    }
+    #[cfg(not(unix))]
+    {
+        before.is_file()
+            && after.is_file()
+            && before.len() == after.len()
+            && before.permissions() == after.permissions()
+            && before.modified().ok() == after.modified().ok()
     }
 }
 
