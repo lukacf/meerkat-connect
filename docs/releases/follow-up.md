@@ -96,8 +96,13 @@ passed development gateway and controlled installed checks. Published Connect
   and fails after native admission at missing-context assertions. The initial
   missing-import compile failure remains recorded. Restoration covers source
   custody, not full process restart. The observation promises neither future
-  readiness nor filesystem isolation. Installed consumption and live-model task
-  completion remain pending.
+  readiness nor filesystem isolation. The corrected package now completes a
+  controlled installed SDK public read with exact native input completion and
+  rejects resource corruption before model entry. Its first installed run failed
+  an obsolete fixture predicate; a strict fixture-only repair reran the same
+  product bytes successfully. Both cases exited naturally with joined cleanup.
+  An untagged Meta transport-reader diagnostic remains recorded. A fresh
+  real-agent answer and browser UX remain unqualified; V39 is in preparation.
 - **Research across setup helpers:** A fresh normal helper can inspect an
   explicitly host-selected prior acquisition after exact matched reconciliation.
   Its historical status stays unconfirmed, and current owner, profile, runtime

@@ -22,6 +22,26 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+The installed context fixture correction comes from private checkpoint
+`4bae81d2da3a04caca57b5245c567356d171bc6c`, exported as public
+`2e941711a343145f8f85d6f14206cc0b9916eb23`. It changes only the verifier and its
+tests. The first installed run rejected canonical context at an obsolete pre-B
+fixture predicate and never reached corruption testing. The correction requires
+exact proposal-derived context before unchanged B while preserving authority,
+catalog and completion assertions. Four focused fixture controls pass. The
+installed rerun uses the same gateway/archive built from `05cc5058`, with unchanged
+resources, library and SDK bytes; the separate UI change is excluded.
+
+Independent review confirms one installed SDK public read with exact native B
+completion and a discriminating resource-corruption refusal before model entry,
+finalization or sentinel connection. Both gateways exit naturally, success with
+0 and integrity refusal with 1, and their owners/readers/children are joined
+without forced cleanup. The combined log retains an untagged Meta transport-reader
+Future diagnostic, without assignment to a particular case. This qualifies that
+controlled installed path, not general service readiness, scoped execution,
+live authentication, browser UX or free-form business completion. V39 is in
+preparation; published assets and earlier failed results remain unchanged.
+
 Protected Console action ordering comes from private checkpoint
 `4f30a16945c98950b11b8dafd9fc5fc2a9d838a5`, exported as public
 `e4802182cdcef2dd239c8edae1540ec85ecc7e0d`. Two exact source/test afterimages
