@@ -1874,10 +1874,35 @@ ORIGINAL_CONTROLLER_FEEDBACK = (
 )
 
 
-def original_catalog_history(messages, request, operation, fresh, *, allow_controller_recovery=False):
-    """Keep exactly A/B business inputs; allow only their bounded native notices."""
-    require(all(row["role"] != "user" or row.get("content") == request
-                for row in messages[:fresh]), "unexpected original input before B")
+def installed_approved_service_context(proposal):
+    """Expected display facts from the fixture's independently checked proposal.
+
+    This controls the synthetic provider only. Native readiness, currentness,
+    permission and B's completed input remain separate acceptance predicates.
+    """
+    decision = proposal["decision"]
+    permission = decision["permission"]
+    return {"schema": "toolkit.approved-service-context.v1",
+        "operation": proposal["acquisition"]["id"], "original": decision["decision"],
+        "connection": permission["connection"], "resource": permission["resource"],
+        "allowed_operations": list(permission["operations"]),
+        "expires_at_ms": permission["lifetime"]["expires_at_ms"],
+        "configuration_sha256": decision["connection_revision"],
+        "attachment": "observed_usable_before_input_admission",
+        "meaning": "The host completed the approved integration attachment checks for this continuation. This context accompanies the unchanged reviewed user instruction. Native authorization is still checked on each use. This observation does not guarantee future readiness, extend permission, establish filesystem isolation or complete the user's task."}
+
+
+def original_catalog_history(messages, request, operation, fresh, *, allow_controller_recovery=False,
+                             service_context=None):
+    """Keep A/B, one exact approved context before B, and bounded native notices."""
+    context_index = None
+    if service_context is not None:
+        context_index = fresh - 1
+        require(fresh > 0 and messages[context_index] == {
+            "role": "user", "content": canonical(service_context).decode()},
+            "approved host context is missing, changed or not immediately before B")
+    require(all(row["role"] != "user" or row.get("content") == request or i == context_index
+                for i, row in enumerate(messages[:fresh])), "unexpected original input before B")
     load_positions = [i for i, row in enumerate(messages) if row["role"] == "tool"
                       and row["tool_call_id"] == "original-catalog-load"]
     require(len(load_positions) <= 1, "duplicate original catalog load result")
@@ -2005,6 +2030,7 @@ class InstalledAcquisitionProvider:
         self.finished = threading.Event()
         self.business_response_prepared = threading.Event()
         self.business_observation = None
+        self.expected_service_context = None
         self.deadline = time.monotonic() + INSTALLED_LIMIT + ACQUISITION_LIMIT
         owner = self
 
@@ -2150,7 +2176,8 @@ class InstalledAcquisitionProvider:
                         for message in messages[first + 1:fresh]), "fresh B input lacks A's actual final history")
             if self.original_catalog:
                 recovery_index = original_catalog_history(messages, self.request_text, self.operation, fresh,
-                    allow_controller_recovery=self.controller_reprepare)
+                    allow_controller_recovery=self.controller_reprepare,
+                    service_context=getattr(self, "expected_service_context", None))
                 search, loaded = "original-catalog-search", "original-catalog-load"
                 if search not in results:
                     return call(search, "tool_catalog_search", {"query": self.operation, "limit": 50})
@@ -2557,6 +2584,12 @@ class InstalledFixtureRule:
             require(hashlib.sha256(canonical(proposal)).hexdigest() == request.proposal_sha256,
                     "actual proposal digest mismatch")
             self.check(proposal)
+            # Bind the finite display expectation before the SDK can submit the
+            # reviewed answer. It is never derived from a model message.
+            with self.provider.lock:
+                require(self.provider.expected_service_context is None,
+                        "approved context expectation was already selected")
+                self.provider.expected_service_context = installed_approved_service_context(proposal)
         except BaseException:
             self.release_untransferred()
             raise
