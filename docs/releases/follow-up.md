@@ -22,6 +22,15 @@ recovery or independent runtime write prevention. Published Connect 0.9.0 binari
 are unchanged. [Source provenance](../../SOURCE-PROVENANCE.md#unreleased-follow-up-source)
 retains exact source identities, earlier failures and scoped validation.
 
+Current source work addresses one setup request that needs several public-service
+integrations: one access approval for the exact set, separate grants and
+attachments, then one continuation after all members are ready. Software
+installation keeps its existing reviews. This is work in progress,
+with no passing batch-use claim yet. Acquiring another integration later in the
+same task remains separate. Concurrent shared setup is also still open: review
+found that a second request queues behind a running installation in the fixed
+helper. Shared records alone would not make that user path reachable.
+
 - **External Agent Plugins consumption:** A format-adapted Microsoft
   `microsoft-docs` 0.3.1 pack now exports on Linux and runs through unchanged
   OpenHands SDK 1.49.2 on macOS. After staging removal, all eight original files
