@@ -10,7 +10,7 @@ use toolkit_store::ToolkitStore;
 
 type Fixture = FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>>;
 
-fn enrolled_login() -> (
+pub(super) fn enrolled_login() -> (
     tokio::sync::watch::Sender<bool>,
     ConsoleLogins,
     ConsoleLoginHandle,
@@ -36,7 +36,7 @@ fn enrolled_login() -> (
 
 /// Attach only a lifetime to the actual retained A while physical scripted
 /// output is paused. Its already admitted native authority remains unchanged.
-fn retain_actual_a_login(
+pub(super) fn retain_actual_a_login(
     fixture: &Fixture,
     binding: &InputAuthorityAssociation,
     login: &ConsoleLoginHandle,

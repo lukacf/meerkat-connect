@@ -170,7 +170,10 @@ impl Package {
                 if self.behavior == 3 {
                     return Ok(ToolResult::new(call.id.into(), "{}".into(), false).into());
                 }
-                json!({"job":{"id":"3".repeat(32), "kind":"install", "family":if self.selected {"selected-python"} else {"services"}, "status":"running"}})
+                let job = if self.behavior == 7
+                    && self.reply.lock().unwrap()["validation_id"] == "9".repeat(32)
+                { "4".repeat(32) } else { "3".repeat(32) };
+                json!({"job":{"id":job, "kind":"install", "family":if self.selected {"selected-python"} else {"services"}, "status":"running"}})
             }
             "setup_help" => self.readback_reply.lock().unwrap().clone().unwrap_or_else(|| json!({})),
             "setup_job" | "setup_reconcile" => {
@@ -2685,6 +2688,9 @@ async fn selected_human_recovery_keeps_exact_participant_and_whole_member_policy
 
 #[path = "service_install_tests/review_observation.rs"]
 mod review_observation;
+
+#[path = "service_install_tests/warm_reuse.rs"]
+mod warm_reuse;
 
 #[path = "service_install_tests/public_selection_feedback.rs"]
 mod public_selection_feedback;

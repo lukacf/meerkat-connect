@@ -64,6 +64,19 @@ accepted neutral application, with a fresh installation and native namespace.
 Browser interaction, authenticated batches and warm later acquisition remain
 separate. Other requirement statuses and released 0.9.0 artifacts are unchanged.
 
+Development warm reacquisition now passes 28 distinct Rust and 49 JavaScript
+controls. A host-selected configured capability lets the continued task use the
+same live helper for a later public acquisition. The new review covers fresh
+setup and service grants plus metadata access for both named agents across both
+named sessions. The helper can select a current earlier job together with a new
+job, but all grants for the next continued task are fresh. Native Ready and
+independent-target checks, stale policy and recovery refusals, and checked-job
+reuse pass; earlier R1-R5 fixture failures remain retained. All command owners
+joined. See [host composition](../site/guides/host-composition.mdx#acquire-another-public-service-through-the-same-live-helper-development)
+and [source provenance](../../SOURCE-PROVENANCE.md#warm-public-reacquisition).
+Installed warm use, helper reset, Browser behavior and performance remain
+unqualified. Requirement statuses and released artifacts are unchanged.
+
 Concurrent shared setup is also still open: review found that a second request
 queues behind a running installation in the fixed helper. Shared records alone
 would not make that user path reachable.

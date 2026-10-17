@@ -97,7 +97,8 @@ impl OperatorSetup {
             return Ok(None);
         }
         let (decision, selection, access_request) = if matches!(record.batch_member,
-            Some(service_batch::ServiceBatchMemberIdentity::PublicServiceCatalogV1 { .. })) {
+            Some(service_batch::ServiceBatchMemberIdentity::PublicServiceCatalogV1 { .. }
+                | service_batch::ServiceBatchMemberIdentity::PublicServiceCatalogWithSetupV2 { .. })) {
             let body: CatalogBody = serde_json::from_value(body).map_err(|_| HostLifetimeError::InvalidSelection)?;
             if body.operator != record.operator || body.application != record.application
                 || body.realm != self.native.realm || body.route != record.route || body.purpose != record.purpose

@@ -254,7 +254,7 @@ export function mountAccountReview(container, refresh, fetcher = fetch, submissi
                 row.append(term, detail); destination.append(row);
             };
             const publicBatch = body?.phase === "installed_public_service_batch_access"
-                && prompt.body?.kind === "public_services_v1" && Array.isArray(prompt.body.members);
+                && ["public_services_v1", "public_services_with_setup_v2"].includes(prompt.body?.kind) && Array.isArray(prompt.body.members);
             let batchDetails;
             if (publicBatch) {
                 const members = prompt.body.members;
@@ -312,6 +312,19 @@ export function mountAccountReview(container, refresh, fetcher = fetch, submissi
                 fact("Session", catalog?.session, catalogRows);
                 fact("Catalog visibility", policy?.catalog_visibility, catalogRows);
                 accessLimit(catalog?.lifetime, catalogRows);
+                if (prompt.body.kind === "public_services_with_setup_v2") {
+                    const setup = body.configured_setup;
+                    const setupRows = section("Later integration setup", "toolkit-batch-setup");
+                    fact("Setup authority", setup?.authority, setupRows);
+                    fact("Catalog scope", setup?.catalog_scope, setupRows);
+                    if (Array.isArray(setup?.processors))
+                        fact("Catalog agents", setup.processors.map(value => JSON.stringify(value)).join(", "), setupRows);
+                    if (Array.isArray(setup?.sessions) && setup.sessions.every(value => typeof value === "string"))
+                        fact("Catalog sessions", setup.sessions.join(", "), setupRows);
+                    if (setup?.audience) fact("Catalog audience", JSON.stringify(setup.audience), setupRows);
+                    fact("Later acquisition", setup?.continuation, setupRows);
+                    accessLimit(catalog?.lifetime, setupRows);
+                }
                 const policyRows = section("Separately reviewed member tool policy", "toolkit-batch-policy");
                 fact("Policy scope", policy?.approval_scope, policyRows);
                 fact("Policy lifetime", policy?.lifetime, policyRows);

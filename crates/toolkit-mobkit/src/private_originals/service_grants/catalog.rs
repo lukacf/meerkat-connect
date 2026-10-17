@@ -7,7 +7,12 @@ use meerkat_toolkit::authority::RoleLifetime;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum CatalogDecisionKind { PublicServiceCatalogV1 }
+pub(crate) enum CatalogDecisionKind {
+    PublicServiceCatalogV1,
+    PublicServiceCatalogWithSetupV2 {
+        helper: crate::private_originals::configured_setup::service::ServiceSetupHelper,
+    },
+}
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +38,26 @@ impl ServiceCatalogDecision {
         let mut result = crate::installed_host::application_operations::parent_restrictions(
             crate::installed_host::application_operations::catalog_read(
                 &route.grant_caller, &route.logical_executor, &route.grant_audience, &self.session));
+        if let CatalogDecisionKind::PublicServiceCatalogWithSetupV2 { helper } = &self.kind {
+            use meerkat_authorization_contracts::constraints::{ExactRestriction, ProcessorRef};
+            if helper.audience != route.grant_audience || helper.logical_executor == route.logical_executor
+                || helper.session_id == self.session {
+                return Err(PrivateOriginalError::Denied);
+            }
+            let helper_values = crate::installed_host::application_operations::catalog_read(
+                &route.grant_caller, &helper.logical_executor, &helper.audience, &helper.session_id);
+            let original_values = crate::installed_host::application_operations::catalog_read(
+                &route.grant_caller, &route.logical_executor, &route.grant_audience, &self.session);
+            // The protected review explicitly authorizes this full 2x2 metadata
+            // scope. These independent restrictions do not encode paired tuples.
+            result.processors = ExactRestriction::exact([
+                ProcessorRef::Principal { principal: route.logical_executor.clone() },
+                ProcessorRef::Principal { principal: helper.logical_executor.clone() },
+            ]);
+            result.resource_domains = ExactRestriction::exact([
+                original_values.resource_domain, helper_values.resource_domain,
+            ]);
+        }
         result.delegation_depth = DelegationDepth::remaining(0);
         result.lifetime = LifetimeRestriction::window(0,
             self.lifetime.expires_at_ms.ok_or(PrivateOriginalError::Denied)?);

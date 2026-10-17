@@ -20,17 +20,30 @@ pub struct PreparedPublicServiceBatch {
 }
 
 impl InstalledServiceTask {
-    /// The integrated public path freezes 2-8 distinct MCP targets. Singleton
-    /// callers keep their existing review and record encoding.
-    pub async fn prepare_public_batch(self, mut entries: Vec<PublicServiceBatchEntry>,
+    /// The integrated public path freezes 2-8 distinct MCP targets, or 1-8
+    /// when a configured warm setup capability was explicitly selected. Other
+    /// singleton callers keep their existing review and record encoding.
+    pub async fn prepare_public_batch(mut self, mut entries: Vec<PublicServiceBatchEntry>,
         expires_in_ms: Option<u64>, mut request: ApprovalRequest, policy: ServiceToolPolicySelection,
     ) -> Result<PreparedPublicServiceBatch, PrivateOriginalError> {
-        if entries.len() < 2 || entries.len() > MAX_PUBLIC_SERVICE_BATCH || policy.catalog.is_none() {
+        if entries.len() < (if self.setup.is_some() { 1 } else { 2 }) || entries.len() > MAX_PUBLIC_SERVICE_BATCH || policy.catalog.is_none() {
             return Err(PrivateOriginalError::Denied);
         }
         entries.sort_by(|left, right| left.configuration.name.cmp(&right.configuration.name));
         if entries.windows(2).any(|pair| pair[0].configuration.name == pair[1].configuration.name) {
             return Err(PrivateOriginalError::Denied);
+        }
+        if let Some(setup) = &self.setup {
+            let setup_targets = setup.binding_targets()?;
+            if setup_targets.len() + entries.len()
+                > meerkat_authorization_contracts::work_association::MAX_ASSOCIATION_REFERENCES {
+                return Err(PrivateOriginalError::Denied);
+            }
+            if entries.iter().any(|entry| setup.configured.capability.helper_targets.iter().any(|target|
+                matches!(&target.target, Some(meerkat_authorization_contracts::work_association::GrantTarget::McpServer { server })
+                    if server == &entry.configuration.name))) {
+                return Err(PrivateOriginalError::Conflict);
+            }
         }
         self.current().await?;
         let tool_policy = self.prepare_tool_policy(Some(policy)).await?.ok_or(PrivateOriginalError::Denied)?;
@@ -56,13 +69,31 @@ impl InstalledServiceTask {
         }));
         let expiry = members.iter().filter_map(|member| member.decision().permission.lifetime.expires_at_ms)
             .min().ok_or(PrivateOriginalError::Denied)?;
+        if let Some(setup) = &mut self.setup {
+            setup.expires_at_ms = setup.expires_at_ms.min(expiry);
+            let route = self.source.route(&self.parent.route)?;
+            body.insert("configured_setup".into(), serde_json::json!({
+                "selection": setup,
+                "authority": "fresh children for this task from the already configured agent setup policy",
+                "catalog_scope": "Both named agents may read tool metadata in both named sessions. This is the full two-agent by two-session scope, not paired permissions. It grants no service invocation.",
+                "processors": [route.logical_executor, setup.helper.logical_executor],
+                "sessions": [self.task.origin_session_id, setup.helper.session_id],
+                "audience": setup.helper.audience,
+                "expires_at_ms": setup.expires_at_ms,
+                "continuation": "A later acquisition requires its own current capture, access review and fresh grants. Earlier connections must be selected again when needed."
+            }));
+        }
         let catalog = ServiceCatalogDecision {
-            kind: CatalogDecisionKind::PublicServiceCatalogV1,
+            kind: match &self.setup {
+                None => CatalogDecisionKind::PublicServiceCatalogV1,
+                Some(setup) => CatalogDecisionKind::PublicServiceCatalogWithSetupV2 { helper: setup.helper.clone() },
+            },
             route: self.parent.route.clone(),
             decision: crate::installed_host::operator_setup::service_batch_member_id(&self.fresh, None)
                 .map_err(application::policy_error)?,
             evidence: PrivateSourceEvidence { resource_id: self.fresh.clone(),
-                revision: EvidenceId::new("public-service-batch-v1").map_err(|_| PrivateOriginalError::Conflict)?,
+                revision: EvidenceId::new(if self.setup.is_some() { "public-services-with-setup-v2" }
+                    else { "public-service-batch-v1" }).map_err(|_| PrivateOriginalError::Conflict)?,
                 sha256: digest(&canonical_json(&request.proposed_action.body).map_err(|_| PrivateOriginalError::Conflict)?) },
             original: self.fresh.clone(), session: self.task.origin_session_id.clone(),
             lifetime: RoleLifetime { scope: LifetimeScope::Task {
@@ -71,7 +102,7 @@ impl InstalledServiceTask {
         };
         let lifetime = self.source.host_lifetime.get().and_then(Weak::upgrade).ok_or(PrivateOriginalError::Unavailable)?;
         let operator = self.source.service_operator_setup(lifetime).map_err(application::policy_error)?;
-        let review = operator.prepare_service_mcp_parent_batch_review(members, catalog, request)
+        let review = operator.prepare_service_mcp_parent_set_review(members, catalog, request, self.setup.clone())
             .map_err(application::policy_error)?;
         Ok(PreparedPublicServiceBatch { task: self, operator, review, tool_policy })
     }
@@ -163,11 +194,55 @@ impl PreparedPublicServiceBatch {
             else { Err(meerkat_toolkit::host_lifetime::control::HostLifetimeError::Denied) })
             .await.map_err(application::policy_error)?;
         let link = ApprovedTaskLink::Batch(selection::ApprovedTaskBatch {
-            kind: selection::BatchVersion::PublicServicesV1, header: self.task.task_header(),
-            set_sha256, members, catalog: catalog.grant,
+            kind: if self.task.setup.is_some() { selection::BatchVersion::PublicServicesWithSetupV2 }
+                else { selection::BatchVersion::PublicServicesV1 },
+            header: self.task.task_header(), set_sha256, members, catalog: catalog.grant,
+            setup: self.task.setup.clone(),
         });
         self.task.retain_approved_selection(link, evidence, &|| if current() { Ok(()) }
             else { Err(PrivateOriginalError::Denied) }, Some(condition)).await?;
         Ok(true)
+    }
+}
+
+/// Public setup-enabled singletons use the same reviewed-set owner. Existing
+/// callers without that selected capability retain their exact singleton path.
+pub enum PreparedPublicInstruction {
+    Single(PreparedServiceInstruction),
+    WithSetup(PreparedPublicServiceBatch),
+}
+impl PreparedPublicInstruction {
+    pub fn request(&self) -> &ApprovalRequest {
+        match self { Self::Single(value) => value.request(), Self::WithSetup(value) => value.request() }
+    }
+    pub async fn approve(self, record: ApprovalRecord,
+        presented: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Result<bool, PrivateOriginalError> {
+        match self {
+            Self::Single(value) => value.approve(record, presented).await,
+            Self::WithSetup(value) => value.approve(record, presented).await,
+        }
+    }
+}
+impl InstalledServiceTask {
+    pub async fn prepare_public_instruction(self, configuration: &meerkat_core::McpServerConfig,
+        operations: BTreeSet<Id>, expires_in_ms: Option<u64>, mut request: ApprovalRequest,
+        policy: Option<ServiceToolPolicySelection>,
+    ) -> Result<PreparedPublicInstruction, PrivateOriginalError> {
+        if self.setup.is_none() {
+            return self.prepare_no_connector_review_with_tool_policy(configuration, operations,
+                expires_in_ms, request, policy).await.map(PreparedPublicInstruction::Single);
+        }
+        let member_request = request.clone();
+        let document = request.proposed_action.body.clone().ok_or(PrivateOriginalError::Denied)?;
+        request.proposed_action.body = Some(serde_json::json!({
+            "phase": "installed_public_service_batch_access", "services": [document],
+            "notice": "One reviewed service and fresh task-specific setup capability. Approval is not readiness."
+        }));
+        request.request_body = request.proposed_action.body.clone();
+        self.prepare_public_batch(vec![PublicServiceBatchEntry {
+            configuration: configuration.clone(), operations, request: member_request,
+        }], expires_in_ms, request, policy.ok_or(PrivateOriginalError::Denied)?)
+            .await.map(PreparedPublicInstruction::WithSetup)
     }
 }

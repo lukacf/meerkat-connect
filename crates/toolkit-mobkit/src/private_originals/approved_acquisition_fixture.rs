@@ -7,21 +7,44 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
     pub(super) async fn for_approved_acquisition(
         script: Arc<acquisition_denial::Script>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
-        Self::for_acquisition_mode(script, None, false, None, None).await
+        Self::for_acquisition_mode(script, None, false, None, None, None, None).await
     }
 
     pub(super) async fn for_helper_report(
         script: Arc<acquisition_denial::Script>,
         report: Arc<helper_report::Report>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
-        Self::for_acquisition_mode(script, Some(report), false, None, None).await
+        Self::for_acquisition_mode(script, Some(report), false, None, None, None, None).await
     }
 
     pub(super) async fn for_configured_helper_report(
         script: Arc<acquisition_denial::Script>,
         report: Arc<helper_report::Report>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
-        Self::for_acquisition_mode(script, Some(report), true, None, None).await
+        Self::for_acquisition_mode(script, Some(report), true, None, None, None, None).await
+    }
+
+    pub(super) async fn for_warm_helper_report(
+        script: Arc<acquisition_denial::Script>, report: Arc<helper_report::Report>,
+    ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
+        Self::for_warm_helper_profile(script, report,
+            crate::installed_host::controller_first_input_fixture::WarmHelperProfile::Standard).await
+    }
+
+    pub(super) async fn for_warm_helper_profile(
+        script: Arc<acquisition_denial::Script>, report: Arc<helper_report::Report>,
+        profile: crate::installed_host::controller_first_input_fixture::WarmHelperProfile,
+    ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
+        Self::for_acquisition_mode(script, Some(report), true, None, None, Some(profile), None).await
+    }
+
+    pub(super) async fn for_warm_helper_report_with_provider(
+        script: Arc<acquisition_denial::Script>, report: Arc<helper_report::Report>,
+        decorate: Arc<dyn Fn(Arc<dyn LlmClient>) -> Arc<dyn LlmClient> + Send + Sync>,
+    ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
+        Self::for_acquisition_mode(script, Some(report), true, None, None,
+            Some(crate::installed_host::controller_first_input_fixture::WarmHelperProfile::Standard),
+            Some(decorate)).await
     }
 
     pub(super) async fn for_helper_entry(
@@ -30,14 +53,14 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
         assert!(matches!(fault.mode,
             DeliveryMode::HoldHelperBeforeLookup | DeliveryMode::HoldHelperAcceptedReply));
-        Self::for_acquisition_mode(script, None, false, Some(fault), None).await
+        Self::for_acquisition_mode(script, None, false, Some(fault), None, None, None).await
     }
 
     pub(super) async fn for_catalog_successor(
         script: Arc<acquisition_denial::Script>,
         catalog: Arc<helper_entry_native::CatalogProbe>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
-        Self::for_acquisition_mode(script, None, false, None, Some(catalog)).await
+        Self::for_acquisition_mode(script, None, false, None, Some(catalog), None, None).await
     }
 
     async fn for_acquisition_mode(
@@ -46,6 +69,8 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         configured_report: bool,
         fault: Option<Arc<DeliveryFault>>,
         catalog: Option<Arc<helper_entry_native::CatalogProbe>>,
+        warm_report: Option<crate::installed_host::controller_first_input_fixture::WarmHelperProfile>,
+        warm_provider: Option<Arc<dyn Fn(Arc<dyn LlmClient>) -> Arc<dyn LlmClient> + Send + Sync>>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
         let mut opened = None;
         let mut owners = None;
@@ -57,6 +82,8 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
                 configured_report,
                 fault,
                 catalog,
+                warm_report,
+                warm_provider,
                 &mut opened,
                 &mut owners,
             )),
@@ -86,6 +113,8 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         configured_report: bool,
         fault: Option<Arc<DeliveryFault>>,
         catalog: Option<Arc<helper_entry_native::CatalogProbe>>,
+        warm_report: Option<crate::installed_host::controller_first_input_fixture::WarmHelperProfile>,
+        warm_provider: Option<Arc<dyn Fn(Arc<dyn LlmClient>) -> Arc<dyn LlmClient> + Send + Sync>>,
         opened: &mut Option<UnifiedRuntime>,
         owners: &mut Option<(Arc<tempfile::TempDir>, Arc<NativeHostLifetime>)>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
@@ -96,7 +125,12 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         let private_helper_entry = fault.is_some() || catalog.is_some();
         assert!(catalog.is_none() || fault.is_none());
         assert!(!private_helper_entry || (report.is_none() && !configured_report));
+        assert!(warm_report.is_none() || (configured_report && report.is_some()));
+        assert!(warm_provider.is_none() || warm_report.is_some());
         let host = match &report {
+            Some(report) if warm_report.is_some() => installed::open_for_warm_helper_profile(
+                &facts, script.dispatcher(), report.dispatcher(), warm_report.unwrap(),
+            ).await,
             Some(report) if configured_report => installed::open_for_configured_helper_report(
                 &facts, script.dispatcher(), report.dispatcher(),
             ).await,
@@ -129,8 +163,12 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             FactoryAgentBuilder::new(AgentFactory::minimal().comms(true), Config::default());
         let client = script.provider(provider.clone());
         let client = match &catalog { Some(probe) => probe.provider(client), None => client };
-        builder.default_llm_client = Some(match &report {
+        let client = match &report {
             Some(report) => report.provider(client),
+            None => client,
+        };
+        builder.default_llm_client = Some(match warm_provider {
+            Some(decorate) => decorate(client),
             None => client,
         });
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =

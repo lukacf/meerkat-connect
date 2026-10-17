@@ -22,6 +22,8 @@ pub(crate) fn member_decision_id(original: &EvidenceId, connection: Option<&Id>)
 pub(super) enum ServiceBatchMemberIdentity {
     PublicServicesV1 { set_sha256: String, index: u8 },
     PublicServiceCatalogV1 { set_sha256: String },
+    PublicServicesWithSetupV2 { set_sha256: String, index: u8 },
+    PublicServiceCatalogWithSetupV2 { set_sha256: String },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -37,6 +39,11 @@ enum BatchReviewBody {
     PublicServicesV1 {
         members: Vec<BatchMemberBody>,
         catalog: Value,
+        access_request: Value,
+    },
+    PublicServicesWithSetupV2 {
+        members: Vec<BatchMemberBody>, catalog: Value,
+        setup: crate::private_originals::ServiceSetupSelection,
         access_request: Value,
     },
 }
@@ -72,14 +79,36 @@ fn selection_digest(members: &[BatchMemberBody], catalog: &Value) -> Result<Stri
         .map(|bytes| digest(&bytes)).map_err(|_| HostLifetimeError::InvalidSelection)
 }
 
+fn setup_selection_digest(members: &[BatchMemberBody], catalog: &Value,
+    setup: Option<&crate::private_originals::ServiceSetupSelection>)
+    -> Result<String, HostLifetimeError> {
+    let Some(setup) = setup else { return selection_digest(members, catalog); };
+    setup.validate().map_err(|_| HostLifetimeError::InvalidSelection)?;
+    if members.is_empty() || members.len() > MAX_PUBLIC_SERVICE_BATCH
+        || members.iter().any(|member| member.server.is_empty())
+        || members.windows(2).any(|pair| pair[0].server >= pair[1].server) {
+        return Err(HostLifetimeError::InvalidSelection);
+    }
+    canonical_json(&("toolkit.public-service-setup-selection.v2", members, catalog, setup))
+        .map(|bytes| digest(&bytes)).map_err(|_| HostLifetimeError::InvalidSelection)
+}
+
 impl OperatorSetup {
     /// Freeze the complete set before native issuance. No member can change
     /// its request after the real shared approval has been returned.
     pub(crate) fn prepare_service_mcp_parent_batch_review(
+        &self, members: Vec<ServiceMcpParentReview>, catalog: ServiceCatalogDecision,
+        request: ApprovalRequest,
+    ) -> Result<ServiceMcpParentBatchReview, HostLifetimeError> {
+        self.prepare_service_mcp_parent_set_review(members, catalog, request, None)
+    }
+
+    pub(crate) fn prepare_service_mcp_parent_set_review(
         &self, mut members: Vec<ServiceMcpParentReview>, catalog: ServiceCatalogDecision,
         mut request: ApprovalRequest,
+        setup: Option<crate::private_originals::ServiceSetupSelection>,
     ) -> Result<ServiceMcpParentBatchReview, HostLifetimeError> {
-        if members.len() < 2 || members.len() > MAX_PUBLIC_SERVICE_BATCH {
+        if members.len() < (if setup.is_some() { 1 } else { 2 }) || members.len() > MAX_PUBLIC_SERVICE_BATCH {
             return Err(HostLifetimeError::InvalidSelection);
         }
         members.sort_by(|left, right| left.decision().permission.connection
@@ -116,6 +145,27 @@ impl OperatorSetup {
             || members.iter().any(|member| member.decision().live_attachment.as_ref()
                 .is_none_or(|effect| effect.destination.context.as_str() != catalog.session.to_string()))
         { return Err(HostLifetimeError::InvalidSelection); }
+        match (&catalog.kind, &setup) {
+            (crate::private_originals::service_grants::catalog::CatalogDecisionKind::PublicServiceCatalogV1, None) => {},
+            (crate::private_originals::service_grants::catalog::CatalogDecisionKind::PublicServiceCatalogWithSetupV2 { helper }, Some(setup)) => {
+                setup.validate().map_err(|_| HostLifetimeError::InvalidSelection)?;
+                let route_row = self.native.routes.iter().find(|row| row.id == route)
+                    .ok_or(HostLifetimeError::InvalidSelection)?;
+                let (binding, _, _) = route_row.source_binding(self.lifetime.selected_policy())?;
+                let member = self.native.members.iter().find(|row| &row.member == binding)
+                    .ok_or(HostLifetimeError::InvalidSelection)?;
+                let selected_helper = self.native.members.iter().find(|row| row.member == helper.member)
+                    .ok_or(HostLifetimeError::InvalidSelection)?;
+                if member.setup_capability.as_ref() != Some(&setup.configured.capability)
+                    || setup.configured.capability.route != route || setup.configured.session_id != catalog.session
+                    || &setup.helper != helper || catalog.lifetime.expires_at_ms != Some(setup.expires_at_ms)
+                    || selected_helper.logical_owner != helper.logical_executor
+                    || selected_helper.audience != helper.audience || member.audience != helper.audience {
+                    return Err(HostLifetimeError::InvalidSelection);
+                }
+            },
+            _ => return Err(HostLifetimeError::InvalidSelection),
+        }
         let mut catalog_restrictions = catalog.restrictions(&self.service_mcp_route(&route)?, 0)
             .map_err(|_| HostLifetimeError::InvalidSelection)?;
         catalog_restrictions.delegation_depth = meerkat_authorization_contracts::constraints::DelegationDepth::remaining(1);
@@ -128,25 +178,33 @@ impl OperatorSetup {
             .ok_or(HostLifetimeError::InvalidSelection)?);
         let catalog_body = catalog_proposal.request.proposed_action.body.clone()
             .ok_or(HostLifetimeError::InvalidSelection)?;
-        let set_sha256 = selection_digest(&selected, &catalog_body)?;
-        let body = BatchReviewBody::PublicServicesV1 {
-            members: selected,
-            catalog: catalog_body,
-            access_request: request.proposed_action.body.take()
-                .ok_or(HostLifetimeError::InvalidSelection)?,
+        let access_request = request.proposed_action.body.take().ok_or(HostLifetimeError::InvalidSelection)?;
+        let set_sha256 = setup_selection_digest(&selected, &catalog_body, setup.as_ref())?;
+        let with_setup = setup.is_some();
+        let body = match setup {
+            Some(setup) => BatchReviewBody::PublicServicesWithSetupV2 {
+                members: selected, catalog: catalog_body, setup, access_request,
+            },
+            None => BatchReviewBody::PublicServicesV1 {
+                members: selected, catalog: catalog_body, access_request,
+            },
         };
         request.proposed_action.summary = "Review this exact set of public services for the task".into();
         request.proposed_action.body = Some(serde_json::to_value(body)
             .map_err(|_| HostLifetimeError::InvalidSelection)?);
         request.request_body = request.proposed_action.body.clone();
         for (index, member) in members.iter_mut().enumerate() {
-            member.proposal.batch_member = Some(ServiceBatchMemberIdentity::PublicServicesV1 {
-                set_sha256: set_sha256.clone(), index: index as u8,
+            member.proposal.batch_member = Some(if with_setup {
+                ServiceBatchMemberIdentity::PublicServicesWithSetupV2 { set_sha256: set_sha256.clone(), index: index as u8 }
+            } else {
+                ServiceBatchMemberIdentity::PublicServicesV1 { set_sha256: set_sha256.clone(), index: index as u8 }
             });
             member.proposal.request = request.clone();
         }
-        catalog_proposal.batch_member = Some(ServiceBatchMemberIdentity::PublicServiceCatalogV1 {
-            set_sha256: set_sha256.clone(),
+        catalog_proposal.batch_member = Some(if with_setup {
+            ServiceBatchMemberIdentity::PublicServiceCatalogWithSetupV2 { set_sha256: set_sha256.clone() }
+        } else {
+            ServiceBatchMemberIdentity::PublicServiceCatalogV1 { set_sha256: set_sha256.clone() }
         });
         catalog_proposal.request = request.clone();
         Ok(ServiceMcpParentBatchReview { request, members, set_sha256,
@@ -166,15 +224,23 @@ pub(super) fn member_body(record: &OperatorDecision) -> Result<Option<Value>, Ho
     let body: BatchReviewBody = serde_json::from_value(record.approval.proposed_action.body.clone()
         .ok_or(HostLifetimeError::InvalidSelection)?)
         .map_err(|_| HostLifetimeError::InvalidSelection)?;
-    let BatchReviewBody::PublicServicesV1 { members, catalog, .. } = body;
+    let (members, catalog, setup) = match body {
+        BatchReviewBody::PublicServicesV1 { members, catalog, .. } => (members, catalog, None),
+        BatchReviewBody::PublicServicesWithSetupV2 { members, catalog, setup, .. } => (members, catalog, Some(setup)),
+    };
+    let with_setup = matches!(identity, ServiceBatchMemberIdentity::PublicServicesWithSetupV2 { .. }
+        | ServiceBatchMemberIdentity::PublicServiceCatalogWithSetupV2 { .. });
+    if with_setup != setup.is_some() { return Err(HostLifetimeError::InvalidSelection); }
     let (set_sha256, selected, server) = match identity {
-        ServiceBatchMemberIdentity::PublicServicesV1 { set_sha256, index } => {
+        ServiceBatchMemberIdentity::PublicServicesV1 { set_sha256, index }
+        | ServiceBatchMemberIdentity::PublicServicesWithSetupV2 { set_sha256, index } => {
             let member = members.get(usize::from(*index)).ok_or(HostLifetimeError::InvalidSelection)?;
             (set_sha256, &member.parent, Some(member.server.as_str()))
         }
-        ServiceBatchMemberIdentity::PublicServiceCatalogV1 { set_sha256 } => (set_sha256, &catalog, None),
+        ServiceBatchMemberIdentity::PublicServiceCatalogV1 { set_sha256 }
+        | ServiceBatchMemberIdentity::PublicServiceCatalogWithSetupV2 { set_sha256 } => (set_sha256, &catalog, None),
     };
-    if selection_digest(&members, &catalog)? != *set_sha256 {
+    if setup_selection_digest(&members, &catalog, setup.as_ref())? != *set_sha256 {
         return Err(HostLifetimeError::InvalidSelection);
     }
     let selected_body = selected.clone();

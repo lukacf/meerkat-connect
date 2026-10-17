@@ -83,7 +83,12 @@ impl PrivateOriginals {
         let lifetime = self.host_lifetime.get().and_then(Weak::upgrade).ok_or(PrivateOriginalError::Unavailable)?;
         let operator = self.service_operator_setup(lifetime).map_err(application::policy_error)?;
         let machine = self.machine()?;
-        let mut failed = None;
+        // Canonical pre-bind setup intent is already stored. Only observed
+        // exact task children are revoked, never configured shared parents.
+        let mut failed = match self.prepare_service_setup_cleanup(reference, &saved).await {
+            Ok(cleanup) => cleanup.revoke(self).err(),
+            Err(error) => Some(error),
+        };
         for grant in task.grants() {
             let result = async {
                 let access = self.store.get(&self.access_key(grant)?).await.map_err(store_error)?

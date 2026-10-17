@@ -290,3 +290,44 @@ async fn legacy_service_permit_cannot_recover_or_publish_member_policy() {
     let (_, slot) = owner.read().await.unwrap();
     assert!(slot.pending.is_none()); assert_eq!(slot.current, bootstrap());
 }
+
+#[tokio::test]
+async fn stale_prepared_successor_refuses_after_exact_current_policy_advances() {
+    let (_dir, _policy, owner, rule, store) = fixture().await;
+    // Both requests are genuinely prepared and approved against the same
+    // canonical slot. No prior, row or approval is rewritten for this check.
+    let first = prepared(&owner, &rule, "first", "first_read").await;
+    let stale = prepared(&owner, &rule, "second", "second_read").await;
+    assert_eq!(first.proposal.prior, stale.proposal.prior);
+    assert_eq!(first.prior, stale.prior);
+    assert_ne!(first.proposal.candidate, stale.proposal.candidate);
+    let candidate = first.proposal.candidate_canonical_json.clone();
+    let policy_id = first.proposal.policy_id.clone();
+    let first_approval = ServiceToolPolicyApproval::until_superseded(&first.proposal).unwrap();
+    let stale_approval = ServiceToolPolicyApproval::until_superseded(&stale.proposal).unwrap();
+    let stale_digest = stale.proposal.sha256().unwrap();
+    let mut transaction = first.begin(&first_approval, &|| Ok(())).await.unwrap();
+    transaction.publish(&|| Ok(())).await.unwrap();
+    assert_eq!(transaction.observation().native, Some(ServiceToolPolicyNativeOutcome::Accepted));
+    drop(transaction);
+
+    let (before, slot) = owner.read().await.unwrap();
+    assert!(slot.pending.is_none());
+    assert_eq!(slot.current, candidate);
+    assert_ne!(version(slot.current.as_bytes()).unwrap(), stale.proposal.prior);
+    assert_eq!(stale.proposal.sha256().unwrap(), stale_digest);
+    let events = store.read_events(&owner.key, 0, 32).await.unwrap();
+    assert!(events.iter().any(|event| event.kind == "accepted-current"));
+    let native = owner.provider.snapshot(&policy_id).unwrap();
+    assert_eq!(native.provenance().revision, version(candidate.as_bytes()).unwrap().revision);
+
+    assert!(matches!(stale.begin(&stale_approval, &|| Ok(())).await,
+        Err(HostLifetimeError::Denied)));
+    let (after, after_slot) = owner.read().await.unwrap();
+    assert_eq!(after, before, "stale approved proposal cannot alter the canonical slot");
+    assert_eq!(encode(&after_slot).unwrap(), encode(&slot).unwrap());
+    assert_eq!(store.read_events(&owner.key, 0, 32).await.unwrap(), events);
+    assert!(Arc::ptr_eq(&native, &owner.provider.snapshot(&policy_id).unwrap()),
+        "refusal precedes any native provider acceptance");
+    assert!(owner.is_observed_current(candidate.as_bytes()).unwrap());
+}

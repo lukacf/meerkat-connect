@@ -236,6 +236,7 @@ async fn one_real_batch_approval_issues_distinct_exact_parents_and_replays_witho
                 set_sha256 == &exact_set && *index < 2,
             ServiceBatchMemberIdentity::PublicServiceCatalogV1 { set_sha256 } =>
                 set_sha256 == &exact_set,
+            _ => false,
         });
     }
     let bytes = fs::read(&journal).unwrap();

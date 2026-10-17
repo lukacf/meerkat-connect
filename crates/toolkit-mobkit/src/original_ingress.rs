@@ -38,6 +38,9 @@ use meerkat_runtime::{
 };
 use std::sync::{Arc, Mutex};
 
+mod service_set_shape;
+pub(crate) use service_set_shape::ServiceSetBindingTargets;
+
 pub(crate) mod helper_originals;
 mod retained_resume;
 mod historical_admission;
@@ -740,7 +743,8 @@ impl ToolkitOriginalOwner {
 
     /// Bind one source-owned public-service set. Its callback must match every
     /// target and catalog lineage to the immutable reviewed source while this
-    /// writer is held. Configured setup's find target is not part of this path.
+    /// writer is held. The versioned caller supplies the exact configured setup
+    /// targets separately from the public service targets.
     pub(crate) async fn bind_issued_service_set_async<F, Fut>(
         &self,
         association: InputAuthorityAssociation,
@@ -748,6 +752,7 @@ impl ToolkitOriginalOwner {
         authenticated_requester: &PrincipalRef,
         authenticated_ingress_actor: &PrincipalRef,
         task_issuer: &PrincipalRef,
+        selected_targets: ServiceSetBindingTargets<'_>,
         persist_or_observe: F,
     ) -> Result<Arc<RetainedToolkitOriginal>, OriginalWriterError>
     where
@@ -756,7 +761,6 @@ impl ToolkitOriginalOwner {
             Output = Result<Option<Arc<toolkit_store::StoredRecord>>, OriginalWriterError>,
         >,
     {
-        use meerkat_authorization_contracts::work_association::GrantTarget;
         let _mutation = self.mutation.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
         self.check_source(&association, &source_custody, authenticated_requester, authenticated_ingress_actor)?;
         self.refuse_cancelled_binding(&association)?;
@@ -764,12 +768,7 @@ impl ToolkitOriginalOwner {
         let WorkAuthorityBasis::TargetedGrantLineages { base: Some(_), targets } = &claims.authority_basis else {
             return Err(OriginalWriterError::UnsupportedMandate);
         };
-        if !(2..=crate::installed_host::operator_setup::MAX_PUBLIC_SERVICE_BATCH).contains(&targets.len())
-            || targets.iter().any(|target| !matches!(&target.target, GrantTarget::McpServer { .. }))
-            || targets.iter().enumerate().any(|(index, target)| targets[..index].iter()
-                .any(|prior| prior.target == target.target)) {
-            return Err(OriginalWriterError::UnsupportedMandate);
-        }
+        selected_targets.check(&targets.iter().map(|target| &target.target).collect::<Vec<_>>())?;
         for lineage in claims.authority_basis.grant_lineages() {
             let resolved = self.grants.resolve_lineage(lineage, &claims.logical_executor, claims.represented_subject.as_ref())
                 .map_err(OriginalWriterError::Grant)?;

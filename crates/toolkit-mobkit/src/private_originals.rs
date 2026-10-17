@@ -28,6 +28,7 @@ mod console_ingress;
 mod controller_setup;
 mod setup_request;
 mod configured_setup;
+pub(crate) use configured_setup::service::ServiceSetupSelection;
 mod setup_targets;
 pub use setup_request::PrivateSetupRequestSelection;
 mod first_input;
@@ -39,7 +40,7 @@ pub(crate) mod source_status;
 pub(crate) mod service_recovery;
 pub use service_approved_input::{
     InstalledServiceTask, PreparedServiceInstruction, ServiceMcpPersistenceProposal,
-    PublicServiceBatchEntry, PreparedPublicServiceBatch,
+    PublicServiceBatchEntry, PreparedPublicServiceBatch, PreparedPublicInstruction,
 };
 pub use crate::installed_host::tool_policy::{ServiceToolPolicySelection, ServiceToolInvocation,
     MemberPolicyLifetime, ServiceToolPolicyVersion, ServiceToolPolicyProposal, ServiceToolPolicyApproval,
@@ -233,6 +234,10 @@ struct SourceRecord {
     /// Exact configured first-bind choice, retained before any child issuance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     configured_setup: Option<configured_setup::ConfiguredSetupSelection>,
+    /// Verified native setup-child facts for exact pre-bind compensation only.
+    /// This is never an admission or liveness observation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    service_setup_children: Vec<configured_setup::service::ServiceSetupChildObservation>,
     source: SourceFacts,
     event: PrivateAuthenticatedEvent,
     operation_cancelled: bool,
@@ -656,6 +661,7 @@ impl PrivateOriginals {
         let data = encode(SourceRecord {
             setup_request: None,
             configured_setup: None,
+            service_setup_children: vec![],
             source,
             event,
             final_association: None,
@@ -1195,6 +1201,7 @@ fn decode_source_record(stored: &StoredRecord) -> Result<SourceRecord, PrivateOr
         return Err(PrivateOriginalError::Conflict);
     }
     cold_service_admission::validate_retained_input(&value)?;
+    configured_setup::service::ServiceSetupChildObservation::validate_set(&value)?;
     if let Some(task) = &value.approved_task { task.validate()?; }
     if let Some(member) = &value.service_attachment_member {
         if value.service_attachment_failure.is_none() || !value.operation_cancelled

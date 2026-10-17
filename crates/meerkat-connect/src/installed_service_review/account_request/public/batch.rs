@@ -90,7 +90,7 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
         return Err(invalid_batch());
     }
     let task = owner.tasks.as_ref().ok_or_else(|| ToolError::access_denied(call.name))?
-        .prepare_captured_consumer(call, &current, plan).await
+        .prepare_public_service(call, &current, plan).await
         .map_err(|_| unavailable())?.ok_or_else(|| ToolError::access_denied(call.name))?;
     require_captured_consumer(call.name, &proposal.agent, &task)?;
     // This new set shape deliberately uses one real protected Console review.

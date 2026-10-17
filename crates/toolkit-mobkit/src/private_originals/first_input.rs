@@ -97,6 +97,9 @@ impl PrivateOriginals {
             None
         };
         let selected_basis = if let Some(task) = batch {
+            if let Some(setup) = task.setup() {
+                self.issue_service_setup(reference, setup, approved_login.as_ref()).await?;
+            }
             self.service_batch_basis(reference, task, true).await?.0
         } else { match grant {
             Some(grant) => {

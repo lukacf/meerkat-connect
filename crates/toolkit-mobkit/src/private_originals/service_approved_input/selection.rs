@@ -31,7 +31,7 @@ pub(in crate::private_originals) struct ApprovedServiceMember {
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(in crate::private_originals) enum BatchVersion { PublicServicesV1 }
+pub(in crate::private_originals) enum BatchVersion { PublicServicesV1, PublicServicesWithSetupV2 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub(in crate::private_originals) struct ApprovedTaskBatch {
@@ -40,6 +40,7 @@ pub(in crate::private_originals) struct ApprovedTaskBatch {
     pub set_sha256: String,
     pub members: Vec<ApprovedServiceMember>,
     pub catalog: PrivateServiceGrantRef,
+    pub setup: Option<super::super::configured_setup::service::ServiceSetupSelection>,
 }
 
 // These explicit wire types preserve strict deserialization and the singleton's
@@ -72,7 +73,7 @@ impl<'de> Deserialize<'de> for ApprovedTaskMember {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BatchWire {
-    kind: BatchVersion,
+    kind: LegacyBatchVersion,
     parent: PrivateOriginalRef,
     acquisition: StoreKey,
     original_task: NativeOriginalTask,
@@ -81,21 +82,61 @@ struct BatchWire {
     members: Vec<ApprovedServiceMember>,
     catalog: PrivateServiceGrantRef,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyBatchVersion { PublicServicesV1 }
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SetupBatchVersion { PublicServicesWithSetupV2 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetupBatchWire {
+    kind: SetupBatchVersion,
+    parent: PrivateOriginalRef,
+    acquisition: StoreKey,
+    original_task: NativeOriginalTask,
+    before_ms: u64,
+    set_sha256: String,
+    members: Vec<ApprovedServiceMember>,
+    catalog: PrivateServiceGrantRef,
+    setup: super::super::configured_setup::service::ServiceSetupSelection,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum VersionedBatchWire { Legacy(BatchWire), Setup(SetupBatchWire) }
 impl Serialize for ApprovedTaskBatch {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        BatchWire { kind: self.kind.clone(), parent: self.header.parent.clone(),
-            acquisition: self.header.acquisition.clone(), original_task: self.header.original_task.clone(),
-            before_ms: self.header.before_ms, set_sha256: self.set_sha256.clone(),
-            members: self.members.clone(), catalog: self.catalog.clone() }.serialize(serializer)
+        match (&self.kind, &self.setup) {
+            (BatchVersion::PublicServicesV1, None) => BatchWire {
+                kind: LegacyBatchVersion::PublicServicesV1, parent: self.header.parent.clone(),
+                acquisition: self.header.acquisition.clone(), original_task: self.header.original_task.clone(),
+                before_ms: self.header.before_ms, set_sha256: self.set_sha256.clone(),
+                members: self.members.clone(), catalog: self.catalog.clone(),
+            }.serialize(serializer),
+            (BatchVersion::PublicServicesWithSetupV2, Some(setup)) => SetupBatchWire {
+                kind: SetupBatchVersion::PublicServicesWithSetupV2, parent: self.header.parent.clone(),
+                acquisition: self.header.acquisition.clone(), original_task: self.header.original_task.clone(),
+                before_ms: self.header.before_ms, set_sha256: self.set_sha256.clone(),
+                members: self.members.clone(), catalog: self.catalog.clone(), setup: setup.clone(),
+            }.serialize(serializer),
+            _ => Err(serde::ser::Error::custom("invalid service setup version")),
+        }
     }
 }
 impl<'de> Deserialize<'de> for ApprovedTaskBatch {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = BatchWire::deserialize(deserializer)?;
-        let selected = Self { kind: value.kind, header: ApprovedTaskHeader { parent: value.parent,
-            acquisition: value.acquisition, original_task: value.original_task, before_ms: value.before_ms },
-            set_sha256: value.set_sha256, members: value.members, catalog: value.catalog };
-        ApprovedTaskLink::Batch(selected.clone()).validate().map_err(|_| serde::de::Error::custom("invalid public-service set"))?;
+        let selected = match VersionedBatchWire::deserialize(deserializer)? {
+            VersionedBatchWire::Legacy(value) => Self { kind: BatchVersion::PublicServicesV1,
+                header: ApprovedTaskHeader { parent: value.parent, acquisition: value.acquisition,
+                    original_task: value.original_task, before_ms: value.before_ms },
+                set_sha256: value.set_sha256, members: value.members, catalog: value.catalog, setup: None },
+            VersionedBatchWire::Setup(value) => Self { kind: BatchVersion::PublicServicesWithSetupV2,
+                header: ApprovedTaskHeader { parent: value.parent, acquisition: value.acquisition,
+                    original_task: value.original_task, before_ms: value.before_ms },
+                set_sha256: value.set_sha256, members: value.members, catalog: value.catalog, setup: Some(value.setup) },
+        };
+        ApprovedTaskLink::Batch(selected.clone()).validate()
+            .map_err(|_| serde::de::Error::custom("invalid public-service set"))?;
         Ok(selected)
     }
 }
@@ -166,9 +207,27 @@ impl ApprovedTaskLink {
         }
     }
 
+    pub(in crate::private_originals) fn setup(&self)
+        -> Option<&super::super::configured_setup::service::ServiceSetupSelection> {
+        match self { Self::Batch(value) => value.setup.as_ref(), Self::Single(_) => None }
+    }
+
     pub(in crate::private_originals) fn validate(&self) -> Result<(), PrivateOriginalError> {
         if let Self::Batch(value) = self {
-            if value.members.len() < 2
+            let minimum = match (&value.kind, &value.setup) {
+                (BatchVersion::PublicServicesV1, None) => 2,
+                (BatchVersion::PublicServicesWithSetupV2, Some(setup)) => {
+                    setup.validate()?;
+                    if setup.configured.capability.route != value.header.parent.route
+                        || setup.configured.session_id != value.header.original_task.origin_session_id
+                        || setup.expires_at_ms > value.header.before_ms {
+                        return Err(PrivateOriginalError::Conflict);
+                    }
+                    1
+                }
+                _ => return Err(PrivateOriginalError::Conflict),
+            };
+            if value.members.len() < minimum
                 || value.members.len() > crate::installed_host::operator_setup::MAX_PUBLIC_SERVICE_BATCH
                 || value.set_sha256.len() != 64
                 || !value.set_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())

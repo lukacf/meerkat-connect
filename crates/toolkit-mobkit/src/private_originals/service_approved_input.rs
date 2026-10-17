@@ -15,7 +15,7 @@ mod batch;
 mod selection;
 use selection::{ApprovedServiceMember, ApprovedTaskHeader, ApprovedTaskMember};
 pub(super) use selection::ApprovedTaskLink;
-pub use batch::{PublicServiceBatchEntry, PreparedPublicServiceBatch};
+pub use batch::{PublicServiceBatchEntry, PreparedPublicServiceBatch, PreparedPublicInstruction};
 
 impl PrivateOriginals {
     /// Reopen the original source chain after a crash. Parent cancellation is
@@ -234,6 +234,7 @@ pub struct InstalledServiceTask {
     before_ms: u64,
     console_login: Option<crate::private_host::ConsoleLoginHandle>,
     installation_readback: Option<RetainedApplicationInstallation>,
+    pub(super) setup: Option<super::configured_setup::service::ServiceSetupSelection>,
 }
 
 /// Nonsecret requested effects for the defining realm's native owner. The
@@ -387,7 +388,7 @@ impl PrivateOriginals {
             input_digest: snapshot.request().input_digest().to_string(), fresh,
             instruction: snapshot.request().request().request.clone(),
             before_ms: snapshot.request().host().limits.deadline_ms,
-            console_login, installation_readback: None,
+            console_login, installation_readback: None, setup: None,
         };
         proposed.current().await?;
         Ok(Some(proposed))
@@ -395,6 +396,20 @@ impl PrivateOriginals {
 }
 
 impl InstalledServiceTask {
+    pub(crate) fn select_configured_setup(mut self,
+        helper: &crate::installed_host::acquisition::InstalledSetupSelection,
+        member: &meerkat_toolkit::host_lifetime::policy::CompiledNativeMember,
+        session: &meerkat_core::SessionId,
+    ) -> Result<Self, PrivateOriginalError> {
+        if self.setup.is_some() { return Err(PrivateOriginalError::Conflict); }
+        self.setup = self.source.select_service_setup(&self.parent, &self.task.origin_session_id,
+            self.before_ms, helper, member, session)?;
+        Ok(self)
+    }
+
+    /// This is a selected proposal, not a native permit or a bound capability.
+    pub fn has_configured_setup(&self) -> bool { self.setup.is_some() }
+
     /// Bind the installed product owner's exact checked software document to
     /// this proposal. This supplies no policy decision or native permission.
     /// The document must be nonsecret; the package owner verifies it again at
@@ -768,7 +783,7 @@ impl InstalledServiceTask {
                 event_sha256: digest(&canonical_json(&event).map_err(|_| E::from(PrivateOriginalError::Conflict))?) };
             let key = source.key(&reference).map_err(|_| E::from(PrivateOriginalError::Denied))?;
             let data = encode(SourceRecord {
-                setup_request: None, configured_setup: None,
+                setup_request: None, configured_setup: None, service_setup_children: vec![],
                 source: parent_record.source,
                 event,
                 operation_cancelled: false,

@@ -108,6 +108,21 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
     report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool,
     prepare_source: Option<PrepareOriginalSource>, console_human: Option<meerkat_core::PrincipalRef>,
     task_parent_administration: bool, private_helper_entry: bool, human_policy: bool, catalog_probe: bool) -> Host {
+    open_selected_source_with_profile(facts, select_controller, probe, local_operator, source_subject,
+        acquisition, helper, report, configured_setup, configured_report, prepare_source, console_human,
+        task_parent_administration, private_helper_entry, human_policy, catalog_probe, None).await
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum WarmHelperProfile { Standard, SameExecutor }
+
+async fn open_selected_source_with_profile(facts: &ControllerModelFacts, select_controller: bool, probe: bool,
+    local_operator: bool, source_subject: bool,
+    acquisition: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, helper: bool,
+    report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool,
+    prepare_source: Option<PrepareOriginalSource>, console_human: Option<meerkat_core::PrincipalRef>,
+    task_parent_administration: bool, private_helper_entry: bool, human_policy: bool, catalog_probe: bool,
+    warm_profile: Option<WarmHelperProfile>) -> Host {
     assert!(!private_helper_entry || (helper && report.is_none() && !configured_setup && !configured_report));
     let (directory, mut selection) = super::tests::fixture();
     let mut local: CompiledLocalPolicy = serde_json::from_slice(
@@ -233,6 +248,13 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
         if report.is_some() { selected.member.role = REPORT_PROFILE.into(); }
         else if private_helper_entry { selected.member.role = PRIVATE_HELPER_PROFILE.into(); }
         selected.logical_owner = super::tests::principal(HELPER);
+        // Select supported legacy host profiles before opening any owner. The
+        // warm capability is optional; these profiles must still prepare the
+        // existing public task without widening its metadata permission.
+        match warm_profile {
+            Some(WarmHelperProfile::SameExecutor) => selected.logical_owner = native.members[0].logical_owner.clone(),
+            _ => (),
+        }
         native.members.push(selected);
     }
     if helper || human_policy {
@@ -269,11 +291,18 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
                     } else if report.is_some() && member.member.member == HELPER {
                         // Fixture provisioning of only this helper's result
                         // operation. No account, installation or Ready access.
-                        vec![meerkat_core::CompiledMemberToolGrant {
+                        let mut grants = vec![meerkat_core::CompiledMemberToolGrant {
                             tool_name: meerkat_toolkit::setup::SETUP_REPORT.into(),
                             action: meerkat_core::CompiledMemberToolAction::Invoke,
                             consequence: meerkat_core::CompiledToolConsequence::R2,
-                        }]
+                        }];
+                        if human_policy && configured_report {
+                            grants.extend(["tool_catalog_load", "tool_catalog_search"].into_iter().map(|name|
+                                meerkat_core::CompiledMemberToolGrant { tool_name: name.into(),
+                                    action: meerkat_core::CompiledMemberToolAction::Invoke,
+                                    consequence: meerkat_core::CompiledToolConsequence::R0 }));
+                        }
+                        grants
                     } else {
                         vec![]
                     },
@@ -359,6 +388,15 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
                 },
             });
         }
+        if human_policy && configured_report {
+            let helper = acquisition_helper.as_mut().unwrap();
+            let member = native.members.iter().find(|member| member.member == helper.member).unwrap();
+            let parent = source.grants().issue_root(&root,
+                EvidenceId::new("warm-helper-catalog-parent").unwrap(),
+                native.grant_administrator.clone(), helper.represented_subject.clone(),
+                application_operations::configured_catalog_parent(&helper.logical_executor, &member.audience)).unwrap();
+            helper.catalog_capability = Some(acquisition::ConfiguredHelperCatalogCapability { parent: vec![parent] });
+        }
         assert!(native.routes[0].application_parent.is_none());
     }
     super::tests::replace_local(&mut selection, &local);
@@ -393,7 +431,7 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
     if configured_setup {
         use operator_setup::{AgentSetupCapabilityRequest, OperatorSetup};
         let native = local.native_host.as_ref().unwrap();
-        let request = AgentSetupCapabilityRequest { member: native.members[0].member.clone(), helper_targets: if configured_report { vec![
+        let mut request = AgentSetupCapabilityRequest { member: native.members[0].member.clone(), helper_targets: if configured_report { vec![
                 operator_setup::SetupTargetRequest { target: Some(acquisition::ConfiguredHelperReportCapability::public_target()),
                     issuance_id: EvidenceId::new("configured-a-public-parent").unwrap() },
                 operator_setup::SetupTargetRequest { target: Some(acquisition::ConfiguredHelperReportCapability::account_target()),
@@ -402,6 +440,12 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
                     issuance_id: EvidenceId::new("configured-a-report-parent").unwrap() },
             ] } else { vec![] },
             route: native.routes[0].id.clone(), issuance_id: EvidenceId::new("configured-acquisition-parent").unwrap() };
+        if human_policy && configured_report {
+            request.helper_targets.push(operator_setup::SetupTargetRequest {
+                target: None, issuance_id: EvidenceId::new("warm-original-catalog-parent").unwrap(),
+            });
+            request.helper_targets.sort_by(|left, right| left.target.cmp(&right.target));
+        }
         // Actual trusted producer, same native owner restored under the stopped
         // candidate fence. Retry the same request to test native reconciliation.
         let selected_helper = acquisition_helper.clone();
@@ -642,6 +686,26 @@ pub(crate) async fn open_for_configured_helper_report(
     open_selected_subject(facts, true, false, true, false, Some(acquisition), true, Some(report), true, true).await
 }
 
+/// Warm public fixture selects real helper catalog and configured targets
+/// before native owners open. It grants no public business service access.
+pub(crate) async fn open_for_warm_helper_report(
+    facts: &ControllerModelFacts,
+    acquisition: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    report: Arc<dyn meerkat_core::AgentToolDispatcher>,
+) -> Host {
+    open_for_warm_helper_profile(facts, acquisition, report, WarmHelperProfile::Standard).await
+}
+
+pub(crate) async fn open_for_warm_helper_profile(
+    facts: &ControllerModelFacts,
+    acquisition: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    report: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    profile: WarmHelperProfile,
+) -> Host {
+    open_selected_source_with_profile(facts, true, false, true, false, Some(acquisition), true, Some(report), true, true,
+        None, None, false, false, true, false, Some(profile)).await
+}
+
 // Mirrors Connect's selected_policy::exact_human_policy_decision contract at
 // this lower crate boundary; depending on meerkat-connect would be cyclic.
 // The selection is immutable. Host/task currentness and canonical slot CAS
@@ -666,14 +730,36 @@ mod human_policy_recovery {
         let bytes = read_bundle_artifact(selection, &native.application_tool_policy).unwrap();
         let bootstrap = CompiledApplicationToolPolicy::parse_canonical_json(&bytes).unwrap();
         // Check the actual immutable bootstrap artifact before any review.
-        assert_eq!(bootstrap.members, vec![meerkat_core::CompiledMemberToolGrants {
+        let original = meerkat_core::CompiledMemberToolGrants {
             member_identity: native.members[0].member.member.clone(),
             grants: vec![meerkat_core::CompiledMemberToolGrant {
                 tool_name: crate::FIND_AND_INSTALL.into(),
                 action: meerkat_core::CompiledMemberToolAction::Invoke,
                 consequence: meerkat_core::CompiledToolConsequence::R2,
             }],
-        }], "captured A starts with no catalog or MCP invocation permission");
+        };
+        if native.members.len() == 1 {
+            assert_eq!(bootstrap.members, vec![original], "captured A starts with no catalog or MCP invocation permission");
+        } else {
+            assert_eq!(native.members.len(), 2);
+            assert_eq!(native.members[1].member.member, HELPER);
+            assert!(native.members[0].setup_capability.as_ref().unwrap().helper_targets.iter().any(|target| target.target.is_none()));
+            let helper = meerkat_core::CompiledMemberToolGrants {
+                member_identity: HELPER.into(),
+                grants: vec![
+                    meerkat_core::CompiledMemberToolGrant { tool_name: meerkat_toolkit::setup::SETUP_REPORT.into(),
+                        action: meerkat_core::CompiledMemberToolAction::Invoke, consequence: meerkat_core::CompiledToolConsequence::R2 },
+                    meerkat_core::CompiledMemberToolGrant { tool_name: "tool_catalog_load".into(),
+                        action: meerkat_core::CompiledMemberToolAction::Invoke, consequence: meerkat_core::CompiledToolConsequence::R0 },
+                    meerkat_core::CompiledMemberToolGrant { tool_name: "tool_catalog_search".into(),
+                        action: meerkat_core::CompiledMemberToolAction::Invoke, consequence: meerkat_core::CompiledToolConsequence::R0 },
+                ],
+            };
+            let mut expected = vec![original, helper];
+            expected.sort_by(|a, b| a.member_identity.cmp(&b.member_identity));
+            for member in &mut expected { member.grants.sort_by(|a, b| a.tool_name.cmp(&b.tool_name)); }
+            assert_eq!(bootstrap.members, expected, "only this fixture's exact helper catalog/report policy is added");
+        }
         Arc::new(Selected { owner: native.grant_administrator.clone(), realm: native.realm.to_string(),
             deployment: local.deployment.to_string(), bootstrap })
     }
@@ -686,15 +772,15 @@ mod human_policy_recovery {
                 .key(&toolkit_package::Id::new(&decision.acquisition.id).map_err(|_| HostLifetimeError::InvalidSelection)?);
             let candidate = CompiledApplicationToolPolicy::parse_canonical_json(canonical)
                 .map_err(|_| HostLifetimeError::InvalidSelection)?;
-            let bootstrap = self.bootstrap.canonical_json().map_err(|_| HostLifetimeError::InvalidSelection)?;
+            // The real ServicePolicyOwner checks the selected current prior
+            // under its canonical slot CAS. This participant authenticates the
+            // exact approved successor, including later successors of bootstrap.
             let same_members = candidate.members.iter().map(|member| &member.member_identity).collect::<Vec<_>>()
                 == self.bootstrap.members.iter().map(|member| &member.member_identity).collect::<Vec<_>>();
             if decision.owner != self.owner || decision.realm != self.realm || decision.deployment != self.deployment
                 || decision.acquisition != key || canonical != proposal.candidate_canonical_json.as_bytes()
                 || proposal.lifetime != MemberPolicyLifetime::UntilSuperseded
                 || proposal.provider_id != self.bootstrap.provider_id || proposal.policy_id != self.bootstrap.policy_id
-                || proposal.prior.revision != self.bootstrap.revision
-                || proposal.prior.digest != PolicyDigest::from_canonical_bytes(&bootstrap)
                 || candidate.provider_id != proposal.provider_id || candidate.policy_id != proposal.policy_id
                 || candidate.revision != proposal.candidate.revision
                 || PolicyDigest::from_canonical_bytes(canonical) != proposal.candidate.digest

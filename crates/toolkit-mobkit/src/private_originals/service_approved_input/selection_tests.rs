@@ -23,7 +23,7 @@ fn legacy() -> ApprovedTaskMember {
 fn batch(count: usize) -> ApprovedTaskLink {
     let old = legacy();
     ApprovedTaskLink::Batch(ApprovedTaskBatch {
-        kind: BatchVersion::PublicServicesV1,
+        kind: BatchVersion::PublicServicesV1, setup: None,
         header: old.header,
         set_sha256: "e".repeat(64),
         members: (0..count)

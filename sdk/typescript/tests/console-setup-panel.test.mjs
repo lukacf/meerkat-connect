@@ -156,6 +156,40 @@ test("batch review visibly explains the exact members, reviewed task limits and 
   assert.equal(container.querySelectorAll("input").length, 0);
 });
 
+test("warm service review shows the complete two-agent two-session metadata scope without changing protected actions", async t => {
+  const container = fixture(t); const sent = deferred(); const calls = [];
+  const account = mountAccountReview(container, async () => {}, (path, options) => {
+    calls.push({ path, options }); return sent.promise;
+  });
+  t.after(() => account.dispose()); const selected = batchReview(1);
+  selected.prompt.body.kind = "public_services_with_setup_v2";
+  selected.prompt.body.access_request.configured_setup = {
+    authority: "fresh children for this task from the already configured agent setup policy",
+    catalog_scope: "Both named agents may read tool metadata in both named sessions. This is the full two-agent by two-session scope, not paired permissions. It grants no service invocation.",
+    processors: [{ namespace: "fixture", id: "original-owner" }, { namespace: "fixture", id: "helper-owner" }],
+    sessions: ["original-session", "helper-session"], audience: { kind: "application", id: "exact-audience" },
+    expires_at_ms: 1800000000000,
+    continuation: "A later acquisition requires its own current capture, access review and fresh grants. Earlier connections must be selected again when needed.",
+  };
+  account.update(selected);
+  const text = ordinaryReviewText(container);
+  for (const expected of ["Later integration setup", "original-owner", "helper-owner", "original-session", "helper-session",
+    "exact-audience", "full two-agent by two-session scope", "It grants no service invocation", "2027-01-15T08:00:00.000Z",
+    "current capture, access review and fresh grants", "Earlier connections must be selected again", "read_0, list_0"])
+    assert.ok(text.includes(expected), expected);
+  assert.equal(container.querySelectorAll(".toolkit-batch-setup").length, 1);
+  assert.equal(container.querySelectorAll(".toolkit-batch-member").length, 1);
+  assert.deepEqual(JSON.parse(container.querySelector("details pre").textContent), selected.prompt);
+  assert.equal(container.querySelectorAll("input").length, 0);
+  const buttons = [...container.querySelectorAll("button")];
+  assert.deepEqual(buttons.map(button => button.textContent), ["Approve", "Deny"]);
+  buttons[0].click(); assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(calls[0].options.body), { review_id: 26, approval_id: "actual-batch-prompt", decision: "approve" });
+  assert.ok(buttons.every(button => button.disabled));
+  sent.resolve(new Response("{}", { status: 202 })); await new Promise(resolve => setImmediate(resolve));
+  account.update(batchReview()); assert.equal(container.querySelector(".toolkit-batch-setup"), null);
+});
+
 test("batch review renders every member as text and never turns a missing reviewed limit into a proposed duration", t => {
   const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
   t.after(() => account.dispose()); const selected = batchReview(8);

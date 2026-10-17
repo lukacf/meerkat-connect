@@ -101,6 +101,12 @@ impl PrivateOriginals {
                     if decision.original != source.original || decision.session != task.original_task.origin_session_id {
                         return Err(PrivateOriginalError::Conflict);
                     }
+                    match (&decision.kind, &batch.setup) {
+                        (catalog::CatalogDecisionKind::PublicServiceCatalogV1, None) => {},
+                        (catalog::CatalogDecisionKind::PublicServiceCatalogWithSetupV2 { helper }, Some(setup))
+                            if helper == &setup.helper && decision.lifetime.expires_at_ms == Some(setup.expires_at_ms) => {},
+                        _ => return Err(PrivateOriginalError::Conflict),
+                    }
                     catalog = Some(lineage);
                 }
                 (AccessDecision::Mcp(decision), Some(selection)) => {
@@ -117,6 +123,14 @@ impl PrivateOriginals {
             }
         }
         if targets.len() != batch.members.len() || catalog.is_none() { return Err(PrivateOriginalError::Conflict); }
+        if let Some(setup) = &batch.setup {
+            targets.extend(self.service_setup_targets(source, setup, current)?);
+            targets.sort_by(|left, right| left.target.cmp(&right.target));
+            if targets.windows(2).any(|pair| pair[0].target == pair[1].target)
+                || targets.len() > meerkat_authorization_contracts::work_association::MAX_ASSOCIATION_REFERENCES {
+                return Err(PrivateOriginalError::Conflict);
+            }
+        }
         Ok((WorkAuthorityBasis::TargetedGrantLineages { base: catalog, targets }, selections))
     }
 
@@ -131,8 +145,13 @@ impl PrivateOriginals {
             return Err(PrivateOriginalError::Conflict);
         }
         let route = self.route(&source.route)?;
+        let setup_targets = task.setup().map(|setup| setup.binding_targets()).transpose()?;
+        let selected_targets = match &setup_targets {
+            None => crate::original_ingress::ServiceSetBindingTargets::PublicServicesV1,
+            Some(targets) => crate::original_ingress::ServiceSetBindingTargets::WithConfiguredSetupV2(targets),
+        };
         let retained = self.owner.bind_issued_service_set_async(association, custody,
-            &route.requester, &route.ingress_actor, &route.grant_caller, |association| async move {
+            &route.requester, &route.ingress_actor, &route.grant_caller, selected_targets, |association| async move {
                 // Native holds the existing source writer through this callback.
                 // Targeted grants deliberately do not impose blanket liveness at
                 // later use, so this source owner checks every initial member.

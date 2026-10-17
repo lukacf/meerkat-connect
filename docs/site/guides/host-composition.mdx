@@ -214,6 +214,57 @@ in place. Omitted scope and `exact_session` retain the previous behavior; a rese
 alone grants nothing. Host adapters must preserve and validate the new scope and
 the returned `helper.catalog_capability` before advertising this mode.
 
+## Acquire another public service through the same live helper (development)
+
+<Note>
+This optional development path passes native and checked-owner controls.
+Installed warm reacquisition is still pending. It does not enable helper reset
+or authenticated-service batches.
+</Note>
+
+The trusted host uses the existing `AgentSetupCapabilityRequest.helper_targets`
+selection with `OperatorSetup::configure_agent_setup`, or the stopped-host
+`configure_application_agent_setup_with_helper` method. Select the actual helper
+and its required operation targets, including an independent catalog target
+(`target: null`) with its own `issuance_id`. Preserve canonical target order and
+all existing operation grants. A target list or installed job is not authority
+by itself. Normal Forge preparation already emits this optional catalog entry;
+that source support is separate from installed warm acceptance.
+
+For public-service review, `InstalledServiceTaskSource::prepare_public_service`
+captures the current configured selection before the continued task's first
+binding. It requires the same audience and distinct actual agents and sessions.
+`InstalledServiceTask::has_configured_setup` reports the selected proposal, not a
+permit. Use `prepare_public_instruction` and the returned
+`PreparedPublicInstruction::{Single, WithSetup}` through its `request` and
+`approve` methods. The existing multi-service review uses the same selected owner.
+These methods are additive; existing public signatures and struct-literal fields
+are unchanged.
+
+The same protected access review names the new task's setup authority, exact
+service set and task deadline. Its metadata permission covers both named agents
+across both named sessions: the full four combinations, not only two paired
+agent/session entries. Read that scope and the separate persistent tool-policy
+successor before approving. Setup, catalog and service targets remain independently
+authorized. First admission requires the complete selected basis; after admission,
+revoking setup access blocks another acquisition without revoking independent
+business access.
+
+The continued task can request another public integration through that same
+surviving helper. To keep an earlier connection X while adding Y, the helper must
+select both exact checked jobs for the new access review. A still-current X job
+can be selected again without reinstalling it, but the new continued task gets
+fresh grants for both X and Y. Earlier grants are not copied or revived, and every
+required attachment must be Ready before continuation.
+
+Omitted, report-only, initially expired or otherwise valid but ineligible optional
+setup selection keeps legacy public preparation. A selection that changes after
+capture refuses; it does not silently downgrade. Software and authenticated
+preparation keep their previous paths. Legacy singleton and `public_services_v1`
+wire bytes remain unchanged. The setup-enabled `public_services_with_setup_v2`
+and catalog-v2 records are explicit new versions; older readers are not
+transparently forward compatible.
+
 ## Advanced library host setup
 
 Start with the [local installation guide](/library/local-install) for the current

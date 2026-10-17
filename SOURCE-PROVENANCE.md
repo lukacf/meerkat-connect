@@ -22,6 +22,50 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+### Warm public reacquisition
+
+Development source adds an optional setup-enabled public review to the existing
+configured host path. The continued task receives fresh setup children and its
+own reviewed service grants before first binding. Its catalog scope explicitly
+covers both named agents across both named sessions under the same audience and
+task deadline. A later review can select an exact earlier checked job plus a new
+job without reinstalling the earlier job, while issuing all fresh grants. Every
+required native attachment must be Ready before continuation. Setup revocation
+after admission preserves independent business grants.
+
+R6 source `7a411015`, result `7d5d3de7` and independent review `8a79bc8e` join
+28 distinct passing Rust controls and 49 unchanged JavaScript controls on Core
+`efd313d4` / Meta `669f54fa`. Native A/helper/B/helper/C composition is distinct
+from the checked-owner reuse control, whose package replies are mechanical.
+The controls retain exact first-admission currentness, independent later target
+checks, the reviewed 2x2 catalog scope, canonical partial-issuance observations,
+stale-offer refusal, legacy preparation and wire compatibility. The final native
+command and all transport owners joined; compilation retains 31 plain warning
+headers and zero JSON compiler-warning rows.
+
+Failed R1-R5 attempts remain retained: private type access, unsorted target pairs
+and reconstructed borrowed authority, retained fixture dispatcher lifetime and a
+bootstrap-only policy comparison, incorrect history/context expectations, then
+using a current-turn witness for historical helper turns. The final correction
+uses exact finalized input receipts and a settled-row reload. Authority and
+revocation assertions and deadlines remain unchanged; these failures are not
+reclassified as passing executions.
+
+The existing host methods and new version boundaries are documented in
+[host composition](docs/site/guides/host-composition.mdx#acquire-another-public-service-through-the-same-live-helper-development).
+Forge source note `81fea62d` confirms the normal optional catalog selection;
+it is not installed warm acceptance. Legacy singleton and v1 bytes remain exact;
+the setup-enabled v2 and catalog-v2 records require matching readers. V43's
+installed multi-service result remains separate. No installed warm, Browser,
+helper-reset, authenticated-batch, performance or release result is claimed.
+
+Current-head composition `c897b204` preserves 33 warm afterimages and merges
+only the shared test file onto adopted job-wait source `d42e093d`. Result
+`5747e1d1` passes the exact bounded-wait guard and checked-job reuse control, with
+source/lock equality and all owners joined. These two composition checks do not
+increase the 28 distinct warm Rust count or repeat native/installed acceptance.
+Compilation retains 55 plain warning headers and zero JSON compiler-warning rows.
+
 ### Bounded setup-job observation
 
 Development source adds optional integer `wait_ms` from 0 to 10000 to the existing
