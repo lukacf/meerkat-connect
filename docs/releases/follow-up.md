@@ -68,6 +68,13 @@ Concurrent shared setup is also still open: review found that a second request
 queues behind a running installation in the fixed helper. Shared records alone
 would not make that user path reachable.
 
+- **Bounded setup-job observation:** Development `setup_job` accepts optional
+  integer `wait_ms` from 0 to 10000; omitted or zero keeps the immediate response.
+  Cancelling the observation leaves installation running, and explicit stop stays
+  separate. Eight Python and four Rust controls pass for exact-job custody and
+  observation lifetime. This addresses V43's repeated immediate reads without
+  claiming an installed latency improvement, shared-peer isolation or readiness.
+  See [source provenance](../../SOURCE-PROVENANCE.md#bounded-setup-job-observation).
 - **External Agent Plugins consumption:** A format-adapted Microsoft
   `microsoft-docs` 0.3.1 pack now exports on Linux and runs through unchanged
   OpenHands SDK 1.49.2 on macOS. After staging removal, all eight original files

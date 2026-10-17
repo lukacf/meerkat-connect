@@ -22,6 +22,23 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+### Bounded setup-job observation
+
+Development source adds optional integer `wait_ms` from 0 to 10000 to the existing
+`setup_job` tool. Omitted or zero preserves immediate snapshots. Positive waits
+re-read the exact job through the existing owner and hold no state lock across
+the timer. Cancelling the observation joins any entered read but leaves the
+installation running; explicit stop remains separate. Terminal observation is
+not readiness or worker-cleanup evidence.
+
+Source manifest `91d643b6`, final result `9fc144ba` and independent review
+`55be2e29` join eight Python and four Rust passing controls on the unchanged Core
+`efd313d4` / Meta `669f54fa` graph. Exact job/session/realm/epoch checks remain;
+stop/reconcile retain their argument shapes. All command owners joined and
+compiler warnings remain recorded. V43's saved trace contains 34 immediate job
+reads. This provides an alternative without claiming an installed latency gain,
+shared-peer native isolation, Browser use or a new release.
+
 ### Public-service batch checkpoint
 
 Development source adds one reviewed set of 2-8 public MCP services to the existing

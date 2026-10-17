@@ -31,6 +31,8 @@ else:
 
 
 GUIDE_LIMIT = 32 * 1024
+MAX_JOB_WAIT_MS = 10_000
+JOB_OBSERVATION_INTERVAL = 0.1
 GUIDE_FILES = {
     "selected-metadata": ("METADATA.md", "sdk/consumer-setup/METADATA.md"),
     "python-install": ("PYTHON-INSTALL.md", "crates/toolkit-package/PYTHON-INSTALL.md"),
@@ -138,8 +140,10 @@ def descriptions(families):
              {}, read_only=True, idempotent=True),
         tool("setup_jobs", "List up to 50 retained job summaries in this live setup session, newest first. Start with before=null; pass the returned next_before to read an earlier page. Use setup_job for one job's result and current file-check observation. Reading does not install, retry, reconcile, change the latest job or establish readiness. This is process-local history, not session recovery.",
              {"before": {"type": ["string", "null"], "pattern": "^[0-9a-f]{32}$"}}, read_only=True, idempotent=True),
-        tool("setup_job", "Read one retained job by its exact ID from this live setup session, including its installation result and separate current file-check observation. Use this to track an earlier job after another job becomes latest, including after cancellation of a reconciliation wait. Does not rerun installation or reconciliation, change the latest job or establish authentication, readiness or task completion.",
-             {"job_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}, read_only=True, idempotent=True),
+        tool("setup_job", "Read one retained job by its exact ID from this live setup session, including its installation result and separate current file-check observation. While a job is running, optional wait_ms (0-10000) waits for a terminal job observation or the bounded interval before returning the current snapshot. Omitted or zero returns immediately. Prefer a bounded wait to repeated immediate polls. Existing caller/read deadlines still apply. Cancelling this observation does not stop the job; setup_stop is the explicit stop action. A terminal job observation does not prove worker cleanup. Use this to track an earlier job after another job becomes latest, including after cancellation of a reconciliation wait. Does not rerun installation or reconciliation, change the latest job or establish authentication, readiness or task completion.",
+             {"job_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+              "wait_ms": {"type": "integer", "minimum": 0, "maximum": MAX_JOB_WAIT_MS}},
+             read_only=True, idempotent=True, optional=("wait_ms",)),
         tool("setup_recovery_manifest", "Export a recovery manifest for explicitly selected retained job IDs in the requested order. Returns exact JSON text, byte length and SHA-256 for the host to save. Checks the original immutable request anchors only, including while a job runs or in a recovery session. Fails the whole selection if any request is missing, changed or unavailable. No installation, reconciliation, file write, replay or readiness claim; this is a bookmark for later read-only recovery, not permission to resume effects.",
              {"job_ids": {"type": "array", "minItems": 1, "maxItems": 256, "uniqueItems": True,
                           "items": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}},
@@ -323,6 +327,7 @@ class SetupAdapter:
         self._connection_reader = connection_reader
         self._connection_scope = connection_scope
         self._connection_reads = set()
+        self._job_reads = set()
         self._inflight = set()
         self._selected_install_waits = {}
         self._close_task = None
@@ -337,6 +342,14 @@ class SetupAdapter:
             raise asyncio.CancelledError()
         if self._close_task is not None:
             raise backend.SetupError("host_closing", 409)
+        if route == "/api/job" and isinstance(arguments, dict) and "wait_ms" in arguments:
+            backend.keys(arguments, ("job_id", "wait_ms"))
+            wait_ms = arguments["wait_ms"]
+            if type(wait_ms) is not int or not 0 <= wait_ms <= MAX_JOB_WAIT_MS:
+                raise backend.SetupError("invalid_request")
+            arguments = {"job_id": arguments["job_id"]}
+            if wait_ms:
+                return await self._read_job(arguments, wait_ms)
         if route == "/api/connections":
             if self._connection_reader is None or self.controller.recovery_only:
                 raise backend.SetupError("connection_reader_unavailable", 503)
@@ -367,6 +380,38 @@ class SetupAdapter:
             # acquisitions retain their separately configured, longer job flow.
             return self.controller.wait_acquisition(value["job"]["id"])
         return value
+
+    async def _read_job(self, arguments, wait_ms):
+        async def read():
+            deadline = asyncio.get_running_loop().time() + wait_ms / 1000
+            while True:
+                # Each observation uses the ordinary caller-filtered owner.
+                # No job pointer, effect custody or state lock survives a wait.
+                entered = asyncio.create_task(asyncio.to_thread(self._dispatch, "/api/job", arguments))
+                self._inflight.add(entered)
+                try:
+                    value = await _joined(entered)
+                finally:
+                    self._inflight.discard(entered)
+                remaining = deadline - asyncio.get_running_loop().time()
+                if value["job"]["status"] != "running" or remaining <= 0:
+                    return value
+                await asyncio.sleep(min(remaining, JOB_OBSERVATION_INTERVAL))
+
+        task = asyncio.create_task(read())
+        self._job_reads.add(task)
+        try:
+            return await task
+        finally:
+            # Cancellation detaches observation only. If an owner read has
+            # entered, its existing dispatch is joined before releasing it.
+            if not task.done():
+                task.cancel()
+                try:
+                    await _joined(task)
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._job_reads.discard(task)
 
     async def _dispatch_selected_install(self, arguments):
         value = await asyncio.to_thread(self._dispatch, "/api/selected_install", arguments)
@@ -424,7 +469,7 @@ class SetupAdapter:
         # Admission is closed before this task is created. Entered dispatches may
         # still be returning an existing job; join them before the job threads.
         try:
-            reads = tuple(self._connection_reads)
+            reads = tuple(self._connection_reads | self._job_reads)
             for task in reads:
                 task.cancel()
             if reads:

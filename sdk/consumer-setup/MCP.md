@@ -395,6 +395,16 @@ host-selected manifest into readback-only history. It lists requests in reverse
 manifest order, not original execution order. The legacy single-request mode
 retains its two-tool interface.
 
+In development source, `setup_job` accepts optional integer `wait_ms` from 0 to
+10000. For example, `setup_job {"job_id":"0123456789abcdef0123456789abcdef","wait_ms":10000}`
+requests a bounded observation interval for that exact retained job; replace the
+example ID with the returned job ID. While the job runs, the adapter re-reads its
+current snapshot until it observes a terminal status or the interval expires.
+Omitting `wait_ms` or setting it to `0` preserves the immediate response. Existing
+caller and read deadlines still apply. Cancelling the observation leaves the
+installation running; `setup_stop` remains the explicit stop action. A terminal
+job observation establishes neither Toolkit readiness nor worker cleanup.
+
 ## Stop one local setup job
 
 When `setup_state.stop.available` is true, call `setup_stop {"job_id": "EXACT_JOB_ID"}`

@@ -94,6 +94,15 @@ current check observation after another job becomes latest, without repeating
 the install or check. These source tools are available in normal live sessions
 and in explicitly selected [multi-request recovery](MULTI-RECOVERY.md).
 
+In development source, `setup_job` can observe a running job with optional
+`wait_ms` from 0 to 10000, for example
+`setup_job {"job_id":"0123456789abcdef0123456789abcdef","wait_ms":10000}`
+using the returned job ID. Omitted or `0` keeps the immediate response. The wait
+returns the current snapshot after a terminal observation or interval expiry;
+existing caller and read deadlines still apply. Cancelling this observation
+leaves installation running. Use `setup_stop` explicitly to request a stop; a
+terminal observation proves neither Toolkit readiness nor worker cleanup.
+
 This history belongs to the running setup host. A browser reload can reconnect
 to those retained jobs, but restarting the host does not automatically restore a
 session. The host can pin one request or a manifest of requests from one original

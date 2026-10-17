@@ -898,7 +898,16 @@ impl CheckedInstalls {
             return false;
         };
         job.as_ref().is_some_and(|id| {
-            document(call.args.get()).is_ok_and(|args| args == json!({"job_id":id}))
+            document(call.args.get()).is_ok_and(|mut args| {
+                if call.name == "setup_job"
+                    && let Some(object) = args.as_object_mut()
+                    && let Some(wait) = object.remove("wait_ms")
+                    && !wait.as_u64().is_some_and(|millis| millis <= 10_000)
+                {
+                    return false;
+                }
+                args == json!({"job_id":id})
+            })
         })
     }
 

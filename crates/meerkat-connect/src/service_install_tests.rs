@@ -1301,6 +1301,98 @@ async fn checked_install_entered_drop_and_retirement_preserve_exact_uncertainty(
 }
 
 #[tokio::test]
+async fn checked_install_bounded_job_wait_preserves_exact_uncertain_readback() {
+    let mut f = Fixture::new(false, 2, DECISION_LIFETIME);
+    f.check().await;
+    let run = f.install();
+    f.prompt().await.decide(ApprovalDecision::Approve).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), f.package.entered.notified())
+        .await
+        .unwrap();
+    f.owner.retire();
+    f.package.release.notify_one();
+    assert!(run.await.unwrap().is_err());
+    assert!(f.approvals.has_uncertain_dispatch());
+
+    for wait_ms in [
+        json!(true),
+        json!(false),
+        json!(-1),
+        json!(10001),
+        json!(1.0),
+        json!("1"),
+        Value::Null,
+        json!([]),
+        json!({}),
+    ] {
+        let before = f.package.calls.lock().unwrap().len();
+        assert!(
+            f.start(
+                "invalid-wait",
+                "setup_job",
+                json!({"job_id":"3".repeat(32),"wait_ms":wait_ms}),
+                false
+            )
+            .await
+            .unwrap()
+            .is_err()
+        );
+        assert_eq!(f.package.calls.lock().unwrap().len(), before);
+    }
+    for (name, arguments) in [
+        ("setup_job", json!({"job_id":"4".repeat(32),"wait_ms":10})),
+        (
+            "setup_job",
+            json!({"job_id":"3".repeat(32),"wait_ms":10,"retry":true}),
+        ),
+        ("setup_stop", json!({"job_id":"3".repeat(32),"wait_ms":0})),
+        (
+            "setup_reconcile",
+            json!({"job_id":"3".repeat(32),"wait_ms":0}),
+        ),
+    ] {
+        let before = f.package.calls.lock().unwrap().len();
+        assert!(
+            f.start("wrong-shape", name, arguments, false)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(f.package.calls.lock().unwrap().len(), before);
+    }
+    for wait_ms in [0, 1, 10000] {
+        let arguments = json!({"job_id":"3".repeat(32),"wait_ms":wait_ms});
+        assert!(
+            f.start("exact-wait", "setup_job", arguments.clone(), false)
+                .await
+                .unwrap()
+                .is_ok()
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&f.package.calls.lock().unwrap().last().unwrap().1)
+                .unwrap(),
+            arguments
+        );
+    }
+    assert!(f.approvals.has_uncertain_dispatch());
+    assert_eq!(f.count(), 1);
+    f.package.epoch.store(8, Ordering::SeqCst);
+    let before = f.package.calls.lock().unwrap().len();
+    assert!(
+        f.start(
+            "stale-wait",
+            "setup_job",
+            json!({"job_id":"3".repeat(32),"wait_ms":1}),
+            false
+        )
+        .await
+        .unwrap()
+        .is_err()
+    );
+    assert_eq!(f.package.calls.lock().unwrap().len(), before);
+}
+
+#[tokio::test]
 async fn checked_install_changed_binding_never_advertises_unusable_recovery() {
     let mut f = Fixture::new(true, 2, DECISION_LIFETIME);
     f.check().await;
