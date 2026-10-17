@@ -50,9 +50,48 @@ the passed fixture, without a separate exported consumer PID or addon binary.
 The production source capsule is `9f78fc8b`, with the final test-only starter
 fixture `0bfaed6b`. Actual result `71a56c28` and independent review `3a7484b2`
 record the compiler case; final starter result `506f8491` completes the focused
-set. This is one local source package and target, not broad build compatibility,
-MCP/native-gateway/task completion, a hermetic toolchain or installed product UX.
-Matching product emission is still required. Published 0.9.0 assets are unchanged.
+set. That direct-consumer result covers one local source package and target.
+The later installed MCP slice below has its own matching product and evidence;
+broad build compatibility and a hermetic toolchain remain unqualified. Published
+0.9.0 assets are unchanged.
+
+### Installed source-built MCP operation
+
+Private Toolkit checkpoint `ffb04f81068746a93783a5b587d713c52d249af1` contributes
+the supplied fixture, installed consumer and scoped qualification records.
+
+On production source `4288d20a7613f03b3a4048446e7087bc8b4f30cd`, a matching rebuilt
+gateway `7b14f790` and resources `b6585e9c` passed one installed supplied-package
+case on Core `efd313d4` / Meta `669f54fa`. The ten-path test-only capsule
+`3ce80944` adds the source fixture, consumer leaf and existing-verifier dispatch;
+source review `2b39a16c` binds those bytes. The fixture is supplied user input,
+not a bundled product resource. Native compilation retains warnings.
+
+The real helper read host planning IDs, inspected exact schema/package bytes,
+checked the explicit build, installed once and reconciled. The protected software
+review retained the exact checked build payload before approval. A separate
+service-access decision enabled the resumed Original to search/load `source_add`
+and call it exactly once with left 19 and right 23. The compiled addon returned
+`{"sum": 42}`; actual native call/result and Original/helper completion frames
+are retained. The 16,056-byte addon `7ac64d9e` matches the original installer reply
+and ready receipt; retained input bytes are unchanged and lifecycle scripts did
+not run. No JavaScript arithmetic fallback supplies the result.
+
+Result `6767debb` records two displayed service/catalog leaf revokes with
+unavailable readbacks, certain login retirement, natural gateway exit 0 and
+joined provider/readers/observed children/listener/outer owners. Independent
+outcome review `d6c566f9` accepts this scoped result. Original final `5a0d4d8e` stays failed
+because its offline summary compared `passed` with the checker's `PASS`; saved-only
+correction `ed2550c0` used the existing successful execution and no runtime replay.
+
+This is a controlled model schedule, supplied synthetic package and protected
+Console API case on Linux x64/glibc 2.39, Node 24.19.0 / ABI 137. It establishes
+installed compiled MCP use, not autonomous discovery, a real-provider strategy,
+Browser rendering, reset/restart, authenticated/shared setup or a complete dynamic
+toolchain closure. No private submitted-input receipt or universal descendant
+closure is claimed; separately issued setup children are outside the two displayed
+revokes. The existing exact review payload was checked, not a new panel summary.
+Published 0.9.0 assets and broader requirement statuses are unchanged.
 
 ### Selected installer cancellation
 

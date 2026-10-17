@@ -3208,7 +3208,7 @@ def main():
     parser.add_argument("--toolkit-python", required=True, type=Path)
     parser.add_argument("--meta-python", "--mobkit-python", dest="mobkit_python", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--case", choices=("core", "all", "memory-cleanup", "shutdown-reader", "private-protocol", "installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm"), default="core")
+    parser.add_argument("--case", choices=("core", "all", "memory-cleanup", "shutdown-reader", "private-protocol", "installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build"), default="core")
     parser.add_argument("--installed-staging", type=Path)
     parser.add_argument("--installed-staging-sha256")
     parser.add_argument("--browser-forge-source", type=Path)
@@ -3222,7 +3222,7 @@ def main():
         parser.error("Forge Browser source inputs apply only to installed-console-browser")
     if sys.platform != "darwin" and not sys.platform.startswith("linux"):
         parser.error("verifier supports explicit macOS /dev/fd or Linux /proc/self/fd inventory only")
-    installed = args.case in ("installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm")
+    installed = args.case in ("installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build")
     if installed:
         if args.raw_gateway is not None or args.installed_staging is None or args.installed_staging_sha256 is None:
             parser.error("installed-product needs the exact staging path/hash and no unrelated raw gateway")
@@ -3284,13 +3284,25 @@ def main():
             report.update(installed_candidate=candidate, installed_inputs=inputs,
                 execution_claim="installed SDK acquisition and one public read; success requires exact native input completion; no live authentication or general service support claim")
             console = None
-            if args.case in ("installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm"):
+            if args.case in ("installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build"):
                 module_path = Path(__file__).with_name("verify_installed_console.py")
                 spec = importlib.util.spec_from_file_location("connect_installed_console", module_path)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 report["console_verifier"] = artifact_pin(module_path)
-                if args.case == "installed-console-warm":
+                if args.case == "installed-console-source-build":
+                    warm_path = Path(__file__).with_name("verify_installed_warm.py")
+                    warm_spec = importlib.util.spec_from_file_location("connect_installed_warm", warm_path)
+                    warm_module = importlib.util.module_from_spec(warm_spec)
+                    warm_spec.loader.exec_module(warm_module)
+                    source_path = Path(__file__).with_name("verify_installed_source_build.py")
+                    source_spec = importlib.util.spec_from_file_location("connect_installed_source_build", source_path)
+                    source_module = importlib.util.module_from_spec(source_spec)
+                    source_spec.loader.exec_module(source_module)
+                    report["warm_observation_helpers"] = artifact_pin(warm_path)
+                    report["source_build_verifier"] = artifact_pin(source_path)
+                    console = source_module.create_scenario(sys.modules[__name__], module, warm_module, module.loopback_origin())
+                elif args.case == "installed-console-warm":
                     warm_path = Path(__file__).with_name("verify_installed_warm.py")
                     warm_spec = importlib.util.spec_from_file_location("connect_installed_warm", warm_path)
                     warm_module = importlib.util.module_from_spec(warm_spec)
@@ -3316,6 +3328,9 @@ def main():
                 require(digest(module_path) == report["console_verifier"]["sha256"], "Console verifier helper changed during verification")
             if args.case == "installed-console-warm":
                 require(digest(warm_path) == report["warm_verifier"]["sha256"], "Warm verifier changed during verification")
+            if args.case == "installed-console-source-build":
+                require(digest(warm_path) == report["warm_observation_helpers"]["sha256"], "Observation helpers changed during verification")
+                require(digest(source_path) == report["source_build_verifier"]["sha256"], "Source-build verifier changed during verification")
             require(installed_candidate(args)[0] == candidate, "selected staged candidate changed during verification")
             for row in report["sdk_sources"]:
                 require(digest(Path(row["path"])) == row["sha256"], "selected SDK source changed during verification")
