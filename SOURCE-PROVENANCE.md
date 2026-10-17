@@ -51,7 +51,11 @@ receipts are `875b385c` and `1585fddc`. No donor/package or SDK fix is hidden by
 Microsoft result. This qualifies one format-adapted pack/client operation, not
 unchanged canonical donor format, immutable remote service code, complete-page or
 `structuredContent` fidelity, remote session deletion acknowledgement, installed
-Connect host adoption or a new release. D3 and PKG-007 remain incomplete. See the
+Connect host adoption or a new release. A separate four-proof audit (`7925c86c`)
+and canonical-loader addendum (`ed8aa088`) close PKG-007 for the declared canonical
+Agent Plugins 1.0 skill/MCP subset, joining current ownership/refusal paths to
+retained execution. Earlier evidence scopes and failures remain unchanged. D3
+and PKG-006 stay open. See the
 [portability reference](docs/site/reference/portability.mdx#qualified-external-client-example).
 
 ### Native acquisition and recovery checkpoints

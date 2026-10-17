@@ -30,7 +30,10 @@ retains exact source identities, earlier failures and scoped validation.
   Independent outcome review and natural local cleanup pass. Both earlier UMT
   initialization failures remain failed with zero tool calls. See the
   [portability example](../site/reference/portability.mdx#qualified-external-client-example)
-  for the explicit format adaptation and limits. D3 and PKG-007 remain incomplete.
+  for the explicit format adaptation and limits. An independent four-proof audit
+  now closes PKG-007 for the declared canonical Agent Plugins 1.0 skill/MCP
+  import/export subset, including required-contract and malformed-entry refusals.
+  D3 and PKG-006 remain open.
 - **Retained approval recovery:** Development now includes one bounded inventory
   of existing parent/access/source records and reviewed exact cleanup through the
   existing native owner. Explicit Console operator policy requires the retained
@@ -239,9 +242,10 @@ Portable import with host-mediated same-session continuation and declared
 Compose owner-conversion evidence on macOS and Linux also remain qualified. These are narrower than
 general native compilation or accepted native application-profile migration.
 The Microsoft/OpenHands case above adds one real, format-adapted Agent Plugins
-client operation; broader client/format conformance remains open. The saved-guidance export above
+client operation. PKG-007 is complete for the declared canonical skill/MCP
+subset; additional client/format profiles remain unqualified. The saved-guidance export above
 already closes the earlier retained-file export gap; no repeat of that proof is
-needed. PKG-006 and PKG-007 remain incomplete.
+needed. PKG-006 and the remaining D3 breadth stay open.
 
 ## Released 0.9.0 limits
 
