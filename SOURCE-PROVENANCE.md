@@ -71,8 +71,47 @@ absent before the exact host received SIGTERM, and all owner sessions and
 forwards joined. Feedback receipt `bcb8a30b` and review `8186217c` record four focused passing controls
 and the unchanged correction regression failing at runtime when only the old
 generic mapping is restored. These are actual checked-owner/software-review calls
-with synthetic package replies; V41 is not reclassified by that patch. No authenticated batch, later resumed-task
-acquisition or requirement completion is claimed.
+with synthetic package replies; V41 is not reclassified by that patch.
+
+### V43 ordinary multi-service completion
+
+V43 uses public `be0df64cf94c54c1462961131bfa961999fe8071` and gateway
+`40ab034b8445a96d6494499cad7f50902b0295b34b5594680915ff5a194f6122`, with
+the same Core `efd313d4` / Meta `669f54fa` graph. The production installed
+success/corruption pair passes without test-support features. Normal Forge
+`3b24a887` refresh preserves the accepted neutral application's authored source;
+Build `7ca94c8f-0282-419d-b3a5-a9f5fd3dda99`, source `95b8a68f`, installs into
+a new destination and a fresh native namespace. No prior installed state or task
+history is copied. Actual Original/helper bindings are independently checked.
+
+One business question produces one acquisition of agent-selected Hacker News and
+English Wikipedia jobs. Two software decisions and one exact complete-set access
+decision precede two attachments, exact catalog acceptance, four successful
+business reads and one automatic Original answer. Native all-member readiness
+precedes continuation; public attachment-add events are not direct Ready receipts.
+The trace retains actionable receipt, metadata and destination corrections.
+Independent saved-result comparison verifies factual correspondence while
+retaining the explicitly speculative story-2 connection and excess answer length.
+
+Final aggregate `1cfbb80f` and independent review `140b773b` verify the ordinary
+result and cleanup, including all 100 direct evidence references. Three exact
+task-grant revocations return 200 with unavailable/nonrevocable readbacks; logout
+returns 303 and one normal Stop returns 200. Application processes and listeners
+are absent before the owned host receives SIGTERM; its child returns -15 and
+supervisor joins 241. Both forward owners join 0, with no remaining owned process,
+group or listener. Files and histories are preserved. The separately approved
+persistent policy revision 2 remains until superseded.
+
+This joins V40's outside-catalog case and the exact-set/native controls to close
+SETUP-002's four proofs on the declared development profiles. It is controlled
+Console API evidence, not Browser, authenticated batch or warm reacquisition
+acceptance. V42 aggregate `1eb47b1a` retains its failed, uninstalled Build: generated
+callbacks and a second report ledger led acceptance to request new protected
+policy grants, which were not added. V41 and V42 remain failed predecessors.
+Saved V43 local question-to-observed-answer time is 502.182 seconds including
+review/polling; cross-host event timing has no measured clock-offset correction.
+Shared-host compile overlap and clock boundaries prevent a performance guarantee
+or PLAT-030 closure. Published 0.9.0 assets remain unchanged.
 
 ### Agent Plugins external-client checkpoint
 

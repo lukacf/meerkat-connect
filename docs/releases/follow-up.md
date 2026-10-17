@@ -44,10 +44,25 @@ No service grant, business call or final answer resulted. Logout, normal Stop an
 exact physical cleanup are independently closed. The feedback repair now passes
 four focused controls; restoring only the old generic mapping makes the unchanged
 correction regression fail at runtime. Agents can see the existing reconciliation
-and fresh-help requirements. Both service uses and the final answer remain
-unqualified, and SETUP-002 stays open. This path adds neither authenticated
-batches nor another acquisition by the resumed task; a new human request and
-setup are separate. Requirement statuses remain unchanged.
+and fresh-help requirements.
+
+V43 now completes the ordinary two-service case on public `be0df64c`. One business
+request names Hacker News and English Wikipedia, without preselecting integration
+IDs, profiles or strategies. The agent chooses and reconciles two installation
+jobs, obtains one exact complete-set access decision, and the same Original
+automatically uses both services and answers. Three exact task-grant revocations,
+logout, normal Stop and physical owner cleanup pass independent review. The
+separately reviewed policy successor remains until superseded.
+
+The four-proof join with V40 and the native authority controls closes SETUP-002
+for the declared development profiles. Story 2's Wikipedia relevance remains
+explicitly uncertain; technically successful tools do not guarantee semantic
+perfection. V41 remains failed before access, and V42 remains a failed, uninstalled
+Build whose generated callback contract would have required new policy grants.
+The policy was not widened. V43 uses a normal source-preserving refresh of the
+accepted neutral application, with a fresh installation and native namespace.
+Browser interaction, authenticated batches and warm later acquisition remain
+separate. Other requirement statuses and released 0.9.0 artifacts are unchanged.
 
 Concurrent shared setup is also still open: review found that a second request
 queues behind a running installation in the fixed helper. Shared records alone
