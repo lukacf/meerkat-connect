@@ -5,6 +5,10 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
+Selected Python/Node installer cancellation now gives the pinned installer time to join its direct child before outer escalation. It retains partial output and the original unconfirmed job for observation; exact replay does not start another install. Fourteen new and six retained controls passed. This qualifies the cancellation and direct-child boundary, not npm/compiler/package execution or arbitrary descendant cleanup.
+
+[Source provenance](../../SOURCE-PROVENANCE.md#selected-installer-cancellation) records the validation scope. Released 0.9.0 assets remain unchanged.
+
 Local setup now keeps the protocol child in its original preparation owner
 across errors and offers a move-owned asynchronous guard. Existing CLI calls
 remain compatible; borrowed guard Drop requests cancellation while retaining the

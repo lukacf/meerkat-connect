@@ -242,33 +242,71 @@ def run(argv: list[str], cwd: Path, env: dict[str, str], label: str, timeout: in
     err_path = Path(os.devnull) if discard_output else cwd / (label + ".stderr")
     mode = "wb" if discard_output else "xb"
     with out_path.open(mode) as out, err_path.open(mode) as err:
-        child = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True)
+        child, interrupted = None, False
+        caller_handlers = {signum: signal.getsignal(signum)
+                           for signum in (signal.SIGINT, signal.SIGTERM)}
+        def defer_interrupt(signum, frame):
+            nonlocal interrupted
+            interrupted = True
         try:
-            code = child.wait(timeout=timeout)
+            # Keep flag-only handlers until this direct child is joined. They
+            # defer signals across Popen handle publication and coalesce later
+            # signals during cleanup, without another handler transition or a
+            # blocked signal mask inherited by the child's exec.
+            for signum in caller_handlers:
+                signal.signal(signum, defer_interrupt)
+            child = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err,
+                                     start_new_session=True)
+            deadline = time.monotonic() + timeout
+            while True:
+                if interrupted:
+                    raise KeyboardInterrupt
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                try:
+                    code = child.wait(timeout=min(0.1, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            # Cancellation concurrent with exit must not enable the next step.
+            if interrupted:
+                raise KeyboardInterrupt
             if code:
                 raise InstallError("installer step failed: " + label)
         except BaseException:
-            # A second caller signal must not abandon a still-running installer.
-            handlers = {signum: signal.signal(signum, signal.SIG_IGN)
-                        for signum in (signal.SIGINT, signal.SIGTERM)}
+            if child is None:
+                raise
             try:
-                try:
-                    os.killpg(child.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    child.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-                try:
-                    os.killpg(child.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                child.wait()
+                if child.returncode is None:
+                    try:
+                        os.killpg(child.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        child.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if child.returncode is None:
+                        try:
+                            os.killpg(child.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
             finally:
-                for signum, handler in handlers.items():
-                    signal.signal(signum, handler)
+                # Signal failure cannot release a still-live direct child.
+                # A returned wait is direct-child evidence only. Never signal
+                # a PID/group after its leader has been reaped.
+                child.wait()
             raise
+        finally:
+            try:
+                signal.signal(signal.SIGINT, caller_handlers[signal.SIGINT])
+            finally:
+                signal.signal(signal.SIGTERM, caller_handlers[signal.SIGTERM])
+    # A signal can be coalesced while the original pair is being restored
+    # after a successful wait. Do not lose it before the next installer step.
+    if interrupted:
+        raise KeyboardInterrupt
     return b"" if discard_output else out_path.read_bytes()
 
 

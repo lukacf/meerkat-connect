@@ -22,6 +22,19 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+### Selected installer cancellation
+
+Private Toolkit checkpoint `a6cab1e3e059fb66cae22a90837f890fcf2a4bab` contributes the
+following four source paths: the selected-job backend, the pinned installer and
+two focused test files.
+
+The selected-installer cancellation repair changes two production files and adds two test files. Its exact 20-control run passed with zero skips on Python 3.11.16 / MCP 2.2.0 (13.657 seconds): 14 new and six retained controls. Ten new controls use synthetic handles; real inert Python controls separately assert the installer's inner wait before selected-job settlement and outer-only cleanup after the 10-second grace expires. The inner wait is an assertion within the passed control, not a separately exported receipt. Selected source bytes remained unchanged; the run recorded joined outer owners and no remaining test threads. Partial output/replay semantics remain intact. No npm/compiler/package, arbitrary-descendant, MCP-transport or separate readback-validator qualification is added.
+
+
+Source manifest `80ef7484`, final result `9a56eef2` and independent outcome
+review `2ad3cd4a` bind the exact controls and selected source. The change preserves
+the existing dependency graph. Published 0.9.0 assets remain unchanged.
+
 ### Retained local setup process
 
 Private Toolkit checkpoint `940d5b679876a82a55fb04384f095c3415f73391` contributes three source paths:

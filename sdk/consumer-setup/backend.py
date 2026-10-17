@@ -42,6 +42,9 @@ INSPECTION_TIMEOUT = 30.0
 SELECTED_GUIDE_BYTES = 32 * 1024
 MCPB_INSPECTION_TIMEOUT = 120.0
 STOP_CHECK_INTERVAL = 0.1
+# The selected Python/Node installer allows its child 2 s after TERM. Leave
+# additional time for that existing owner to join and unwind before escalation.
+SELECTED_INSTALLER_TERMINATION_GRACE = 10
 REQUEST_ID = re.compile(r"[0-9a-f]{32}\Z")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 REFERENCE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
@@ -1019,11 +1022,14 @@ class Runner:
             # Direct-child settlement does not attest every descendant exit.
             try:
                 if process.returncode is None:
-                    grace = compose.get("termination_grace", 0) if compose else 0
+                    grace = (compose.get("termination_grace", 0) if compose else
+                             getattr(self._job_context, "termination_grace", 0))
                     if grace:
-                        # The pinned Compose CLI owns separately-sessioned
-                        # children. TERM lets its existing owner join them.
-                        # Even a graceful exit does not establish effect state.
+                        # Pinned Compose and selected installer processes own
+                        # separately-sessioned children. Give that owner a
+                        # chance to join them. Grace exhaustion leaves inner
+                        # settlement unconfirmed; even a graceful exit does
+                        # not establish effect state or descendant closure.
                         try:
                             process.send_signal(signal.SIGTERM)
                             process.wait(timeout=grace)
@@ -2982,6 +2988,21 @@ class Controller:
         self._check_stop()
         return result
 
+    def _run_selected_installer(self, argv, profile, **kwargs):
+        # Only these selected commands invoke the pinned Python installer with
+        # its TERM/join handler. Custom run signatures and MCPB stay unchanged.
+        if profile not in ("python", "node"):
+            return self._run(argv, **kwargs)
+        previous = getattr(self._job_context, "termination_grace", None)
+        self._job_context.termination_grace = SELECTED_INSTALLER_TERMINATION_GRACE
+        try:
+            return self._run(argv, **kwargs)
+        finally:
+            if previous is None:
+                del self._job_context.termination_grace
+            else:
+                self._job_context.termination_grace = previous
+
     def compose_action(self, action, request):
         with self.lock:
             self.admit_setup()
@@ -4523,7 +4544,8 @@ class Controller:
                       "effect_sha256": value["effect_sha256"], "destination": Path(effect["destination"])}
             def work():
                 argv, _, _ = self.selected_command(intent, verify=False)
-                if self._run(argv)[0]:
+                code, _ = self._run_selected_installer(argv, effect["request"]["profile"])
+                if code:
                     raise SetupError("operation_unconfirmed", 500)
                 verified = self.selected_readback(intent)
                 return {**verified, "scope": "observed_software_installation_only", "readback_scope": READBACK_SCOPE}
@@ -4563,7 +4585,7 @@ class Controller:
         destination = Path(effect["destination"])
         receipt_raw = selected_read(intent["root"], "installations/" + intent["validation_id"] + "/ready/installed.json", SELECTED_FILE)
         profile = effect["request"]["profile"]
-        code, raw = self._run(argv, capture=True,
+        code, raw = self._run_selected_installer(argv, profile, capture=True,
                                    **({"inspection_timeout": MCPB_INSPECTION_TIMEOUT} if profile == "mcpb" else {}))
         if code:
             raise SetupError("reconciliation_unconfirmed", 500)
