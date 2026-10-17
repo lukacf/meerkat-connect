@@ -10,6 +10,7 @@ use meerkat_toolkit::request::NativeOriginalTask;
 pub(super) mod attachment;
 mod continuation;
 pub(super) mod application;
+mod compensation;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -253,9 +254,29 @@ impl PreparedServiceInstruction {
     pub async fn approve(self, record: ApprovalRecord, presented: impl Fn() -> bool + Send + Sync + 'static) -> Result<bool, PrivateOriginalError> {
         let reservation = self.task.console_login.as_ref().map(|login| login.reserve())
             .transpose().map_err(|_| PrivateOriginalError::Denied)?;
-        let result = self.approve_retained(record, Arc::new(presented)).await;
+        // Keep the login reservation with an entered blocking issuance worker,
+        // even if an exceptional caller drops this future instead of joining it.
+        let retained_login = Arc::new(std::sync::Mutex::new(reservation));
+        let worker_login = retained_login.clone();
+        let cleanup = self.operator.service_mcp_parent_compensation(&self.review, &record)
+            .map_err(application::policy_error)?;
+        let task = self.task.clone();
+        let grant = PrivateOriginals::service_mcp_reference(self.review.decision(), self.review.selection())?;
+        let result = self.approve_retained(record, Arc::new(move || {
+            let _retained_login = &worker_login;
+            presented()
+        })).await;
         if result.is_ok() {
-            if let Some(reservation) = reservation { reservation.settled(); }
+            if let Some(reservation) = retained_login.lock()
+                .map_err(|_| PrivateOriginalError::Unavailable)?.take()
+            { reservation.settled(); }
+        } else if let Some(cleanup) = cleanup {
+            // This future has joined every issuance worker. Reconcile only
+            // this approval's unpublished grants under the source writer.
+            // A policy successor is separately approved and is not rolled back.
+            task.compensate_unpublished_approval(cleanup, grant).await?;
+            // An error can include another owner's unresolved policy effect.
+            // Native revoke success alone does not settle that login aggregate.
         }
         result
     }
@@ -686,6 +707,8 @@ impl InstalledServiceTask {
             // generic retained callback. No mutable error side channel exists.
             Ok(async {
             let (parent, snapshot) = self.current().await.map_err(E::from)?;
+            presented()?;
+            source.require_service_grant_issued(&grant).await.map_err(E::from)?;
             presented()?;
             let parent_record = source.decode_record(&parent, &self.parent).map_err(|_| E::from(PrivateOriginalError::Conflict))?;
             let event = PrivateAuthenticatedEvent {

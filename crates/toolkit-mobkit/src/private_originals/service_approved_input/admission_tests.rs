@@ -24,6 +24,8 @@ const INSTRUCTION: &str = "Read the reviewed inbox for this task";
 mod continuation_tests;
 #[path = "application_policy_tests.rs"]
 mod application_policy_tests;
+#[path = "compensation_tests.rs"]
+mod compensation_tests;
 fn id(value: &str) -> Id { Id::new(value).unwrap() }
 fn revision(value: &str) -> Revision { Revision::new(value).unwrap() }
 

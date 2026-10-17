@@ -1208,6 +1208,29 @@ impl ToolkitOriginalOwner {
         publish().await
     }
 
+    /// Failure reconciliation shares the source-publication writer. The exact
+    /// admitted parent's identity must still be retained, but its cancellation
+    /// or terminality must not prevent cleanup of unpublished service grants.
+    /// This callback cannot admit a new input or reopen the parent operation.
+    pub(crate) async fn reconcile_followup_source<T, F, Fut>(
+        &self, parent: &InputAuthorityAssociation, reconcile: F,
+    ) -> Result<T, OriginalWriterError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let _mutation = self.mutation.try_lock()
+            .map_err(|_| OriginalWriterError::Unavailable)?;
+        {
+            let originals = self.originals.try_lock()
+                .map_err(|_| OriginalWriterError::Unavailable)?;
+            if !originals.iter().filter_map(OriginalRecord::bound).any(|held| {
+                held.association == *parent && held.source_custody == Some(SourceCustody::Admitted)
+            }) { return Err(OriginalWriterError::Unavailable); }
+        }
+        Ok(reconcile().await)
+    }
+
     /// Fence every exact linked source under the existing publication before
     /// the first durable write. An interrupted write leaves all members pending.
     /// Recovery must reopen their canonical parent link before binding again.

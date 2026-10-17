@@ -194,6 +194,63 @@ fn restrictions(
 }
 
 impl PrivateOriginals {
+    pub(super) fn service_mcp_reference(decision: &PrivateServiceMcpAccessDecision,
+        selection: &ServiceMcpSelection) -> Result<PrivateServiceGrantRef, PrivateOriginalError>
+    {
+        Ok(PrivateServiceGrantRef { route: decision.route.clone(), decision: decision.decision.clone(),
+            decision_sha256: decision_digest(&AccessDecision::Mcp(decision.clone()), Some(&selection.0))? })
+    }
+
+    /// Only an access intent bound to this exact approved parent belongs to
+    /// its compensation. Another approval for the same task may share the
+    /// decision ID; that earlier approval's child must remain untouched.
+    pub(super) async fn service_compensation_child(&self, reference: &PrivateServiceGrantRef,
+        parent: &GrantLineageRef) -> Result<Option<(PrincipalRef, GrantLineageRef)>, PrivateOriginalError>
+    {
+        let key = self.access_key(reference)?;
+        let child_id = EvidenceId::new(format!("access-{}", key.id)).map_err(|_| PrivateOriginalError::Conflict)?;
+        let Some(stored) = self.store.get(&key).await.map_err(store_error)? else {
+            // Issuance requires this intent first. A missing intent alongside
+            // native issuance is inconsistent, never proof that cleanup ended.
+            return match self.owner.grants().issued_reference(&child_id) {
+                Ok(None) => Ok(None),
+                _ => Err(PrivateOriginalError::Unavailable),
+            };
+        };
+        let decoded: AccessRecord = serde_json::from_value(stored.data.body.clone())
+            .map_err(|_| PrivateOriginalError::Conflict)?;
+        let actual_ref = PrivateServiceGrantRef { route: decoded.decision.route().clone(),
+            decision: decoded.decision.id().clone(),
+            decision_sha256: decision_digest(&decoded.decision, decoded.mcp.as_ref())? };
+        let record = self.decode_access(&stored, &actual_ref)?;
+        if record.parent.as_slice() != [parent.clone()] { return Ok(None); }
+        if &actual_ref != reference || record.application_policy.is_some()
+            || record.caller != self.route(&reference.route)?.grant_caller {
+            return Err(PrivateOriginalError::Conflict);
+        }
+        let leaf = self.owner.grants().issued_reference(&child_id)
+            .map_err(|_| PrivateOriginalError::Unavailable)?;
+        match (&record.issuance, &leaf) {
+            (IssuanceObservation::PendingNativeIssuance, _) => {},
+            (IssuanceObservation::Issued { lineage }, Some(leaf)) if lineage.last() == Some(leaf) => {},
+            (IssuanceObservation::NativeRefused | IssuanceObservation::ApprovalDenied, None) => {},
+            _ => return Err(PrivateOriginalError::Unavailable),
+        }
+        Ok(leaf.map(|leaf| (record.caller, leaf)))
+    }
+
+    pub(super) async fn require_service_grant_issued(&self, reference: &PrivateServiceGrantRef)
+        -> Result<(), PrivateOriginalError>
+    {
+        let stored = self.store.get(&self.access_key(reference)?).await.map_err(store_error)?
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        let record = self.decode_access(&stored, reference)?;
+        if self.access_observation(reference.clone(), &record)?.state != PrivateServiceGrantState::GrantIssued {
+            return Err(PrivateOriginalError::Unavailable);
+        }
+        Ok(())
+    }
+
     fn access_key(
         &self,
         reference: &PrivateServiceGrantRef,

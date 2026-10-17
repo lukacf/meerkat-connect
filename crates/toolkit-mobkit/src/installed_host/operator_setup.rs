@@ -32,6 +32,7 @@ pub use setup_targets::SetupTargetRequest;
 mod setup_recovery;
 pub(crate) use setup_request::{validate_setup_selection, validate_retained_setup_selection};
 pub use service_mcp::{ReviewedServiceMcpParent, ServiceMcpParentOutcome, ServiceMcpParentReview};
+pub(crate) use service_mcp::ServiceMcpParentCompensation;
 
 const SCHEMA: &str = "toolkit.operator-application-parent";
 const RECORD_VERSION: u32 = 2;
@@ -675,10 +676,9 @@ impl OperatorSetup {
         self.apply_parent_decision_current(proposal, approval, Arc::new(|| true)).await
     }
 
-    async fn apply_parent_decision_current(
-        &self, proposal: OperatorParentProposal, approval: ApprovalRecord,
-        presented: Arc<dyn Fn() -> bool + Send + Sync>,
-    ) -> Result<OperatorParentOutcome, HostLifetimeError> {
+    fn parent_decision_record(&self, proposal: &OperatorParentProposal, approval: ApprovalRecord)
+        -> Result<OperatorDecision, HostLifetimeError>
+    {
         // An actual approval is applied only by the source and lifetime that
         // created its opaque proposal. Re-prepare after a legitimate restore.
         self.check_parent_proposal_owner(&proposal)?;
@@ -700,22 +700,31 @@ impl OperatorSetup {
             _ => return Err(HostLifetimeError::Denied),
         };
         let record = OperatorDecision {
-            route: proposal.route,
+            route: proposal.route.clone(),
             purpose: proposal.purpose,
             target_issuance: proposal.setup_request.as_ref().map(|intent|
                 vec![setup_targets::TargetIssuance::NotStarted; intent.targets.len()]).unwrap_or_default(),
-            setup_request: proposal.setup_request,
+            setup_request: proposal.setup_request.clone(),
             operator: self.operator.clone(),
             application: self.native.grant_administrator.clone(),
             represented_subject: route.represented_subject.clone(),
             approval,
-            requested: proposal.restrictions,
+            requested: proposal.restrictions.clone(),
             issued: if approved {
                 ParentIssuance::Pending
             } else {
                 ParentIssuance::Denied
             },
         };
+        Ok(record)
+    }
+
+    async fn apply_parent_decision_current(
+        &self, proposal: OperatorParentProposal, approval: ApprovalRecord,
+        presented: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<OperatorParentOutcome, HostLifetimeError> {
+        let record = self.parent_decision_record(&proposal, approval)?;
+        let approved = matches!(&record.issued, ParentIssuance::Pending);
         let key = self.parent_decision_key(&record)?;
         // Store admission compares the whole immutable decision. An exact retry
         // reads the saved result even if the review deadline has since elapsed.
