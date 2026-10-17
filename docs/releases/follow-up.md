@@ -92,8 +92,16 @@ affected Rust controls pass, including actual cross-audience public preparation,
 captured-scope refusal, partial recovery and both native repeat-acquisition cases.
 Six are existing controls; the cross-audience control is new. Restoring only
 the old production comparison compiles, then fails that new test at actual public
-preparation with Conflict. The installed rerun remains pending, and no
-permissions or installed assertions were relaxed.
+preparation with Conflict. No permissions or installed assertions were relaxed.
+
+The fresh production gateway from public `3ecf0d5a` now passes the unchanged
+strict installed success and resource-corruption pair. The success case reaches
+the actual continued agent's durable consumed/completed receipt; corruption
+refuses before negotiated entry. Native shutdown, readers, providers, children,
+process groups and the build lock all settle. Independent review verifies the
+exact source and artifact bindings. The gateway build retains 65 warning headers.
+This closes the installed compatibility regression; the separate ordinary
+repeat-acquisition journey remains pending.
 
 Concurrent shared setup is also still open: review found that a second request
 queues behind a running installation in the fixed helper. Shared records alone
