@@ -4,6 +4,7 @@
 //! native principal. The existing OS facade and same grant owner issue access.
 
 pub(crate) mod setup_presenter;
+mod local_recovery;
 pub mod console_setup;
 pub use console_setup::serve_console_setup;
 pub use setup_presenter::{LocalSetupApprovals, LocalSetupReviews};
@@ -19,7 +20,7 @@ use std::{
     fs::{File, OpenOptions},
     io,
     os::fd::{OwnedFd, RawFd},
-    os::unix::fs::{FileTypeExt, MetadataExt},
+    os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
     path::PathBuf,
     sync::Arc,
 };
@@ -63,7 +64,11 @@ impl InheritedOperatorTerminal {
             return Err(io::Error::new(io::ErrorKind::InvalidInput,
                 "operator input is not a terminal"));
         }
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        // Reopening an inherited PTY must not make it this process's controlling
+        // terminal. A session-leading gateway otherwise receives SIGHUP when
+        // its operator closes the master, before owned cleanup can settle.
+        let file = OpenOptions::new().read(true).write(true)
+            .custom_flags(nix::libc::O_NOCTTY).open(path)?;
         let after = file.metadata()?;
         if before.dev() != after.dev() || before.ino() != after.ino()
             || before.rdev() != after.rdev()
@@ -174,6 +179,13 @@ async fn serve_operator(
     setup: Option<LocalSetupReviews>,
 ) -> Result<(), ConnectError> {
     let mut setup = setup.map(SetupPresenters::new);
+    let recovery_selected = host.local_operator_recovery_selected();
+    if recovery_selected {
+        use std::io::Write as _;
+        writeln!(terminal.output, "Installed-host operator recovery is selected. Type /recover while this terminal is idle to inspect unresolved approvals.")
+            .and_then(|()| terminal.output.flush())
+            .map_err(|error| ConnectError::native("display local recovery entry", error))?;
+    }
     loop {
         let request = tokio::select! {
             biased;
@@ -188,6 +200,19 @@ async fn serve_operator(
                 continue;
             }
             request = requests.next() => match request { Some(request) => request, None => return Ok(()) },
+            command = terminal.input.recv(), if recovery_selected => {
+                let Some(command) = command else { return Ok(()); };
+                let command = command.map_err(|error| ConnectError::native("read operator command", error))?;
+                if command.trim() == "/recover" {
+                    if !local_recovery::present(&host, &mut terminal, &artifact_parent, &closed).await? { return Ok(()); }
+                } else {
+                    use std::io::Write as _;
+                    writeln!(terminal.output, "Use /recover to inspect unresolved installed-host approvals. Other input is handled by its active review prompt.")
+                        .and_then(|()| terminal.output.flush())
+                        .map_err(|error| ConnectError::native("display operator command help", error))?;
+                }
+                continue;
+            }
         };
         // This native call is retained to completion even if the parent closes.
         // It returns before input admission and before any human wait starts.
@@ -560,12 +585,40 @@ mod tests {
     #[test]
     fn owned_terminal_is_retained_close_on_exec_without_a_second_input_owner() {
         let pty = nix::pty::openpty(None, None).unwrap();
+        assert_eq!(nix::sys::termios::tcgetsid(&pty.slave), Err(nix::errno::Errno::ENOTTY));
         let fd = pty.slave.into_raw_fd();
         let terminal = InheritedOperatorTerminal::adopt(fd, fd + 1, fd + 2).unwrap();
         terminal.input.require_terminal().unwrap();
+        assert_eq!(nix::sys::termios::tcgetsid(&terminal.output), Err(nix::errno::Errno::ENOTTY));
         let flags = nix::fcntl::fcntl(&terminal.output, nix::fcntl::FcntlArg::F_GETFD).unwrap();
         assert!(nix::fcntl::FdFlag::from_bits_truncate(flags).contains(nix::fcntl::FdFlag::FD_CLOEXEC));
         drop(terminal);
         drop(pty.master);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn adopting_terminal_does_not_acquire_a_controlling_terminal() {
+        const CHILD: &str = "MEERKAT_CONNECT_TERMINAL_SESSION_TEST";
+        if std::env::var_os(CHILD).as_deref() != Some(std::ffi::OsStr::new("child")) {
+            // Run the real adoption path in a fresh session, without changing
+            // the test runner's terminal or suppressing the SIGHUP disposition.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "application_gateway::tests::adopting_terminal_does_not_acquire_a_controlling_terminal",
+                    "--exact", "--test-threads=1", "--nocapture",
+                ])
+                .env(CHILD, "child")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "terminal child {:?}: {}{}",
+                output.status, String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        let session = nix::unistd::setsid().unwrap();
+        assert_eq!(session, nix::unistd::getpid());
+        assert_eq!(nix::unistd::getsid(None).unwrap(), session);
+        owned_terminal_is_retained_close_on_exec_without_a_second_input_owner();
     }
 }

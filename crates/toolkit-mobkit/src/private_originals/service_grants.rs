@@ -24,6 +24,7 @@ use toolkit_store::AdmissionOutcome;
 const SCHEMA: &str = "toolkit.authenticated-service-access-decision";
 
 pub(crate) mod console;
+pub(crate) mod recovery;
 mod mcp;
 pub use mcp::{PrivateServiceMcpAccessDecision, PrivateServiceMcpPermission, PrivateServiceMcpLiveAttachment, PrivateServiceMcpCatalog, ServiceMcpSelection};
 pub(crate) use mcp::RetainedServiceMcpAccess;

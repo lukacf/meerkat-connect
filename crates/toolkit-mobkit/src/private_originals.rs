@@ -36,6 +36,7 @@ mod service_input_receipt;
 pub use service_input_receipt::{PrivateServiceInputObservation, PrivateServiceInputReceipt,
     PrivateServiceInputReport, PrivateReceiptWitness, PrivateReceiptScope};
 pub(crate) mod source_status;
+pub(crate) mod service_recovery;
 pub use service_approved_input::{
     InstalledServiceTask, PreparedServiceInstruction, ServiceMcpPersistenceProposal,
 };

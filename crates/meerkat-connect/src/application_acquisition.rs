@@ -41,6 +41,8 @@ pub struct ApplicationAcquisitionSelection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub console_setup: Option<crate::application_gateway::console_setup::ConsoleSetupSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_operator_recovery: Option<toolkit_mobkit::host_gateway::LocalOperatorRecoveryPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standing_policy: Option<StandingPolicySelection>,
     pub prepared_application_setup: CompiledArtifactReference,
     pub backend_generation: Id,
@@ -56,6 +58,8 @@ pub struct ApplicationAcquisitionParameters {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standing_policy: Option<StandingPolicySelection>,
     pub console_setup: Option<crate::application_gateway::console_setup::ConsoleSetupSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_operator_recovery: Option<toolkit_mobkit::host_gateway::LocalOperatorRecoveryPolicy>,
     pub backend_generation: Id,
     pub proposal_ceiling: Ceiling,
     pub output_audience: BTreeSet<Id>,
@@ -63,7 +67,7 @@ pub struct ApplicationAcquisitionParameters {
 }
 impl ApplicationAcquisitionParameters {
     pub fn complete(self, prepared_application_setup: CompiledArtifactReference) -> ApplicationAcquisitionSelection {
-        ApplicationAcquisitionSelection { schema: 1, console_setup: self.console_setup, standing_policy: self.standing_policy,
+        ApplicationAcquisitionSelection { schema: 1, console_setup: self.console_setup, local_operator_recovery: self.local_operator_recovery, standing_policy: self.standing_policy,
             prepared_application_setup, backend_generation: self.backend_generation,
             proposal_ceiling: self.proposal_ceiling, output_audience: self.output_audience,
             limits: self.limits }
@@ -171,6 +175,7 @@ pub struct PreparedGatewayAcquisition {
     acquisition_reference: CompiledArtifactReference,
     realm: meerkat_core::RealmLocator,
     console_setup: Option<crate::application_gateway::console_setup::ConsoleSetupSelection>,
+    local_operator_recovery: Option<toolkit_mobkit::host_gateway::LocalOperatorRecoveryPolicy>,
     // Ordinary completed-bundle startup creates this from authenticated output.
     // A held driver already retains the original resource participant/provider.
     resource: Option<Arc<crate::application_setup::resource::SetupResourceSelection>>,
@@ -321,6 +326,9 @@ impl PreparedGatewayAcquisition {
     }
 
     fn compose_resources(self, host: ToolkitGatewayHost) -> Result<ToolkitGatewayHost, HostLifetimeError> {
+        let host = match self.local_operator_recovery {
+            Some(policy) => host.with_local_operator_recovery(policy)?, None => host,
+        };
         let host = host.with_native_setup_bootstrap(self.continuation, self.projection, self.application)?;
         match self.resource {
             Some(resource) => {
@@ -490,7 +498,7 @@ fn prepare_gateway_acquisition_selected(
         Some(tools) => installed.with_enrolled_bootstrap_acquisition(defaults, tools)?,
         None => installed.with_bootstrap_acquisition(defaults)?,
     };
-    Ok((installed, Some(PreparedGatewayAcquisition { continuation, projection, application, helper_member, helper_tools: prepared.helper_tools, standing_policy: config.standing_policy, selected_policy: None, acquisition_reference: native.setup.clone().ok_or(HostLifetimeError::InvalidSelection)?, realm, console_setup: config.console_setup, resource })))
+    Ok((installed, Some(PreparedGatewayAcquisition { continuation, projection, application, helper_member, helper_tools: prepared.helper_tools, standing_policy: config.standing_policy, selected_policy: None, acquisition_reference: native.setup.clone().ok_or(HostLifetimeError::InvalidSelection)?, realm, console_setup: config.console_setup, local_operator_recovery: config.local_operator_recovery, resource })))
 }
 
 /// Native calls this with each actual provider result, including refresh and
@@ -541,7 +549,7 @@ mod tests {
     #[test]
     fn selected_output_audience_cannot_exceed_compiled_proposal_ceiling() {
         let mut selected = ApplicationAcquisitionSelection {
-            schema: 1, console_setup: None, standing_policy: None,
+            schema: 1, console_setup: None, local_operator_recovery: None, standing_policy: None,
             prepared_application_setup: CompiledArtifactReference { name: "application-setup.json".into(), sha256: "a".repeat(64) },
             backend_generation: id("selected-backend"),
             proposal_ceiling: Ceiling { actions: BTreeSet::new(), services: BTreeSet::new(), frontends: BTreeSet::new(), output_audiences: [id("requester")].into() },
@@ -557,7 +565,7 @@ mod tests {
     #[test]
     fn absent_standing_policy_preserves_wire_and_selected_choices_match_exactly() {
         use selected_policy::{StandingPolicySelection, InstallationSelection, AccessSelection};
-        let parameters = ApplicationAcquisitionParameters { standing_policy: None, console_setup: None,
+        let parameters = ApplicationAcquisitionParameters { standing_policy: None, console_setup: None, local_operator_recovery: None,
             backend_generation: id("selected-backend"),
             proposal_ceiling: Ceiling { actions: BTreeSet::new(), services: BTreeSet::new(),
                 frontends: BTreeSet::new(), output_audiences: [id("requester")].into() },
@@ -612,6 +620,38 @@ mod tests {
         let mut extra = serde_json::to_value(&expected).unwrap();
         extra["standing_policy"]["actor"] = serde_json::json!("untrusted");
         assert!(serde_json::from_value::<ApplicationAcquisitionParameters>(extra).is_err());
+    }
+
+    #[test]
+    fn local_operator_recovery_is_explicit_pinned_and_preserves_absent_wire() {
+        use toolkit_mobkit::host_gateway::LocalOperatorRecoveryPolicy;
+        let mut parameters = ApplicationAcquisitionParameters { standing_policy: None, console_setup: None, local_operator_recovery: None,
+            backend_generation: id("selected-backend"),
+            proposal_ceiling: Ceiling { actions: BTreeSet::new(), services: BTreeSet::new(),
+                frontends: BTreeSet::new(), output_audiences: [id("requester")].into() },
+            output_audience: [id("requester")].into(), limits: InstalledSetupLimits::default() };
+        let reference = CompiledArtifactReference { name: "application-setup.json".into(), sha256: "a".repeat(64) };
+        let absent = parameters.clone().complete(reference.clone());
+        let old_parameters = toolkit_package::canonical_json(&parameters).unwrap();
+        let old_selected = toolkit_package::canonical_json(&absent).unwrap();
+        assert!(serde_json::to_value(&parameters).unwrap().get("local_operator_recovery").is_none());
+        assert!(serde_json::to_value(&absent).unwrap().get("local_operator_recovery").is_none());
+        let decoded: ApplicationAcquisitionParameters = serde_json::from_slice(&old_parameters).unwrap();
+        assert_eq!(toolkit_package::canonical_json(&decoded).unwrap(), old_parameters);
+        let decoded: ApplicationAcquisitionSelection = serde_json::from_slice(&old_selected).unwrap();
+        assert_eq!(toolkit_package::canonical_json(&decoded).unwrap(), old_selected);
+        assert!(parameters.matches(&decoded).unwrap());
+        parameters.local_operator_recovery = Some(LocalOperatorRecoveryPolicy::UnpublishedServiceApprovals);
+        let selected = parameters.clone().complete(reference);
+        assert!(parameters.matches(&selected).unwrap());
+        assert!(!parameters.matches(&absent).unwrap());
+        let value = serde_json::to_value(&selected).unwrap();
+        assert_eq!(value["local_operator_recovery"], "unpublished_service_approvals");
+        assert!(value.get("console_setup").is_none(), "local selection grants no Console policy");
+        for unsupported in [serde_json::json!("automatic_startup"), serde_json::json!({"principal":"remote-user"})] {
+            let mut injected = value.clone(); injected["local_operator_recovery"] = unsupported;
+            assert!(serde_json::from_value::<ApplicationAcquisitionSelection>(injected).is_err());
+        }
     }
 
 }

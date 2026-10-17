@@ -47,60 +47,60 @@ This does not establish other targets, compilation-dependent addons or general
 write prevention.
 
 
-The retained approval inventory and protected Console recovery candidate is
-frozen as source manifest
-`8cef2b436dbdd9a2a4d6887d70b7d2a8321bd6258c2991610c94529f2e7dc135`.
-Its 24 source/test afterimages compose the original reviewed candidate with a
-two-file UI repair and one fixture-only repair. The unchanged Core `efd313d4` /
-Meta `669f54fa` graph remains selected. Existing canonical intent records, the
-source writer and actual native authority own recovery; Console adds an explicit
-operator selection and protected presentation, without a second ledger or
-automatic startup revocation. Published sources and other approvals are preserved;
-missing-parent and partial native outcomes remain unresolved. Policy observation
-is separate from cleanup, and aggregate login uncertainty remains unchanged.
+The retained approval inventory, protected Console adapter and independent local
+SDK/inherited-terminal adapter compose 32 exact source/test afterimages in manifest
+`ac6b1f76c538250ec278a9a83fca7281564b0ba427cd6af01780eaa6e8b0919a`.
+The native Core `efd313d4` / Meta `669f54fa` graph is unchanged. Existing canonical
+records, the source writer and actual native authority own recovery; there is no
+second ledger, automatic startup revoke or Original re-admission. Published
+sources and other approvals are preserved. Missing-parent and partial effects
+remain unresolved, with policy observation and login uncertainty kept separate.
+The [host guide](docs/site/guides/host-composition.mdx#recover-unpublished-service-approvals)
+shows explicit Console and local SDK selection. There is no standalone realm recovery command.
 
-The original JavaScript run passed 39 of 40 controls. It caught an empty recovery
-panel mounted without selection during legacy same-login tab retirement. The
-narrow repair passes all 40, retaining the original failing test. The first Rust
-compile exited 101 before tests because five fixture assertions called
-`to_string()` on a typed ID without `Display`. The repair uses `as_str().to_owned()`
-and preserves exact ID matching and all assertions. R2 compiled and passed 11 of
-13 controls. The recovery login fixture failed before task preparation because
-it omitted actual Console source/login custody. The existing valid-token fixture
-used an issuer excluded by Meta's development HS256 policy. Separate fixture
-repairs passed independent source review, with no production authority change;
-those reruns are included in the composed result below. The separate installed-host local SDK
-and inherited-terminal adapter was composed with those repaired afterimages. Its
-complete32 compile exited 101 before tests because one terminal error path passed
-`String` to the typed native-error constructor. The one-file repair retains the
-original IO error, awaits presenter retirement and uses existing `Cleanup` for a
-second error. All other 31 afterimages and assertions are unchanged. Current
-complete32 manifest is
-`7b182c5efacdbc0bfec173e7770f12cc23d8be3e8c196aa44278eebfd1748cc0`;
-that candidate compiled and passed 11 of 16 affected auth/SDK controls. The five
-failures were a probe-count expectation, two HTTP binder-observation timeouts,
-duplicate live fixture supervisor ownership and terminal SIGHUP. Execution
-aggregate `d2b3e4c5` records all runners joined and owned processes absent. The
-four-file successor `496ae8a1` / complete selection `0b282918` corrects the count
-and fixture ordering, adds `O_NOCTTY` with a session-leader regression, and
-records finite HTTP response classifications without changing the stale-alias
-fence or deadlines. It remains pending qualification. The candidate is unadopted;
-no installed or full-process recovery is claimed. Warnings and failed runs remain
-recorded, without a CI or warning-free build claim.
+The final affected eight-control run passes compile/list and all eight exact
+verifier/recovery tests. It covers actual normal Console admission/completion,
+retired and mismatched login, invalid signature/issuer, exact current operator
+and administrative/member authority, and configured remote-operator refusal.
+The preceding six-control run passed the four count/ownership/terminal repairs;
+its two HTTP diagnostics returned the finite stale-durable-alias refusal. The
+fixture correction uses native `restore_flow`, real status/session bindings and
+actual completion instead of a raw member plus an invented runtime alias.
+The original negative assertions and deadlines remain. `O_NOCTTY` prevents an
+inherited PTY reopen from acquiring a controlling terminal, with a separate
+session-leader regression. Retained unaffected controls and the repaired
+40-case JavaScript suite remain applicable; this is not a repeated full-workspace
+or CI run. The reviewed selector map joins 26 distinct passing Rust controls,
+using the latest applicable exact result, not a sum of overlapping cohorts or
+one final run of all 26. Final execution is
+`83cd15e3dd8a052017205da4a0393fbfe7bc3689e107e29fbe1f88f2398489d8`; independent review is
+`c65727b8c6450d8bcc1dce89c2a073802095a78a6e4d15ebde6b59a69b8c3cbb`; selector map is
+`6b9696a91d4a4a4e6f26b6f1f164cb7cfa9a326727ab3a2000fe782e3dba7bfa`.
+All command/transport owners joined. The final compile retains 27 rendered
+warning lines.
 
-The successful V40 package above excludes this recovery candidate and keeps
-ordinary Forge generation with recovery absent.
-The earlier two-file Forge adapter passed 12 focused factory/Prepare controls.
-Forge/MobkitInstaller's composed owner source `e33ed031` / `40119816` now passes
+The validation history remains intact: 39/40 UI before the same-login retirement
+repair; five typed-ID compile errors; an 11/13 run before genuine Console source
+admission and permitted test issuer; a typed terminal-error compile failure;
+11/16 before count, fixture ownership, terminal and HTTP diagnosis; and two
+private error-path compile errors before the public enum-path correction.
+No assertion or production authority fence was weakened. Execution warnings and
+failed runs are retained, without a warning-free claim. Detailed earlier source
+identities remain in the [prior provenance checkpoint](https://github.com/lukacf/meerkat-connect/blob/740922ab8fbd833a9d2e3036f158bd6a91831af0/SOURCE-PROVENANCE.md) and execution records.
+
+V40's exact public `1779df8f` package excludes this recovery implementation and
+uses ordinary Forge `3b24a887` with recovery absent. Focused cold-file-owner,
+verified-carrier and terminal tests do not establish an explicitly selected
+installed recovery deployment, Browser login or abrupt-process-loss behavior.
+Those consumer claims remain open. Published release assets are unchanged.
+
+Forge/MobkitInstaller's composed owner source `e33ed031` / `40119816` passes
 38 independently reviewed controls (`53bf78ac`) for explicit optional selection
-and exact cold-controller pin restoration. The older pretest refusal and pytest
-cleanup warnings remain recorded; no clean-stderr claim is made. This is
-source/fixture qualification, not installed adoption, and generator defaults are
-unchanged. V40's selected older Forge source does not include the correction.
+and exact cold-controller pin restoration. The earlier 12-control proposal,
+pretest refusal and pytest cleanup warnings remain recorded. This is source and
+fixture qualification, not installed adoption; generator defaults are unchanged.
 Full controller reconstruction differs from retained gateway artifact startup.
-The local SDK/terminal adapter remains in the pending complete32 candidate and
-adds no standalone realm recovery command. No Core/Meta API change is required.
-Published release assets are unchanged.
+No Core/Meta API change is required.
 
 Returned-error service approval compensation comes from private checkpoint
 `317806cc7b6e1d9e472cab1a31b0a67d2f572616`, exported as public

@@ -274,6 +274,13 @@ pub(crate) struct ServiceMcpParentCompensation {
     source: Arc<ToolkitOriginalOwner>,
 }
 impl OperatorSetup {
+    pub(super) fn retained_service_compensation(&self, expected: OperatorDecision, key: StoreKey)
+        -> ServiceMcpParentCompensation
+    {
+        ServiceMcpParentCompensation { expected, key,
+            originals: self.originals.clone(), source: self.source.clone() }
+    }
+
     pub(crate) fn service_mcp_parent_compensation(&self, review: &ServiceMcpParentReview,
         approval: &ApprovalRecord) -> Result<Option<ServiceMcpParentCompensation>, HostLifetimeError>
     {
@@ -295,6 +302,12 @@ impl ServiceMcpParentCompensation {
     /// Pending store acknowledgement is reconciled with the actual native owner;
     /// a failed native lookup is never absence or permission to issue again.
     pub(crate) async fn issued(&self) -> Result<Option<GrantLineageRef>, HostLifetimeError> {
+        self.reference_observation().await
+    }
+
+    /// Pure native identity observation. Absence while a worker may remain is
+    /// unresolved, never final nonentry or a cancellation receipt.
+    pub(crate) async fn reference_observation(&self) -> Result<Option<GrantLineageRef>, HostLifetimeError> {
         let saved = self.originals.get(&self.key).await.map_err(|_| HostLifetimeError::Unavailable)?;
         let native = self.source.grants().issued_reference(
             &EvidenceId::new(self.key.id.clone()).map_err(|_| HostLifetimeError::InvalidSelection)?)

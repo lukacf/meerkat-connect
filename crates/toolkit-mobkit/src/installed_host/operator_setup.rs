@@ -23,6 +23,7 @@ pub use configured_setup::AgentSetupCapabilityRequest;
 pub(super) mod configured_report;
 pub use configured_report::HelperReportCapabilityRequest;
 mod service_mcp;
+pub(crate) mod service_recovery;
 mod standing_service;
 pub(crate) use standing_service::{ServiceParentRuleEvidence, StandingServiceParentProposal};
 mod service_review;

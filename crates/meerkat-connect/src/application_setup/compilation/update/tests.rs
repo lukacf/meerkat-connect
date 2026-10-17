@@ -107,7 +107,7 @@ impl Fixture {
         };
         let output_audience = BTreeSet::from([Id::new("operator").unwrap()]);
         let acquisition = ApplicationAcquisitionSelection {
-            schema: 1, console_setup: None, standing_policy: None,
+            schema: 1, console_setup: None, local_operator_recovery: None, standing_policy: None,
             prepared_application_setup: reference("setup.json", &canonical_json(&prepared).unwrap()),
             backend_generation: Id::new("retained-backend").unwrap(),
             proposal_ceiling: Ceiling { actions: BTreeSet::new(), services: BTreeSet::new(),

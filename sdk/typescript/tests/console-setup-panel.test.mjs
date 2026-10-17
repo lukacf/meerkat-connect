@@ -10,7 +10,7 @@ const projection = moduleUrl(await readFile(new URL("projection.js", assets), "u
 const view = moduleUrl((await readFile(new URL("view.js", assets), "utf8")).replace('"./projection.js"', JSON.stringify(projection)));
 const moduleSource = (await readFile(new URL("panel.js", assets), "utf8"))
   .replace('"./projection.js"', JSON.stringify(projection)).replace('"./view.js"', JSON.stringify(view));
-const { mountSourceStatusPanel, mountAccountReview, readSourceStatus, mountSourceStatusPage, mountApplicationAccess } = await import(moduleUrl(moduleSource));
+const { mountSourceStatusPanel, mountAccountReview, readSourceStatus, mountSourceStatusPage, mountApplicationAccess, mountOperatorRecovery } = await import(moduleUrl(moduleSource));
 function fixture(t) {
   const dom = new JSDOM("<main></main>");
   t.after(() => dom.window.close());
@@ -857,4 +857,51 @@ test("stale access offer 409 is definite nonentry while a lost reply remains unc
     assert.equal(container.querySelector("button").disabled, false, "a fresh explicit decision is available");
     await Promise.resolve(); assert.equal(posts, 1, "neither failure class automatically retries");
   }
+});
+
+function recoveryOffer(overrides = {}) {
+  return { scope:"operator_service_recovery", offer_id:31, rows:[{ id:"b".repeat(64), service:"mail", target:"worker",
+    operations:["read"], resource:"inbox", state:"publication_unresolved", parent:"issued", child:"issued", policy:"pending", can_recover:true, ...overrides }] };
+}
+test("operator recovery is absent without selection and never offers cleanup for a published or unobserved parent", t => {
+  const container = fixture(t); const recovery = mountOperatorRecovery(container, async () => {}, async () => { throw Error("no mutation"); });
+  t.after(() => recovery.dispose()); recovery.update(undefined, "viewer"); assert.equal(container.textContent, "");
+  assert.equal(container.querySelector(".toolkit-view"), null, "absent selection adds no panel");
+  recovery.update(recoveryOffer({ parent:"not_observed", child:"not_observed", can_recover:false }), "viewer");
+  assert.match(container.textContent, /worker may still enter/); assert.equal(container.querySelectorAll("button").length, 0);
+  recovery.update(recoveryOffer({ state:"publication_present", can_recover:false }), "viewer");
+  assert.equal(container.querySelectorAll("button").length, 0); assert.match(container.textContent, /matching task source is retained/);
+  recovery.clear(); assert.equal(container.textContent, "");
+  assert.equal(container.querySelector(".toolkit-view"), null, "retirement removes the recovery panel");
+});
+test("operator cleanup posts only the opaque offer once and reports partial native outcomes without claiming policy rollback", async t => {
+  const container = fixture(t); const held = deferred(); const calls = []; let refreshes = 0; const submission = { sending:false };
+  const recovery = mountOperatorRecovery(container, async () => { refreshes++; recovery.update(recoveryOffer({ parent:"unavailable", child:"unavailable" }), "viewer"); },
+    (path, options) => { calls.push({ path, options }); return held.promise; }, submission);
+  t.after(() => recovery.dispose()); recovery.update(recoveryOffer(), "viewer");
+  const button = container.querySelector("button"); button.click(); button.click();
+  assert.equal(calls.length, 1); assert.equal(submission.sending, true);
+  assert.equal(calls[0].path, "/host/toolkit/setup/recovery/revoke");
+  assert.equal(calls[0].options.credentials, "same-origin"); assert.equal(calls[0].options.redirect, "error");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { offer_id:31, row_id:"b".repeat(64) });
+  held.resolve(new Response(JSON.stringify({ scope:"operator_service_recovery", parent:"revoked", child:"unresolved", uncertain:true,
+    policy_observed_at_offer:"pending", policy_changed:false }), { headers:{"content-type":"application/json"} }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(refreshes, 1); assert.equal(submission.sending, false);
+  assert.match(container.textContent, /parent was revoked/); assert.match(container.textContent, /ownership needs reconciliation/);
+  assert.match(container.textContent, /Tool policy was not changed/); assert.match(container.textContent, /Some effects remain uncertain/);
+});
+test("operator cleanup response lost across retirement is not replayed or applied to another viewer", async t => {
+  const container = fixture(t); const held = deferred(); let calls = 0; let refreshes = 0;
+  const recovery = mountOperatorRecovery(container, async () => { refreshes++; }, () => { calls++; return held.promise; });
+  t.after(() => recovery.dispose()); recovery.update(recoveryOffer(), "old-login"); container.querySelector("button").click();
+  recovery.update(undefined, "new-login"); held.reject(Error("connection lost"));
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(calls, 1); assert.equal(refreshes, 1); assert.equal(container.textContent, "");
+});
+
+test("operator refresh preserves keyboard focus only within the same scope and current row", t => {
+  const container = fixture(t); const recovery = mountOperatorRecovery(container, async () => {});
+  t.after(() => recovery.dispose()); recovery.update(recoveryOffer(), "viewer"); container.querySelector("button").focus();
+  recovery.suspend(); recovery.update(recoveryOffer(), "viewer"); assert.equal(container.ownerDocument.activeElement, container.querySelector("button"));
+  recovery.suspend(); recovery.update(recoveryOffer(), "another-viewer"); assert.equal(container.ownerDocument.activeElement, container.ownerDocument.body);
 });

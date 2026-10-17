@@ -11,7 +11,7 @@ function checkedPage(value) {
 /** One current page, replaced after every authenticated read. Page positions
  * carry no principal, grant or approval and are discarded on view retirement.
  */
-export function mountSourceStatusPanel(container, read, account = { clear() {}, update() {} }, access = { clear() {}, update() {} }, submission = { sending: false }) {
+export function mountSourceStatusPanel(container, read, account = { clear() {}, update() {} }, access = { clear() {}, update() {} }, submission = { sending: false }, recovery = { clear() {}, update() {} }) {
     const doc = container.ownerDocument;
     const status = doc.createElement("p");
     status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
@@ -26,6 +26,7 @@ export function mountSourceStatusPanel(container, read, account = { clear() {}, 
         view?.dispose(); view = undefined; content.replaceChildren();
         if (forRead && typeof account.suspend === "function") account.suspend(); else account.clear();
         if (forRead && typeof access.suspend === "function") access.suspend(); else access.clear();
+        if (forRead && typeof recovery.suspend === "function") recovery.suspend(); else recovery.clear();
     };
     const buttons = busy => {
         refresh.disabled = busy || needsFirst;
@@ -68,6 +69,7 @@ export function mountSourceStatusPanel(container, read, account = { clear() {}, 
                 view.update(snapshot);
                 account.update(envelope.review, snapshot.scope);
                 access.update(envelope.application_access, snapshot.scope, selected !== undefined);
+                recovery.update(envelope.operator_recovery, snapshot.scope, selected !== undefined);
                 page = selected; needsFirst = false;
                 status.textContent = selected ? selected.has_next
                     ? "Showing one page. More history remains to inspect; later pages may have no matching entries."
@@ -512,6 +514,101 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
         dispose() { disposed = true; clear(); document.removeEventListener("focusin", movedFocus); root.remove(); },
     };
 }
+/** Explicit operator recovery of existing approvals whose source publication
+ * is unresolved. The browser holds only an opaque, one-use offer selection.
+ */
+export function mountOperatorRecovery(container, refresh, fetcher = fetch, submission = { sending: false }) {
+    const doc = container.ownerDocument;
+    const root = doc.createElement("section"); root.className = "toolkit-view toolkit-operator-recovery";
+    let epoch = 0; let disposed = false; let currentScope; let status; let controls; let hint;
+    const focusHint = () => controls && { scope:currentScope, focus:[...controls].find(([, element]) => element === doc.activeElement)?.[0] };
+    const movedFocus = event => { if (hint && event.target !== doc.body && event.target !== doc.documentElement) hint.focus = undefined; };
+    doc.addEventListener("focusin", movedFocus);
+    const clear = () => { ++epoch; currentScope = undefined; status = undefined; controls = undefined; hint = undefined; root.replaceChildren(); root.remove(); };
+    return {
+        clear,
+        suspend() {
+            if (disposed) return;
+            if (controls) hint = focusHint();
+            ++epoch; currentScope = undefined; status = undefined; controls = undefined; root.replaceChildren(); root.remove();
+        },
+        update(value, scope, paged = false) {
+            if (disposed) return;
+            const previous = hint ?? focusHint(); clear();
+            // Absent policy retains the prior presentation, including no new
+            // operator section for an ordinary requester-only installation.
+            if (value == null) return;
+            container.append(root);
+            currentScope = scope; const current = epoch;
+            if (value.scope !== "operator_service_recovery") throw new TypeError("Invalid recovery scope");
+            const heading = doc.createElement("h2"); heading.textContent = "Unresolved service approvals";
+            status = doc.createElement("p"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
+            root.append(heading, status);
+            if (value.state === "unavailable") { status.textContent = "Operator recovery status is unavailable."; return; }
+            if (!Number.isSafeInteger(value.offer_id) || value.offer_id < 1 || !Array.isArray(value.rows)
+                || value.rows.length > 64 || typeof scope !== "string" || !scope.length) throw new TypeError("Invalid recovery offer");
+            const states = { publication_present: "A matching task source is retained; cleanup is unavailable here",
+                publication_unresolved: "Task source publication is unresolved" };
+            const parents = { issued: "Currently available", unavailable: "Not currently available or could not be confirmed", not_observed: "No issuance observed; an approval worker may still enter" };
+            const children = { issued: "Currently available", unavailable: "Not currently available or could not be confirmed", not_observed: "No issuance observed", another_approval: "Belongs to another approval and will be preserved", pending_reconciliation: "Issuance needs reconciliation", denied: "Approval denied" };
+            const policies = { not_requested: "No member tool policy requested", pending: "Retained policy remains pending", retained_current: "Approved policy is retained as current", superseded_or_unobserved: "No matching current or pending policy observed", unavailable: "Policy observation unavailable" };
+            const ids = new Set();
+            for (const row of value.rows) {
+                if (!row || !/^[a-f0-9]{64}$/.test(row.id) || ids.has(row.id) || typeof row.can_recover !== "boolean"
+                    || !Object.hasOwn(states, row.state) || !Object.hasOwn(parents, row.parent)
+                    || !Object.hasOwn(children, row.child) || !Object.hasOwn(policies, row.policy)
+                    || row.can_recover && (row.state !== "publication_unresolved" || row.parent === "not_observed")
+                    || ![row.service, row.target, row.resource].every(text => typeof text === "string" && text.length)
+                    || !Array.isArray(row.operations) || !row.operations.length || !row.operations.every(text => typeof text === "string" && text.length))
+                    throw new TypeError("Invalid recovery row");
+                ids.add(row.id);
+            }
+            const note = doc.createElement("p");
+            note.textContent = "These are your operator approvals. Missing task publication does not mean the work was abandoned. Choosing cleanup attempts to revoke this approval's native access; it does not remove credentials, uninstall software, roll back tool policy, or stop running work.";
+            root.append(note);
+            if (!value.rows.length) { status.textContent = paged ? "No matching service approvals on this page." : "No matching service approvals found."; return; }
+            controls = new Map();
+            for (const row of value.rows) {
+                const card = doc.createElement("article"); const title = doc.createElement("h3"); title.textContent = row.service;
+                const facts = doc.createElement("dl");
+                const fact = (name, text) => { const dt = doc.createElement("dt"); dt.textContent = name;
+                    const dd = doc.createElement("dd"); dd.textContent = text; facts.append(dt, dd); };
+                fact("Agent", row.target); fact("Operations", row.operations.join(", ")); fact("Resource", row.resource);
+                fact("Publication", states[row.state]); fact("Parent access", parents[row.parent]); fact("Application access", children[row.child]); fact("Tool policy", policies[row.policy]);
+                card.append(title, facts);
+                if (row.can_recover) {
+                    const button = doc.createElement("button"); button.type = "button"; button.textContent = "Revoke this unresolved approval"; button.disabled = submission.sending;
+                    controls.set(row.id, button);
+                    button.addEventListener("click", async () => {
+                        if (disposed || current !== epoch || submission.sending) return;
+                        submission.sending = true; for (const control of root.querySelectorAll("button")) control.disabled = true;
+                        let text = "The cleanup result could not be confirmed. Read current status before making a new decision.";
+                        try {
+                            const response = await fetcher("/host/toolkit/setup/recovery/revoke", { method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error",
+                                headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offer_id: value.offer_id, row_id: row.id }) });
+                            if (response.status === 409) text = "This offer is no longer current. This request changed no access. Read current status.";
+                            else {
+                                if (!response.ok || !response.headers.get("content-type")?.startsWith("application/json")) throw new Error("Response unavailable");
+                                const result = await response.json();
+                                const parent = { revoked: "The operator parent was revoked.", not_current: "The access view changed before cleanup entered.", controller_in_use: "Unfinished controller work still requires this parent.", refused: "Parent cleanup was refused.", unavailable: "Parent cleanup could not be confirmed." };
+                                const child = { revoked: "Its application access was revoked.", not_entered: "Application cleanup was not entered.", not_issued: "No application access was issued under the revoked parent.", another_approval_preserved: "The application access belongs to another approval and was preserved.", unresolved: "Application access ownership needs reconciliation.", unavailable: "Application cleanup could not be confirmed.", controller_in_use: "Unfinished controller work still requires the application access.", refused: "Application cleanup was refused." };
+                                if (result.scope !== "operator_service_recovery" || !Object.hasOwn(parent, result.parent) || !Object.hasOwn(child, result.child) || typeof result.uncertain !== "boolean" || result.policy_changed !== false) throw new Error("Unknown recovery result");
+                                text = `${parent[result.parent]} ${child[result.child]} Tool policy was not changed.${result.uncertain ? " Some effects remain uncertain." : ""}`;
+                            }
+                        } catch { /* Never replay an operation whose response may have been lost. */ }
+                        submission.sending = false;
+                        if (!disposed) { await refresh(); if (!disposed && currentScope === scope && status) status.textContent = text; }
+                    });
+                    card.append(button);
+                }
+                root.append(card);
+            }
+            const focus = previous?.scope === scope ? controls.get(previous.focus) : undefined;
+            if (focus && !focus.disabled && doc.activeElement === doc.body) focus.focus();
+        },
+        dispose() { disposed = true; clear(); doc.removeEventListener("focusin", movedFocus); root.remove(); },
+    };
+}
 /** A cached document must read the current authenticated projection again when
  * the browser restores it. Native setup work stays with the existing driver.
  */
@@ -530,6 +627,7 @@ export function mountSourceStatusPage(container, read, fetcher = fetch) {
         if (mounted.timer !== undefined) page.clearTimeout(mounted.timer);
         mounted.account.dispose();
         mounted.access.dispose();
+        mounted.recovery.dispose();
         mounted.panel.dispose();
     };
     const start = () => {
@@ -537,8 +635,9 @@ export function mountSourceStatusPage(container, read, fetcher = fetch) {
         let panel;
         const account = mountAccountReview(container, () => panel.refresh(), fetcher, submission);
         const access = mountApplicationAccess(container, () => panel.refresh(), fetcher, submission);
-        panel = mountSourceStatusPanel(container, read, account, access, submission);
-        const mounted = { panel, account, access, timer: undefined };
+        const recovery = mountOperatorRecovery(container, () => panel.refresh(), fetcher, submission);
+        panel = mountSourceStatusPanel(container, read, account, access, submission, recovery);
+        const mounted = { panel, account, access, recovery, timer: undefined };
         current = mounted;
         const poll = async () => {
             if (current !== mounted) return;

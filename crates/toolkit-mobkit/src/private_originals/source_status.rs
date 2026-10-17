@@ -42,6 +42,18 @@ impl PrivateOriginals {
     pub(crate) async fn source_status_page_from(&self, store: &dyn ToolkitStore, after: Option<&str>)
         -> Result<SourceStatusPage, PrivateOriginalError>
     {
+        self.status_page_records(store, after, false).await
+    }
+
+    pub(crate) async fn source_status_page_with_recovery(&self, after: Option<&str>)
+        -> Result<SourceStatusPage, PrivateOriginalError>
+    {
+        self.status_page_records(self.store.as_ref(), after, true).await
+    }
+
+    pub(crate) async fn status_page_records(&self, store: &dyn ToolkitStore, after: Option<&str>, recovery: bool)
+        -> Result<SourceStatusPage, PrivateOriginalError>
+    {
         let lifetime = self.status_lifetime()?;
         let mut cursor = after.map(str::to_owned);
         let mut scanned = 0;
@@ -59,7 +71,8 @@ impl PrivateOriginals {
                 // read again on Next, including when this row fills the page.
                 cursor = Some(row.key.id.clone());
                 scanned += 1;
-                if row.data.schema == SOURCE_SCHEMA { rows.push(row); }
+                if row.data.schema == SOURCE_SCHEMA || recovery
+                    && crate::installed_host::operator_setup::service_recovery::is_parent_record(&row) { rows.push(row); }
                 if scanned == MAX_STATUS_RECORDS || rows.len() == MAX_STATUS_TASKS { break; }
             }
         }

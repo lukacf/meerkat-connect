@@ -79,6 +79,14 @@ pub(crate) async fn open_for_console_input(facts: &ControllerModelFacts, human: 
         None, Some(human), false, false, false, false).await
 }
 
+/// Select the exact future verified human as the native operator/root before
+/// initializing any owner. Ordinary Console input fixtures remain unchanged.
+pub(crate) async fn open_for_console_operator_input(facts: &ControllerModelFacts, human: meerkat_core::PrincipalRef) -> Host {
+    assert_eq!(human.kind, meerkat_core::PrincipalKind::Human);
+    open_selected_source(facts, true, true, true, false, None, false, None, true, false,
+        None, Some(human), false, false, false, false).await
+}
+
 /// Explicit fixture administration for an actual fresh task. This does not
 /// authenticate a Human or preselect an application parent for a future session.
 pub(crate) async fn open_for_task_parent_service_input(facts: &ControllerModelFacts) -> Host {
@@ -105,7 +113,7 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
     // This variant exercises the production local service review route. The
     // native root/requester/audience are selected before owner construction;
     // ordinary fixture modes retain their original synthetic administrator.
-    let root = if local_operator {
+    let mut root = if local_operator {
         let operator = meerkat::governed_realm::stock::StockPrincipals::for_local_operator(&native.realm)
             .unwrap().operator;
         native.members[0].audience = meerkat_authorization_contracts::constraints::AudienceRef::Principal {
@@ -122,8 +130,9 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
         operator
     } else { super::tests::principal("admin") };
     if let Some(human) = console_human {
-        // Select only the Console source and audience. The initialized grant
-        // administrator remains the fixture's separate existing local root.
+        // Ordinary Console fixtures retain their existing separate root. The
+        // explicit operator variant selects its root before initialization.
+        if configured_setup { root = human.clone(); }
         native.members[0].audience = meerkat_authorization_contracts::constraints::AudienceRef::Principal {
             principal: human.clone(),
         };

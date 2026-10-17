@@ -188,4 +188,6 @@ fn stock_console_event_key(input: &Input) -> Result<IdempotencyKey, String> {
 }
 
 #[cfg(test)]
+pub(crate) mod auth_fixture;
+#[cfg(test)]
 mod tests;

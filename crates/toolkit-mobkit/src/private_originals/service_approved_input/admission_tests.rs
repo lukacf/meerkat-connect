@@ -26,6 +26,8 @@ mod continuation_tests;
 mod application_policy_tests;
 #[path = "compensation_tests.rs"]
 mod compensation_tests;
+#[path = "service_recovery_tests.rs"]
+mod service_recovery_tests;
 fn id(value: &str) -> Id { Id::new(value).unwrap() }
 fn revision(value: &str) -> Revision { Revision::new(value).unwrap() }
 
@@ -39,10 +41,19 @@ impl ContextReferenceOwner for NoReferences {
 pub(super) async fn acquisition<S>(fixture: &ContinuationFixture<S>, dispatch: &ToolDispatchContext)
     -> SetupSnapshot
 {
+    let association = fixture.binding().await.unwrap().unwrap();
+    acquisition_for_association(fixture, dispatch, association).await
+}
+
+// The caller must read this association from the actual admitted source. The
+// ordinary fixture keeps its historical source; Console fixtures use the source
+// retained by their real verified ingress instead of a synthetic login handle.
+async fn acquisition_for_association<S>(fixture: &ContinuationFixture<S>, dispatch: &ToolDispatchContext,
+    association: meerkat_authorization_contracts::work_association::InputAuthorityAssociation) -> SetupSnapshot
+{
     let tenant = id(&fixture.scope.realm);
     let deployment = id(&fixture.scope.owner);
     let policy = revision("test-policy");
-    let association = fixture.binding().await.unwrap().unwrap();
     let target = association.candidate().target.clone();
     let authorization = dispatch.work_authorization().unwrap();
     let retained = dispatch.retained_work().unwrap().clone();
@@ -550,7 +561,7 @@ async fn public_mcp_review_uses_the_actual_waiting_task_and_separate_no_connecto
     if let Err(payload) = result { std::panic::resume_unwind(payload); }
 }
 
-fn persistence_review_request(fixture: &ContinuationFixture) -> ApprovalRequest {
+fn persistence_review_request<S>(fixture: &ContinuationFixture<S>) -> ApprovalRequest {
     ApprovalRequest {
         requester: ApprovalPrincipalId::new("installed-service-fixture").unwrap(),
         owner: ApprovalOwnerRef::Session { session_id: fixture.session.clone() },
@@ -581,7 +592,7 @@ fn persistence_config() -> meerkat_core::McpServerConfig {
     config
 }
 
-async fn persistence_task(fixture: &ContinuationFixture) -> InstalledServiceTask {
+async fn persistence_task<S>(fixture: &ContinuationFixture<S>) -> InstalledServiceTask {
     let original = fixture.submit().await;
     fixture.finish(&original).await.unwrap();
     let dispatch = fixture.probe.as_ref().unwrap().captured();

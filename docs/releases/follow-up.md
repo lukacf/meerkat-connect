@@ -22,23 +22,23 @@ recovery or independent runtime write prevention. Published Connect 0.9.0 binari
 are unchanged. [Source provenance](../../SOURCE-PROVENANCE.md#unreleased-follow-up-source)
 retains exact source identities, earlier failures and scoped validation.
 
-- **Retained approval recovery:** A reviewed candidate uses one bounded inventory
-  of existing parent/access/source records and the existing native owner. Explicit
-  Console operator policy and an independent local OS-operator SDK selection
-  permit reviewed exact cleanup; neither viewer status nor source absence grants
-  authority. Published sources and other approvals are preserved. Missing parents
-  or partial outcomes remain unresolved, with policy observation kept separate.
-  The repaired UI suite passes 40 controls. The composed candidate compiles and
-  passes 11 of 16 affected auth/SDK controls after the retained fixture and typed
-  error repairs. Five failures remain: a probe-count expectation, two HTTP
-  observation timeouts, duplicate live fixture ownership and terminal SIGHUP.
-  Narrow source fixes and finite HTTP diagnostics are pending qualification. Recovery
-  remains unadopted and not installed-qualified. No standalone
-  realm recovery command is added. Forge/MobkitInstaller's composed optional
-  selection and exact cold-controller pin restoration passes 38 independently
-  reviewed controls; installed adoption remains pending and generator defaults
-  are unchanged. That controller path differs from retained gateway artifact
-  startup, and V40 includes neither new selection nor that owner correction.
+- **Retained approval recovery:** Development now includes one bounded inventory
+  of existing parent/access/source records and reviewed exact cleanup through the
+  existing native owner. Explicit Console operator policy requires the retained
+  human plus current admin/member/login authority; independent local OS-operator
+  SDK selection supports the inherited terminal's `/recover` command. Published
+  sources and other approvals are preserved, and absent-parent or partial effects
+  remain unresolved. Policy observation stays separate. The repaired UI suite
+  passes 40 controls; a reviewed selector map joins 26 distinct passing Rust
+  controls across native/SQLite, SDK, terminal and actual-verifier behavior. The fixture uses native
+  identity restoration after actual HTTP diagnostics confirmed a stale alias.
+  Inherited PTY adoption uses `O_NOCTTY`, with an isolated session-leader control.
+  Earlier failed runs remain recorded. See the [host guide](../site/guides/host-composition.mdx#recover-unpublished-service-approvals)
+  for explicit selection and use. Installed recovery, Browser login and process-loss
+  qualification remain open; V40 excludes these changes. No standalone realm
+  command or automatic startup revoke is added. Forge/MobkitInstaller's optional
+  selection and cold-controller pin correction passes 38 reviewed controls but
+  has no installed adoption claim and changes no generator default.
 - **Approval failure cleanup:** After an approval worker joins with an error,
   the source owner reconciles the exact result and attempts unpublished-grant
   revocation. Native refusal or uncertainty remains unresolved. An already
