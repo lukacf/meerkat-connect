@@ -138,6 +138,25 @@ def recheck_pins(pins):
             raise PreparationError("host_input_changed")
 
 
+def node_build_options(args):
+    """Capture an optional host-selected profile without interpreting its tools."""
+    value = getattr(args, "node_build_profile", None)
+    expected = getattr(args, "node_build_profile_sha256", None)
+    if value is None and expected is None:
+        return None
+    if not value or not expected:
+        raise PreparationError("node_build_profile_pair_required")
+    checked_hash(expected)
+    path = Path(value)
+    if not path.is_absolute():
+        raise PreparationError("invalid_input_path")
+    path = directory(path.parent) / path.name
+    raw, _ = read_regular(path, 65536)
+    if not raw or digest(raw) != expected:
+        raise PreparationError("node_build_profile_changed")
+    return path, expected, raw
+
+
 def relative(value):
     path = PurePosixPath(value)
     if (not value or path.is_absolute() or path.as_posix() != value or "\\" in value
@@ -441,6 +460,11 @@ def prepare(args):
         raise PreparationError("overlapping_directories")
     if args.target not in TARGETS:
         raise PreparationError("unsupported_target")
+    node_build = node_build_options(args)
+    if node_build is not None:
+        if any(overlap(node_build[0], location) for location in locations):
+            raise PreparationError("node_build_profile_overlaps_host_paths")
+        locations.append(node_build[0])
     # The archive owns both manifest parsing and each retained request format.
     snapshot, retained = release_snapshot(args.release_archive, args.release_sha256, release, args.target)
     backend = owner_module("prepared_setup_backend", release / "setup/backend.py", retained["setup/backend.py"])
@@ -760,6 +784,10 @@ def prepare(args):
         pins["selected_node"] = pinned_path(args.selected_node, args.selected_node_sha256, executable=True)
     if all(selected_npm_inputs):
         pins["selected_npm_cli"] = pinned_path(args.selected_npm_cli, args.selected_npm_cli_sha256)
+    if node_build is not None:
+        if not {"selected_node", "selected_npm_cli"} <= pins.keys():
+            raise PreparationError("node_build_requires_selected_node_validator")
+        pins["node_build_profile"] = pinned_path(node_build[0], node_build[1])
     if args.allow_public_npm or search_node:
         pins["npm_archive"] = pinned_path(args.npm_archive, args.npm_archive_sha256)
     def tool(name):
@@ -781,7 +809,13 @@ def prepare(args):
         profile["validators"]["mcpb"] = tool(MCPB_TOOL)
     selected_enabled = (not recovery or inspect_acquired or inspect_package or inspect_plugin or allow_mcpb
                         or any(row["kind"] == backend.SELECTED_REQUEST for row in recovery_entries))
+    if node_build is not None:
+        if not selected_enabled or "node" not in profile["validators"]:
+            raise PreparationError("node_build_requires_selected_node_validator")
+        profile["node_build"] = {"path": str(output / "node-build-profile.json"), "sha256": node_build[1]}
     files = {"selected-install.json": encoded(profile)} if selected_enabled else {}
+    if node_build is not None:
+        files["node-build-profile.json"] = node_build[2]
     compose_wrappers = {}
     for name in ("successor_inputs", "successor_backend"):
         if name in compose_raw:
@@ -909,8 +943,17 @@ def prepare(args):
             write_new(temp / name, raw)
         selected_binding = None
         if selected_enabled:
-            _, _, payloads = backend.selected_profile(temp / "selected-install.json",
-                digest(files["selected-install.json"]), recovering=bool(recovery))
+            checked_profile = temp / "selected-install.json"
+            checked_profile_raw = files["selected-install.json"]
+            if node_build is not None:
+                # Only the outer profile locator differs before publication.
+                # The toolchain's internal paths and exact bytes stay intact.
+                checked_profile = temp / "check-selected-install.json"
+                checked_profile_raw = encoded({**profile, "node_build": {
+                    "path": str(temp / "node-build-profile.json"), "sha256": node_build[1]}})
+                write_new(checked_profile, checked_profile_raw)
+            _, _, payloads = backend.selected_profile(checked_profile,
+                digest(checked_profile_raw), recovering=bool(recovery))
             selected_node = pins.get("selected_node", pins.get("node"))
             selected_npm = pins.get("selected_npm_cli", None if "selected_node" in pins else pins.get("npm_cli"))
             selected_binding = {"profile_sha256": digest(files["selected-install.json"]),
@@ -1022,6 +1065,8 @@ def prepare(args):
                 raise PreparationError("mcpb_acquisition_python_mismatch")
         recheck_release(release, snapshot)
         recheck_pins(pins)
+        if node_build is not None and node_build_options(args) != node_build:
+            raise PreparationError("node_build_profile_changed")
         if playwright and digest(read_regular(playwright_path, backend.MAX_BODY)[0]) != playwright_sha256:
             raise PreparationError("playwright_host_profile_changed")
         if prior_enabled and digest(read_prior()) != prior_sha256:
@@ -1102,6 +1147,7 @@ def main(argv=None):
                  "mcpb-acquisition-profile", "mcpb-acquisition-profile-sha256",
                  "node-prebuilt-profile", "node-prebuilt-profile-sha256",
                  "node-prebuilt-policy", "node-prebuilt-policy-sha256",
+                 "node-build-profile", "node-build-profile-sha256",
                  "compose-acquisition-host-profile", "compose-acquisition-host-profile-sha256",
                  "compose-backend-profile", "compose-backend-profile-sha256", "compose-graph-workspace",
                  "compose-allowed-actions", "compose-expected-plan-sha256", "compose-delete-state-namespaces",

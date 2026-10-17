@@ -296,6 +296,32 @@ for the supported mapping and example. `persisted=False` attaches the configurat
 For an already installed stdio MCP integration, use the
 [ordinary Meerkat host configuration](/guides/native-mcp). Use the application's native setup, authentication and continuation owners for those parts of the workflow.
 
+## Enable selected Node builds (unreleased)
+
+A host may opt into explicit Node build plans during resource preparation. Pass
+`--node-build-profile /absolute/path/profile.json` and
+`--node-build-profile-sha256 <exact-sha256>` through the existing resource-packaging
+or host-preparation command. The profile requires an enabled Node validator and
+explicitly selected Node and npm runtimes. Omission preserves ordinary installation
+with npm lifecycle scripts disabled.
+
+The version-1 host profile has scope `selected_node_build` and contains the exact
+Node target, named executables and input files with absolute paths and hashes, a
+fixed nonsecret environment, and time/output limits. Preparation retains the
+profile in the existing resource bundle; it does not install the referenced
+compiler, headers or other tools. Their paths must be valid on the execution host.
+Do not put credentials in this profile or its environment.
+
+The agent sees a bounded planning projection through `setup_state.node_build`
+and proposes commands using those IDs. It cannot supply a replacement host profile
+through tool arguments. The existing software-install approval carries the checked
+plan, and the existing installer owns execution and readback. No separate build
+agent, runtime or Core API is required.
+
+See [packages that need a build](/acquisition/local-install#packages-that-need-a-build-unreleased)
+for the setup sequence. Focused preparation controls and one Linux compile/load
+fixture pass. Use matching rebuilt development resources; this is not in 0.9.0.
+
 ## Standalone service-secret setup
 
 The standalone terminal adds initial credential setup for checked library stdio

@@ -82,6 +82,201 @@ installer does not launch the selected server or guess a `profiles` command.
 A failed attempt retains its partial directory and step logs; keep it unused
 and select another new directory after correcting the cause.
 
+## Build selected source with an explicit plan
+
+This optional development contract is not in Connect 0.9.0. It extends the existing selected installer; it does not enable npm
+lifecycle scripts or change `NodeInstallPlan`. Use a matching current setup host
+and installer. The no-build path and earlier package-specific evidence above
+retain their original scope.
+
+The agent chooses the source, exact input mappings and literal commands. The
+host selects a hash-bound toolchain profile and admits the checked software
+effect. The same pinned installer parses that profile and plan for planning,
+review, installation and readback. No compiler-specific recipe name or implicit
+shell is involved. A reviewed command may execute package code or a build script
+as trusted local code; the working directory is not a sandbox.
+
+### Version-1 build plan
+
+Retain the exact UTF-8 plan as `closure/node-build-plan`. Add the flat
+`node-build-plan` key and its raw SHA-256 to the selected component's
+`pinned_closure.artifacts`, alongside the unchanged project, lock and archive
+pins. The setup request must explicitly select that same digest. With live
+`acquired_source`, submit the plan separately and let the host add only this
+authored digest after revalidating the acquisition; do not rewrite the acquired
+receipt or supply your own acquired dependency map.
+
+The object and each nested record have exactly the keys shown below. Replace
+the package paths, target and hash placeholder with actual selected facts. This
+illustrative package contains a `build.mjs` that accepts the two arguments shown;
+it is not a claim about an existing package or a qualified target. Copy the
+target from the host's planning response, rather than guessing it.
+
+```json
+{
+  "schema_version": 1,
+  "target": {
+    "node_sha256": "EXACT_NODE_EXECUTABLE_SHA256",
+    "node_version": "v24.19.0",
+    "node_abi": "137",
+    "platform": "linux",
+    "arch": "x64",
+    "libc": {"family": "glibc", "version": "2.39"}
+  },
+  "inputs": [
+    {
+      "source": {"npm": "node_modules/@example/source-server/build.mjs"},
+      "path": "build.mjs"
+    },
+    {
+      "source": {"toolchain": "generator-config"},
+      "path": "config.json"
+    }
+  ],
+  "steps": [
+    {
+      "executable": "node-runtime",
+      "arguments": ["build.mjs", "config.json", "index.mjs"]
+    }
+  ],
+  "outputs": [
+    {
+      "path": "index.mjs",
+      "destination": "node_modules/@example/source-server/index.mjs",
+      "replaces_sha256": null
+    }
+  ]
+}
+```
+
+- `inputs` has 1-256 records. Each source selects exactly one original retained
+  npm file by its installed lock path, or one host `files` ID. `path` is its
+  relative copy location in the separate build workspace.
+- `steps` has 1-16 records. `executable` selects a host `executables` ID;
+  `arguments` contains at most 256 literal strings, each at most 4096 UTF-8
+  bytes without NUL. Empty arguments are allowed. There is no interpolation,
+  shell expansion or inference of a package's lifecycle command.
+- `outputs` has 1-64 records. Each `path` is a generated workspace file and
+  `destination` is its exact installed location within a selected npm package.
+  `replaces_sha256: null` requires an absent destination. A replacement requires
+  the exact SHA-256 of that destination's original archive file. It cannot
+  replace a prebuilt addition or silently overwrite a retained file.
+
+The complete plan is limited to 32 KiB. Relative input/output paths follow the
+existing portable no-link and no-alias rules; input and output paths cannot
+collide, and their first component cannot be reserved `tmp`. The installer
+creates input parent directories and `tmp`; commands must create any other
+output directories they need. Only declared generated files are published.
+Original inputs remain retained and are checked after execution. Generated
+`.js`, `.mjs` or `.cjs` entrypoints must appear in the exact output destinations;
+without a build plan, the existing retained-JavaScript rule remains required.
+Other generated files, including `.node` addons, use the same output mapping.
+
+### Version-1 host profile
+
+The host supplies this separate, nonsecret object. It is not agent tool input.
+All shown fields are required; `files` and `environment` may be empty. Replace
+every path and digest, including the target, with the host's actual selection.
+
+```json
+{
+  "schema_version": 1,
+  "scope": "selected_node_build",
+  "target": {
+    "node_sha256": "EXACT_NODE_EXECUTABLE_SHA256",
+    "node_version": "v24.19.0",
+    "node_abi": "137",
+    "platform": "linux",
+    "arch": "x64",
+    "libc": {"family": "glibc", "version": "2.39"}
+  },
+  "executables": {
+    "node-runtime": {
+      "path": "/opt/node24/bin/node",
+      "sha256": "EXACT_NODE_EXECUTABLE_SHA256"
+    }
+  },
+  "files": {
+    "generator-config": {
+      "path": "/opt/toolkit/build/config.json",
+      "sha256": "EXACT_CONFIG_FILE_SHA256"
+    }
+  },
+  "environment": {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+  "limits": {
+    "timeout_seconds": 120,
+    "file_bytes": 1048576,
+    "total_output_bytes": 2097152
+  }
+}
+```
+
+The profile is limited to 64 KiB. It allows 1-16 executables and 0-256 input
+files, keyed by `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`. Values contain exactly `path`
+and lowercase 64-digit `sha256`. Paths identify canonical absolute regular
+files; executables must also be executable. Each executable may be at most
+512 MiB, each input file at most 64 MiB, and the entire selected inventory at
+most 512 MiB. Files are checked by bytes, not inferred from a tool name.
+
+The target has exactly the six keys shown. `node_abi` is a decimal string.
+Supported target shapes are `linux`/`x64` with an explicit `glibc` version, or
+`darwin`/`arm64` with `libc: null`. The plan, profile and any retained npm/native
+target must agree. Review checks the selected Node executable hash;
+installation also observes its runtime target. Readback does not rerun that probe.
+
+`environment` has at most 32 keys matching `[A-Z_][A-Z0-9_]{0,63}` and string
+values of at most 4096 UTF-8 bytes without NUL. It is fixed nonsecret build
+configuration, not credential transport. No inherited environment is copied;
+the installer adds its own `TMPDIR`, so that key cannot be supplied. Tool paths
+and input hashes do not attest external headers, subprocess tools, dynamic
+libraries or a complete reproducible toolchain.
+
+Limits are positive integers: `timeout_seconds` at most 3600, `file_bytes` at
+most 64 MiB and `total_output_bytes` at most 512 MiB, with the per-file limit no
+larger than the total. The Controller uses the timeout for its whole captured
+installer invocation. Compiler steps share the installer's remaining build
+deadline; they do not each receive a fresh budget. This is not a whole-command
+deadline promise for independently invoking the installer CLI.
+
+### Hashing, review and observation
+
+Plan and profile pins are SHA-256 of the exact file bytes, including whitespace
+and the final newline. Inline `build_plan_json` is hashed as its exact UTF-8
+string; it is not parsed and reserialized before freezing. Staged and inline
+forms match only when those bytes match. A useful deterministic authoring
+convention is:
+
+```python
+raw = (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                  ensure_ascii=True, allow_nan=False) + "\n").encode("ascii")
+pin = hashlib.sha256(raw).hexdigest()
+```
+
+Other valid JSON formatting is accepted but produces a different raw pin.
+Duplicate keys, unknown contract keys and invalid numeric values are refused.
+Never substitute a typed package digest for a raw selection, plan or profile pin.
+
+Use the [selected setup tools](../../sdk/consumer-setup/SELECTED.md#select-an-explicit-node-build)
+to produce the checked proposal. Its `build-review.json` binds literal argv,
+source and tool hashes, environment, target, outputs and limits into the existing
+software effect. The installer requires that exact reviewed projection, then
+keeps `npm ci --offline --ignore-scripts --bin-links=false`, runs the approved
+commands, checks the original inputs and publishes measured declared outputs.
+Merely adding a plan to a historical manual bundle does not supply this review.
+
+The installer's `node_build` receipt contains `review`, successful step records
+`{"index": 0, "exit_code": 0}` in command order, and an `outputs` map from installed
+path to `{"sha256": "...", "bytes": 123}`. The live Controller binds its original
+successful stdout before reading mutable ready files. Later readback checks the
+original selection and current output bytes without npm, compiler, addon import
+or repair. See the [live and cold receipt distinction](../../sdk/consumer-setup/SELECTED.md#node-build-receipt-binding).
+Successful file checks do not establish MCP compatibility, authority or task
+completion. Qualification includes 37 distinct focused controls and one actual
+Linux x64/glibc 2.39 source-addon build with Node 24.19.0 (ABI 137). A fresh
+consumer loaded the generated addon and returned 42 for 19 + 23. This covers one
+local package; broad compilation-dependent package support remains open.
+
+
 ## Add an explicitly selected prebuilt native dependency
 
 The optional `setup_acquire_node_prebuilt` capability can supplement an exact
@@ -114,8 +309,9 @@ contents, and verifies the combined graph. Links, path aliases, mismatched
 targets and unbounded archives refuse. Readback checks the retained inputs,
 installed payloads and current selected Node executable hash without loading
 the addon. Protocol startup, operation authorization, resource boundaries and
-original-task completion remain separate checks. A package requiring compilation
-or another installation effect still needs an appropriate supported backend.
+original-task completion remain separate checks. Compilation requires the
+separate [explicit build plan](#build-selected-source-with-an-explicit-plan);
+prebuilt payload selection alone cannot authorize it.
 
 ## Reconcile an existing selected installation
 
@@ -263,8 +459,9 @@ A platform-incompatible optional subtree can be omitted with an explicit
 `excluded_optional_packages` reason; required edges and shared required rows
 remain protected. Every package retained in the selected graph must match its exact installed
 files even after npm exits successfully. The full original lock remains
-unchanged. Conditional peer/devOptional graphs, unsupported libc and packages
-requiring native compilation are outside this subset. Explicit prebuilt addons
+unchanged. Conditional peer/devOptional graphs and unsupported libc remain
+outside this subset. Compilation requires the optional reviewed build contract
+above; this optional-target selection alone does not enable it. Explicit prebuilt addons
 remain a separate selection. Acquisition, installation and matching files do
 not supply authentication, a native grant, MCP readiness or task completion.
 
@@ -308,7 +505,8 @@ HTTPS registry dependency rows, and literal JavaScript entrypoints. It refuses
 links, workspaces, bundled dependencies, development-only rows, archive path
 aliases and unsupported paths. Lifecycle scripts and binary links are disabled;
 an explicitly selected prebuilt addon can use the optional path above. Packages
-requiring compilation or other installation scripts need another reviewed backend.
+requiring compilation or generated entrypoints need the optional reviewed build
+plan above. Other installation effects remain unsupported by the no-build path.
 Request/Deployment lifetime on the full path and authentication fields in both
 forms remain declarations, not native observations or permission.
 Existing native runtime and policy owners are unchanged.

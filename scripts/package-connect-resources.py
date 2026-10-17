@@ -93,6 +93,23 @@ def captured_input(path, expected, size):
     return raw
 
 
+def captured_node_build_profile(path, expected, *, selected_node):
+    """Capture only the bounded profile; do not relocate or execute its tools."""
+    if path is None and expected is None:
+        return None
+    if (not selected_node or not isinstance(path, Path) or not path.is_absolute()
+            or not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)):
+        raise ValueError("Node build profile requires an exact pair and selected npm resources")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 65536:
+            raise ValueError("invalid Node build profile input")
+        raw = source.read(65537)
+    if len(raw) != info.st_size or hashlib.sha256(raw).hexdigest() != expected:
+        raise ValueError("Node build profile pin mismatch")
+    return raw
+
+
 def selected_npm_inputs(target, node_archive, node_sha256, node_bytes, npm_archive, npm_sha256, npm_bytes):
     fields = (node_archive, node_sha256, node_bytes, npm_archive, npm_sha256, npm_bytes)
     if not any(value is not None for value in fields):
@@ -385,7 +402,8 @@ def build(destination, upstream, zstd, target="macos-arm64", *, library=None,
           library_sha256=None, library_bytes=None, starter=None, release_manifest_sha256=None,
           acquisition_node_archive=None, acquisition_node_sha256=None, acquisition_node_bytes=None,
           npm_archive=None, npm_archive_sha256=None, npm_archive_bytes=None,
-          node_prebuilt_policy=None, node_prebuilt_policy_sha256=None):
+          node_prebuilt_policy=None, node_prebuilt_policy_sha256=None,
+          node_build_profile=None, node_build_profile_sha256=None):
     if target not in TARGETS:
         raise ValueError("unsupported packaging target")
     fields = (library, library_sha256, library_bytes, starter, release_manifest_sha256)
@@ -396,6 +414,8 @@ def build(destination, upstream, zstd, target="macos-arm64", *, library=None,
         acquisition_node_bytes, npm_archive, npm_archive_sha256, npm_archive_bytes)
     if acquisition is not None and not explicit:
         raise ValueError("npm resources require explicit current starter and library selection")
+    node_build_raw = captured_node_build_profile(node_build_profile, node_build_profile_sha256,
+                                               selected_node=acquisition is not None)
     prebuilt_policy_raw = None
     if node_prebuilt_policy is not None or node_prebuilt_policy_sha256 is not None:
         if node_prebuilt_policy is None or not node_prebuilt_policy_sha256 or acquisition is None:
@@ -478,6 +498,8 @@ def build(destination, upstream, zstd, target="macos-arm64", *, library=None,
                     {"linux-x86_64": ("linux", "x64"), "macos-arm64": ("darwin", "arm64")}[target]):
             raise ValueError("Node prebuilt policy does not bind the selected target")
         (resources / "node-prebuilt-policy.json").write_bytes(prebuilt_policy_raw)
+    if node_build_raw is not None:
+        (resources / "node-build-profile.json").write_bytes(node_build_raw)
     if explicit:
         # Compatibility and packaged payload consume the same pinned capture.
         # A changed external pathname cannot substitute metadata during review
@@ -590,6 +612,10 @@ def build(destination, upstream, zstd, target="macos-arm64", *, library=None,
         result["node_prebuilt_policy_input"] = {"path": str(node_prebuilt_policy),
             "sha256": node_prebuilt_policy_sha256, "bytes": len(prebuilt_policy_raw),
             "scope": "explicit_target_and_origins_host_binds_selected_python_during_preparation"}
+    if node_build_raw is not None:
+        result["node_build_profile_input"] = {"path": str(node_build_profile),
+            "sha256": node_build_profile_sha256, "bytes": len(node_build_raw),
+            "scope": "exact_profile_bytes_external_toolchain_paths_remain_host_owned"}
     (destination / "build.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -613,6 +639,8 @@ def main():
     parser.add_argument("--npm-archive-bytes", type=int)
     parser.add_argument("--node-prebuilt-policy", type=Path)
     parser.add_argument("--node-prebuilt-policy-sha256")
+    parser.add_argument("--node-build-profile", type=Path)
+    parser.add_argument("--node-build-profile-sha256")
     args = parser.parse_args()
     selected = {key: getattr(args, key) for key in (
         "library", "library_sha256", "library_bytes", "starter", "release_manifest_sha256")}
@@ -626,6 +654,9 @@ def main():
     if args.node_prebuilt_policy is not None or args.node_prebuilt_policy_sha256 is not None:
         selected.update(node_prebuilt_policy=args.node_prebuilt_policy,
                         node_prebuilt_policy_sha256=args.node_prebuilt_policy_sha256)
+    if args.node_build_profile is not None or args.node_build_profile_sha256 is not None:
+        selected.update(node_build_profile=args.node_build_profile,
+                        node_build_profile_sha256=args.node_build_profile_sha256)
     print(json.dumps(build(args.destination, args.upstream, args.zstd, target=args.target, **selected), sort_keys=True))
 
 

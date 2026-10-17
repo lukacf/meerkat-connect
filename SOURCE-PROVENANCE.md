@@ -22,6 +22,38 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+### Explicit Node build plans
+
+Private Toolkit checkpoint `07172f52e03b4a3c0ec9f383651bbfde4ebc2364` contributes 19 source/test
+paths and the selected Node build, setup and host-composition documentation.
+The agent supplies literal commands and input/output mappings; the host supplies
+an exact toolchain profile. Existing installer, software review, job, cancellation
+and readback owners retain their responsibilities. No Rust API or dependency-graph
+change is needed. npm lifecycle scripts remain disabled.
+
+Thirty-seven distinct focused controls passed across the retained attempts.
+The original integrated attempts failed first on an omitted baseline license,
+then a synthetic macOS fixture's Linux admission, and finally a missing archived
+GitHub research module. Only the affected remainder reran; the production source
+was unchanged. The last missing-member cause was established from source; its
+saved child refusal was generic. The fixture now includes the actual module and
+keeps its target substitution local to the test.
+
+A separate actual Controller/installer/compiler case passed on Linux x64/glibc
+2.39 with Node 24.19.0 (ABI 137). It generated a 16,056-byte addon, then a fresh
+Node consumer loaded it and returned 42 for 19 + 23. Original stdout and parsed
+receipt bindings agree with the ready file; replay retains the same job, readback
+preserves bytes and the lifecycle-script marker stays absent. Controller and
+command owners join normally. Direct-child waits and ELF shape are assertions in
+the passed fixture, without a separate exported consumer PID or addon binary.
+
+The production source capsule is `9f78fc8b`, with the final test-only starter
+fixture `0bfaed6b`. Actual result `71a56c28` and independent review `3a7484b2`
+record the compiler case; final starter result `506f8491` completes the focused
+set. This is one local source package and target, not broad build compatibility,
+MCP/native-gateway/task completion, a hermetic toolchain or installed product UX.
+Matching product emission is still required. Published 0.9.0 assets are unchanged.
+
 ### Selected installer cancellation
 
 Private Toolkit checkpoint `a6cab1e3e059fb66cae22a90837f890fcf2a4bab` contributes the

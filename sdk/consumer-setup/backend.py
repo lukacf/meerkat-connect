@@ -946,9 +946,11 @@ class Runner:
 
     def run(self, argv: list[str], *, capture: bool = False,
             inspection_timeout: float | None = None) -> tuple[int, bytes]:
-        timeout = INSPECTION_TIMEOUT if inspection_timeout is None else inspection_timeout
+        selected_timeout = getattr(self._job_context, "installer_timeout", None)
+        timeout = ((selected_timeout if selected_timeout is not None else INSPECTION_TIMEOUT)
+                   if inspection_timeout is None else inspection_timeout)
         compose = getattr(self._compose_context, "settings", None)
-        if capture and (type(timeout) not in (int, float) or not 0 < timeout <= (3600 if compose else MCPB_INSPECTION_TIMEOUT)):
+        if capture and (type(timeout) not in (int, float) or not 0 < timeout <= (3600 if compose or selected_timeout is not None else MCPB_INSPECTION_TIMEOUT)):
             raise SetupError("inspection_unavailable", 500)
         control = getattr(self._job_context, "control", None)
         diagnostic = getattr(self._diagnostic_context, "stderr", None) if capture else None
@@ -1257,7 +1259,7 @@ def selected_profile(path, expected, *, recovering=False):
         if digest(raw) != expected:
             raise ValueError()
         value = decode(raw)
-        if not isinstance(value, dict) or set(value) - {"python_target", "package_inspector", "plugin_inspection", "mcpb_inspection"} not in (
+        if not isinstance(value, dict) or set(value) - {"python_target", "package_inspector", "plugin_inspection", "mcpb_inspection", "node_build"} not in (
                 {"schema_version", "scope", "staging_root", "installer", "validators"},
                 {"schema_version", "scope", "staging_root", "validators"}):
             raise ValueError()
@@ -1273,22 +1275,24 @@ def selected_profile(path, expected, *, recovering=False):
                 or ("mcpb_inspection" in value and (type(value["mcpb_inspection"]) is not bool
                     or value["mcpb_inspection"] and ("package_inspector" not in value
                         or "mcpb" not in value["validators"])))
+                or ("node_build" in value and ("node" not in value["validators"] or "installer" not in value))
                 or ("installer" not in value and set(value["validators"]) != {"mcpb"})):
             raise ValueError()
         if not recovering:
             canonical_directory(Path(value["staging_root"]))
         tools = {**({"installer": value["installer"]} if "installer" in value else {}), **value["validators"],
-                 **({"package_inspector": value["package_inspector"]} if "package_inspector" in value else {})}
+                 **({"package_inspector": value["package_inspector"]} if "package_inspector" in value else {}),
+                 **({"node_build": value["node_build"]} if "node_build" in value else {})}
         payloads = {}
         for name, item in tools.items():
             keys(item, ("path", "sha256"))
             if not isinstance(item["path"], str) or not Path(item["path"]).is_absolute() or not selected_hash(item["sha256"]):
                 raise ValueError()
             source = Path(item["path"])
-            data = read_file(canonical_directory(source.parent), source.name, SELECTED_FILE)
+            data = read_file(canonical_directory(source.parent), source.name, 65536 if name == "node_build" else SELECTED_FILE)
             if digest(data) != item["sha256"]:
                 raise ValueError()
-            if name != "installer" and not os.access(source, os.X_OK):
+            if name not in ("installer", "node_build") and not os.access(source, os.X_OK):
                 raise ValueError()
             payloads[name] = data
         return value, raw, payloads
@@ -1327,12 +1331,15 @@ def selected_source_request(value):
     keys(value, (*fields, *(("configuration_sha256",) if isinstance(value, dict) and value.get("profile") == "mcpb" else ()),
                  *(("plugin_source",) if isinstance(value, dict) and "plugin_source" in value else ()),
                  *(("acquired_source",) if isinstance(value, dict) and "acquired_source" in value else ()),
-                 *(("document_kind",) if isinstance(value, dict) and "document_kind" in value else ())))
+                 *(("document_kind",) if isinstance(value, dict) and "document_kind" in value else ()),
+                 *(("build_plan_sha256",) if isinstance(value, dict) and "build_plan_sha256" in value else ())))
     selected_document(value)
     if (value["profile"] not in ("python", "node", "mcpb") or not selected_name(value["staged_id"])
             or not selected_name(value["component"]) or not selected_hash(value["package_sha256"])
             or not selected_hash(value["selection_sha256"])
             or (value["profile"] == "mcpb" and not selected_hash(value["configuration_sha256"]))):
+        raise SetupError("invalid_selected_request")
+    if "build_plan_sha256" in value and (value["profile"] != "node" or not selected_hash(value["build_plan_sha256"])):
         raise SetupError("invalid_selected_request")
     if "plugin_source" in value:
         plugin_source_reference(value["plugin_source"])
@@ -1383,6 +1390,10 @@ def selected_check_request(value):
                   ("declaration.json" if software else "activation.json", "selection_sha256")}
     if value.get("profile") == "mcpb":
         fields["configuration_json"] = ("configuration.json", "configuration_sha256")
+    if "build_plan_json" in value:
+        if value.get("profile") != "node":
+            raise SetupError("invalid_selected_request")
+        fields["build_plan_json"] = ("closure/node-build-plan", "build_plan_sha256")
     keys(value, ("profile", "staged_id", "component", *fields,
                  *(("plugin_source",) if "plugin_source" in value else ()),
                  *(("acquired_source",) if "acquired_source" in value else ())))
@@ -1401,7 +1412,7 @@ def selected_check_request(value):
     return request, documents
 
 
-def materialize_acquired_source(raw, component_id, result):
+def materialize_acquired_source(raw, component_id, result, build_plan_sha256=None):
     """Copy only retained artifact facts; the pinned validator owns semantics."""
     value = decode(raw)
     if not isinstance(value, dict) or type(value.get("components")) is not list:
@@ -1418,6 +1429,11 @@ def materialize_acquired_source(raw, component_id, result):
                   dependencies={"kind": "pinned_closure", "artifacts": {
                       name.removeprefix("closure/"): sha for name, sha in result["files"].items()
                       if name.startswith("closure/")}})
+    if build_plan_sha256 is not None:
+        if not selected_hash(build_plan_sha256) or "closure/node-build-plan" in result["files"]:
+            raise SetupError("invalid_selected_request")
+        # The authored plan is separate from the unmodified acquisition result.
+        source["dependencies"]["artifacts"]["node-build-plan"] = build_plan_sha256
     expanded = encoded(value)
     if len(expanded) > SELECTED_DOCUMENT:
         raise SetupError("invalid_selected_request")
@@ -1955,6 +1971,8 @@ def selected_plan(raw, request):
 
 
 def selected_files(plan, request):
+    if request["profile"] == "node" and plan["closure"].get("node-build-plan") != request.get("build_plan_sha256"):
+        raise SetupError("selected_validation_unavailable")
     if request["profile"] == "mcpb":
         return {"package.json": request["package_sha256"], "activation.json": request["selection_sha256"],
                 "configuration.json": request["configuration_sha256"], "artifact.mcpb": plan["artifact_digest"]}
@@ -1981,7 +1999,8 @@ def selected_proposal(root, identifier, expected, host_binding):
     if digest(raw) != expected:
         raise SetupError("selected_proposal_changed", 409)
     effect = decode(raw)
-    keys(effect, ("schema_version", "kind", "request", "host", "destination", "files", "plan_sha256"))
+    keys(effect, ("schema_version", "kind", "request", "host", "destination", "files", "plan_sha256",
+                  *(("build_review",) if isinstance(effect, dict) and "build_review" in effect else ())))
     if (type(effect["schema_version"]) is not int or effect["schema_version"] != 1
             or effect["kind"] != SELECTED_PROPOSAL or effect["host"] != host_binding
             or effect["destination"] != str(root / "installations" / identifier)):
@@ -1999,11 +2018,31 @@ def selected_proposal(root, identifier, expected, host_binding):
         total += len(data)
         if total > SELECTED_TOTAL or digest(data) != sha:
             raise SetupError("selected_proposal_changed", 409)
+    if "build_plan_sha256" in effect["request"]:
+        review_raw = selected_read(path, "build-review.json", MAX_JSON)
+        if encoded(decode(review_raw)) != encoded(effect.get("build_review")):
+            raise SetupError("selected_proposal_changed", 409)
+        selected_build_review(effect["build_review"], effect["request"], host_binding)
+    elif "build_review" in effect:
+        raise SetupError("selected_proposal_changed", 409)
     if "plugin_source" in effect["request"]:
         source = selected_read(path, "plugin-source.json", MAX_JSON)
         if digest(source) != effect["request"]["plugin_source"]["inspection_sha256"]:
             raise SetupError("selected_proposal_changed", 409)
     return path, effect, plan
+
+
+def selected_build_review(review, request, host_binding):
+    if (not isinstance(review, dict) or type(review.get("schema_version")) is not int
+            or review["schema_version"] != 1 or review.get("scope") != "selected_node_build"
+            or review.get("plan_sha256") != request.get("build_plan_sha256")
+            or review.get("profile_sha256") != host_binding["tools"].get("node_build")
+            or not isinstance(review.get("limits"), dict)
+            or type(review["limits"].get("timeout_seconds")) is not int
+            or not 1 <= review["limits"]["timeout_seconds"] <= 3600
+            or len(encoded(review)) > MAX_JSON):
+        raise SetupError("selected_build_review_unavailable", 409)
+    return review
 
 
 def load_selected_recovery(root, identifier, expected, host_binding):
@@ -2679,7 +2718,7 @@ class Controller:
             for name, data in selected_payloads.items():
                 tool = workspace / "selected-tools" / (name + (".py" if name == "installer" else ""))
                 write_new(tool, data)
-                if name != "installer":
+                if name not in ("installer", "node_build"):
                     tool.chmod(0o700)
         self.local_recipes = recipes
         self.allow_remote_recipes = allow_remote_recipes
@@ -2808,10 +2847,35 @@ class Controller:
         return ("Host-permitted local software installation and separately delegated container-plan execution; "
                 "no account access, tool attachment or native authority is supplied." if self.compose else SCOPE)
 
+    def selected_build_planning(self):
+        if self.selected is None or "node_build" not in self.selected or self.recovery_only:
+            return None
+        if not self.operation_lock.acquire(blocking=False):
+            return {"available": False, "reason": "operation_in_progress"}
+        try:
+            tools = self.selected_tools()
+            code, raw = self._run([self.python, "-I", "-B", tools["installer"], "--describe-node-build",
+                "--node", self.selected_node, "--node-build-profile", tools["node_build"],
+                "--node-build-profile-sha256", self.selected_binding["tools"]["node_build"]], capture=True)
+            value = decode(raw)
+            if (code or not isinstance(value, dict) or value.get("scope") != "selected_node_build_planning"
+                    or value.get("profile_sha256") != self.selected_binding["tools"]["node_build"]
+                    or len(encoded(value)) > MAX_BODY):
+                raise SetupError("selected_build_review_unavailable", 409)
+            self.selected_tools()
+            return {"available": True, "planning": value}
+        except (SetupError, ValueError, OSError, TypeError, KeyError):
+            return {"available": False, "reason": "host_toolchain_unavailable",
+                    "guidance": "The host must supply the selected toolchain files and matching Node target before checking a build plan."}
+        finally:
+            self.operation_lock.release()
+
     def state(self):
+        build_planning = self.selected_build_planning()
         with self.lock:
             return copy.deepcopy({"families": list(self.families.values()), "job": self.job,
                                   "scope": self.scope(),
+                                  **({"node_build": build_planning} if build_planning is not None else {}),
                                   **({"compose": self.compose.summary()} if self.compose else {}),
                                   **({"python_acquisition": {**self.python_acquisition.summary(), "workspace": str(self.workspace)}}
                                      if self.python_acquisition is not None else {}),
@@ -2988,11 +3052,17 @@ class Controller:
         self._check_stop()
         return result
 
-    def _run_selected_installer(self, argv, profile, **kwargs):
+    def _run_selected_installer(self, argv, profile, *, installer_timeout=None, **kwargs):
         # Only these selected commands invoke the pinned Python installer with
         # its TERM/join handler. Custom run signatures and MCPB stay unchanged.
         if profile not in ("python", "node"):
             return self._run(argv, **kwargs)
+        if installer_timeout is not None and (profile != "node" or type(installer_timeout) is not int
+                                               or not 1 <= installer_timeout <= 3600):
+            raise SetupError("selected_build_review_unavailable", 409)
+        prior_timeout = getattr(self._job_context, "installer_timeout", None)
+        if installer_timeout is not None:
+            self._job_context.installer_timeout = installer_timeout
         previous = getattr(self._job_context, "termination_grace", None)
         self._job_context.termination_grace = SELECTED_INSTALLER_TERMINATION_GRACE
         try:
@@ -3002,6 +3072,11 @@ class Controller:
                 del self._job_context.termination_grace
             else:
                 self._job_context.termination_grace = previous
+            if installer_timeout is not None:
+                if prior_timeout is None:
+                    del self._job_context.installer_timeout
+                else:
+                    self._job_context.installer_timeout = prior_timeout
 
     def compose_action(self, action, request):
         with self.lock:
@@ -3833,6 +3908,8 @@ class Controller:
             result["acquired_source"] = copy.deepcopy(effect["request"]["acquired_source"])
         if effect["request"]["profile"] == "mcpb":
             result["configuration_sha256"] = effect["request"]["configuration_sha256"]
+        if "build_review" in effect:
+            result["build"] = copy.deepcopy(effect["build_review"])
         if "retry_of" in value:
             result.update(retry_of=value["retry_of"], job_id=value["job_id"])
         if len(encoded(result)) > MAX_JSON:
@@ -4341,8 +4418,10 @@ class Controller:
             if "acquired_source" in request:
                 acquired = self.selected_acquired_source(request)
                 documents[document_name] = materialize_acquired_source(
-                    documents[document_name], request["component"], acquired)
+                    documents[document_name], request["component"], acquired, request.get("build_plan_sha256"))
                 request["selection_sha256"] = digest(documents[document_name])
+            if "build_plan_sha256" in request and "node_build" not in tools:
+                raise SetupError("selected_profile_unavailable", 409)
             # Read from the host-fixed root through no-follow child traversal.
             prefix = request["staged_id"] + "/"
             mcpb = request["profile"] == "mcpb"
@@ -4355,6 +4434,11 @@ class Controller:
                     or digest(documents[document_name]) != request["selection_sha256"]
                     or (mcpb and digest(documents["configuration.json"]) != request["configuration_sha256"])):
                 raise SetupError("selected_source_changed", 409)
+            if "build_plan_sha256" in request:
+                if "closure/node-build-plan" not in documents:
+                    documents["closure/node-build-plan"] = selected_read(staging, prefix + "closure/node-build-plan", SELECTED_INLINE_DOCUMENT)
+                if digest(documents["closure/node-build-plan"]) != request["build_plan_sha256"]:
+                    raise SetupError("selected_source_changed", 409)
             if "plugin_source" in request:
                 documents["plugin-source.json"] = self.plugin_source_bytes(request["plugin_source"])
             for identifier, value in self.validations.items():
@@ -4407,6 +4491,16 @@ class Controller:
             effect = {"schema_version": 1, "kind": SELECTED_PROPOSAL, "request": copy.deepcopy(request),
                       "host": copy.deepcopy(self.selected_binding), "destination": str(self.workspace / "installations" / identifier),
                       "files": files, "plan_sha256": digest(plan_raw)}
+            if "build_plan_sha256" in request:
+                code, raw = self._run([self.python, "-I", "-B", tools["installer"],
+                    "--review-node-build", str(snapshot), "--node", self.selected_node,
+                    "--node-build-profile", tools["node_build"],
+                    "--node-build-profile-sha256", self.selected_binding["tools"]["node_build"]], capture=True)
+                if code:
+                    raise SetupError("selected_build_review_unavailable", 409)
+                review = selected_build_review(decode(raw), request, self.selected_binding)
+                write_new(snapshot / "build-review.json", encoded(review))
+                effect["build_review"] = review
             effect_raw = encoded(effect)
             write_new(snapshot / "effect.json", effect_raw)
             value = {"kind": "selected", "effect": effect, "plan": plan,
@@ -4473,6 +4567,8 @@ class Controller:
             if digest(plan_raw) != effect["plan_sha256"]:
                 raise SetupError("selected_proposal_changed", 409)
             write_new(snapshot / "plan.json", plan_raw)
+            if "build_review" in effect:
+                write_new(snapshot / "build-review.json", selected_read(old_path, "build-review.json", MAX_JSON))
             effect["destination"] = str(self.workspace / "installations" / successor)
             effect_raw = encoded(effect)
             write_new(snapshot / "effect.json", effect_raw)
@@ -4517,6 +4613,9 @@ class Controller:
             argv += ["--document-kind", effect["request"]["document_kind"]]
         if profile == "python" and "python_target" in self.selected:
             argv += ["--python-target", self.selected["python_target"]]
+        if "build_review" in effect:
+            argv += ["--node-build-profile", tools["node_build"],
+                     "--node-build-profile-sha256", self.selected_binding["tools"]["node_build"]]
         if verify:
             argv.append("--verify-existing")
         elif profile == "node":
@@ -4542,16 +4641,41 @@ class Controller:
             family = "selected-" + effect["request"]["profile"]
             intent = {"kind": "selected", "family": family, "root": self.workspace, "validation_id": identifier,
                       "effect_sha256": value["effect_sha256"], "destination": Path(effect["destination"])}
+            if "build_review" in effect:
+                # This live attempt requires its own successful installer reply.
+                # A lost reply must not become cold consistency on reconciliation.
+                intent["installer_reply_required"] = True
             def work():
                 argv, _, _ = self.selected_command(intent, verify=False)
-                code, _ = self._run_selected_installer(argv, effect["request"]["profile"])
+                review = effect.get("build_review")
+                code, raw = self._run_selected_installer(argv, effect["request"]["profile"],
+                    **({"capture": True, "installer_timeout": review["limits"]["timeout_seconds"]} if review else {}))
                 if code:
                     raise SetupError("operation_unconfirmed", 500)
+                if review:
+                    # Observe the actual installer's bounded response before any
+                    # mutable ready-file read. Overflow is a Runner error, never
+                    # truncation accepted as success. Preserve this origin even
+                    # when subsequent readback fails, in this same job intent.
+                    if type(raw) is not bytes or len(raw) > MAX_JSON:
+                        raise SetupError("operation_unconfirmed", 500)
+                    receipt = decode(raw)
+                    if (not isinstance(receipt, dict) or not isinstance(receipt.get("node_build"), dict)
+                            or receipt["node_build"].get("review") != review
+                            or receipt.get("destination") != effect["destination"]
+                            or receipt.get("selection_sha256") != effect["request"]["selection_sha256"]):
+                        raise SetupError("operation_unconfirmed", 500)
+                    canonical = encoded(receipt)
+                    if len(canonical) > MAX_JSON:
+                        raise SetupError("operation_unconfirmed", 500)
+                    intent["installer_reply"] = {"raw_sha256": digest(raw), "bytes": len(raw),
+                                                  "semantic_sha256": digest(canonical)}
                 verified = self.selected_readback(intent)
                 return {**verified, "scope": "observed_software_installation_only", "readback_scope": READBACK_SCOPE}
             def retain(job):
                 path, current, _ = selected_proposal(self.workspace, identifier, value["effect_sha256"], self.selected_binding)
                 for name in (*current["files"], "plan.json", "effect.json",
+                             *(("build-review.json",) if "build_review" in current else ()),
                              *(("plugin-source.json",) if "plugin_source" in current["request"] else ())):
                     file = path / name
                     sync_file(file.parent, file.name)
@@ -4585,6 +4709,15 @@ class Controller:
         destination = Path(effect["destination"])
         receipt_raw = selected_read(intent["root"], "installations/" + intent["validation_id"] + "/ready/installed.json", SELECTED_FILE)
         profile = effect["request"]["profile"]
+        origin = intent.get("installer_reply")
+        if intent.get("installer_reply_required") and origin is None:
+            raise SetupError("reconciliation_unconfirmed", 500)
+        if origin is not None:
+            # Both JSON producers use this one semantic projection. The ready
+            # file's whitespace is not the installer's stdout wire format.
+            if (digest(encoded(decode(receipt_raw))) != origin["semantic_sha256"]
+                    or ("receipt_sha256" in origin and digest(receipt_raw) != origin["receipt_sha256"])):
+                raise SetupError("reconciliation_unconfirmed", 500)
         code, raw = self._run_selected_installer(argv, profile, capture=True,
                                    **({"inspection_timeout": MCPB_INSPECTION_TIMEOUT} if profile == "mcpb" else {}))
         if code:
@@ -4608,6 +4741,10 @@ class Controller:
                   "effect_sha256": intent["effect_sha256"], "mcp_path": str(destination / "ready/mcp.json"),
                   "receipt_path": str(destination / "ready/installed.json"), "receipt_sha256": digest(receipt_raw),
                   "mcp_configuration": mcp}
+        if "build_review" in effect:
+            result["build_receipt_binding"] = "original_installer_reply" if origin is not None else "current_receipt_consistency_only"
+            if origin is not None:
+                result["installer_reply"] = {**origin, "receipt_sha256": digest(receipt_raw)}
         if "declared_service" in plan:
             result["declared_service"] = copy.deepcopy(plan["declared_service"])
         if profile == "mcpb":
@@ -4618,6 +4755,10 @@ class Controller:
             result["acquired_source"] = copy.deepcopy(effect["request"]["acquired_source"])
         if len(encoded(result)) > MAX_JSON:
             raise SetupError("selected_output_too_large")
+        if origin is not None:
+            # Only successful verification establishes the retained raw-file pin.
+            # Future live observations also retain the original semantic origin.
+            origin["receipt_sha256"] = digest(receipt_raw)
         return result
 
     def mcpb_readback(self, raw, receipt_raw, receipt, mcp, effect, plan):
@@ -5219,6 +5360,18 @@ class Controller:
                     raise SetupError("reconciliation_unconfirmed", 500)
                 observation["setup_metadata"] = metadata
             with self.lock:
+                if intent.get("installer_reply_required"):
+                    # readback used a copy. Commit its successful raw-file pin
+                    # only to the same retained live origin, not to cold intent
+                    # or the historical job outcome.
+                    owned = self.install_intents[identifier]
+                    origin, checked = owned.get("installer_reply"), intent.get("installer_reply")
+                    if (not owned.get("installer_reply_required") or not isinstance(origin, dict)
+                            or not isinstance(checked, dict)
+                            or any(checked.get(key) != value for key, value in origin.items())
+                            or checked.get("receipt_sha256") != result.get("receipt_sha256")):
+                        raise SetupError("reconciliation_unconfirmed", 500)
+                    origin["receipt_sha256"] = checked["receipt_sha256"]
                 observation.update(status="matched", result=result)
         except BaseException as error:
             # Never project verifier output or exception values. A failed check

@@ -100,6 +100,7 @@ def verify_resources(root):
         relative(value[key])
     npm_resources(root, value)
     node_prebuilt_resources(root, value)
+    node_build_resources(root, value)
     if tree_entries(root) != value["entries"]:
         raise ResourceError("resource_closure_changed")
     return value, hashlib.sha256(raw).hexdigest()
@@ -132,6 +133,27 @@ def node_prebuilt_resources(root, manifest):
             or entries[0].get("sha256") != sha256(path)
             or npm_resources(root, manifest) is None):
         raise ResourceError("bundled_node_prebuilt_profile_unavailable")
+    return {"path": path, "sha256": entries[0]["sha256"]}
+
+
+def node_build_resources(root, manifest):
+    """Discover exact optional profile bytes; external tool paths stay host-owned."""
+    name = "node-build-profile.json"
+    entries = [entry for entry in manifest.get("entries", []) if entry.get("path") == name]
+    path = root / name
+    if not entries and not path.exists() and not path.is_symlink():
+        return None
+    if (len(entries) != 1 or entries[0].get("kind") != "file"
+            or npm_resources(root, manifest) is None):
+        raise ResourceError("bundled_node_build_profile_unavailable")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 65536:
+            raise ResourceError("bundled_node_build_profile_unavailable")
+        raw = source.read(65537)
+    if (len(raw) != info.st_size or entries[0].get("size") != len(raw)
+            or entries[0].get("sha256") != hashlib.sha256(raw).hexdigest()):
+        raise ResourceError("bundled_node_build_profile_unavailable")
     return {"path": path, "sha256": entries[0]["sha256"]}
 
 
@@ -214,6 +236,10 @@ def prepare(root, destination, stopped, *, realm_state_root=None, realm=None):
     if node_prebuilt is not None:
         args.node_prebuilt_policy = str(node_prebuilt["path"])
         args.node_prebuilt_policy_sha256 = node_prebuilt["sha256"]
+    node_build = node_build_resources(root, manifest)
+    if node_build is not None:
+        args.node_build_profile = str(node_build["path"])
+        args.node_build_profile_sha256 = node_build["sha256"]
     if (realm is None) != (realm_state_root is None):
         raise ResourceError("complete_native_realm_required")
     if realm is not None:
@@ -247,6 +273,10 @@ def prepare(root, destination, stopped, *, realm_state_root=None, realm=None):
             "node-prebuilt.json" not in receipt.get("files", {})
             or receipt.get("runtimes", {}).get("node_prebuilt_policy", {}).get("sha256") != node_prebuilt["sha256"]):
         raise ResourceError("node_prebuilt_preparation_scope_mismatch")
+    if node_build is not None and (
+            receipt.get("files", {}).get("node-build-profile.json") != node_build["sha256"]
+            or receipt.get("runtimes", {}).get("node_build_profile", {}).get("sha256") != node_build["sha256"]):
+        raise ResourceError("node_build_preparation_scope_mismatch")
     files = receipt.get("files", {})
     for name, digest in files.items():
         relative(name)
@@ -275,6 +305,10 @@ def prepare(root, destination, stopped, *, realm_state_root=None, realm=None):
                 or "node" not in selected.get("validators", {})
                 or "--allow-node-search" not in config["mcpServers"]["toolkit-setup"]["args"]):
             raise ResourceError("npm_acquisition_not_prepared")
+        if node_build is not None and selected.get("node_build") != {
+                "path": str(destination / "config/node-build-profile.json"),
+                "sha256": node_build["sha256"]}:
+            raise ResourceError("node_build_not_prepared")
     if realm is not None:
         profile = checked_receipt(host, destination / "config/local-recipes.json", files["local-recipes.json"])
         if (profile.get("database") != args.recipes_database or profile.get("realm") != realm

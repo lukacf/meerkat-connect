@@ -819,8 +819,300 @@ def npm_target_graph(closure: dict, lock: dict, target: dict) -> dict:
             "npm_target": target, "excluded_optional_packages": dict(sorted(excluded.items()))}
 
 
+NODE_BUILD_PLAN = "closure/node-build-plan"
+NODE_BUILD_PROFILE_LIMIT = 65536
+NODE_BUILD_PLAN_LIMIT = 32768
+
+
+def node_build_text(value, limit=4096):
+    if not isinstance(value, str) or not 1 <= len(value.encode("utf-8")) <= limit or "\0" in value:
+        raise InstallError("bounded literal build text required")
+    return value
+
+
+def node_build_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value):
+        raise InstallError("invalid build tool or input ID")
+    return value
+
+
+def node_build_plan(raw, closure):
+    """Validate declared inputs/outputs against original archives, without execution."""
+    if len(raw) > NODE_BUILD_PLAN_LIMIT:
+        raise InstallError("build plan exceeds document limit")
+    value = native_keys(unique_json(raw), {"schema_version", "target", "inputs", "steps", "outputs"})
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise InstallError("unsupported build plan")
+    checked_node_native_target(value["target"])
+    if ((closure.get("npm_target") and closure["npm_target"] != value["target"])
+            or closure.get("native") and closure["native"]["summary"]["target"] != value["target"]):
+        raise InstallError("build and npm targets differ")
+    originals = {root + "/" + name: data for root, (_, archive) in closure["rows"].items()
+                 for name, data in archive["files"].items()}
+    inputs, steps, outputs = value["inputs"], value["steps"], value["outputs"]
+    if (not isinstance(inputs, list) or not 1 <= len(inputs) <= 256
+            or not isinstance(steps, list) or not 1 <= len(steps) <= 16
+            or not isinstance(outputs, list) or not 1 <= len(outputs) <= 64):
+        raise InstallError("build input, command or output count exceeds limit")
+    for row in inputs:
+        native_keys(row, {"source", "path"})
+        if relative(row["path"])[0] == "tmp":
+            raise InstallError("build input uses reserved temporary directory")
+        source = row["source"]
+        if not isinstance(source, dict) or len(source) != 1:
+            raise InstallError("one exact build input source required")
+        if "npm" in source:
+            if source["npm"] not in originals:
+                raise InstallError("build input is not an original retained npm file")
+        elif "toolchain" in source:
+            node_build_id(source["toolchain"])
+        else:
+            raise InstallError("unsupported build input source")
+    checked_paths([row["path"] for row in inputs])
+    for step in steps:
+        native_keys(step, {"executable", "arguments"})
+        node_build_id(step["executable"])
+        arguments = step["arguments"]
+        if not isinstance(arguments, list) or len(arguments) > 256:
+            raise InstallError("build argument count exceeds limit")
+        for argument in arguments:
+            if not isinstance(argument, str) or len(argument.encode("utf-8")) > 4096 or "\0" in argument:
+                raise InstallError("bounded literal build argument required")
+    if len(encoded(steps)) > NODE_BUILD_PLAN_LIMIT:
+        raise InstallError("build commands exceed limit")
+    destinations, additions = [], []
+    for row in outputs:
+        native_keys(row, {"path", "destination", "replaces_sha256"})
+        if relative(row["path"])[0] == "tmp":
+            raise InstallError("build output uses reserved temporary directory")
+        relative(row["destination"])
+        destination = row["destination"]
+        if not any(destination.startswith(root + "/") for root in closure["rows"]):
+            raise InstallError("generated output must belong to a selected npm package")
+        original = originals.get(destination)
+        if row["replaces_sha256"] is None:
+            if destination in closure["paths"]:
+                raise InstallError("generated output would overwrite retained payload")
+            additions.append(destination)
+        elif original is None or native_hash(row["replaces_sha256"]) != sha(original):
+            raise InstallError("replacement requires exact original archive file hash")
+        destinations.append(destination)
+    checked_paths([row["path"] for row in outputs])
+    checked_paths(destinations)
+    checked_paths([*closure["paths"], *additions])
+    # An input is never implicitly replaced inside the compiler workspace.
+    checked_paths([row["path"] for row in inputs] + [row["path"] for row in outputs])
+    return {"plan": value, "sha256": sha(raw), "originals": originals}
+
+
+def node_build_profile(args):
+    """Observe host-selected file identities; do not execute or infer tool closure."""
+    name, expected = getattr(args, "node_build_profile", None), getattr(args, "node_build_profile_sha256", None)
+    if name is None or expected is None:
+        raise InstallError("selected Node build requires an explicit host profile")
+    path = Path(name)
+    if not path.is_absolute() or str(path) != name:
+        raise InstallError("build profile requires an absolute file")
+    raw = read(path.parent, path.name, NODE_BUILD_PROFILE_LIMIT)
+    if sha(raw) != native_hash(expected):
+        raise InstallError("build profile changed")
+    value = native_keys(unique_json(raw), {"schema_version", "scope", "target", "executables", "files", "environment", "limits"})
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1 or value["scope"] != "selected_node_build":
+        raise InstallError("unsupported build host profile")
+    checked_node_native_target(value["target"])
+    observed, payloads, total = {}, {}, 0
+    for key, maximum in (("executables", 16), ("files", 256)):
+        rows = value[key]
+        if not isinstance(rows, dict) or not (1 if key == "executables" else 0) <= len(rows) <= maximum:
+            raise InstallError("build toolchain inventory exceeds limit")
+        observed[key], payloads[key] = {}, {}
+        for identifier, row in rows.items():
+            node_build_id(identifier)
+            native_keys(row, {"path", "sha256"})
+            path = Path(node_build_text(row["path"]))
+            if not path.is_absolute() or str(path) != row["path"]:
+                raise InstallError("toolchain requires an absolute path")
+            data = read(path.parent, path.name, MAX_TOTAL if key == "executables" else MAX_FILE)
+            total += len(data)
+            if total > MAX_TOTAL or sha(data) != native_hash(row["sha256"]):
+                raise InstallError("toolchain file changed or exceeds limit")
+            if key == "executables" and (not os.access(path, os.X_OK) or executable(str(path)) != str(path)):
+                raise InstallError("toolchain executable must be an exact canonical executable")
+            observed[key][identifier] = {**row, "bytes": len(data)}
+            payloads[key][identifier] = data
+    environment = value["environment"]
+    if (not isinstance(environment, dict) or len(environment) > 32
+            or any(not isinstance(key, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,63}", key)
+                   or key == "TMPDIR" for key in environment)):
+        raise InstallError("invalid fixed build environment")
+    for item in environment.values():
+        if not isinstance(item, str) or len(item.encode("utf-8")) > 4096 or "\0" in item:
+            raise InstallError("invalid fixed build environment value")
+    limits = native_keys(value["limits"], {"timeout_seconds", "file_bytes", "total_output_bytes"})
+    for key, maximum in (("timeout_seconds", 3600), ("file_bytes", MAX_FILE), ("total_output_bytes", MAX_TOTAL)):
+        if type(limits[key]) is not int or not 1 <= limits[key] <= maximum:
+            raise InstallError("invalid build execution limit")
+    if limits["file_bytes"] > limits["total_output_bytes"]:
+        raise InstallError("build file limit exceeds total output limit")
+    return {"value": value, "sha256": sha(raw), "observed": observed, "payloads": payloads}
+
+
+def review_node_build(closure, args):
+    """The same parser serves review, execution and inert existing-file readback."""
+    build = closure.get("build")
+    if build is None:
+        raise InstallError("explicit build plan required")
+    profile = node_build_profile(args)
+    value, plan = profile["value"], build["plan"]
+    if value["target"] != plan["target"] or node_runtime_hash(executable(args.node)) != plan["target"]["node_sha256"]:
+        raise InstallError("build target differs from selected host/runtime")
+    inputs = []
+    for row in plan["inputs"]:
+        source = row["source"]
+        if "npm" in source:
+            data = build["originals"][source["npm"]]
+        else:
+            if source["toolchain"] not in profile["payloads"]["files"]:
+                raise InstallError("build input is not selected by the host")
+            data = profile["payloads"]["files"][source["toolchain"]]
+        inputs.append({**row, "sha256": sha(data), "bytes": len(data)})
+    commands = []
+    for step in plan["steps"]:
+        tool = profile["observed"]["executables"].get(step["executable"])
+        if tool is None:
+            raise InstallError("build executable is not selected by the host")
+        commands.append({"executable": step["executable"], "argv": [tool["path"], *step["arguments"]],
+                         "executable_sha256": tool["sha256"]})
+    return {"schema_version": 1, "scope": "selected_node_build", "plan_sha256": build["sha256"],
+            "profile_sha256": profile["sha256"], "target": plan["target"],
+            "tools": profile["observed"], "inputs": inputs, "commands": commands,
+            "outputs": plan["outputs"], "environment": value["environment"], "limits": value["limits"],
+            "working_directory": "separate_installation_build_work", "temporary_directory": "build_work/tmp",
+            "custody": "Trusted local software effect; not sandboxed or a complete dynamic toolchain closure."}
+
+
+def describe_node_build(args):
+    profile = node_build_profile(args)
+    if node_runtime_hash(executable(args.node)) != profile["value"]["target"]["node_sha256"]:
+        raise InstallError("build profile differs from selected Node")
+    return {"schema_version": 1, "scope": "selected_node_build_planning", "profile_sha256": profile["sha256"],
+            "target": profile["value"]["target"], "limits": profile["value"]["limits"],
+            "executables": {key: {"sha256": row["sha256"], "name": Path(row["path"]).name}
+                            for key, row in profile["observed"]["executables"].items()},
+            "files": {key: {"sha256": row["sha256"], "bytes": row["bytes"], "name": Path(row["path"]).name}
+                      for key, row in profile["observed"]["files"].items()},
+            "environment_keys": sorted(profile["value"]["environment"]),
+            "notice": "Host-selected inputs for an explicit reviewed build plan; no build or compatibility proof."}
+
+
+def node_build_review_bundle(args):
+    """Read only the already checked snapshot; the caller owns canonical validation."""
+    bundle = Path(args.review_node_build).resolve(strict=True)
+    plan = unique_json(read(bundle, "plan.json", MAX_CONFIGURATION * 16))
+    files = {"artifact.tgz": read(bundle, "artifact.tgz")}
+    for key, expected in plan["closure"].items():
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", key):
+            raise InstallError("invalid closure ID")
+        raw = read(bundle, "closure/" + key)
+        if sha(raw) != native_hash(expected):
+            raise InstallError("reviewed closure changed")
+        files["closure/" + key] = raw
+    if sha(files["artifact.tgz"]) != plan["artifact_digest"]:
+        raise InstallError("reviewed artifact changed")
+    return review_node_build(selected_npm_closure(files, plan), args)
+
+
+def node_build_write(root, path, raw, *, replace=False):
+    parts = relative(path)
+    parent = root
+    for part in parts[:-1]:
+        parent = parent / part
+        if not parent.exists():
+            parent.mkdir(mode=0o700)
+        fd = directory(parent)
+        os.close(fd)
+    flags = os.O_WRONLY | os.O_NOFOLLOW | (os.O_TRUNC if replace else os.O_CREAT | os.O_EXCL)
+    fd = os.open(parent / parts[-1], flags, 0o600)
+    with os.fdopen(fd, "wb") as output:
+        output.write(raw)
+
+
+def execute_node_build(destination, closure, args, review, deadline):
+    """Retain original files, execute literal argv, then publish declared additions."""
+    if review_node_build(closure, args) != review:
+        raise InstallError("reviewed build inputs or tools changed")
+    profile, build = node_build_profile(args), closure["build"]
+    work = destination / "build-work"
+    work.mkdir(mode=0o700)
+    (work / "tmp").mkdir(mode=0o700)
+    for row in build["plan"]["inputs"]:
+        source = row["source"]
+        data = (build["originals"][source["npm"]] if "npm" in source
+                else profile["payloads"]["files"][source["toolchain"]])
+        node_build_write(work, row["path"], data)
+    environment = {**review["environment"], "TMPDIR": str(work / "tmp")}
+    steps = []
+    for index, command in enumerate(review["commands"]):
+        if review_node_build(closure, args) != review:
+            raise InstallError("selected toolchain changed before build command")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise InstallError("selected build deadline expired")
+        # Compiler streams do not enter the model response or an unbounded log.
+        # run returns only after this exact direct child has exited successfully.
+        run(command["argv"], work, environment, "build-" + str(index), timeout=remaining, discard_output=True)
+        steps.append({"index": index, "exit_code": 0})
+    if review_node_build(closure, args) != review:
+        raise InstallError("selected toolchain changed during build")
+    for row in review["inputs"]:
+        if sha(read(work, row["path"])) != row["sha256"]:
+            raise InstallError("build modified an original working input")
+    # A compiler is trusted local code, not a sandbox. Detect changes to owned
+    # original npm bytes before publishing any declared generated output.
+    verify_selected_npm(destination, closure)
+    outputs, total = {}, 0
+    for row in review["outputs"]:
+        raw = read(work, row["path"], review["limits"]["file_bytes"])
+        total += len(raw)
+        if total > review["limits"]["total_output_bytes"]:
+            raise InstallError("generated output exceeds selected limit")
+        outputs[row["destination"]] = {"sha256": sha(raw), "bytes": len(raw)}
+    for row in review["outputs"]:
+        raw = read(work, row["path"], review["limits"]["file_bytes"])
+        if {"sha256": sha(raw), "bytes": len(raw)} != outputs[row["destination"]]:
+            raise InstallError("generated output changed during publication")
+        if row["replaces_sha256"] is not None and sha(read(destination, row["destination"])) != row["replaces_sha256"]:
+            raise InstallError("original replacement payload changed")
+        node_build_write(destination, row["destination"], raw, replace=row["replaces_sha256"] is not None)
+    return {"review": review, "steps": steps, "outputs": outputs}
+
+
+def checked_node_build_receipt(closure, args, value):
+    native_keys(value, {"review", "steps", "outputs"})
+    review = review_node_build(closure, args)
+    if (value["review"] != review or value["steps"] != [
+            {"index": index, "exit_code": 0} for index in range(len(review["commands"]))]
+            or not isinstance(value["outputs"], dict)
+            or set(value["outputs"]) != {row["destination"] for row in review["outputs"]}):
+        raise InstallError("generated output receipt differs from original build selection")
+    total = 0
+    for row in value["outputs"].values():
+        native_keys(row, {"sha256", "bytes"})
+        native_hash(row["sha256"])
+        if type(row["bytes"]) is not int or not 0 <= row["bytes"] <= review["limits"]["file_bytes"]:
+            raise InstallError("generated output size exceeds limit")
+        total += row["bytes"]
+    if total > review["limits"]["total_output_bytes"]:
+        raise InstallError("generated output total exceeds limit")
+    return value
+
+
 def npm_archive_closure(files: dict[str, bytes]) -> dict:
     """Bind npm's concrete lock to retained archives without choosing an entrypoint."""
+    build_raw = files.get(NODE_BUILD_PLAN)
+    # The authored plan is not part of the acquisition/native source receipt.
+    # Remove this exact reserved input before checking that unchanged graph.
+    files = {key: raw for key, raw in files.items() if key != NODE_BUILD_PLAN}
     files, native = node_native_inputs(files)
     project = unique_json(files["closure/package-json"])
     lock = unique_json(files["closure/package-lock"])
@@ -915,7 +1207,10 @@ def npm_archive_closure(files: dict[str, bytes]) -> dict:
         closure = npm_target_graph(closure, lock, target)
         if native and native["manifest"]["target"] != target:
             raise InstallError("npm and native payload targets differ")
-    return compose_node_native_payloads(closure, files, native) if native else closure
+    closure = compose_node_native_payloads(closure, files, native) if native else closure
+    if build_raw is not None:
+        closure["build"] = node_build_plan(build_raw, closure)
+    return closure
 
 
 def selected_npm_closure(files: dict[str, bytes], plan: dict) -> dict:
@@ -924,17 +1219,20 @@ def selected_npm_closure(files: dict[str, bytes], plan: dict) -> dict:
     component = closure["rows"][closure["component_path"]][1]
     entry = plan["entrypoint"]["executable"]
     relative(entry)
-    if entry not in component["files"] or not entry.endswith((".js", ".mjs", ".cjs")):
-        raise InstallError("selected Node entrypoint must be a retained JavaScript payload")
+    generated = {row["destination"] for row in closure.get("build", {}).get("plan", {}).get("outputs", [])}
+    if (not entry.endswith((".js", ".mjs", ".cjs"))
+            or entry not in component["files"] and closure["component_path"] + "/" + entry not in generated):
+        raise InstallError("selected Node entrypoint must be retained or explicitly generated JavaScript")
     return {**closure, "entrypoint": entry}
 
 
-def verify_selected_npm(destination: Path, closure: dict) -> dict:
+def verify_selected_npm(destination: Path, closure: dict, generated: dict | None = None) -> dict:
     """Require exact payload bytes and no extra executable files or symlinks."""
     graph = {}
+    generated = generated or {}
     for path, (_, archive) in closure["rows"].items():
         for filename, raw in archive["files"].items():
-            if read(destination, path + "/" + filename) != raw:
+            if path + "/" + filename not in generated and read(destination, path + "/" + filename) != raw:
                 raise InstallError("installed npm payload differs from retained archive")
         graph[path] = {"name": archive["name"], "version": archive["version"],
                        "integrity": archive["integrity"], "files": len(archive["files"])}
@@ -945,13 +1243,20 @@ def verify_selected_npm(destination: Path, closure: dict) -> dict:
         for package, hashes in native["per_package"].items():
             graph[package]["native_payloads"] = hashes
             graph[package]["files"] += len(hashes)
+    for path, expected in generated.items():
+        raw = read(destination, path)
+        if {"sha256": sha(raw), "bytes": len(raw)} != expected:
+            raise InstallError("installed generated output differs from its receipt")
+        package = max((root for root in graph if path.startswith(root + "/")), key=len)
+        graph[package].setdefault("generated_outputs", {})[path] = expected
+        graph[package]["files"] += path not in closure["paths"]
     actual = set()
     for root, dirs, filenames in os.walk(destination / "node_modules", followlinks=False):
         for child in dirs + filenames:
             if (Path(root) / child).is_symlink():
                 raise InstallError("unexpected installed npm symlink")
         actual.update(str((Path(root) / file).relative_to(destination)) for file in filenames)
-    if actual - {"node_modules/.package-lock.json"} != closure["paths"]:
+    if actual - {"node_modules/.package-lock.json"} != closure["paths"] | set(generated):
         raise InstallError("installed npm file graph differs from closure")
     return graph
 
@@ -1064,11 +1369,17 @@ def install_selected_node(args: argparse.Namespace) -> dict:
         files[filename] = raw
         (frozen / filename).write_bytes(raw)
     closure = selected_npm_closure(files, plan)
+    build_review = review_node_build(closure, args) if closure.get("build") else None
+    build_deadline = time.monotonic() + build_review["limits"]["timeout_seconds"] if build_review else None
+    if build_review:
+        if unique_json(read(bundle, "build-review.json", MAX_CONFIGURATION * 32)) != build_review:
+            raise InstallError("build differs from the reviewed software effect")
     observed = json.loads(run([runtime, "-p", "JSON.stringify([process.version,process.platform,process.arch])"],
                               destination, env, "node-runtime"))
     native = closure.get("native")
-    if native or closure.get("npm_target"):
-        bound_target = native["summary"]["target"] if native else closure["npm_target"]
+    if native or closure.get("npm_target") or build_review:
+        bound_target = (build_review["target"] if build_review else
+                        native["summary"]["target"] if native else closure["npm_target"])
         if (observe_node_native_target(runtime, destination, env) != bound_target
                 or observed != [bound_target["node_version"], bound_target["platform"], bound_target["arch"]]):
             raise InstallError("native payload target differs from selected Node runtime")
@@ -1094,7 +1405,18 @@ def install_selected_node(args: argparse.Namespace) -> dict:
         verify_selected_npm(destination, original)
         install_node_native_payloads(destination, native)
     graph = verify_selected_npm(destination, closure)
-    if (native or closure.get("npm_target")) and node_runtime_hash(runtime) != bound_target["node_sha256"]:
+    build_receipt = None
+    if build_review:
+        build_receipt = execute_node_build(destination, closure, args, build_review, build_deadline)
+        graph = verify_selected_npm(destination, closure, build_receipt["outputs"])
+        for name, original in files.items():
+            if read(frozen, name) != original:
+                raise InstallError("build modified retained original selection")
+        for name, original in (("package.json", files["closure/package-json"]),
+                               ("package-lock.json", files["closure/package-lock"]), ("artifact.tgz", files["artifact.tgz"])):
+            if read(destination, name) != original:
+                raise InstallError("build modified original npm project")
+    if (native or closure.get("npm_target") or build_review) and node_runtime_hash(runtime) != bound_target["node_sha256"]:
         raise InstallError("selected native Node executable changed during installation")
     launch = [runtime, str(destination / closure["component_path"] / closure["entrypoint"]),
               *plan["entrypoint"]["arguments"]]
@@ -1109,6 +1431,8 @@ def install_selected_node(args: argparse.Namespace) -> dict:
         receipt.update({key: closure[key] for key in ("npm_target", "excluded_optional_packages")})
     if native:
         receipt["native_payloads"] = native["summary"]
+    if build_receipt:
+        receipt["node_build"] = build_receipt
     # No guessed command is executed against an unknown server. A successful
     # install is not protocol readiness, authorization or business completion.
     ready = destination / "pending-ready"
@@ -1953,11 +2277,20 @@ def verify_existing_selected(args: argparse.Namespace) -> dict:
         tree = existing_tree(destination / "node_modules", MAX_NPM_MEMBERS * 2)
         if any(kind == "link" for kind in tree.values()):
             raise InstallError("unexpected existing npm symlink")
-        graph = verify_selected_npm(destination, closure)
+        build_receipt = None
+        if closure.get("build"):
+            build_receipt = checked_node_build_receipt(closure, args, receipt.get("node_build"))
+            if unique_json(read(bundle, "build-review.json", MAX_CONFIGURATION * 32)) != build_receipt["review"]:
+                raise InstallError("existing build differs from reviewed software effect")
+        elif "node_build" in receipt:
+            raise InstallError("unexpected generated build receipt")
+        graph = verify_selected_npm(destination, closure, build_receipt["outputs"] if build_receipt else None)
         for target, source in (("package.json", "closure/package-json"), ("package-lock.json", "closure/package-lock"), ("artifact.tgz", "artifact.tgz")):
             if read(destination, target) != files[source]:
                 raise InstallError("existing npm project differs from selection")
         proof = {"installed_graph": graph, "verified_payload_files": sum(row["files"] for row in graph.values())}
+        if build_receipt:
+            proof["node_build"] = build_receipt
         if receipt.get("installed_graph") != graph:
             raise InstallError("receipt npm graph differs")
         if target := closure.get("npm_target"):
@@ -2000,7 +2333,7 @@ def verify_existing_selected(args: argparse.Namespace) -> dict:
             "historical_receipt": {"sha256": sha(receipt_raw), "recorded_scope": receipt["scope"]},
             "excluded": ["Only explicitly selected native-payload or conditional-graph Node executable bytes are checked when present; runtime behavior, current OS/libc state, compatibility and historical probe claims are not verified.",
                          "Python bootstrap bytes and historical preservation claims are not verified. Generated file hashes establish only consistency with the mutable receipt, not provenance or safety.",
-                         "npm-generated hidden lock metadata, caches and step logs are not verified.",
+                         "Generated build outputs establish consistency with the original plan, selected tools and mutable receipt. Cold readback does not establish historical build provenance. npm-generated hidden lock metadata, caches and step logs are not verified.",
                          "No observed runtime, npm, pip, donor code or MCP server was executed. Authentication, account access, grants, readiness and native activation are not established."],
             "effects": "Only the host-selected canonical metadata validator executes, with bounded output and temporary copies outside the observed destination; no installation or repair.",
             "custody": "Point-in-time observation requires exclusive host custody of original inputs, executables and destination; not an atomic filesystem snapshot or a claim the environment is safe to execute."}
@@ -2719,6 +3052,10 @@ def main() -> int:
     selection.add_argument("--bundle", help="previously delivered library consumer bundle")
     selection.add_argument("--selected-node", help="explicitly selected artifact-backed Node MCP bundle")
     selection.add_argument("--selected-python", help="explicitly selected wheel-backed Python MCP bundle")
+    selection.add_argument("--describe-node-build", action="store_true", help="inert host toolchain planning projection")
+    selection.add_argument("--review-node-build", help="inert review of a checked selected Node snapshot")
+    parser.add_argument("--node-build-profile")
+    parser.add_argument("--node-build-profile-sha256")
     parser.add_argument("--contents-sha256", help="expected digest from the selected library or official delivery")
     parser.add_argument("--family", choices=("agno", "services", "activepieces"))
     parser.add_argument("--config", help="absolute selected nonsecret library or official configuration file")
@@ -2741,6 +3078,21 @@ def main() -> int:
     parser.add_argument("--npm-cli", help="absolute selected npm-cli.js, run with --node")
     parser.add_argument("--verify-existing", action="store_true", help="read back original selection; selected modes run only the trusted metadata validator, never install or repair")
     args = parser.parse_args()
+    if args.review_node_build or args.describe_node_build:
+        if (not all((args.node, args.node_build_profile, args.node_build_profile_sha256))
+                or any((args.destination, args.validator, args.npm_cli, args.verify_existing, args.component,
+                        args.document_kind, args.selection_sha256, args.config, args.python))):
+            parser.error("build review requires only snapshot, Node and exact host profile")
+        try:
+            result = describe_node_build(args) if args.describe_node_build else node_build_review_bundle(args)
+        except (OSError, ValueError, KeyError, TypeError, RecursionError, tarfile.TarError):
+            print("selected build review unavailable", file=sys.stderr)
+            return 2
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    if (args.node_build_profile is not None or args.node_build_profile_sha256 is not None) and (
+            not args.selected_node or not all((args.node_build_profile, args.node_build_profile_sha256))):
+        parser.error("build host profile requires selected Node mode and exact paired arguments")
     if args.document_kind is not None and not (args.selected_python or args.selected_node):
         parser.error("document-kind requires selected Python or Node mode")
     if args.python_target is not None and not args.selected_python:

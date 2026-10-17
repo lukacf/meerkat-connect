@@ -163,6 +163,16 @@ def start(args, *, stopped=None):
         if search_node:
             extra += ["--enable-node-search"]
 
+    node_build = host.node_build_options(args)
+    if node_build is not None:
+        if not {"selected_node", "selected_npm_cli"} <= pins.keys():
+            raise host.PreparationError("node_build_requires_selected_node_validator")
+        if host.compose_overlaps(node_build[0], destination):
+            raise host.PreparationError("node_build_profile_overlaps_host_paths")
+        pins["node_build_profile"] = host.pinned_path(node_build[0], node_build[1])
+        extra += ["--node-build-profile", str(node_build[0]),
+                  "--node-build-profile-sha256", node_build[1]]
+
     node_prebuilt_profile = getattr(args, "node_prebuilt_profile", None)
     node_prebuilt_sha256 = getattr(args, "node_prebuilt_profile_sha256", None)
     acquire_node_prebuilt = node_prebuilt_profile is not None or node_prebuilt_sha256 is not None
@@ -296,6 +306,8 @@ def main(argv=None):
     parser.add_argument("--node-prebuilt-profile-sha256")
     parser.add_argument("--node-prebuilt-policy", help="explicit relocatable target/origin policy; host binds its selected Python")
     parser.add_argument("--node-prebuilt-policy-sha256")
+    parser.add_argument("--node-build-profile", help="optional host-selected build profile; external tools remain host-owned")
+    parser.add_argument("--node-build-profile-sha256")
     parser.add_argument("--timeout-seconds", type=int, default=300)
     for key in ("database", "realm", "owner"):
         parser.add_argument("--recipes-" + key)

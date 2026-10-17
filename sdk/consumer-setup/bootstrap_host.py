@@ -159,6 +159,9 @@ def bootstrap(args, *, stopped=None):
         raise host.PreparationError("mcpb_acquisition_profile_pair_required")
     if mcpb_profile and any(overlaps(Path(mcpb_profile), path) for path in locations):
         raise host.PreparationError("mcpb_acquisition_profile_overlaps_host_paths")
+    node_build = host.node_build_options(args)
+    if node_build is not None and any(overlaps(node_build[0], path) for path in locations):
+        raise host.PreparationError("node_build_profile_overlaps_host_paths")
     node_prebuilt_profile = getattr(args, "node_prebuilt_profile", None)
     node_prebuilt_sha256 = getattr(args, "node_prebuilt_profile_sha256", None)
     acquire_node_prebuilt = node_prebuilt_profile is not None or node_prebuilt_sha256 is not None
@@ -240,6 +243,10 @@ def bootstrap(args, *, stopped=None):
                 or preview_receipt["files"].get("prior-request.json") != prior_source["sha256"]):
             raise BootstrapError("prior_manifest_not_prepared")
         pins = preview_receipt["runtimes"]
+        if node_build is not None and (
+                preview_receipt["files"].get("node-build-profile.json") != node_build[1]
+                or pins.get("node_build_profile", {}).get("sha256") != node_build[1]):
+            raise BootstrapError("node_build_profile_not_prepared")
         if acquire_mcpb and (preview_receipt["files"].get("mcpb-acquisition.json") != mcpb_sha256
                              or pins.get("mcpb_acquisition_profile", {}).get("sha256") != mcpb_sha256):
             raise BootstrapError("mcpb_acquisition_not_prepared")
@@ -359,6 +366,7 @@ def main(argv=None):
                  "mcpb-acquisition-profile", "mcpb-acquisition-profile-sha256",
                  "node-prebuilt-profile", "node-prebuilt-profile-sha256",
                  "node-prebuilt-policy", "node-prebuilt-policy-sha256",
+                 "node-build-profile", "node-build-profile-sha256",
                  "compose-acquisition-host-profile", "compose-acquisition-host-profile-sha256",
                  "compose-backend-profile", "compose-backend-profile-sha256", "compose-graph-workspace",
                  "compose-allowed-actions", "compose-expected-plan-sha256", "compose-delete-state-namespaces",

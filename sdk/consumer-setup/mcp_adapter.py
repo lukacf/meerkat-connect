@@ -182,7 +182,7 @@ def bounded_arguments(value, tool_name=None):
         "setup_export_recipe": {"activation_json", "declaration_json"},
         "setup_inspect_package": {"package_json"},
         "setup_inspect_schema": {"schema_json"},
-        "setup_selected_check": {"package_json", "activation_json", "declaration_json", "configuration_json"},
+        "setup_selected_check": {"package_json", "activation_json", "declaration_json", "configuration_json", "build_plan_json"},
     }.get(tool_name, set())
     document_limit = (backend.SELECTED_INLINE_DOCUMENT if tool_name in ("setup_inspect_package", "setup_inspect_schema", "setup_selected_check")
                       else backend.REMOTE_RECIPE_DOCUMENT)
@@ -830,13 +830,31 @@ def create_server(adapter):
              "inputSchema": {"type": "object", "properties": {"job_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}},
                              "required": ["job_id"], "additionalProperties": False},
              "read_only": False, "idempotent": True},
-            {"name": "setup_selected_install", "description": "Install one exact checked software proposal using only its validation_id and effect_sha256. The existing installer revalidates frozen inputs, realizes an offline environment and emits ordinary MCP configuration. MCPB uses its same pinned owner and probes Node --version without launching the selected server. Waits for this exact installer worker, verified readback and cleanup, then returns its terminal job result; no polling is needed during a normal call. Existing caller and native deadlines still apply. Cancelling the call joins the worker but does not request stopping it; setup_stop is the explicit job-local stop action. After a lost or cancelled response, observe setup_job or setup_reconcile. Exact replay observes the same job even after uncertain outcomes and never retries installation. No package launch, credential lookup, authentication, native activation or operation permission is supplied. Use existing setup_reconcile for a separate retained-payload/launch-binding check.",
+            {"name": "setup_selected_install", "description": "Install one exact checked software proposal using only its validation_id and effect_sha256. The existing installer revalidates frozen inputs, realizes an offline environment and emits ordinary MCP configuration. MCPB uses its same pinned owner and probes Node --version without launching the selected server. Waits for this exact installer worker, verified readback and cleanup, then returns its terminal job result; no polling is needed during a normal call. Existing caller and native deadlines still apply. Cancelling the call joins the worker but does not request stopping it; setup_stop is the explicit job-local stop action. After a lost or cancelled response, observe setup_job or setup_reconcile. Exact replay observes the same job even after uncertain outcomes and never retries installation. Installation may execute the explicitly reviewed build commands. It does not launch the selected MCP server or supply credential lookup, authentication, native activation or operation permission. Use existing setup_reconcile for a separate retained-payload/launch-binding check.",
              "inputSchema": {"type": "object", "properties": {
                  "validation_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
                  "effect_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
                  "required": ["validation_id", "effect_sha256"], "additionalProperties": False},
              "read_only": False, "idempotent": True}])
         selected_schema = next(item for item in items if item["name"] == "setup_selected_check")
+        if "node_build" in adapter.controller.selected:
+            selected_schema["inputSchema"]["properties"].update({
+                "build_plan_json": {"type": "string", "minLength": 1, "maxLength": backend.SELECTED_INLINE_DOCUMENT},
+                "build_plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}})
+            selected_schema["inputSchema"].setdefault("allOf", []).append({"if": {"anyOf": [
+                {"required": ["build_plan_json"]}, {"required": ["build_plan_sha256"]}]}, "then": {
+                    "properties": {"profile": {"const": "node"}}, "oneOf": [
+                        {"required": ["package_json", "build_plan_json"], "not": {"required": ["build_plan_sha256"]}},
+                        {"required": ["package_sha256", "build_plan_sha256"], "not": {"required": ["build_plan_json"]}}]}})
+            selected_schema["description"] += (
+                " This host optionally supports explicit Node build plans. Read setup_state node_build for available executable/file IDs, exact target and limits; unavailable toolchain support requires a host correction. "
+                "Supply build_plan_json with inline metadata or build_plan_sha256 for staged closure/node-build-plan. Version 1 fields are schema_version, target, inputs, steps and outputs. "
+                "Each input maps source {npm: exact installed original path} or {toolchain: host file ID} to a relative working path. "
+                "Each step has executable (host ID) and literal arguments. Each output has working path, exact node_modules destination and replaces_sha256 (null for a new file). "
+                "Bind the plan digest in the selected closure; acquired_source adds only this authored digest after its own retained graph is reobserved. "
+                "Review the returned build commands, fixed nonsecret environment and outputs before the separate install. "
+                "Commands may execute explicitly selected source/build scripts as trusted local software effects, with no implicit shell or lifecycle script enabling. "
+                "npm lifecycle scripts remain disabled. This is not sandboxed, a complete toolchain closure or MCP readiness.")
         selected_schema["description"] += " Optional plugin_source binds this session's exact retained ordinary-plugin evidence to the proposal, retry and recovery. It is provenance only, not executable compatibility or approval."
         selected_schema["inputSchema"]["properties"]["plugin_source"] = {
             "type": "object", "properties": {
@@ -849,14 +867,14 @@ def create_server(adapter):
                 "job_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
                 "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
             "required": ["job_id", "receipt_sha256"], "additionalProperties": False}
-        selected_schema["inputSchema"]["allOf"] = [
+        selected_schema["inputSchema"].setdefault("allOf", []).extend([
             {"if": {"required": ["acquired_source"]}, "then": {
                 "required": ["package_json"],
                 "oneOf": [{"required": ["activation_json"]}, {"required": ["declaration_json"]}],
                 "properties": {"profile": {"enum": ["python", "node"]}}}},
             {"if": {"anyOf": [{"required": ["declaration_json"]}, {"required": ["document_kind"]}]},
              "then": {"properties": {"profile": {"enum": ["python", "node"]}},
-                      "not": {"anyOf": [{"required": ["configuration_json"]}, {"required": ["configuration_sha256"]}]}}}]
+                      "not": {"anyOf": [{"required": ["configuration_json"]}, {"required": ["configuration_sha256"]}]}}}])
         if "mcpb" in adapter.controller.selected["validators"]:
             schema = next(item["inputSchema"] for item in items if item["name"] == "setup_selected_check")
             schema["properties"]["configuration_sha256"] = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
