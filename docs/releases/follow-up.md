@@ -103,6 +103,16 @@ exact source and artifact bindings. The gateway build retains 65 warning headers
 This closes the installed compatibility regression; the separate ordinary
 repeat-acquisition journey remains pending.
 
+V44 then completes an initial setup-enabled two-service batch through the
+controlled Console API on that corrected production source. The host's actual
+catalog/audience profile is eligible, but both services are selected up front,
+so installed B-to-C and retained-X reuse remain unproven. Six tool errors recover
+automatically before the Original answer. Exactly three displayed service/catalog
+grants are revoked and physical cleanup joins all owners. Those revokes do not
+cover separately issued setup children or reverse the persistent policy. See
+[source provenance](../../SOURCE-PROVENANCE.md#v44-initial-setup-enabled-batch)
+for the exact final evidence and answer limits. No additional requirement closes.
+
 Concurrent shared setup is also still open: review found that a second request
 queues behind a running installation in the fixed helper. Shared records alone
 would not make that user path reachable.
@@ -111,8 +121,9 @@ would not make that user path reachable.
   integer `wait_ms` from 0 to 10000; omitted or zero keeps the immediate response.
   Cancelling the observation leaves installation running, and explicit stop stays
   separate. Eight Python and four Rust controls pass for exact-job custody and
-  observation lifetime. This addresses V43's repeated immediate reads without
-  claiming an installed latency improvement, shared-peer isolation or readiness.
+  observation lifetime. V44 uses seven actual `wait_ms: 10000` requests during
+  its completed initial batch. This establishes usage without a comparable
+  latency claim, shared-peer isolation or readiness.
   See [source provenance](../../SOURCE-PROVENANCE.md#bounded-setup-job-observation).
 - **External Agent Plugins consumption:** A format-adapted Microsoft
   `microsoft-docs` 0.3.1 pack now exports on Linux and runs through unchanged

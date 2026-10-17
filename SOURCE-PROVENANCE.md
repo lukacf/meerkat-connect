@@ -92,6 +92,32 @@ exact source and artifact bindings. The gateway build retains 65 warning headers
 This closes the installed compatibility regression; the separate ordinary
 repeat-acquisition journey remains pending.
 
+### V44 initial setup-enabled batch
+
+V44 uses public `3ecf0d5a`, gateway `80f956a8` and the unchanged Core `efd313d4` /
+Meta `669f54fa` graph in a fresh installation of the source-preserved application.
+Actual prepared output confirms the helper catalog issuance, equal audiences and
+distinct executors. One question produces two software decisions, one setup-v2
+complete-set access decision and an automatic Original answer using Hacker News,
+Wikipedia background and a Hacker News refresh. Both integrations were selected
+in the first acquisition; installed B-to-C and retained-X reuse remain unproven.
+
+Six tool errors recover automatically, including catalog refusals, busy help and
+the exact reconciliation, metadata and member corrections. The initial refresh
+refusal before builder entry also remains recorded. Saved results support the
+requested answer fields; only those fields are unchanged on refresh, while a raw
+comment-ID field changes. The Wikipedia background does not establish the exact
+model release or official status, as the answer states.
+
+Exactly three displayed service/catalog grants are revoked, logout returns 303,
+normal Stop returns 200 and all owned processes, forwards and listeners close.
+The separately approved persistent policy remains until superseded. Source-owned
+setup children are not covered by those three revokes; no child-journal read or
+grant-revocation sweep is claimed. Final aggregate `07b6e68c`, independent review
+`0649ebf3`, continuation review `c8f7eec7` and cleanup source trace `32f2509d` bind
+the 116 verified references. This is controlled Console API task completion,
+without a Browser, performance, release or broader requirement-closure claim.
+
 ### Bounded setup-job observation
 
 Development source adds optional integer `wait_ms` from 0 to 10000 to the existing
@@ -106,8 +132,11 @@ Source manifest `91d643b6`, final result `9fc144ba` and independent review
 `efd313d4` / Meta `669f54fa` graph. Exact job/session/realm/epoch checks remain;
 stop/reconcile retain their argument shapes. All command owners joined and
 compiler warnings remain recorded. V43's saved trace contains 34 immediate job
-reads. This provides an alternative without claiming an installed latency gain,
-shared-peer native isolation, Browser use or a new release.
+reads. V44 records seven actual `wait_ms: 10000` call/result pairs during its
+completed initial batch. Different work, operator review, polling and unmeasured
+shared-host contention prevent a comparable latency claim. This establishes
+usage, without qualifying performance, PLAT-030, shared-peer native isolation,
+Browser use or a new release.
 
 ### Public-service batch checkpoint
 
