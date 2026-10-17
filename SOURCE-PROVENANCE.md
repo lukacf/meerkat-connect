@@ -126,11 +126,33 @@ No assertion or production authority fence was weakened. Execution warnings and
 failed runs are retained, without a warning-free claim. Detailed earlier source
 identities remain in the [prior provenance checkpoint](https://github.com/lukacf/meerkat-connect/blob/740922ab8fbd833a9d2e3036f158bd6a91831af0/SOURCE-PROVENANCE.md) and execution records.
 
-V40's exact public `1779df8f` package excludes this recovery implementation and
-uses ordinary Forge `3b24a887` with recovery absent. Focused cold-file-owner,
-verified-carrier and terminal tests do not establish an explicitly selected
-installed recovery deployment, Browser login or abrupt-process-loss behavior.
-Those consumer claims remain open. Published release assets are unchanged.
+A separate ordinary development Rust SDK consumer now reopens the same installed
+host using adopted public `070d3469`, the unchanged Core/Meta graph and one explicit
+local-operator recovery selection. A fixture process prepares actual canonical
+A/B approvals and fully closes before consumer startup; A is published and B is
+deliberately unpublished. Public bootstrap/host APIs bind the restored owners,
+without starting agents or declaring Ready. One displayed-row recovery action
+appends exactly B's parent and child revocations. A, source-table rows and native
+input history remain unchanged; all process/IPC/service owners close naturally.
+
+The first producer run failed `AdmissionConflict` before consumer launch because
+it admitted the same acquisition twice with different timestamps. A test-only
+repair rereads the existing current acquisition. The same consumer artifact
+`b0917377` and original 60-second deadline pass without retry. Final receipt is
+`cf153b3e8d16f7f7e2287b13e087fa94b5ca175c7de508649aa8332ed0e1fe2c`;
+independent outcome review is `dce04004eebc9741301fd9791d4a49c16c4a07ce2f3b782b36acfb5556f65fb1`.
+Temporary workspace/member/lock scaffolding remains verification-only. This
+qualifies public pre-agent SDK owner restoration/recovery, not a released
+package, stock gateway, inherited terminal, Ready or actual process loss.
+V40's public `1779df8f` package still excludes this implementation. Published
+release assets are unchanged.
+
+The official hidden in-app Browser fixture attempt stopped at
+`Browser is not available: iab`, before creating a tab or performing any read,
+action or effect. Normal fixture shutdown, process/listener absence and unchanged
+product assets pass independent review (`6ded4eed`); blocked receipt is
+`3ddce254`. No mouse or alternate driver was used. Panel ordering/presentation,
+Browser login and deployed Console recovery remain unqualified.
 
 Forge/MobkitInstaller's composed owner source `e33ed031` / `40119816` passes
 38 independently reviewed controls (`53bf78ac`) for explicit optional selection

@@ -46,9 +46,16 @@ retains exact source identities, earlier failures and scoped validation.
   identity restoration after actual HTTP diagnostics confirmed a stale alias.
   Inherited PTY adoption uses `O_NOCTTY`, with an isolated session-leader control.
   Earlier failed runs remain recorded. See the [host guide](../site/guides/host-composition.mdx#recover-unpublished-service-approvals)
-  for explicit selection and use. Installed recovery, Browser login and process-loss
-  qualification remain open; V40 excludes these changes. No standalone realm
-  command or automatic startup revoke is added. Forge/MobkitInstaller's optional
+  for explicit selection and use. A separate ordinary development Rust SDK consumer
+  now reopens the same installed host after fixture preparation and owner closure.
+  One public API recovery action revokes unpublished B's parent/child, preserving
+  published A, canonical source rows and native input history. Exact journal
+  readback and natural cleanup pass independent review. The first producer
+  duplicate-admission failure remains failed; its repair preserves the unchanged
+  consumer, authority and deadline. This is pre-agent SDK consumption, not a
+  released distribution, stock gateway, terminal, Ready or real-crash proof.
+  Browser login remains open; V40 excludes these changes. No standalone realm
+  recovery command or automatic startup revoke is added. Forge/MobkitInstaller's optional
   selection and cold-controller pin correction passes 38 reviewed controls but
   has no installed adoption claim and changes no generator default.
 - **Approval failure cleanup:** After an approval worker joins with an error,
@@ -71,7 +78,10 @@ retains exact source identities, earlier failures and scoped validation.
   the mutation. Two prior-source regressions and 36 controlled JavaScript checks
   pass with independent review. Other tabs can still replace an offer; this adds
   no cross-tab lock or pending-fetch timeout. V40 includes these bytes and
-  completes protected API actions; actual Browser interaction remains unqualified.
+  completes protected API actions. The official hidden in-app Browser was
+  unavailable before any tab, read or UI action in a separate synthetic-transport
+  fixture. The fixture stopped naturally with joined owners; no mouse or
+  substitute driver was used. Actual Browser interaction remains unqualified.
 - **Operation feedback:** Public and declared-secret-slot requests identify exact
   permitted raw tool names when a current checked selection receives invalid
   names. A controlled Console test now exercises the invalid-name feedback before
