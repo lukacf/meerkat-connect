@@ -380,6 +380,55 @@ test("software approval displays the actual checked package and preserves native
   assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Deny"]);
 });
 
+function sourceBuildReview() {
+  return { review_id: 9, can_start: false, prompt: { kind: "approval", approval_id: "source-build-review",
+    summary: "Install the checked source package", allowed_decisions: ["approve", "deny"], body: {
+      kind: "service_software_install", scope: "software_installation_only", check_tool: "setup_selected_check",
+      owner_proposal: { profile: "node", destination: "/selected/install", build: {
+        schema_version: 1, scope: "selected_node_build", profile_sha256: "b".repeat(64),
+        target: { node_version: "v24.19.0", node_abi: "137", platform: "linux", arch: "x64",
+          libc: { family: "glibc", version: "2.39" } },
+        commands: [{ argv: ["/selected/cc", "-c", "src/with space.c", "", "<img src=x>", "-o", "addon.o"] },
+          { argv: ["/selected/ld", "-shared", "addon.o", "-o", "addon.node"] }],
+        inputs: Array.from({ length: 256 }, (_, index) => ({ path: `headers/input-${index}.h`, sha256: "f".repeat(64) })),
+        outputs: [{ destination: "node_modules/fixture/build/addon.node", replaces_sha256: null },
+          { destination: "node_modules/fixture/index.cjs", replaces_sha256: "2".repeat(64) }] } } } } };
+}
+
+test("source build summary keeps command boundaries and file changes concise", t => {
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = sourceBuildReview();
+  const original = JSON.stringify(selected); account.update(selected);
+  const text = ordinaryReviewText(container);
+  for (const expected of ["Build source on this host", "without sandboxing", "v24.19.0", "137", "linux x64 glibc 2.39",
+    '"/selected/cc" "-c" "src/with space.c" "" "<img src=x>" "-o" "addon.o"',
+    '"/selected/ld" "-shared" "addon.o" "-o" "addon.node"',
+    "node_modules/fixture/build/addon.node - Add a new file", "node_modules/fixture/index.cjs - Replace the existing file"])
+    assert.ok(text.includes(expected), expected);
+  assert.ok(text.indexOf("Command 1 literal arguments") < text.indexOf("Command 2 literal arguments"));
+  assert.doesNotMatch(text, /headers\/input-|bbbbbbbb|ffffffff/);
+  assert.equal(container.querySelector(".toolkit-build-review").querySelectorAll("dt").length, 7);
+  assert.equal(container.querySelector("img,script"), null);
+  assert.equal(container.querySelector("details").open, false);
+  assert.deepEqual(JSON.parse(container.querySelector("details pre").textContent), selected.prompt);
+  assert.equal(JSON.stringify(selected), original);
+});
+
+test("build summaries retain unknown change and format limits", t => {
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = sourceBuildReview();
+  delete selected.prompt.body.owner_proposal.build.outputs[0].replaces_sha256;
+  account.update(selected);
+  assert.match(ordinaryReviewText(container), /Replacement information unavailable/);
+  assert.doesNotMatch(ordinaryReviewText(container), /Add a new file/);
+  selected.prompt.body.owner_proposal.build.schema_version = 2; account.update(selected);
+  assert.match(ordinaryReviewText(container), /This build format cannot be summarized here/);
+  assert.doesNotMatch(ordinaryReviewText(container), /Command 1|Add a new file|Replace the existing file/);
+  assert.deepEqual(JSON.parse(container.querySelector("details pre").textContent), selected.prompt);
+  delete selected.prompt.body.owner_proposal.build; account.update(selected);
+  assert.equal(container.querySelector(".toolkit-build-review"), null);
+});
+
 test("serialized refresh clears private DOM and restores only the fresh same-review presentation", async t => {
   const container = fixture(t); const held = deferred();
   const responses = [{projection:snapshot(),review:review()}, held.promise]; let reads = 0; let panel;

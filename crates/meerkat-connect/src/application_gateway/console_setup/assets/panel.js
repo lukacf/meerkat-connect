@@ -255,7 +255,7 @@ export function mountAccountReview(container, refresh, fetcher = fetch, submissi
             };
             const publicBatch = body?.phase === "installed_public_service_batch_access"
                 && ["public_services_v1", "public_services_with_setup_v2"].includes(prompt.body?.kind) && Array.isArray(prompt.body.members);
-            let batchDetails;
+            let batchDetails, buildDetails;
             if (publicBatch) {
                 const members = prompt.body.members;
                 const policy = body.member_tool_policy;
@@ -427,9 +427,38 @@ export function mountAccountReview(container, refresh, fetcher = fetch, submissi
                 fact("Executable", proposed?.entrypoint?.executable);
                 fact("Configuration digest", proposed?.configuration_sha256);
                 fact("Selected software digest", proposed?.selection_sha256);
+                const build = proposed?.build;
+                if (build != null) {
+                    buildDetails = document.createElement("section"); buildDetails.className = "toolkit-build-review";
+                    const title = document.createElement("h3"); title.textContent = "Build source on this host";
+                    const rows = document.createElement("dl"); buildDetails.append(title, rows);
+                    if (build.scope === "selected_node_build" && build.schema_version === 1) {
+                        const note = document.createElement("p");
+                        note.textContent = "These commands run locally as trusted software, without sandboxing. Exact review details contains the selected toolchain, inputs and limits.";
+                        buildDetails.insertBefore(note, rows);
+                        const target = build.target;
+                        fact("Node version", target?.node_version, rows);
+                        fact("Node ABI", target?.node_abi, rows);
+                        fact("Target", [target?.platform, target?.arch, target?.libc?.family, target?.libc?.version]
+                            .filter(value => typeof value === "string").join(" "), rows);
+                        if (Array.isArray(build.commands)) for (const [index, command] of build.commands.entries()) {
+                            if (Array.isArray(command?.argv) && command.argv.every(value => typeof value === "string"))
+                                // Quoted tokens preserve argument boundaries; this is not a shell command.
+                                fact(`Command ${index + 1} literal arguments`, command.argv.map(value => JSON.stringify(value)).join(" "), rows);
+                        }
+                        if (Array.isArray(build.outputs)) for (const [index, output] of build.outputs.entries()) {
+                            const change = output?.replaces_sha256 === null ? "Add a new file"
+                                : typeof output?.replaces_sha256 === "string" ? "Replace the existing file"
+                                    : "Replacement information unavailable; inspect Exact review details";
+                            if (typeof output?.destination === "string")
+                                fact(`Output ${index + 1} (relative to install destination)`, `${output.destination} - ${change}`, rows);
+                        }
+                    } else fact("Build summary", "This build format cannot be summarized here; inspect Exact review details", rows);
+                }
             }
             root.append(facts);
             if (batchDetails) root.append(batchDetails);
+            if (buildDetails) root.append(buildDetails);
             if (typeof body?.notice === "string") { const notice = document.createElement("p"); notice.textContent = body.notice; root.append(notice); }
             const credentialFields = new Map();
             if (review.credential_input != null) {

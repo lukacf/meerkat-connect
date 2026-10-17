@@ -93,6 +93,18 @@ closure is claimed; separately issued setup children are outside the two display
 revokes. The existing exact review payload was checked, not a new panel summary.
 Published 0.9.0 assets and broader requirement statuses are unchanged.
 
+### Console source-build summary
+
+Private Toolkit checkpoint `d30e7dc3970acb25a7b01ed30ba8e45c75b1ab66` makes the ordinary build
+approval show the target, ordered literal command tokens and relative file
+destinations to add or replace. Full toolchain/input hashes and limits remain in
+Exact review details; protected decisions are unchanged. Three focused DOM
+controls pass, including escaping, argument boundaries, a 256-input summary
+bound and retained software-approval behavior. Result `919cadf5` and independent
+review `f64956b5` bind the selected source and joined Node owner. These checks use
+Node 25.9.0/jsdom 26.1.0. The earlier installed product did not include this UI
+change; no Browser rendering or interaction is claimed.
+
 ### Selected installer cancellation
 
 Private Toolkit checkpoint `a6cab1e3e059fb66cae22a90837f890fcf2a4bab` contributes the
