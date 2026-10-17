@@ -2020,6 +2020,11 @@ class InstalledAcquisitionProvider:
     original_catalog = False
     controller_reprepare = False
 
+    def checked_original_catalog_history(self, messages, fresh):
+        return original_catalog_history(messages, self.request_text, self.operation, fresh,
+            allow_controller_recovery=self.controller_reprepare,
+            service_context=getattr(self, "expected_service_context", None))
+
     def __init__(self, directory, events):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         self.directory, self.events = directory, events
@@ -2175,9 +2180,7 @@ class InstalledAcquisitionProvider:
             require(any(message["role"] == "assistant" and message.get("content") == ORIGINAL_A_FINISH
                         for message in messages[first + 1:fresh]), "fresh B input lacks A's actual final history")
             if self.original_catalog:
-                recovery_index = original_catalog_history(messages, self.request_text, self.operation, fresh,
-                    allow_controller_recovery=self.controller_reprepare,
-                    service_context=getattr(self, "expected_service_context", None))
+                recovery_index = self.checked_original_catalog_history(messages, fresh)
                 search, loaded = "original-catalog-search", "original-catalog-load"
                 if search not in results:
                     return call(search, "tool_catalog_search", {"query": self.operation, "limit": 50})
@@ -3084,6 +3087,9 @@ async def _run_installed_product(args, candidate, package, resource_manifest, *,
                     private, finalizer, provider, directory, events, process)
             else:
                 console.application_tool_policy = finalizer.application_tool_policy
+                if hasattr(console, "observe_completed_setup"):
+                    console.observe_completed_setup(
+                        finalizer.completed_setup, finalizer.evidence["completed_setup"])
                 report["console_journey"] = await console.run(
                     private, provider, directory, events, process, runtime.rust_http_base_url)
             observe()
@@ -3202,7 +3208,7 @@ def main():
     parser.add_argument("--toolkit-python", required=True, type=Path)
     parser.add_argument("--meta-python", "--mobkit-python", dest="mobkit_python", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--case", choices=("core", "all", "memory-cleanup", "shutdown-reader", "private-protocol", "installed-product", "installed-console", "installed-console-credentials", "installed-console-browser"), default="core")
+    parser.add_argument("--case", choices=("core", "all", "memory-cleanup", "shutdown-reader", "private-protocol", "installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm"), default="core")
     parser.add_argument("--installed-staging", type=Path)
     parser.add_argument("--installed-staging-sha256")
     parser.add_argument("--browser-forge-source", type=Path)
@@ -3216,7 +3222,7 @@ def main():
         parser.error("Forge Browser source inputs apply only to installed-console-browser")
     if sys.platform != "darwin" and not sys.platform.startswith("linux"):
         parser.error("verifier supports explicit macOS /dev/fd or Linux /proc/self/fd inventory only")
-    installed = args.case in ("installed-product", "installed-console", "installed-console-credentials", "installed-console-browser")
+    installed = args.case in ("installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm")
     if installed:
         if args.raw_gateway is not None or args.installed_staging is None or args.installed_staging_sha256 is None:
             parser.error("installed-product needs the exact staging path/hash and no unrelated raw gateway")
@@ -3278,17 +3284,25 @@ def main():
             report.update(installed_candidate=candidate, installed_inputs=inputs,
                 execution_claim="installed SDK acquisition and one public read; success requires exact native input completion; no live authentication or general service support claim")
             console = None
-            if args.case in ("installed-console", "installed-console-credentials", "installed-console-browser"):
+            if args.case in ("installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm"):
                 module_path = Path(__file__).with_name("verify_installed_console.py")
                 spec = importlib.util.spec_from_file_location("connect_installed_console", module_path)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 report["console_verifier"] = artifact_pin(module_path)
-                scenario = (module.TrelloConsoleScenario if args.case == "installed-console-credentials"
-                            else module.ConsoleScenario)
-                console = (module.BrowserConsoleScenario(sys.modules[__name__], module.loopback_origin(),
-                    args.browser_forge_source, args.browser_forge_source_sha256) if browser else
-                    scenario(sys.modules[__name__], module.loopback_origin()))
+                if args.case == "installed-console-warm":
+                    warm_path = Path(__file__).with_name("verify_installed_warm.py")
+                    warm_spec = importlib.util.spec_from_file_location("connect_installed_warm", warm_path)
+                    warm_module = importlib.util.module_from_spec(warm_spec)
+                    warm_spec.loader.exec_module(warm_module)
+                    report["warm_verifier"] = artifact_pin(warm_path)
+                    console = warm_module.create_scenario(sys.modules[__name__], module, module.loopback_origin())
+                else:
+                    scenario = (module.TrelloConsoleScenario if args.case == "installed-console-credentials"
+                                else module.ConsoleScenario)
+                    console = (module.BrowserConsoleScenario(sys.modules[__name__], module.loopback_origin(),
+                        args.browser_forge_source, args.browser_forge_source_sha256) if browser else
+                        scenario(sys.modules[__name__], module.loopback_origin()))
                 report["execution_claim"] = console.scope
             for corrupt in ((False,) if console is not None else (False, True)):
                 result = (asyncio.run(_run_installed_product(args, candidate, package, resource_manifest,
@@ -3300,6 +3314,8 @@ def main():
                     break
             if console is not None:
                 require(digest(module_path) == report["console_verifier"]["sha256"], "Console verifier helper changed during verification")
+            if args.case == "installed-console-warm":
+                require(digest(warm_path) == report["warm_verifier"]["sha256"], "Warm verifier changed during verification")
             require(installed_candidate(args)[0] == candidate, "selected staged candidate changed during verification")
             for row in report["sdk_sources"]:
                 require(digest(Path(row["path"])) == row["sha256"], "selected SDK source changed during verification")

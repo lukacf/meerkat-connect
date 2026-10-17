@@ -217,9 +217,11 @@ the returned `helper.catalog_capability` before advertising this mode.
 ## Acquire another public service through the same live helper (development)
 
 <Note>
-This optional development path passes native and checked-owner controls.
-Installed warm reacquisition is still pending. It does not enable helper reset
-or authenticated-service batches.
+This optional development path now passes an installed controlled Console API
+case: one session uses X, requests Y through the same helper, reuses X's checked
+job and then uses X+Y with fresh grants. Five displayed grants are revoked and
+all physical owners join. Autonomous choice, Browser interaction, helper reset
+and authenticated-service batches are separate qualifications.
 </Note>
 
 The trusted host uses the existing `AgentSetupCapabilityRequest.helper_targets`

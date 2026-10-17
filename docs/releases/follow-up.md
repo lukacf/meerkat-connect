@@ -5,6 +5,24 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
+An installed controlled Console API case now completes repeated acquisition in
+one Original session. It first installs and uses Hacker News, requests Wikipedia
+through the same surviving helper, then answers using both services. The earlier
+Hacker News job is reused without reinstalling it; the new continuation receives
+fresh grants for the complete service set. All three Original runs and both
+helper runs complete. Exactly five displayed service/catalog grants are revoked,
+login retirement is certain and native/process owners join.
+
+This case uses a controlled model schedule with real native execution and public
+service calls. It qualifies installed continuation and reuse, not autonomous
+integration choice, Browser interaction, helper reset, process restart,
+authenticated batches or concurrent shared setup. No controller-recovery notice
+occurred, so the new recovery validator has source/control evidence only.
+Separately issued setup children and persistent policy are outside the five
+displayed revokes. Published 0.9.0 assets and requirement statuses are unchanged.
+
+[Source provenance](../../SOURCE-PROVENANCE.md#installed-repeat-acquisition) records exact versions and evidence.
+
 The fresh V40 journey now completes agent-led discovery of an outside-catalog
 integration, protected installation/access and the original business answer
 through the controlled Console API. The same Original reported overdue invoices
@@ -74,8 +92,8 @@ independent-target checks, stale policy and recovery refusals, and checked-job
 reuse pass; earlier R1-R5 fixture failures remain retained. All command owners
 joined. See [host composition](../site/guides/host-composition.mdx#acquire-another-public-service-through-the-same-live-helper-development)
 and [source provenance](../../SOURCE-PROVENANCE.md#warm-public-reacquisition).
-Installed warm use, helper reset, Browser behavior and performance remain
-unqualified. Requirement statuses and released artifacts are unchanged.
+Helper reset, Browser behavior and performance remain unqualified.
+Requirement statuses and released artifacts are unchanged.
 
 The first strict installed check on public `63c8d79a` failed after software
 installation and receipt reconciliation. Its valid legacy profile gives the
@@ -100,22 +118,21 @@ the actual continued agent's durable consumed/completed receipt; corruption
 refuses before negotiated entry. Native shutdown, readers, providers, children,
 process groups and the build lock all settle. Independent review verifies the
 exact source and artifact bindings. The gateway build retains 65 warning headers.
-This closes the installed compatibility regression; the separate ordinary
-repeat-acquisition journey remains pending.
+This closes the installed compatibility regression. The later R9 case
+separately qualifies installed repeat acquisition.
 
 V44 then completes an initial setup-enabled two-service batch through the
 controlled Console API on that corrected production source. The host's actual
 catalog/audience profile is eligible, but both services are selected up front,
-so installed B-to-C and retained-X reuse remain unproven. Six tool errors recover
+so V44 alone does not establish B-to-C or retained-X reuse. Six tool errors recover
 automatically before the Original answer. Exactly three displayed service/catalog
 grants are revoked and physical cleanup joins all owners. Those revokes do not
 cover separately issued setup children or reverse the persistent policy. See
 [source provenance](../../SOURCE-PROVENANCE.md#v44-initial-setup-enabled-batch)
 for the exact final evidence and answer limits. No additional requirement closes.
 
-Concurrent shared setup is also still open: review found that a second request
-queues behind a running installation in the fixed helper. Shared records alone
-would not make that user path reachable.
+Concurrent shared setup remains in development and is not covered by this
+installed repeat-acquisition result.
 
 - **Bounded setup-job observation:** Development `setup_job` accepts optional
   integer `wait_ms` from 0 to 10000; omitted or zero keeps the immediate response.

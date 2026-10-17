@@ -56,8 +56,9 @@ The existing host methods and new version boundaries are documented in
 Forge source note `81fea62d` confirms the normal optional catalog selection;
 it is not installed warm acceptance. Legacy singleton and v1 bytes remain exact;
 the setup-enabled v2 and catalog-v2 records require matching readers. V43's
-installed multi-service result remains separate. No installed warm, Browser,
-helper-reset, authenticated-batch, performance or release result is claimed.
+installed multi-service result remains separate. Installed repeat acceptance
+is recorded below; Browser, helper-reset, authenticated-batch, performance and
+release results remain outside this checkpoint.
 
 Current-head composition `c897b204` preserves 33 warm afterimages and merges
 only the shared test file onto adopted job-wait source `d42e093d`. Result
@@ -89,8 +90,40 @@ the actual continued agent's durable consumed/completed receipt; corruption
 refuses before negotiated entry. Native shutdown, readers, providers, children,
 process groups and the build lock all settle. Independent review verifies the
 exact source and artifact bindings. The gateway build retains 65 warning headers.
-This closes the installed compatibility regression; the separate ordinary
-repeat-acquisition journey remains pending.
+This closes the installed compatibility regression. The following R9 case
+separately qualifies installed repeat acquisition.
+
+### Installed repeat acquisition
+
+R9 completes the controlled installed A/helper/B/same-helper/C path on unchanged
+production `3ecf0d5a`, gateway `80f956a8`, Core `efd313d4` and Meta
+`669f54fa` with their retained matching SDK/resource inputs. B uses Hacker News
+before requesting Wikipedia. The same helper installs Y once and reselects X's
+checked job without reinstalling X. C receives fresh complete-set grants, uses
+both integrations and answers in the same Original session. Native Console
+events prove three completed Original runs and two helper runs.
+
+Exactly five displayed service/catalog leaves are revoked with exact unavailable
+readbacks. Login is fenced and drained, native shutdown acknowledges runtime
+and host cleanup, and readers, providers, observed children, listeners and outer
+owners join without escalation. One First-page action obtains a fresh access
+offer without repeating a protected request. Setup children and persistent
+policy are not included in those revokes.
+
+Final aggregate `017a5eb0`, source review `6810c12c`, mechanics review
+`79e7bbf8` and outcome review `c232d0bd` bind the exact case. The public verifier
+and its 36 portable verifier controls are retained. Nine saved-artifact controls
+separately validate the runner's observations. The model schedule is controlled;
+this case does not prove autonomous strategy or Browser interaction. No native
+controller-recovery notice occurred, so the recovery branch remains qualified
+by source and synthetic controls only. Private native input receipts were not
+requested. No helper-reset, restart, authenticated-batch, shared-setup,
+performance, release or broader requirement closure is claimed.
+
+R7's parser failure after C answered and R8's HTTP500/cancelled C caused by its
+fixture's recovery-message rejection remain failed. R9 corrects those verifier
+assumptions without weakening product authority or the existing success and
+cleanup assertions. Product and native binaries are unchanged.
 
 ### V44 initial setup-enabled batch
 
@@ -100,7 +133,7 @@ Actual prepared output confirms the helper catalog issuance, equal audiences and
 distinct executors. One question produces two software decisions, one setup-v2
 complete-set access decision and an automatic Original answer using Hacker News,
 Wikipedia background and a Hacker News refresh. Both integrations were selected
-in the first acquisition; installed B-to-C and retained-X reuse remain unproven.
+in the first acquisition; V44 alone does not establish B-to-C or retained-X reuse.
 
 Six tool errors recover automatically, including catalog refusals, busy help and
 the exact reconciliation, metadata and member corrections. The initial refresh
