@@ -122,15 +122,15 @@ impl PrivateOriginals {
         )
         .map_err(|_| PrivateOriginalError::Conflict)?;
         // The existing configured owner selects contributor targets for the
-        // Original audience. Validate that contract before deciding whether
-        // this optional metadata scope can be selected.
+        // helper audience. Validate that exact contract before deciding whether
+        // the Original and helper can share the optional warm metadata scope.
         if capability.helper_targets.iter().any(|target| {
             target.restrictions.processors
                 != ExactRestriction::exact([ProcessorRef::Principal {
                     principal: helper.logical_executor.clone(),
                 }])
                 || target.restrictions.audiences
-                    != ExactRestriction::exact([facts.member.audience.clone()])
+                    != ExactRestriction::exact([helper_member.audience.clone()])
         }) {
             return Err(PrivateOriginalError::Conflict);
         }

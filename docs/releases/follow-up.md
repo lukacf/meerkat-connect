@@ -77,6 +77,24 @@ and [source provenance](../../SOURCE-PROVENANCE.md#warm-public-reacquisition).
 Installed warm use, helper reset, Browser behavior and performance remain
 unqualified. Requirement statuses and released artifacts are unchanged.
 
+The first strict installed check on public `63c8d79a` failed after software
+installation and receipt reconciliation. Its valid legacy profile gives the
+Original and helper different audiences. Warm selection incorrectly compared
+helper targets with the Original audience and returned a policy refusal before
+public access review. The corruption case was not entered, and no Forge app or
+business question was started. Normal native shutdown and physical cleanup
+completed. This is a Connect compatibility regression, not a missing policy grant;
+the failed execution remains retained.
+
+The scoped correction validates targets against the actual helper audience,
+then preserves legacy fallback for initially ineligible configurations. Seven
+affected Rust controls pass, including actual cross-audience public preparation,
+captured-scope refusal, partial recovery and both native repeat-acquisition cases.
+Six are existing controls; the cross-audience control is new. Restoring only
+the old production comparison compiles, then fails that new test at actual public
+preparation with Conflict. The installed rerun remains pending, and no
+permissions or installed assertions were relaxed.
+
 Concurrent shared setup is also still open: review found that a second request
 queues behind a running installation in the fixed helper. Shared records alone
 would not make that user path reachable.

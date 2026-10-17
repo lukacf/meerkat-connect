@@ -114,7 +114,7 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum WarmHelperProfile { Standard, SameExecutor }
+pub(crate) enum WarmHelperProfile { Standard, SameExecutor, CrossAudience }
 
 async fn open_selected_source_with_profile(facts: &ControllerModelFacts, select_controller: bool, probe: bool,
     local_operator: bool, source_subject: bool,
@@ -253,6 +253,9 @@ async fn open_selected_source_with_profile(facts: &ControllerModelFacts, select_
         // existing public task without widening its metadata permission.
         match warm_profile {
             Some(WarmHelperProfile::SameExecutor) => selected.logical_owner = native.members[0].logical_owner.clone(),
+            Some(WarmHelperProfile::CrossAudience) => selected.audience = meerkat_authorization_contracts::constraints::AudienceRef::Principal {
+                principal: selected.logical_owner.clone(),
+            },
             _ => (),
         }
         native.members.push(selected);

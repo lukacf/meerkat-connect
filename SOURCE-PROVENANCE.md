@@ -66,6 +66,24 @@ source/lock equality and all owners joined. These two composition checks do not
 increase the 28 distinct warm Rust count or repeat native/installed acceptance.
 Compilation retains 55 plain warning headers and zero JSON compiler-warning rows.
 
+The first strict installed check on public `63c8d79a` failed after software
+installation and receipt reconciliation. Its valid legacy profile gives the
+Original and helper different audiences. Warm selection incorrectly compared
+helper targets with the Original audience and returned a policy refusal before
+public access review. The corruption case was not entered, and no Forge app or
+business question was started. Normal native shutdown and physical cleanup
+completed. This is a Connect compatibility regression, not a missing policy grant;
+the failed execution remains retained.
+
+The scoped correction validates targets against the actual helper audience,
+then preserves legacy fallback for initially ineligible configurations. Seven
+affected Rust controls pass, including actual cross-audience public preparation,
+captured-scope refusal, partial recovery and both native repeat-acquisition cases.
+Six are existing controls; the cross-audience control is new. Restoring only
+the old production comparison compiles, then fails that new test at actual public
+preparation with Conflict. The installed rerun remains pending, and no
+permissions or installed assertions were relaxed.
+
 ### Bounded setup-job observation
 
 Development source adds optional integer `wait_ms` from 0 to 10000 to the existing

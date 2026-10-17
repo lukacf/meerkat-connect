@@ -111,7 +111,21 @@ async fn software_authenticated_and_report_only_public_capture_keep_legacy_prepa
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_executor_legacy_helper_prepares_public_without_warm_selection() {
     use crate::installed_host::controller_first_input_fixture::WarmHelperProfile;
-    for profile in [WarmHelperProfile::SameExecutor] {
+    legacy_helper_preparation(&[WarmHelperProfile::SameExecutor]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cross_audience_legacy_helper_prepares_public_without_warm_selection() {
+    use crate::installed_host::controller_first_input_fixture::WarmHelperProfile;
+    legacy_helper_preparation(&[WarmHelperProfile::CrossAudience]).await;
+}
+
+async fn legacy_helper_preparation(
+    profiles: &[crate::installed_host::controller_first_input_fixture::WarmHelperProfile],
+) {
+    use crate::installed_host::controller_first_input_fixture::WarmHelperProfile;
+    use meerkat_authorization_contracts::constraints::{ExactRestriction, ProcessorRef};
+    for &profile in profiles {
         let script = acquisition_denial::Script::for_approved();
         let report = Report::new(script.tools().result_tool());
         let (fixture, _) =
@@ -124,7 +138,7 @@ async fn same_executor_legacy_helper_prepares_public_without_warm_selection() {
                 let feedback = script.observations().0;
                 assert_eq!(feedback.len(), 1);
                 assert!(!feedback[0].is_error, "{feedback:?}");
-                let _context = report.take_context().await;
+                let context = report.take_context().await;
                 let native = fixture
                     .lifetime()
                     .selected_policy()
@@ -148,7 +162,23 @@ async fn same_executor_legacy_helper_prepares_public_without_warm_selection() {
                         assert!(original.audience == helper.audience);
                         assert!(original.logical_owner == helper.logical_owner);
                     }
+                    WarmHelperProfile::CrossAudience => {
+                        assert!(original.audience != helper.audience);
+                        assert!(original.logical_owner != helper.logical_owner);
+                    }
                     WarmHelperProfile::Standard => unreachable!(),
+                }
+                for target in &original.setup_capability.as_ref().unwrap().helper_targets {
+                    assert!(
+                        target.restrictions.processors
+                            == ExactRestriction::exact([ProcessorRef::Principal {
+                                principal: helper.logical_owner.clone()
+                            },])
+                    );
+                    assert!(
+                        target.restrictions.audiences
+                            == ExactRestriction::exact([helper.audience.clone()])
+                    );
                 }
                 let owner = script.installed_owner();
                 let mut bootstrap = AcquisitionBootstrap::selected(owner.clone());
@@ -172,6 +202,24 @@ async fn same_executor_legacy_helper_prepares_public_without_warm_selection() {
                 );
                 assert_eq!(public.consumer_member(), Some(MEMBER));
                 public.check_setup_current().await.unwrap();
+                if matches!(profile, WarmHelperProfile::CrossAudience) {
+                    // Optional fallback cannot hide contradictory helper facts.
+                    // This negative owner lookup changes no retained policy or
+                    // grants; positive preparation above uses the actual call.
+                    let mut contradictory = helper.clone();
+                    contradictory.audience = original.audience.clone();
+                    assert!(matches!(
+                        fixture.source.select_service_setup(
+                            fixture.original_reference(),
+                            &fixture.session,
+                            public.deadline_ms(),
+                            report.selection.get().unwrap(),
+                            &contradictory,
+                            context.origin_session_id().unwrap(),
+                        ),
+                        Err(PrivateOriginalError::Conflict)
+                    ));
+                }
                 for task in [
                     report
                         .prepare_task(&tasks, ReportPreparation::Software)
