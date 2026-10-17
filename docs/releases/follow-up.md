@@ -35,10 +35,19 @@ coverage is settled historical source custody, not process restart or a new
 post-restoration operation. The earlier fixture-order and public-refusal
 classification failures remain recorded. The panel passes 48 JavaScript controls,
 including visible per-service operations, deadlines,
-remote endpoints and policy scope. Ordinary multi-service selection/use and the
-final answer remain unqualified. This path adds neither authenticated batches nor
-another acquisition by the resumed task; a new human request and setup are
-separate. Requirement statuses remain unchanged.
+remote endpoints and policy scope. A fresh controlled Console API case on public
+`4fb67218` selected and installed both services after correcting the initial
+provider route through normal setup. It made no receipt reconciliation call;
+three public requests returned generic unavailability before access review.
+Current library metadata was also absent because help was read before checking.
+No service grant, business call or final answer resulted. Logout, normal Stop and
+exact physical cleanup are independently closed. The feedback repair now passes
+four focused controls; restoring only the old generic mapping makes the unchanged
+correction regression fail at runtime. Agents can see the existing reconciliation
+and fresh-help requirements. Both service uses and the final answer remain
+unqualified, and SETUP-002 stays open. This path adds neither authenticated
+batches nor another acquisition by the resumed task; a new human request and
+setup are separate. Requirement statuses remain unchanged.
 
 Concurrent shared setup is also still open: review found that a second request
 queues behind a running installation in the fixed helper. Shared records alone

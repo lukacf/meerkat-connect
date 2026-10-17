@@ -56,10 +56,23 @@ The separate review renderer preserves the status-read deadline and passes all
 48 JavaScript controls; the exact prior renderer passes 46/48, with two meaningful
 visible-detail failures. Independent UI review is `2c43cb33`; final panel SHA-256
 is `7af2b61109a62a98727fdd573df5d1fab4e2df4f9882482fb8dc567a7358ff33`.
-This is focused source/component evidence, not ordinary-agent multi-service use,
-Browser interaction, CI or released packaging. Ordinary multi-service acceptance
-is pending. No authenticated batch, later resumed-task acquisition or requirement
-completion is claimed.
+This is focused source/component evidence, not Browser interaction, CI or
+released packaging. The separate V41 ordinary case used exact public `4fb67218`
+and the same native graph. Its initial provider-route startup failure remains
+recorded; normal model correction, Build and fresh Install then reached startup.
+One question produced one acquisition and two successful software installs, but
+no receipt reconciliation, access review, service grant, business call or answer.
+Three public requests returned generic unavailability. The existing checked-owner
+source identifies an unconfirmed matched receipt first and missing post-check
+library metadata next; the visible errors did not disclose those reasons.
+Final receipt `929ba6fa` and independent review `6264976c` retain the failed result
+and confirmed cleanup. Normal Stop returned 200; application processes were
+absent before the exact host received SIGTERM, and all owner sessions and
+forwards joined. Feedback receipt `bcb8a30b` and review `8186217c` record four focused passing controls
+and the unchanged correction regression failing at runtime when only the old
+generic mapping is restored. These are actual checked-owner/software-review calls
+with synthetic package replies; V41 is not reclassified by that patch. No authenticated batch, later resumed-task
+acquisition or requirement completion is claimed.
 
 ### Agent Plugins external-client checkpoint
 

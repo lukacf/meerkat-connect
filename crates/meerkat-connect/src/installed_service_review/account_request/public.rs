@@ -2,7 +2,7 @@
 //! No account is invented and no standalone realm finalizer is composed here.
 
 use super::*;
-use crate::service_install::PublicServiceSelection;
+use crate::service_install::{ConnectorSelectionError, PublicServiceSelection};
 use crate::approval::ApprovalPresenter;
 use crate::stdio::PromptBridge;
 use std::{collections::BTreeSet, future::Future, sync::atomic::{AtomicBool, Ordering}, time::Duration};
@@ -81,6 +81,27 @@ fn unavailable() -> ToolError {
     ToolError::unavailable(SETUP_PUBLIC_SERVICE_REQUEST,
         meerkat_core::ToolUnavailableReason::TemporarilyUnavailable)
 }
+
+/// Shared singleton/batch selection feedback, after the caller's native check.
+/// This only projects the existing owner's refusal; it performs no setup work.
+pub(crate) fn select_public_job(
+    checked: &Arc<CheckedInstalls>, realm: &RealmLocator, session: &SessionId, job_id: &str,
+) -> Result<PublicServiceSelection, ToolError> {
+    checked.public_selection(realm, session, job_id).map_err(|error| {
+        let job = json!(job_id);
+        let reason = match error {
+            ConnectorSelectionError::Unconfirmed => format!(
+                "Job {job} has no current reconciled selection in this helper session. If this is an existing job from this setup session, inspect it with setup_job using the same job_id and call setup_reconcile when reconciliation is available. A succeeded job alone does not confirm its retained receipt. Do not reinstall to remedy this refusal. Unknown, foreign or stale jobs remain refused. This request has not entered access review."),
+            ConnectorSelectionError::MetadataRequired { family, profile } => {
+                let help = json!({"family": family, "profile": profile});
+                format!(
+                    "Job {job} needs current library operation metadata. Call setup_help with {help} after the current setup_check; help read before that check is not retained for this selection. Then retry the public request with the same job, exact raw operation names, intended consumer agent and requested lifetime. Do not reinstall. This request has not entered access review.")
+            }
+        };
+        ToolError::InvalidArguments { name: SETUP_PUBLIC_SERVICE_REQUEST.into(), reason }
+    })
+}
+
 fn invalid() -> ToolError {
     ToolError::InvalidArguments { name: SETUP_PUBLIC_SERVICE_REQUEST.into(),
         reason: "Provide one exact reconciled public job, raw operations, intended consumer agent and explicit lifetime. Commands, credentials, accounts and authority are not accepted.".into() }
@@ -112,8 +133,7 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
     { return Err(ToolError::access_denied(call.name)); }
     let mut current = context.check_tool_authorization(call, plan)?.unwrap_or_else(|| context.clone());
     let proposal = parse(call.args.get())?;
-    let selected = owner.checked.public_selection(&owner.realm, &owner.session, &proposal.job_id)
-        .map_err(|_| unavailable())?;
+    let selected = select_public_job(&owner.checked, &owner.realm, &owner.session, &proposal.job_id)?;
     let selection = PublicSelection { operations: proposal.operations.into_iter().collect(),
         agent: proposal.agent, expires_in_ms: proposal.expires_in_ms, tool_policy: proposal.tool_policy };
     let permitted = selected.public_operations().map_err(|_| unavailable())?;

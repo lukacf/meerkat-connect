@@ -73,8 +73,7 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
     let proposal = parse_batch(call.args.get())?;
     let mut members = Vec::with_capacity(proposal.services.len());
     for member in proposal.services {
-        let selected = owner.checked.public_selection(&owner.realm, &owner.session, &member.job_id)
-            .map_err(|_| unavailable())?;
+        let selected = select_public_job(&owner.checked, &owner.realm, &owner.session, &member.job_id)?;
         let operations: BTreeSet<_> = member.operations.into_iter().collect();
         if !operations.is_subset(&selected.public_operations().map_err(|_| unavailable())?) {
             return Err(invalid_batch());

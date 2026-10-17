@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 const NAMES: &[&str] = &[
     "setup_state",
+    "setup_help",
     "setup_check",
     "setup_selected_check",
     "setup_install",
@@ -171,6 +172,7 @@ impl Package {
                 }
                 json!({"job":{"id":"3".repeat(32), "kind":"install", "family":if self.selected {"selected-python"} else {"services"}, "status":"running"}})
             }
+            "setup_help" => self.readback_reply.lock().unwrap().clone().unwrap_or_else(|| json!({})),
             "setup_job" | "setup_reconcile" => {
                 if self.lose_readback.swap(false, Ordering::SeqCst) {
                     return Err(ToolError::execution_failed("fixture lost readback reply"));
@@ -2591,3 +2593,6 @@ async fn selected_human_recovery_keeps_exact_participant_and_whole_member_policy
 
 #[path = "service_install_tests/review_observation.rs"]
 mod review_observation;
+
+#[path = "service_install_tests/public_selection_feedback.rs"]
+mod public_selection_feedback;
