@@ -22,6 +22,15 @@ recovery or independent runtime write prevention. Published Connect 0.9.0 binari
 are unchanged. [Source provenance](../../SOURCE-PROVENANCE.md#unreleased-follow-up-source)
 retains exact source identities, earlier failures and scoped validation.
 
+- **External Agent Plugins consumption:** A format-adapted Microsoft
+  `microsoft-docs` 0.3.1 pack now exports on Linux and runs through unchanged
+  OpenHands SDK 1.49.2 on macOS. After staging removal, all eight original files
+  and two canonical JSON values match; the actual client loads three skills and
+  fetches a substantive 2,089-byte Azure Blob Storage overview with one tool call.
+  Independent outcome review and natural local cleanup pass. Both earlier UMT
+  initialization failures remain failed with zero tool calls. See the
+  [portability example](../site/reference/portability.mdx#qualified-external-client-example)
+  for the explicit format adaptation and limits. D3 and PKG-007 remain incomplete.
 - **Retained approval recovery:** Development now includes one bounded inventory
   of existing parent/access/source records and reviewed exact cleanup through the
   existing native owner. Explicit Console operator policy requires the retained
@@ -228,8 +237,9 @@ Node 24.19.0 ABI 137. Independent review matched the 135-file acquisition invent
 and runtime to the recorded adapter calls and answer, without a new business probe.
 Portable import with host-mediated same-session continuation and declared
 Compose owner-conversion evidence on macOS and Linux also remain qualified. These are narrower than
-general native compilation, real third-party Agent Plugins client interoperability
-or accepted native application-profile migration. The saved-guidance export above
+general native compilation or accepted native application-profile migration.
+The Microsoft/OpenHands case above adds one real, format-adapted Agent Plugins
+client operation; broader client/format conformance remains open. The saved-guidance export above
 already closes the earlier retained-file export gap; no repeat of that proof is
 needed. PKG-006 and PKG-007 remain incomplete.
 

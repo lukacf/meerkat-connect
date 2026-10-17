@@ -41,6 +41,28 @@ The saved-recipe CLI also supports `export --guidance` and matching `check-expor
 
 The local round-trip controls cover an authored stdio server used by a generic protocol client after source removal, and saved guidance discovered by an independent file reader after canonical inspection, SQLite retention and staging removal. The latter follows a skill's relative reference to fresh fixture data. These controls do not qualify Windows permissions or full Agent Plugins client conformance. Automatic whole-package discovery, skill frontmatter validation and artifact-backed Connect package realization remain separate work.
 
+### Qualified external-client example
+
+A development case exported [Microsoft's `microsoft-docs` 0.3.1 pack](https://github.com/MicrosoftDocs/mcp/tree/f8ffde185dfd232dbf5d187c22ce299eadc3d583)
+on Linux, then used unchanged [OpenHands SDK 1.49.2](https://github.com/OpenHands/software-agent-sdk/tree/d128a786ee2ee570eb23ff5862ec148b43cfad0b)
+on macOS with Python 3.12.13. This was an explicit format adaptation: all eight
+original files and the license remain intact, while two added canonical JSON
+files select Agent Plugins metadata and map `http` to `streamable-http` without
+changing the published endpoint.
+
+After source staging was removed, the public Rust export API produced and
+inspected the ten-file pack. OpenHands' normal `Plugin.load` and
+`create_mcp_tools` loaded three skills and one server, then one
+`microsoft_docs_fetch` call returned a substantive Azure Blob Storage overview.
+No model, credentials, runtime overlay or alternate HTTP client was needed.
+Normal local context/process cleanup passed independent review.
+
+This establishes one pack/client operation, not a general format-conversion
+feature or full client conformance. Two earlier UMT launch attempts remain failed
+before any tool call. Remote implementation identity, remote session deletion,
+complete-page fidelity, other targets and installed Connect host adoption need
+separate evidence.
+
 ## Host execution modes
 
 Python and TypeScript integrations can run in a compatible host or supervised workers with isolated dependencies. Native Rust remains useful for host constraints or measured needs. Unselected integrations should remain cold metadata: no import, process or prompt cost merely because a recipe exists.

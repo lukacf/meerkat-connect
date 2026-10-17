@@ -22,6 +22,40 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+### Agent Plugins external-client checkpoint
+
+One independently reviewed development case exports Microsoft's
+[`microsoft-docs` 0.3.1](https://github.com/MicrosoftDocs/mcp/tree/f8ffde185dfd232dbf5d187c22ce299eadc3d583)
+and uses unchanged [OpenHands SDK 1.49.2](https://github.com/OpenHands/software-agent-sdk/tree/d128a786ee2ee570eb23ff5862ec148b43cfad0b)
+through its normal loader/runtime. The Linux exporter uses public `1779df8f`
+plus one case-only public-API example; all 127 selected portable package/store/graph
+paths match adopted public `070d3469`. The client runs on macOS with Python
+3.12.13 and the pinned SDK dependency lock
+`334b82b8688861bfa3f051f3cfca31ed5585101599212ff76399865117a29f18`.
+
+All eight original donor files, including the CC-BY-4.0 notice, are retained
+byte-identically. Two explicit canonical JSON additions select Agent Plugins
+metadata and map `http` to `streamable-http` without changing the endpoint.
+Staging is removed before export/use; all ten files are inspected. The actual
+client loads three skills and calls `microsoft_docs_fetch` once, returning a
+substantive 2,089-byte Azure Blob Storage overview. Result body SHA-256 is
+`21f40ae2aa0780d7dc046b27993e5c4f427d459b4bf3a2dd2352b47482fa6dcd`.
+Build/export and client exit naturally with observed owners joined; the SDK's
+background GET-stream reconnect is not a repeated tool invocation. Final receipt
+`ee02bead` and independent review `55496809` retain exact evidence.
+
+Both earlier full-pack UMT cases at donor `b6eb997c` remain failed with zero tool
+calls: unchanged `npx` execution encounters a bin without a shebang, and the
+explicit Node launch encounters a missing published core entrypoint. Their
+receipts are `875b385c` and `1585fddc`. No donor/package or SDK fix is hidden by the
+Microsoft result. This qualifies one format-adapted pack/client operation, not
+unchanged canonical donor format, immutable remote service code, complete-page or
+`structuredContent` fidelity, remote session deletion acknowledgement, installed
+Connect host adoption or a new release. D3 and PKG-007 remain incomplete. See the
+[portability reference](docs/site/reference/portability.mdx#qualified-external-client-example).
+
+### Native acquisition and recovery checkpoints
+
 V40 completed the controlled Console API business journey using exact adopted
 public `1779df8f6d95f34e17fd6b24c944d7d1a2ac69c7` (production `5c00e496`) and
 ordinary Forge `3b24a887`, without overlays or a recovery selection. One original
