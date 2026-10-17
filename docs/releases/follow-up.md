@@ -5,6 +5,18 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
+Local setup now keeps the protocol child in its original preparation owner
+across errors and offers a move-owned asynchronous guard. Existing CLI calls
+remain compatible; borrowed guard Drop requests cancellation while retaining the
+handle needed for an explicit join. Seven focused controls pass on the current
+Core/Meta graph, including cancellation, malformed replies, changed resources and
+that same-child join. The initial fixture failure remains recorded.
+
+This qualifies synthetic process custody. Native adapter, gateway/reset and
+shared SDK acceptance remain separate, as does CLI recovery after a persistent
+OS wait error. [Source provenance](../../SOURCE-PROVENANCE.md#retained-local-setup-process)
+records the exact checkpoint and limits. Released 0.9.0 assets are unchanged.
+
 An installed controlled Console API case now completes repeated acquisition in
 one Original session. It first installs and uses Hacker News, requests Wikipedia
 through the same surviving helper, then answers using both services. The earlier

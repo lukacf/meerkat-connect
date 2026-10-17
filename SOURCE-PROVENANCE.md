@@ -22,6 +22,31 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+### Retained local setup process
+
+Private Toolkit checkpoint `940d5b679876a82a55fb04384f095c3415f73391` contributes three source paths:
+the local-round exports, the retained owner/guard implementation and its focused
+tests. The protocol child stays in the original `LocalRoundOwner` across errors.
+`OwnedLocalRoundGuard` adds a move-owned asynchronous form; the existing borrowed
+CLI API remains compatible. Borrowed guard Drop requests cancellation and leaves
+the child handle in the owner for an explicit join.
+
+Seven exact controls pass on public baseline `d0cfd48d` with unchanged Core
+`efd313d4`, Meta `669f54fa` and native lock `3afe2492`. Six exercise actual
+synthetic protocol children; one checks the bounded Ready parser. The process
+controls require `console` and an explicit absolute `TOOLKIT_SHARED_TEST_PYTHON`,
+and use only that interpreter's standard library. Result `e80d43d1` and independent
+review `b225e641` bind source, executed binary and joined command owners. The
+initial run compiled but retained six pre-child fixture failures; its corrected
+private-directory fixture preserves the production verifier. Compile retains 55
+warning headers.
+
+This does not qualify production Python, native MCP, gateway/reset integration,
+shared SDK use or cleanup after dropping an entire owner/runtime. Callers retain
+begin/finish futures and explicitly retry cleanup after an OS wait failure. The
+current CLI has no persistent-wait-error retry loop. Published 0.9.0 assets and
+requirement statuses are unchanged.
+
 ### Warm public reacquisition
 
 Development source adds an optional setup-enabled public review to the existing

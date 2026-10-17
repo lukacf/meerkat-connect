@@ -78,7 +78,7 @@ mod readback_process;
 #[cfg(unix)]
 mod local_round;
 #[cfg(unix)]
-pub use local_round::{LocalRoundGuard, LocalRoundOwner};
+pub use local_round::{LocalRoundGuard, LocalRoundOwner, OwnedLocalRoundGuard};
 
 #[cfg(not(unix))]
 impl InstalledResources {
