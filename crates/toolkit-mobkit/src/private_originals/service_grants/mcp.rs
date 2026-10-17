@@ -332,7 +332,7 @@ impl PrivateOriginals {
             .ok_or(PrivateOriginalError::Unavailable)?;
         let selected = held
             .service_mcp
-            .as_ref()
+            .iter().find(|selected| selected.selection.server == server)
             .ok_or(PrivateOriginalError::Unavailable)?;
         let route = self.route(&held.reference.route)?;
         selected.selection.validate(route, &selected.decision)?;

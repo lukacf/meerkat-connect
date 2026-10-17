@@ -7,7 +7,7 @@ use crate::private_originals::{
 /// The existing native approval request, with the whole proposed service scope
 /// and any caller task context included in the same retained review body.
 pub struct ServiceMcpParentReview {
-    proposal: OperatorParentProposal,
+    pub(super) proposal: OperatorParentProposal,
     decision: PrivateServiceMcpAccessDecision,
     selection: ServiceMcpSelection,
 }

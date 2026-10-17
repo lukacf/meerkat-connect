@@ -23,6 +23,10 @@ pub use configured_setup::AgentSetupCapabilityRequest;
 pub(super) mod configured_report;
 pub use configured_report::HelperReportCapabilityRequest;
 mod service_mcp;
+mod service_batch;
+pub use service_batch::{MAX_PUBLIC_SERVICE_BATCH, ServiceMcpParentBatchReview};
+pub(crate) use service_batch::ReviewedServiceCatalogParent;
+pub(crate) use service_batch::member_decision_id as service_batch_member_id;
 pub(crate) mod service_recovery;
 mod standing_service;
 pub(crate) use standing_service::{ServiceParentRuleEvidence, StandingServiceParentProposal};
@@ -82,6 +86,7 @@ pub struct OperatorParentProposal {
     restrictions: ExecutionRestrictions,
     purpose: OperatorParentPurpose,
     setup_request: Option<SetupRequestIntent>,
+    batch_member: Option<service_batch::ServiceBatchMemberIdentity>,
     creating_source: std::sync::Weak<ToolkitOriginalOwner>,
     creating_lifetime: std::sync::Weak<NativeHostLifetime>,
 }
@@ -98,6 +103,8 @@ struct OperatorDecision {
     purpose: OperatorParentPurpose,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     setup_request: Option<SetupRequestIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    batch_member: Option<service_batch::ServiceBatchMemberIdentity>,
     operator: meerkat_core::PrincipalRef,
     application: meerkat_core::PrincipalRef,
     represented_subject: Option<meerkat_core::PrincipalRef>,
@@ -651,6 +658,7 @@ impl OperatorSetup {
             restrictions,
             purpose,
             setup_request: None,
+            batch_member: None,
             creating_source: Arc::downgrade(&self.source),
             creating_lifetime: Arc::downgrade(&self.lifetime),
         })
@@ -706,6 +714,7 @@ impl OperatorSetup {
             target_issuance: proposal.setup_request.as_ref().map(|intent|
                 vec![setup_targets::TargetIssuance::NotStarted; intent.targets.len()]).unwrap_or_default(),
             setup_request: proposal.setup_request.clone(),
+            batch_member: proposal.batch_member.clone(),
             operator: self.operator.clone(),
             application: self.native.grant_administrator.clone(),
             represented_subject: route.represented_subject.clone(),
@@ -717,6 +726,7 @@ impl OperatorSetup {
                 ParentIssuance::Denied
             },
         };
+        service_batch::validate_member(&record)?;
         Ok(record)
     }
 
@@ -872,6 +882,15 @@ fn same_request(a: &ApprovalRequest, b: &ApprovalRecord) -> bool {
         && a.request_provenance == b.request_provenance
 }
 fn decision_body(record: &OperatorDecision) -> Result<Vec<u8>, HostLifetimeError> {
+    if let Some(member) = &record.batch_member {
+        return canonical_json(&(
+            "toolkit.public-service-batch-parent.v1", member, &record.route,
+            record.purpose, &record.setup_request, &record.operator,
+            &record.application, &record.represented_subject, &record.approval,
+            &record.requested,
+        )).map_err(|_| HostLifetimeError::InvalidSelection);
+    }
+    // The historical singleton comparison bytes remain exactly unchanged.
     canonical_json(&(
         &record.route,
         record.purpose,
@@ -912,6 +931,7 @@ fn decode(stored: &StoredRecord, key: &StoreKey) -> Result<OperatorDecision, Hos
         }
     }
     setup_targets::validate_progress(&record, key)?;
+    service_batch::validate_member(&record)?;
     Ok(record)
 }
 
@@ -949,7 +969,7 @@ mod tests {
             generation: 1,
         }
     }
-    fn request() -> ApprovalRequest {
+    pub(super) fn request() -> ApprovalRequest {
         ApprovalRequest {
             requester: ApprovalPrincipalId::new("setup-invocation").unwrap(),
             owner: ApprovalOwnerRef::Session {
@@ -1695,7 +1715,7 @@ mod tests {
         }
     }
 
-    fn service_proposal(setup: &OperatorSetup) -> (
+    pub(super) fn service_proposal(setup: &OperatorSetup) -> (
         crate::private_originals::PrivateServiceMcpAccessDecision,
         crate::private_originals::ServiceMcpSelection,
         ApprovalRequest,

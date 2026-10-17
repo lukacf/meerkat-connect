@@ -143,7 +143,15 @@ impl PrivateOriginals {
         if snapshot.approved_service() != Some(&self.service_selection(&stored, &record)?) {
             return Err(PrivateOriginalError::Conflict);
         }
-        let mcp = self.historical_task_access(reference, &task.grant, association).await?;
+        let mcp = match task {
+            service_approved_input::ApprovedTaskLink::Single(member) =>
+                vec![self.historical_task_access(reference, &member.grant, association).await?],
+            service_approved_input::ApprovedTaskLink::Batch(_) => {
+                let (basis, mcp) = self.service_batch_basis(reference, task, false).await?;
+                if association.candidate().authority_basis != basis { return Err(PrivateOriginalError::Conflict); }
+                mcp
+            }
+        };
         // Reopen the exact source and its complete canonical cancellation chain
         // under the existing writer. Pending local cancellation is checked again
         // synchronously inside native's callback, not inferred from this read.
@@ -216,7 +224,7 @@ impl PrivateOriginals {
         };
         // The callback has released native locks. This existing holder retains
         // the same original and exact MCP decision; it is no finish receipt.
-        self.hold_binding_with_mcp(reference.clone(), retained, Some(mcp)).await?;
+        self.hold_binding_with_mcp(reference.clone(), retained, mcp).await?;
         Ok(Some(admission))
     }
 }

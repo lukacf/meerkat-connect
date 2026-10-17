@@ -301,7 +301,7 @@ impl PrivateOriginals {
         // recovery. A partially persisted outer cancellation is not settled
         // merely because this acquisition was already terminal.
         let mut records = vec![source.clone(), parent.clone()];
-        let mut next = self.decode_stored(parent)?.approved_task.map(|link| link.parent);
+        let mut next = self.decode_stored(parent)?.approved_task.map(|link| link.parent.clone());
         while let Some(reference) = next {
             let key = self.key(&reference)?;
             if records.iter().any(|before| before.key == key) || records.len() > MAX_STATUS_TASKS {
@@ -311,7 +311,7 @@ impl PrivateOriginals {
                 .ok_or(PrivateOriginalError::Unavailable)?;
             let ancestor = self.decode_record(&stored, &reference)?;
             if ancestor.source != record.source { return Err(PrivateOriginalError::Conflict); }
-            next = ancestor.approved_task.map(|link| link.parent);
+            next = ancestor.approved_task.map(|link| link.parent.clone());
             records.push(stored);
         }
         if self.service_task_snapshot(record).await?.condition() != task.condition() {
@@ -624,7 +624,7 @@ impl PrivateOriginals {
             return Err(PrivateOriginalError::Conflict);
         }
         if let Some(pending) = pending.first() {
-            return pending.publication_status(&task.original_task.origin_session_id, &task.grant);
+            return pending.publication_status(&task.original_task.origin_session_id, task.grants().first().copied().ok_or(PrivateOriginalError::Conflict)?);
         }
         let candidate = held.original.association().candidate();
         Ok(

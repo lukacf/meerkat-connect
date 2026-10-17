@@ -104,6 +104,8 @@ enum OriginalGrantBinding {
     ControllerOnly,
     Standing,
     Task { issuer: Option<PrincipalRef> },
+    /// An exact reviewed set requires all members only on first admission.
+    ServiceSet { issuer: PrincipalRef },
     /// An internal helper has its own native mandate. Its contributor does
     /// not give this writer permission to revoke or reuse a task grant.
     Helper,
@@ -115,7 +117,15 @@ struct HeldOriginal {
     // Actual native client supplied with the bound input. Its availability is
     // governed by this same candidate/admitted custody, never selection data.
     controller: Option<ControllerModelClient>,
+    service_set_admission: Option<Arc<ServiceSetAdmission>>,
     operation: OriginalOperationDisposition,
+}
+
+/// Final canonical preparation for the existing native first-authentication
+/// callback. This is not admission or durable source authority.
+struct ServiceSetAdmission {
+    publication: meerkat_authorization::publication::LocalPublicationStamp,
+    expires_at_ms: u64,
 }
 
 /// An uncertain cancellation cannot be treated as Open. This disposition
@@ -728,6 +738,75 @@ impl ToolkitOriginalOwner {
             .map_err(|_| OriginalWriterError::Unavailable)
     }
 
+    /// Bind one source-owned public-service set. Its callback must match every
+    /// target and catalog lineage to the immutable reviewed source while this
+    /// writer is held. Configured setup's find target is not part of this path.
+    pub(crate) async fn bind_issued_service_set_async<F, Fut>(
+        &self,
+        association: InputAuthorityAssociation,
+        source_custody: AuthenticatedOriginal,
+        authenticated_requester: &PrincipalRef,
+        authenticated_ingress_actor: &PrincipalRef,
+        task_issuer: &PrincipalRef,
+        persist_or_observe: F,
+    ) -> Result<Arc<RetainedToolkitOriginal>, OriginalWriterError>
+    where
+        F: FnOnce(InputAuthorityAssociation) -> Fut,
+        Fut: std::future::Future<
+            Output = Result<Option<Arc<toolkit_store::StoredRecord>>, OriginalWriterError>,
+        >,
+    {
+        use meerkat_authorization_contracts::work_association::GrantTarget;
+        let _mutation = self.mutation.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        self.check_source(&association, &source_custody, authenticated_requester, authenticated_ingress_actor)?;
+        self.refuse_cancelled_binding(&association)?;
+        let claims = association.candidate();
+        let WorkAuthorityBasis::TargetedGrantLineages { base: Some(_), targets } = &claims.authority_basis else {
+            return Err(OriginalWriterError::UnsupportedMandate);
+        };
+        if !(2..=crate::installed_host::operator_setup::MAX_PUBLIC_SERVICE_BATCH).contains(&targets.len())
+            || targets.iter().any(|target| !matches!(&target.target, GrantTarget::McpServer { .. }))
+            || targets.iter().enumerate().any(|(index, target)| targets[..index].iter()
+                .any(|prior| prior.target == target.target)) {
+            return Err(OriginalWriterError::UnsupportedMandate);
+        }
+        for lineage in claims.authority_basis.grant_lineages() {
+            let resolved = self.grants.resolve_lineage(lineage, &claims.logical_executor, claims.represented_subject.as_ref())
+                .map_err(OriginalWriterError::Grant)?;
+            if resolved.restrictions().delegation_depth
+                != meerkat_authorization_contracts::constraints::DelegationDepth::remaining(0) {
+                return Err(OriginalWriterError::UnsupportedMandate);
+            }
+            resolved.check_current().map_err(|_| OriginalWriterError::Unavailable)?;
+        }
+        self.check_original_child(&association)?;
+        let cancelled_record = persist_or_observe(association.clone()).await?;
+        self.publish_binding(association, source_custody,
+            OriginalGrantBinding::ServiceSet { issuer: task_issuer.clone() }, cancelled_record)
+    }
+
+    /// Install only the exact candidate's final preparation. This does not
+    /// publish semantic source state, so it cannot invalidate the stamp whose
+    /// canonical reads it represents. A missing or stale guard refuses entry.
+    pub(crate) fn prepare_service_set_admission(
+        &self, original: &Arc<RetainedToolkitOriginal>,
+        publication: meerkat_authorization::publication::LocalPublicationStamp,
+        expires_at_ms: u64,
+    ) -> Result<(), OriginalWriterError> {
+        let mut originals = self.originals.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let held = originals.iter_mut().filter_map(OriginalRecord::bound_mut)
+            .find(|held| Arc::ptr_eq(&held.retained, original)).ok_or(OriginalWriterError::WrongOwner)?;
+        if !matches!(held.grant_binding, OriginalGrantBinding::ServiceSet { .. })
+            || held.source_custody != Some(SourceCustody::Candidate)
+            || held.operation != OriginalOperationDisposition::Open
+            || held.service_set_admission.is_some() {
+            return Err(OriginalWriterError::Conflict);
+        }
+        publication.check_current().map_err(|_| OriginalWriterError::Unavailable)?;
+        held.service_set_admission = Some(Arc::new(ServiceSetAdmission { publication, expires_at_ms }));
+        Ok(())
+    }
+
     /// Reconstruct an acknowledged original from the actual application's
     /// retained source record, including its exact writer-issued child binding.
     /// Public JSON, audit copies and old Toolkit sealed roots are not this
@@ -843,7 +922,7 @@ impl ToolkitOriginalOwner {
                     || existing.custody.authority_basis.grant_lineages().any(|old| old.contains(child))
                 { return Err(OriginalWriterError::Conflict); }
             }
-            if matches!(existing.grant_binding, OriginalGrantBinding::Task { .. }) {
+            if matches!(existing.grant_binding, OriginalGrantBinding::Task { .. } | OriginalGrantBinding::ServiceSet { .. }) {
                 for old in existing.custody.authority_basis.grant_lineages() {
                     if old.last().is_some_and(|child| claims.controller_grant_lineage.contains(child)
                         || lineages.iter().any(|lineage| lineage.contains(child)))
@@ -943,7 +1022,7 @@ impl ToolkitOriginalOwner {
             if existing.association == *association {
                 continue;
             }
-            if matches!(existing.grant_binding, OriginalGrantBinding::Task { .. }) {
+            if matches!(existing.grant_binding, OriginalGrantBinding::Task { .. } | OriginalGrantBinding::ServiceSet { .. }) {
                 if existing.custody.authority_basis.grant_lineages().any(|old| old.last().is_some_and(|child|
                     lineage.contains(child) || claims.controller_grant_lineage.contains(child)))
                 { return Err(OriginalWriterError::Conflict); }
@@ -1007,7 +1086,7 @@ impl ToolkitOriginalOwner {
             }
             if existing.grant_binding != grant_binding
                 && !(matches!(grant_binding, OriginalGrantBinding::Task { issuer: None })
-                    && matches!(existing.grant_binding, OriginalGrantBinding::Task { .. }))
+                    && matches!(existing.grant_binding, OriginalGrantBinding::Task { .. } | OriginalGrantBinding::ServiceSet { .. }))
             {
                 return Err(OriginalWriterError::Conflict);
             }
@@ -1038,6 +1117,7 @@ impl ToolkitOriginalOwner {
             retained: retained.clone(),
             source_custody: None,
             controller: None,
+            service_set_admission: None,
             operation: match cancelled_record {
                 Some(record) => OriginalOperationDisposition::Cancelled { record },
                 None => OriginalOperationDisposition::Open,
@@ -1452,6 +1532,7 @@ impl ToolkitOriginalOwner {
         let held = originals[index].bound_mut().ok_or(OriginalWriterError::WrongOwner)?;
         held.source_custody = Some(SourceCustody::Candidate);
         held.controller = controller;
+        held.service_set_admission = None;
         Ok(PendingToolkitOriginal {
             owner: self.clone(),
             original: original.clone(),
@@ -1595,24 +1676,45 @@ impl AuthenticatedOriginalSource for ToolkitOriginalOwner {
         namespace: &QualifiedIngressNamespace,
         original: &OriginalWorkRef,
     ) -> Result<Option<AuthenticatedOriginal>, ControllerReadinessFailure> {
-        let originals = self
-            .originals
-            .try_lock()
-            .map_err(|_| ControllerReadinessFailure::PolicyUnavailable)?;
-        Ok(originals
-            .iter()
-            .filter_map(OriginalRecord::bound)
-            .find(|retained| {
+        let selected = {
+            let originals = self.originals.try_lock()
+                .map_err(|_| ControllerReadinessFailure::PolicyUnavailable)?;
+            originals.iter().filter_map(OriginalRecord::bound).find(|retained| {
                 let claims = retained.association.candidate();
                 retained.names(namespace, original)
                     && &claims.requester == ingress.requester()
                     && &claims.ingress_namespace.realm == ingress.realm()
                     && (retained.source_custody == Some(SourceCustody::Admitted)
                         || (retained.source_custody == Some(SourceCustody::Candidate)
-                            && claims.ingress_namespace.occurrence_scope
-                                == namespace.occurrence_scope))
-            })
-            .map(|retained| retained.custody.clone()))
+                            && claims.ingress_namespace.occurrence_scope == namespace.occurrence_scope))
+            }).map(|held| (held.retained.clone(), held.service_set_admission.clone(), held.source_custody))
+        };
+        let Some((retained, guard, custody)) = selected else { return Ok(None); };
+        // Native alone supplies this verdict at its decisive admission point,
+        // with driver/credential custody and no await before input acceptance.
+        // The earlier host fence does not close the queued-admission window.
+        // The same incoming context also reaches admitted contributors. Only
+        // this own Candidate requires the first-set guard; an admitted source
+        // never inherits a new input's FirstAuthentication obligation.
+        // Later operation authentication and verified retained replay deliberately
+        // preserve independent target revocation rather than gating the set.
+        if custody == Some(SourceCustody::Candidate)
+            && matches!(retained.grant_binding, OriginalGrantBinding::ServiceSet { .. })
+            && matches!(ingress.replay_lookup(), Some(meerkat_runtime::input_authority::NativeReplayLookup::FirstAuthentication)) {
+            let guard = guard.ok_or(ControllerReadinessFailure::PolicyUnavailable)?;
+            if !self.clock.now().is_ok_and(|now| now.unix_ms < guard.expires_at_ms) {
+                return Err(ControllerReadinessFailure::PolicyUnavailable);
+            }
+            guard.publication.check_current().map_err(|_| ControllerReadinessFailure::PolicyUnavailable)?;
+            let claims = retained.association.candidate();
+            for lineage in claims.authority_basis.grant_lineages() {
+                self.grants.resolve_lineage(lineage, &claims.logical_executor, claims.represented_subject.as_ref())
+                    .map_err(|_| ControllerReadinessFailure::PolicyUnavailable)?
+                    .check_current().map_err(|_| ControllerReadinessFailure::PolicyUnavailable)?;
+            }
+            guard.publication.check_current().map_err(|_| ControllerReadinessFailure::PolicyUnavailable)?;
+        }
+        Ok(Some(retained.custody.clone()))
     }
 
     fn retained_original(

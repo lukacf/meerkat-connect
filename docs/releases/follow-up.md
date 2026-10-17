@@ -22,14 +22,27 @@ recovery or independent runtime write prevention. Published Connect 0.9.0 binari
 are unchanged. [Source provenance](../../SOURCE-PROVENANCE.md#unreleased-follow-up-source)
 retains exact source identities, earlier failures and scoped validation.
 
-Current source work addresses one setup request that needs several public-service
-integrations: one access approval for the exact set, separate grants and
-attachments, then one continuation after all members are ready. Software
-installation keeps its existing reviews. This is work in progress,
-with no passing batch-use claim yet. Acquiring another integration later in the
-same task remains separate. Concurrent shared setup is also still open: review
-found that a second request queues behind a running installation in the fixed
-helper. Shared records alone would not make that user path reachable.
+Development source now supports 2-8 public MCP services in one acquisition.
+The agent chooses the checked installation jobs and operations. One protected
+access review covers the exact set; each service has separate grants and must
+become natively usable before one continuation answers the original question.
+Software installation keeps its existing reviews. Separately reviewed agent tool
+permissions last until superseded and do not replace exact task grants. See the
+[Console guide](../site/guides/request-an-integration.mdx#use-several-public-services-in-one-console-task-development).
+
+Twenty-nine distinct Rust controls pass (21 focused and eight native). Restoration
+coverage is settled historical source custody, not process restart or a new
+post-restoration operation. The earlier fixture-order and public-refusal
+classification failures remain recorded. The panel passes 48 JavaScript controls,
+including visible per-service operations, deadlines,
+remote endpoints and policy scope. Ordinary multi-service selection/use and the
+final answer remain unqualified. This path adds neither authenticated batches nor
+another acquisition by the resumed task; a new human request and setup are
+separate. Requirement statuses remain unchanged.
+
+Concurrent shared setup is also still open: review found that a second request
+queues behind a running installation in the fixed helper. Shared records alone
+would not make that user path reachable.
 
 - **External Agent Plugins consumption:** A format-adapted Microsoft
   `microsoft-docs` 0.3.1 pack now exports on Linux and runs through unchanged

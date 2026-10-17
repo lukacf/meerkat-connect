@@ -165,7 +165,7 @@ impl GovernedInputBinder for ConsoleBinder {
             .map_err(|_| "The Console original could not be retained")?;
         self.entry.check()?;
         reservation.settled();
-        let binder = Arc::new(OriginalBinder { source: self.source.clone(), grant: None, original,
+        let binder = Arc::new(OriginalBinder { source: self.source.clone(), grant: None, batch: None, original,
             held: OnceLock::new(), pending: OnceLock::new(),
             authentication: evidence(&route.authentication_domain, &authentication)
                 .map_err(|_| "The Console authentication evidence is invalid")?,

@@ -130,7 +130,7 @@ async fn cold_b_requires_complete_reserved_selection_and_retained_input() {
             let requests = fixture.model_requests();
             let (stored, mut changed) = row(&fixture, &b).await;
             match corruption {
-                "task-link" => changed.approved_task.as_mut().unwrap().before_ms -= 1,
+                "task-link" => changed.approved_task.as_mut().unwrap().header_mut().before_ms -= 1,
                 "legacy-no-input" => changed.bound_service_input = None,
                 _ => {
                     let mut input = changed.bound_service_input.as_ref().unwrap().decode().unwrap();

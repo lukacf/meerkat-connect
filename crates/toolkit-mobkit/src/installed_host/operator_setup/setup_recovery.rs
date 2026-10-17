@@ -304,6 +304,12 @@ fn decision_id(
     native: &CompiledNativeHost,
     record: &OperatorDecision,
 ) -> Result<String, HostLifetimeError> {
+    if let Some(member) = &record.batch_member {
+        return Ok(format!("operator-batch-parent-{}", digest(
+            &canonical_json(&("toolkit.public-service-batch-parent.v1", &record.route,
+                &record.approval.approval_id, member))
+                .map_err(|_| HostLifetimeError::InvalidSelection)?)));
+    }
     if approved(record) && record.purpose == OperatorParentPurpose::SetupRequest {
         if let Some(original) = record
             .setup_request

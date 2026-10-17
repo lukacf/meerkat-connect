@@ -87,6 +87,14 @@ pub(crate) async fn open_for_console_operator_input(facts: &ControllerModelFacts
         None, Some(human), false, false, false, false).await
 }
 
+/// Public batch fixture uses the normal human-reviewed policy participant and
+/// a genuinely verified Console Original. No service authority is preissued.
+pub(crate) async fn open_for_console_service_batch(facts: &ControllerModelFacts, human: meerkat_core::PrincipalRef) -> Host {
+    assert_eq!(human.kind, meerkat_core::PrincipalKind::Human);
+    open_selected_source(facts, true, true, true, false, None, false, None, true, false,
+        None, Some(human), false, false, true, false).await
+}
+
 /// Explicit fixture administration for an actual fresh task. This does not
 /// authenticate a Human or preselect an application parent for a future session.
 pub(crate) async fn open_for_task_parent_service_input(facts: &ControllerModelFacts) -> Host {

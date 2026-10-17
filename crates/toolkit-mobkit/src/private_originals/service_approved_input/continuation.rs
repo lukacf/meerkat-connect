@@ -108,7 +108,7 @@ impl PrivateOriginals {
     pub(super) async fn reject_service_continuation(&self, reference: &PrivateOriginalRef)
         -> Result<(), PrivateOriginalError>
     {
-        self.reject_service_continuation_with_failure(reference, None, None)
+        self.reject_service_continuation_with_failure(reference, None, None, None)
             .await
     }
 
@@ -126,14 +126,30 @@ impl PrivateOriginals {
         failure: meerkat_toolkit::setup::ApprovedServiceAttachmentFailure,
         observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
     ) -> Result<(), PrivateOriginalError> {
-        self.reject_service_continuation_with_failure(reference, Some(failure), observation)
+        self.reject_service_continuation_with_failure(reference, Some(failure), observation, None)
             .await
+    }
+
+    pub(super) async fn reject_failed_service_attachment_member(
+        &self, reference: &PrivateOriginalRef, grant: &PrivateServiceGrantRef,
+        failure: meerkat_toolkit::setup::ApprovedServiceAttachmentFailure,
+        observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+    ) -> Result<(), PrivateOriginalError> {
+        let saved = self.store.get(&self.key(reference)?).await.map_err(store_error)?.ok_or(PrivateOriginalError::Unavailable)?;
+        let record = self.decode_record(&saved, reference)?;
+        let task = record.approved_task.as_ref().ok_or(PrivateOriginalError::Denied)?;
+        task.attachment_member(grant)?;
+        let batch_member = matches!(task, ApprovedTaskLink::Batch(_)).then_some(grant);
+        self.reject_service_continuation_with_failure(reference, Some(failure), observation, batch_member).await?;
+        self.retire_service_attachment(reference, task).await;
+        self.compensate_rejected_batch(reference).await
     }
 
     async fn reject_service_continuation_with_failure(
         &self, reference: &PrivateOriginalRef,
         failure: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentFailure>,
         observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+        member: Option<&PrivateServiceGrantRef>,
     ) -> Result<(), PrivateOriginalError> {
         let row = self.store.get(&self.key(reference)?).await.map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
@@ -141,7 +157,7 @@ impl PrivateOriginals {
         let snapshot = self.service_task_snapshot(&record).await?;
         let Some(selected) = snapshot.approved_service() else { return Ok(()); };
         if self.service_selection(&row, &record)? != *selected { return Err(PrivateOriginalError::Conflict); }
-        self.record_task_group_cancelled_with_failure(reference, failure, observation)
+        self.record_task_group_cancelled_with_member(reference, failure, observation, member)
             .await?;
         let current = self.store.get(&row.key).await.map_err(store_error)?.ok_or(PrivateOriginalError::Unavailable)?;
         let current = self.decode_record(&current, reference)?;

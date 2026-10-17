@@ -243,16 +243,82 @@ export function mountAccountReview(container, refresh, fetcher = fetch, submissi
                 root.append(missing);
             }
             const nestedPhase = prompt.body?.access_request?.phase;
-            const body = ["installed_account_access", "installed_public_service_access", "installed_credential_service_access"].includes(nestedPhase)
+            const body = ["installed_account_access", "installed_public_service_access", "installed_credential_service_access", "installed_public_service_batch_access"].includes(nestedPhase)
                 ? prompt.body.access_request : prompt.body;
             const facts = document.createElement("dl");
-            const fact = (label, value) => {
+            const fact = (label, value, destination = facts) => {
                 if (typeof value !== "string" || !value.length) return;
                 const row = document.createElement("div");
                 const term = document.createElement("dt"); term.textContent = label;
                 const detail = document.createElement("dd"); detail.textContent = value;
-                row.append(term, detail); facts.append(row);
+                row.append(term, detail); destination.append(row);
             };
+            const publicBatch = body?.phase === "installed_public_service_batch_access"
+                && prompt.body?.kind === "public_services_v1" && Array.isArray(prompt.body.members);
+            let batchDetails;
+            if (publicBatch) {
+                const members = prompt.body.members;
+                const policy = body.member_tool_policy;
+                fact("Reviewed service set", `${members.length} services`);
+                fact("Agent", policy?.proposal?.member);
+                fact("New instruction", body.service_instruction?.proposed_fresh_instruction);
+                fact("Instruction origin", body.service_instruction?.instruction_origin);
+                fact("Live attachment", body.service_instruction?.live_attachment_effect);
+                fact("Configuration persistence", body.service_instruction?.configuration_persistence);
+                batchDetails = document.createElement("div");
+                const section = (title, className) => {
+                    const section = document.createElement("section"); section.className = className;
+                    const heading = document.createElement("h3"); heading.textContent = title;
+                    const rows = document.createElement("dl"); section.append(heading, rows); batchDetails.append(section);
+                    return rows;
+                };
+                const accessLimit = (lifetime, rows) => {
+                    const task = lifetime?.scope?.kind === "task";
+                    if (task) fact("Access scope", "This task", rows);
+                    const expires = lifetime?.expires_at_ms;
+                    const deadline = Number.isSafeInteger(expires) && expires > 0 ? new Date(expires) : null;
+                    if (deadline && !Number.isNaN(deadline.valueOf())) fact("Access expires", deadline.toISOString(), rows);
+                    if (!task || !deadline || Number.isNaN(deadline.valueOf()))
+                        fact("Access limit", "Reviewed access limit unavailable; inspect the exact review details", rows);
+                };
+                for (const [index, member] of members.entries()) {
+                    const rows = section(`Service ${index + 1}`, "toolkit-batch-member");
+                    const parent = member?.parent;
+                    const document = parent?.access_request;
+                    fact("Connector", member?.server, rows);
+                    fact("Profile", document?.software?.profile, rows);
+                    const remote = document?.operation_basis?.kind === "remote_recipe_declarations";
+                    fact("Operation source", remote ? "Researched remote recipe declarations"
+                        : ["selected_manifest_declarations", "selected_software_declarations"].includes(document?.operation_basis?.kind)
+                            ? "Selected package declarations" : document?.operation_basis?.kind === "package_published_metadata"
+                                ? "Package publisher metadata" : "Operation provenance is unconfirmed", rows);
+                    if (remote) {
+                        const exported = document.remote_export?.export;
+                        const name = exported?.declared_remote_service?.mcp_name;
+                        fact("Declared remote connector", name, rows);
+                        fact("Endpoint", exported?.mcp_configuration?.mcpServers?.[name]?.url, rows);
+                    }
+                    if (document?.authentication?.kind === "none")
+                        fact("Authentication", "No sign-in required by the selected service declaration", rows);
+                    // Use the reviewed native permission, not the proposal TTL
+                    // or an alias from the helper's application selection.
+                    const permission = parent?.service_access?.permission;
+                    if (Array.isArray(permission?.operations) && permission.operations.every(name => typeof name === "string"))
+                        fact("Reviewed operations", permission.operations.join(", "), rows);
+                    accessLimit(permission?.lifetime, rows);
+                }
+                const catalog = prompt.body.catalog?.catalog_access;
+                const catalogRows = section("Tool catalog", "toolkit-batch-catalog");
+                fact("Session", catalog?.session, catalogRows);
+                fact("Catalog visibility", policy?.catalog_visibility, catalogRows);
+                accessLimit(catalog?.lifetime, catalogRows);
+                const policyRows = section("Separately reviewed member tool policy", "toolkit-batch-policy");
+                fact("Policy scope", policy?.approval_scope, policyRows);
+                fact("Policy lifetime", policy?.lifetime, policyRows);
+                const tools = policy?.proposal?.selection?.tools;
+                if (Array.isArray(tools) && tools.every(tool => typeof tool?.name === "string"))
+                    fact("Selected policy tools", tools.map(tool => tool.name).join(", "), policyRows);
+            }
             const publicService = body?.phase === "installed_public_service_access";
             const credentialService = body?.phase === "installed_credential_service_access";
             if (credentialService && Number.isFinite(Date.parse(prompt.expires_at))
@@ -350,6 +416,7 @@ export function mountAccountReview(container, refresh, fetcher = fetch, submissi
                 fact("Selected software digest", proposed?.selection_sha256);
             }
             root.append(facts);
+            if (batchDetails) root.append(batchDetails);
             if (typeof body?.notice === "string") { const notice = document.createElement("p"); notice.textContent = body.notice; root.append(notice); }
             const credentialFields = new Map();
             if (review.credential_input != null) {

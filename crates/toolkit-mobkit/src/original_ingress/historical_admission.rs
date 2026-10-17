@@ -105,7 +105,7 @@ impl ToolkitOriginalOwner {
             entry.names(&claims.ingress_namespace.realm, &claims.original_work))
         {
             let OriginalRecord::Bound(held) = record else { return Err(OriginalWriterError::Unavailable); };
-            if held.association() != association || !matches!(held.grant_binding, OriginalGrantBinding::Task { .. }) {
+            if held.association() != association || !matches!(held.grant_binding, OriginalGrantBinding::Task { .. } | OriginalGrantBinding::ServiceSet { .. }) {
                 return Err(OriginalWriterError::Conflict);
             }
             if held.source_custody == Some(SourceCustody::Candidate) {
@@ -123,7 +123,7 @@ impl ToolkitOriginalOwner {
         });
         originals.push(OriginalRecord::Bound(HeldOriginal {
             retained: retained.clone(), source_custody: Some(SourceCustody::Admitted),
-            controller: Some(admitted.controller().clone()), operation: OriginalOperationDisposition::Open,
+            controller: Some(admitted.controller().clone()), service_set_admission: None, operation: OriginalOperationDisposition::Open,
         }));
         Ok(retained)
     }
@@ -139,7 +139,7 @@ impl ToolkitOriginalOwner {
         let index = originals.iter().position(|entry|
             entry.bound().is_some_and(|held| held.association() == association)).unwrap();
         let held = originals[index].bound().unwrap();
-        assert!(matches!(held.grant_binding, OriginalGrantBinding::Task { .. }));
+        assert!(matches!(held.grant_binding, OriginalGrantBinding::Task { .. } | OriginalGrantBinding::ServiceSet { .. }));
         assert!(held.source_custody != Some(SourceCustody::Candidate));
         originals.remove(index);
     }

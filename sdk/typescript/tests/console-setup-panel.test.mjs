@@ -89,6 +89,112 @@ test("the actual approval renderer uses supplied summary and exact fields withou
   account.update(review("")); assert.match(container.textContent, /No additional description was supplied/);
   assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Approve", "Deny"]);
 });
+// This is the final protected operator body, not the helper's input shape.
+// Member permissions and the separate catalog permission own their deadlines.
+function batchReview(count = 2) {
+  const service_instruction = {
+    proposed_fresh_instruction: "Compare the selected public sources for the original question",
+    instruction_origin: "setup proposal; approval authorizes this new instruction",
+    live_attachment_effect: "hydrate these exact servers into the original session",
+    configuration_persistence: "not authorized by this review",
+  };
+  const member_tool_policy = {
+    proposal: { member: "original-agent", lifetime: "until_superseded",
+      selection: { tools: Array.from({ length: count }, (_, index) => ({ name: `public_${index}_read`, consequence: "r0" })), catalog: "r0" },
+      candidate_canonical_json: '{"members":[{"member_identity":"original-agent","grants":[{"tool_name":"preserved_tool"}]}]}' },
+    approval_scope: "the complete successor policy including preserved member permissions",
+    lifetime: "until superseded; task closure does not undo this separately reviewed policy",
+    catalog_visibility: "eligible tool metadata in the original session; invocation still needs its exact native target grant",
+  };
+  const members = Array.from({ length: count }, (_, index) => {
+    const server = `public-${index}`;
+    return { server, parent: { purpose: "operations", connector_selection: { server, connector: null },
+      service_access: { permission: { connection: server, operations: [`read_${index}`, `list_${index}`],
+        lifetime: { scope: { kind: "task", task: "fresh-original" }, expires_at_ms: 1800000000000 + index * 1000 } } },
+      access_request: { phase: "installed_public_service_access", authentication: { kind: "none" },
+        software: { profile: `profile-${index}`, server_name: server }, operation_basis: { kind: "selected_manifest_declarations" },
+        application_selection: { agent: "original-agent", operations: [`untrusted_display_alias_${index}`], expires_in_ms: null },
+        service_instruction } } };
+  });
+  const request = { phase: "installed_public_service_batch_access", services: members.map(member => member.parent.access_request),
+    service_instruction, member_tool_policy, notice: "One decision covers this exact public set and fresh instruction. Readiness is checked separately." };
+  return { review_id: 26, can_start: false, prompt: { kind: "approval", approval_id: "actual-batch-prompt",
+    summary: "Review this exact set of public services for the task", allowed_decisions: ["approve", "deny"],
+    body: { kind: "public_services_v1", members, catalog: { purpose: "operations", access_request: request,
+      catalog_access: { session: "original-session", lifetime: { scope: { kind: "task", task: "fresh-original" }, expires_at_ms: 1800000000000 } } },
+      access_request: request } } };
+}
+function ordinaryReviewText(container) {
+  const copy = container.cloneNode(true); for (const detail of copy.querySelectorAll("details")) detail.remove();
+  return copy.textContent;
+}
+
+test("batch review visibly explains the exact members, reviewed task limits and separate persistent policy", t => {
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = batchReview();
+  const remote = selected.prompt.body.members[1].parent.access_request;
+  delete remote.software;
+  remote.operation_basis = { kind: "remote_recipe_declarations" };
+  remote.remote_export = { export: { declared_remote_service: { mcp_name: "public-1" },
+    mcp_configuration: { mcpServers: { "public-1": { url: "https://public-one.example/mcp" },
+      unrelated: { url: "https://not-selected.example/mcp" } } } } };
+  account.update(selected);
+  const text = ordinaryReviewText(container);
+  for (const expected of ["2 services", "original-agent", "public-0", "public-1", "read_0, list_0", "read_1, list_1",
+    "This task", "2027-01-15T08:00:00.000Z", "2027-01-15T08:00:01.000Z", "Tool catalog", "original-session",
+    "Compare the selected public sources for the original question", "not authorized by this review",
+    "the complete successor policy including preserved member permissions",
+    "until superseded; task closure does not undo this separately reviewed policy",
+    "invocation still needs its exact native target grant", "public_0_read", "public_1_read",
+    "Selected package declarations", "Researched remote recipe declarations", "https://public-one.example/mcp",
+    "No sign-in required by the selected service declaration"])
+    assert.ok(text.includes(expected), expected);
+  assert.equal(container.querySelectorAll(".toolkit-batch-member").length, 2);
+  assert.doesNotMatch(text, /untrusted_display_alias|Until revoked|anonymous execution verified|grant issued|not-selected\.example/i);
+  assert.equal(container.querySelector("details").open, false);
+  assert.deepEqual(JSON.parse(container.querySelector("details pre").textContent), selected.prompt);
+  assert.equal(container.querySelectorAll("input").length, 0);
+});
+
+test("batch review renders every member as text and never turns a missing reviewed limit into a proposed duration", t => {
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = batchReview(8);
+  const last = selected.prompt.body.members[7]; last.server = '<img src=x onerror="bad()">';
+  last.parent.service_access.permission.operations = ['<script>bad()</script>'];
+  delete last.parent.service_access.permission.lifetime;
+  last.parent.access_request.application_selection.expires_in_ms = 999999;
+  account.update(selected);
+  const text = ordinaryReviewText(container);
+  assert.equal(container.querySelectorAll(".toolkit-batch-member").length, 8);
+  assert.match(text, /8 services/); assert.ok(text.includes(last.server));
+  assert.ok(text.includes('<script>bad()</script>')); assert.equal(container.querySelector("img,script"), null);
+  assert.match(text, /Reviewed access limit unavailable/); assert.doesNotMatch(text, /999999|Until revoked/);
+  assert.deepEqual(JSON.parse(container.querySelector("details pre").textContent), selected.prompt);
+});
+
+test("batch review keeps the existing protected answer payload, held-action controls and credential refusal", async t => {
+  for (const decision of ["approve", "deny"]) {
+    const container = fixture(t); const sent = deferred(); const calls = []; let refreshes = 0;
+    const account = mountAccountReview(container, async () => { refreshes++; }, (path, options) => {
+      calls.push({ path, options }); return sent.promise;
+    });
+    t.after(() => account.dispose()); account.update(batchReview());
+    const buttons = [...container.querySelectorAll("button")];
+    assert.deepEqual(buttons.map(button => button.textContent), ["Approve", "Deny"]);
+    buttons[decision === "approve" ? 0 : 1].click();
+    assert.equal(calls.length, 1); assert.equal(calls[0].path, "/host/toolkit/setup/answer");
+    assert.deepEqual(JSON.parse(calls[0].options.body), { review_id: 26, approval_id: "actual-batch-prompt", decision });
+    assert.ok(buttons.every(button => button.disabled)); assert.equal(refreshes, 0);
+    sent.resolve(new Response("{}", { status: 202 })); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(refreshes, 1);
+  }
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = batchReview();
+  selected.credential_input = { kind: "declared_secret_slots", slots: [{ slot: "TOKEN", label: "Token" }] };
+  assert.throws(() => account.update(selected), /Invalid credential input/);
+  assert.equal(container.querySelectorAll("input,button").length, 0);
+});
+
 test("explicit start forwards only the retained review id and waits for a fresh status read", async t => {
   const container = fixture(t); const sent = deferred(); let calls = []; let refreshes = 0;
   const account = mountAccountReview(container, async () => { refreshes++; }, (path, options) => { calls.push({ path, options }); return sent.promise; });

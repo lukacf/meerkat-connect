@@ -146,7 +146,7 @@ enum NativeCallState {
 /// the future prevents caller cancellation from losing that command's attempt.
 pub(in crate::private_originals) struct HeldServiceAttachment {
     reference: PrivateOriginalRef,
-    task: ApprovedTaskLink,
+    task: ApprovedTaskMember,
     control: Arc<McpAttachmentControlRequest>,
     operations: BTreeSet<Id>,
     console_login: Option<ConsoleLoginHandle>,
@@ -156,7 +156,7 @@ pub(in crate::private_originals) struct HeldServiceAttachment {
 impl HeldServiceAttachment {
     fn new(
         reference: PrivateOriginalRef,
-        task: ApprovedTaskLink,
+        task: ApprovedTaskMember,
         control: Arc<McpAttachmentControlRequest>,
         operations: BTreeSet<Id>,
         future: NativeCall,
@@ -229,7 +229,7 @@ fn settle_login(
 
 impl PrivateOriginals {
     fn attachment_parent(
-        &self, task: &ApprovedTaskLink,
+        &self, task: &ApprovedTaskMember,
     ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
         self.retained.lock().map_err(|_| PrivateOriginalError::Unavailable)?
             .iter().find(|held| held.reference == task.parent).cloned()
@@ -237,11 +237,11 @@ impl PrivateOriginals {
     }
 
     fn held_service_attachment(
-        &self, reference: &PrivateOriginalRef, task: &ApprovedTaskLink,
+        &self, reference: &PrivateOriginalRef, task: &ApprovedTaskMember,
     ) -> Result<Option<Arc<HeldServiceAttachment>>, PrivateOriginalError> {
         let parent = self.attachment_parent(task)?;
         let entries = parent.service_attachments.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
-        let held = entries.iter().find(|held| held.reference == *reference).cloned();
+        let held = entries.iter().find(|held| held.reference == *reference && held.task.grant == task.grant).cloned();
         if held.as_ref().is_some_and(|held| held.task != *task) {
             return Err(PrivateOriginalError::Conflict);
         }
@@ -269,7 +269,7 @@ impl PrivateOriginals {
     /// polled. A cold process cannot reconstruct the missing retained A owner.
     async fn prepare_service_attachment(
         self: &Arc<Self>, store: &Arc<SqliteStore>, reference: &PrivateOriginalRef,
-        task: &ApprovedTaskLink,
+        task: &ApprovedTaskMember,
     ) -> Result<Arc<HeldServiceAttachment>, PrivateOriginalError> {
         if let Some(held) = self.held_service_attachment(reference, task)? { return Ok(held); }
         // Read the canonical B link and retain its actual parent A handle now.
@@ -279,7 +279,7 @@ impl PrivateOriginals {
         attachment_diagnostic("prepare_console_login", if console_login.is_ok() { "ok" } else { "error" });
         let console_login = console_login?;
         attachment_diagnostic("prepare_installation", "entered");
-        let control = self.prepare_service_mcp_installation(store, reference).await;
+        let control = self.prepare_service_mcp_installation_member(store, reference, &task.grant).await;
         attachment_diagnostic("prepare_installation", if control.is_ok() { "ok" } else { "error" });
         let control = control?;
         let binding = control.effect_binding(McpAttachmentEffect::Apply);
@@ -337,7 +337,7 @@ impl PrivateOriginals {
             }), console_login));
         self.attachment_current(&held)?;
         let mut entries = parent.service_attachments.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
-        if let Some(previous) = entries.iter().find(|entry| entry.reference == *reference) {
+        if let Some(previous) = entries.iter().find(|entry| entry.reference == *reference && entry.task.grant == task.grant) {
             return if previous.task == *task { Ok(previous.clone()) }
                 else { Err(PrivateOriginalError::Conflict) };
         }
@@ -441,9 +441,9 @@ impl PrivateOriginals {
         Ok(ServiceAttachmentReadiness::Ready)
     }
 
-    pub(super) async fn ensure_service_attachment(
+    async fn ensure_service_attachment_member(
         self: &Arc<Self>, store: &Arc<SqliteStore>, reference: &PrivateOriginalRef,
-        task: &ApprovedTaskLink,
+        task: &ApprovedTaskMember,
     ) -> Result<bool, PrivateOriginalError> {
         attachment_diagnostic("prepare", "entered");
         let held = self.prepare_service_attachment(store, reference, task).await;
@@ -479,8 +479,8 @@ impl PrivateOriginals {
     /// Repeat the same native observation after the final setup/content read.
     /// Only a ready, current attempt yields host context for the existing B
     /// submission. The observation creates no authority or durable ready bit.
-    pub(super) async fn recheck_service_attachment(
-        &self, reference: &PrivateOriginalRef, task: &ApprovedTaskLink,
+    async fn recheck_service_attachment_member(
+        &self, reference: &PrivateOriginalRef, task: &ApprovedTaskMember,
     ) -> Result<Option<ServiceInputContext>, PrivateOriginalError> {
         let held = self.held_service_attachment(reference, task)?.ok_or(PrivateOriginalError::Unavailable)?;
         let receipt = held.receipt(|| Err(PrivateOriginalError::Denied)).await?
@@ -534,26 +534,65 @@ impl PrivateOriginals {
                 // source/task/grant, then let its existing cancellation writer
                 // fence B and prove no immutable binding/admission was published.
                 self.attachment_current_after_read(held).await?;
-                self.reject_failed_service_attachment_with_observation(
+                self.reject_failed_service_attachment_member(
                     &held.reference,
+                    &held.task.grant,
                     failure,
                     observation,
                 )
                 .await?;
-                self.retire_service_attachment(&held.reference, &held.task)
+                self.retire_service_attachment_member(&held.reference, &held.task)
                     .await;
                 Ok(false)
             }
         }
     }
 
-    pub(super) async fn retire_service_attachment(
-        &self, reference: &PrivateOriginalRef, task: &ApprovedTaskLink,
+    async fn retire_service_attachment_member(
+        &self, reference: &PrivateOriginalRef, task: &ApprovedTaskMember,
     ) {
         if let Ok(Some(held)) = self.held_service_attachment(reference, task) {
             held.join_if_polled().await;
             self.remove_service_attachment(&held);
         }
+    }
+
+    pub(super) async fn ensure_service_attachment(
+        self: &Arc<Self>, store: &Arc<SqliteStore>, reference: &PrivateOriginalRef, task: &ApprovedTaskLink,
+    ) -> Result<bool, PrivateOriginalError> {
+        for member in task.attachments() {
+            if !self.ensure_service_attachment_member(store, reference, &member).await? { return Ok(false); }
+        }
+        Ok(true)
+    }
+
+    pub(super) async fn recheck_service_attachments(
+        &self, reference: &PrivateOriginalRef, task: &ApprovedTaskLink,
+    ) -> Result<Option<Vec<ServiceInputContext>>, PrivateOriginalError> {
+        let mut contexts = Vec::new();
+        for member in task.attachments() {
+            let Some(context) = self.recheck_service_attachment_member(reference, &member).await? else { return Ok(None); };
+            contexts.push(context);
+        }
+        // Every await may invalidate an earlier member. Reopen all exact controls
+        // once more; the final native binder independently validates the set.
+        for member in task.attachments() {
+            let held = self.held_service_attachment(reference, &member)?.ok_or(PrivateOriginalError::Unavailable)?;
+            self.attachment_current_after_read(&held).await?;
+        }
+        Ok(Some(contexts))
+    }
+
+    #[cfg(test)]
+    pub(super) async fn recheck_service_attachment(
+        &self, reference: &PrivateOriginalRef, task: &ApprovedTaskLink,
+    ) -> Result<Option<ServiceInputContext>, PrivateOriginalError> {
+        task.singleton_grant()?;
+        self.recheck_service_attachment_member(reference, &task.attachments()[0]).await
+    }
+
+    pub(super) async fn retire_service_attachment(&self, reference: &PrivateOriginalRef, task: &ApprovedTaskLink) {
+        for member in task.attachments() { self.retire_service_attachment_member(reference, &member).await; }
     }
 
     pub(super) async fn prune_service_attachments(&self) -> Result<(), PrivateOriginalError> {

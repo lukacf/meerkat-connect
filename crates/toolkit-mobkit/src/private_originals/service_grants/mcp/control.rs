@@ -53,12 +53,22 @@ impl PrivateOriginals {
     pub(crate) async fn prepare_service_mcp_installation(
         self: &Arc<Self>, store: &Arc<SqliteStore>, reference: &PrivateOriginalRef,
     ) -> Result<Arc<McpAttachmentControlRequest>, PrivateOriginalError> {
+        let stored = self.store.get(&self.key(reference)?).await.map_err(store_error)?
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        let record = self.decode_record(&stored, reference)?;
+        let grant = record.approved_task.as_ref().ok_or(PrivateOriginalError::Denied)?.singleton_grant()?.clone();
+        self.prepare_service_mcp_installation_member(store, reference, &grant).await
+    }
+
+    pub(crate) async fn prepare_service_mcp_installation_member(
+        self: &Arc<Self>, store: &Arc<SqliteStore>, reference: &PrivateOriginalRef, grant: &PrivateServiceGrantRef,
+    ) -> Result<Arc<McpAttachmentControlRequest>, PrivateOriginalError> {
         attachment_preparation_diagnostic::<()>("capture_publication", None);
         let publication = self.capture_service_mcp_publication(store);
         attachment_preparation_diagnostic("capture_publication", Some(&publication));
         let publication = publication?;
         attachment_preparation_diagnostic::<()>("installation_readback", None);
-        let server = self.read_service_installation(reference).await;
+        let server = self.read_service_installation_member(reference, grant).await;
         attachment_preparation_diagnostic("installation_readback", Some(&server));
         let server = server?;
         attachment_preparation_diagnostic::<()>("canonical_control", None);
@@ -103,8 +113,9 @@ impl PrivateOriginals {
             .approved_task
             .as_ref()
             .ok_or(PrivateOriginalError::Denied)?;
+        let grant = task.attachment_grant(&server.name)?;
         if task.parent.route != reference.route
-            || task.grant.route != reference.route
+            || grant.route != reference.route
             || record.operation_cancelled
             || record.final_association.is_some()
             || record.service_admission.is_some()
@@ -123,11 +134,11 @@ impl PrivateOriginals {
             .ok_or(PrivateOriginalError::Unavailable)?;
         let access_stored = self
             .store
-            .get(&self.access_key(&task.grant)?)
+            .get(&self.access_key(&grant)?)
             .await
             .map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
-        let access = self.decode_access(&access_stored, &task.grant)?;
+        let access = self.decode_access(&access_stored, &grant)?;
         let route = self.route(&reference.route)?;
         let control = McpAttachmentControlRequest::from_trusted_ingress(
             task.original_task.origin_session_id.clone(),
@@ -147,7 +158,7 @@ impl PrivateOriginals {
                     work: reference.original.clone(),
                 },
                 parent,
-                grant: task.grant.clone(),
+                grant: grant.clone(),
                 access,
                 before_ms: task.before_ms,
                 publication,
@@ -167,6 +178,15 @@ impl PrivateOriginals {
             .unix_ms;
         self.current_service_mcp_control(&control, &binding, now, false)?;
         Ok(control)
+    }
+
+    pub(in crate::private_originals) fn service_control_grant<'a>(
+        &self, control: &'a McpAttachmentControlRequest,
+    ) -> Result<&'a PrivateServiceGrantRef, PrivateOriginalError> {
+        let held = control.evidence::<ServiceMcpControl>().ok_or(PrivateOriginalError::Denied)?;
+        let source = held.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
+        if !std::ptr::eq(self, source.as_ref()) { return Err(PrivateOriginalError::Denied); }
+        Ok(&held.grant)
     }
 
     /// Synchronous native policy callback. No SQLite, network, filesystem or

@@ -282,7 +282,7 @@ impl PrivateOriginals {
         self: &Arc<Self>,
         submission: PrivateOriginalSubmit,
     ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
-        self.submit_selected_original(submission, None, Vec::new()).await
+        self.submit_selected_original(submission, None, None, Vec::new()).await
     }
 
     pub(super) async fn submit_ready_service_original(
@@ -290,7 +290,25 @@ impl PrivateOriginals {
         context: super::service_approved_input::attachment::ServiceInputContext,
     ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
         let context = context.into_content(&submission.original, &grant)?;
-        self.submit_selected_original(submission, Some(grant), vec![context]).await
+        self.submit_selected_original(submission, Some(grant), None, vec![context]).await
+    }
+
+    pub(super) async fn submit_ready_service_set(
+        self: &Arc<Self>, submission: PrivateOriginalSubmit,
+        task: service_approved_input::ApprovedTaskLink,
+        contexts: Vec<super::service_approved_input::attachment::ServiceInputContext>,
+    ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
+        let members = task.attachments();
+        if contexts.len() != members.len() { return Err(PrivateOriginalError::Conflict); }
+        let contents = contexts.into_iter().zip(&members)
+            .map(|(context, member)| context.into_content(&submission.original, &member.grant))
+            .collect::<Result<Vec<_>, _>>()?;
+        match task {
+            service_approved_input::ApprovedTaskLink::Single(member) =>
+                self.submit_selected_original(submission, Some(member.grant), None, contents).await,
+            task @ service_approved_input::ApprovedTaskLink::Batch(_) =>
+                self.submit_selected_original(submission, None, Some(task), contents).await,
+        }
     }
 
     // These source/admission controls deliberately have no live attachment.
@@ -299,7 +317,7 @@ impl PrivateOriginals {
     pub(super) async fn submit_service_original(
         self: &Arc<Self>, submission: PrivateOriginalSubmit, grant: PrivateServiceGrantRef,
     ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
-        self.submit_selected_original(submission, Some(grant), Vec::new()).await
+        self.submit_selected_original(submission, Some(grant), None, Vec::new()).await
     }
 
     /// Reconcile only an existing in-process native submission. The exact
@@ -330,7 +348,7 @@ impl PrivateOriginals {
             return Err(PrivateOriginalError::Conflict);
         }
         let publication = pending.admit();
-        if publication.is_ok() && pending.service_grant.is_none() {
+        if publication.is_ok() && pending.service_grant.is_none() && pending.service_batch.is_none() {
             held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                 .retain(|retained| !Arc::ptr_eq(retained, &pending));
         }
@@ -361,7 +379,10 @@ impl PrivateOriginals {
             unresolved.first().cloned()
         };
         let Some(pending) = pending else { return Ok(()); };
-        if pending.service_grant.as_ref() != Some(&task.grant)
+        if (match task {
+            service_approved_input::ApprovedTaskLink::Single(member) => pending.service_grant.as_ref() != Some(&member.grant) || pending.service_batch.is_some(),
+            service_approved_input::ApprovedTaskLink::Batch(_) => pending.service_batch.as_ref() != Some(task) || pending.service_grant.is_some(),
+        })
             || record.final_association.as_ref() != Some(held.original.association())
             || admission.session_id != pending.session.to_string()
             || admission.input_id != pending.input.id().to_string()
@@ -376,6 +397,7 @@ impl PrivateOriginals {
 
     async fn submit_selected_original(
         self: &Arc<Self>, submission: PrivateOriginalSubmit, grant: Option<PrivateServiceGrantRef>,
+        batch: Option<service_approved_input::ApprovedTaskLink>,
         injected_context: Vec<meerkat_core::ContentInput>,
     ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
         let route = self.route(&submission.original.route)?;
@@ -403,15 +425,16 @@ impl PrivateOriginals {
         let binder = Arc::new(OriginalBinder {
             source: self.clone(),
             grant: grant.clone(),
+            batch: batch.clone(),
             original: submission.original.clone(),
             held: OnceLock::new(),
             pending: OnceLock::new(),
             authentication,
             event_key: self.original_event_key(&submission.original).await?,
             console: None,
-            approved_login: match &grant {
-                Some(_) => self.console_login_for_approved_source(&submission.original).await?,
-                None => None,
+            approved_login: match grant.is_some() || batch.is_some() {
+                true => self.console_login_for_approved_source(&submission.original).await?,
+                false => None,
             },
         });
         // Preserve the reviewed user bytes. Host context is a distinct native
@@ -483,6 +506,7 @@ pub(super) fn evidence(
 pub(super) struct OriginalBinder {
     pub(super) source: Arc<PrivateOriginals>,
     pub(super) grant: Option<PrivateServiceGrantRef>,
+    pub(super) batch: Option<service_approved_input::ApprovedTaskLink>,
     pub(super) original: PrivateOriginalRef,
     pub(super) held: OnceLock<Arc<HeldPrivateOriginal>>,
     pub(super) pending: OnceLock<Arc<PendingOriginalAdmission>>,
@@ -533,6 +557,8 @@ impl OriginalBinder {
             login.check().map_err(|_| "The approved Console login is unavailable")?;
         }
         let held = match &self.grant {
+            None if self.batch.is_some() => self.source.binding_for_batch_input(
+                &self.original, context, self.batch.as_ref().unwrap(), self.approved_login.clone()).await,
             Some(grant) => self.source.binding_for_access_input(
                 &self.original, context, grant, self.approved_login.clone(),
             ).await,
@@ -587,7 +613,7 @@ impl OriginalBinder {
         // The actual binder owns both this Input and its pending guard. The
         // source retains only approved B or selected stock setup A evidence.
         // Refused/uncertain persistence drops the guard before native entry.
-        if self.grant.is_some() || held.retain_bound_input {
+        if self.grant.is_some() || self.batch.is_some() || held.retain_bound_input {
             self.source.retain_bound_service_input(&self.original, &held.original, &input)
                 .await.map_err(|_error| {
                     #[cfg(test)]
@@ -601,6 +627,7 @@ impl OriginalBinder {
             // The existing service caller must still record native acceptance
             // in this source's canonical row after source promotion succeeds.
             service_grant: self.grant.clone(),
+            service_batch: self.batch.clone(),
             pending: Mutex::new(SourcePublication::Pending(pending)),
             held: Arc::downgrade(&held),
         });
@@ -608,13 +635,20 @@ impl OriginalBinder {
         // this binder until either definite refusal or retained uncertainty.
         self.pending.set(pending.clone())
             .map_err(|_| "Toolkit original was bound more than once".to_owned())?;
+        let entry_fence = if let Some(batch) = &self.batch {
+            let login = self.approved_login.as_ref().ok_or("The public service set has no Console login")?;
+            Some(self.source.batch_entry_fence(&self.original, batch, &held.original, login).await
+                .map_err(|_| "The selected public service set is unavailable".to_owned())?)
+        } else {
+            self.console.as_ref().map(|entry| Arc::new(entry.clone())
+                as Arc<dyn meerkat_mobkit::identity_first::GovernedEntryFence>)
+                .or_else(|| self.approved_login.as_ref().map(|login| Arc::new(login.clone())
+                    as Arc<dyn meerkat_mobkit::identity_first::GovernedEntryFence>))
+        };
         Ok(BoundGovernedInput {
             input,
             settlement: Box::new(OriginalSettlement(pending)),
-            entry_fence: self.console.as_ref().map(|entry| Arc::new(entry.clone())
-                as Arc<dyn meerkat_mobkit::identity_first::GovernedEntryFence>)
-                .or_else(|| self.approved_login.as_ref().map(|login| Arc::new(login.clone())
-                    as Arc<dyn meerkat_mobkit::identity_first::GovernedEntryFence>)),
+            entry_fence,
         })
     }
 
@@ -626,6 +660,7 @@ pub(super) struct PendingOriginalAdmission {
     session: SessionId,
     input: Input,
     service_grant: Option<PrivateServiceGrantRef>,
+    service_batch: Option<service_approved_input::ApprovedTaskLink>,
     pending: Mutex<SourcePublication>,
     held: Weak<HeldPrivateOriginal>,
 }
@@ -646,7 +681,7 @@ impl PendingOriginalAdmission {
         grant: &PrivateServiceGrantRef,
     ) -> Result<super::source_status::SourcePublicationStatus, PrivateOriginalError> {
         use super::source_status::SourcePublicationStatus;
-        if &self.session != session || self.service_grant.as_ref() != Some(grant) {
+        if &self.session != session || (self.service_grant.as_ref() != Some(grant) && !self.service_batch.as_ref().is_some_and(|task| task.contains(grant))) {
             return Err(PrivateOriginalError::Conflict);
         }
         let state = self.pending.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
@@ -691,7 +726,7 @@ impl GovernedSettlement for OriginalSettlement {
             return Err("Toolkit source settlement acknowledgement did not match".into());
         }
         let result = self.0.admit();
-        if result.is_err() || self.0.service_grant.is_some() {
+        if result.is_err() || self.0.service_grant.is_some() || self.0.service_batch.is_some() {
             self.0.retain_unresolved();
         }
         result

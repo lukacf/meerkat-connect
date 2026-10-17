@@ -26,6 +26,8 @@ const SCHEMA: &str = "toolkit.authenticated-service-access-decision";
 pub(crate) mod console;
 pub(crate) mod recovery;
 mod mcp;
+pub(crate) mod catalog;
+mod batch;
 pub use mcp::{PrivateServiceMcpAccessDecision, PrivateServiceMcpPermission, PrivateServiceMcpLiveAttachment, PrivateServiceMcpCatalog, ServiceMcpSelection};
 pub(crate) use mcp::RetainedServiceMcpAccess;
 use mcp::StoredServiceMcpSelection;
@@ -110,30 +112,31 @@ fn observe_progress(record: &AccessRecord, progress: Option<&ServiceOperationPro
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
-enum AccessDecision {
+pub(crate) enum AccessDecision {
     Legacy(PrivateServiceAccessDecision),
     Mcp(PrivateServiceMcpAccessDecision),
+    Catalog(catalog::ServiceCatalogDecision),
 }
 impl AccessDecision {
-    fn route(&self) -> &Id { match self { Self::Legacy(d) => &d.route, Self::Mcp(d) => &d.route } }
-    fn id(&self) -> &Id { match self { Self::Legacy(d) => &d.decision, Self::Mcp(d) => &d.decision } }
-    fn choice(&self) -> PrivateAccessChoice { match self { Self::Legacy(d) => d.choice, Self::Mcp(d) => d.choice } }
+    pub(crate) fn route(&self) -> &Id { match self { Self::Legacy(d) => &d.route, Self::Mcp(d) => &d.route, Self::Catalog(d) => &d.route } }
+    fn id(&self) -> &Id { match self { Self::Legacy(d) => &d.decision, Self::Mcp(d) => &d.decision, Self::Catalog(d) => &d.decision } }
+    fn choice(&self) -> PrivateAccessChoice { match self { Self::Legacy(d) => d.choice, Self::Mcp(d) => d.choice, Self::Catalog(_) => PrivateAccessChoice::Approve } }
     fn lifetime(&self) -> &meerkat_toolkit::authority::RoleLifetime {
-        match self { Self::Legacy(d) => &d.permission.lifetime, Self::Mcp(d) => &d.permission.lifetime }
+        match self { Self::Legacy(d) => &d.permission.lifetime, Self::Mcp(d) => &d.permission.lifetime, Self::Catalog(d) => &d.lifetime }
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AccessRecord {
-    decision: AccessDecision,
+pub(super) struct AccessRecord {
+    pub(super) decision: AccessDecision,
     /// Selected before issuance, never replaced by a later policy on replay.
     caller: PrincipalRef,
-    parent: Vec<GrantLineageRef>,
+    pub(super) parent: Vec<GrantLineageRef>,
     issuance: IssuanceObservation,
     // Version 2 has no native connector correspondence. Preserve its bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    mcp: Option<StoredServiceMcpSelection>,
+    pub(super) mcp: Option<StoredServiceMcpSelection>,
     /// Version 4 records the actual application policy decision beside the
     /// exact native issuance attempt. It is evidence, never reusable authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -252,7 +255,7 @@ impl PrivateOriginals {
         Ok(())
     }
 
-    fn access_key(
+    pub(super) fn access_key(
         &self,
         reference: &PrivateServiceGrantRef,
     ) -> Result<StoreKey, PrivateOriginalError> {
@@ -267,14 +270,14 @@ impl PrivateOriginals {
         })
     }
 
-    fn decode_access(
+    pub(super) fn decode_access(
         &self,
         stored: &StoredRecord,
         reference: &PrivateServiceGrantRef,
     ) -> Result<AccessRecord, PrivateOriginalError> {
         if stored.key != self.access_key(reference)?
             || stored.data.schema != SCHEMA
-            || !matches!(stored.data.version, 2 | 3 | 4 | 5)
+            || !matches!(stored.data.version, 2 | 3 | 4 | 5 | 6)
             || stored.data.digest().ok().as_deref() != Some(stored.content_digest.as_str())
         {
             return Err(PrivateOriginalError::Conflict);
@@ -283,7 +286,8 @@ impl PrivateOriginals {
             .map_err(|_| PrivateOriginalError::Conflict)?;
         if !matches!((&record.decision, &record.mcp, &record.application_policy, stored.data.version),
                 (AccessDecision::Legacy(_), None, None, 2) | (AccessDecision::Mcp(_), Some(_), None, 3)
-                | (AccessDecision::Mcp(_), Some(_), Some(_), 4 | 5))
+                | (AccessDecision::Mcp(_), Some(_), Some(_), 4 | 5)
+                | (AccessDecision::Catalog(_), None, None, 6))
             || (record.application_policy.as_ref().is_some_and(|evidence| evidence.service_parent.is_some())
                 != (stored.data.version == 5))
             || canonical_json(&record).map_err(|_| PrivateOriginalError::Conflict)?
@@ -401,6 +405,7 @@ impl PrivateOriginals {
         match (&decision, &mcp, &reviewed_parent, &mcp_lifetime) {
             (AccessDecision::Legacy(_), None, None, None) => {}
             (AccessDecision::Mcp(decision), Some(mcp), Some(_), Some(_)) => mcp.validate(route, decision)?,
+            (AccessDecision::Catalog(decision), None, Some(_), Some(_)) => { decision.restrictions(route, 0)?; }
             _ => return Err(PrivateOriginalError::Denied.into()),
         }
         if matches!(&decision.lifetime().scope, LifetimeScope::Deployment { deployment }
@@ -463,7 +468,7 @@ impl PrivateOriginals {
             .map_err(store_error)?;
         let stored = admitted.record();
         let mut record = self.decode_access(stored, &reference)?;
-        if (initial.mcp.is_some() && record.parent != initial.parent)
+        if ((initial.mcp.is_some() || matches!(initial.decision, AccessDecision::Catalog(_))) && record.parent != initial.parent)
             || record.application_policy != initial.application_policy {
             return Err(PrivateOriginalError::Conflict.into());
         }
@@ -718,7 +723,7 @@ impl PrivateOriginals {
             (AccessDecision::Legacy(_), None) => None,
             _ => return Err(PrivateOriginalError::Conflict),
         };
-        self.hold_binding_with_mcp(source.clone(), retained.clone(), mcp).await?;
+        self.hold_binding_with_mcp(source.clone(), retained.clone(), mcp.into_iter().collect()).await?;
         Ok(retained)
     }
 
@@ -805,6 +810,7 @@ fn access_restrictions(
     match (decision, mcp) {
         (AccessDecision::Legacy(decision), None) => restrictions(route, decision, now_ms),
         (AccessDecision::Mcp(decision), Some(selection)) => selection.restrictions(route, decision, now_ms),
+        (AccessDecision::Catalog(decision), None) => decision.restrictions(route, now_ms),
         _ => Err(PrivateOriginalError::Denied),
     }
 }
@@ -812,7 +818,8 @@ fn access_restrictions(
 fn encode_access(record: &AccessRecord) -> Result<RecordData, PrivateOriginalError> {
     Ok(RecordData {
         schema: SCHEMA.into(),
-        version: if record.application_policy.as_ref().is_some_and(|evidence| evidence.service_parent.is_some()) { 5 }
+        version: if matches!(record.decision, AccessDecision::Catalog(_)) { 6 }
+            else if record.application_policy.as_ref().is_some_and(|evidence| evidence.service_parent.is_some()) { 5 }
             else if record.application_policy.is_some() { 4 } else if record.mcp.is_some() { 3 } else { 2 },
         body: serde_json::to_value(record).map_err(|_| PrivateOriginalError::Denied)?,
     })

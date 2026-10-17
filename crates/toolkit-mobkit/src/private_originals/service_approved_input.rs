@@ -11,16 +11,11 @@ pub(super) mod attachment;
 mod continuation;
 pub(super) mod application;
 mod compensation;
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ApprovedTaskLink {
-    pub parent: PrivateOriginalRef,
-    pub acquisition: StoreKey,
-    pub original_task: NativeOriginalTask,
-    pub grant: PrivateServiceGrantRef,
-    pub before_ms: u64,
-}
+mod batch;
+mod selection;
+use selection::{ApprovedServiceMember, ApprovedTaskHeader, ApprovedTaskMember};
+pub(super) use selection::ApprovedTaskLink;
+pub use batch::{PublicServiceBatchEntry, PreparedPublicServiceBatch};
 
 impl PrivateOriginals {
     /// Reopen the original source chain after a crash. Parent cancellation is
@@ -53,7 +48,7 @@ impl PrivateOriginals {
                 .ok_or(PrivateOriginalError::Unavailable)?;
             let parent_record = self.decode_record(&stored, &parent)?;
             if parent_record.operation_cancelled { cancelled = Some(parent); }
-            next = parent_record.approved_task.map(|link| link.parent);
+            next = parent_record.approved_task.map(|link| link.parent.clone());
         }
         Ok(cancelled)
     }
@@ -62,7 +57,7 @@ impl PrivateOriginals {
         &self,
         validated: Arc<StoredRecord>,
     ) -> Result<Arc<StoredRecord>, OriginalWriterError> {
-        self.persist_source_cancellation_with_failure(validated, None, None)
+        self.persist_source_cancellation_with_failure(validated, None, None, None)
             .await
     }
 
@@ -70,6 +65,7 @@ impl PrivateOriginals {
         &self, validated: Arc<StoredRecord>,
         failure: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentFailure>,
         observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+        member: Option<&PrivateServiceGrantRef>,
     ) -> Result<Arc<StoredRecord>, OriginalWriterError> {
         let before = self.decode_stored(&validated).map_err(|_| OriginalWriterError::Conflict)?;
         let stored = self.store.get(&validated.key).await
@@ -88,6 +84,13 @@ impl PrivateOriginals {
             && current.service_admission.is_none() {
             current.service_attachment_failure = failure;
             current.service_attachment_observation = observation;
+            if let Some(member) = member {
+                let Some(ApprovedTaskLink::Batch(batch)) = &current.approved_task else { return Err(OriginalWriterError::Conflict); };
+                if !batch.members.iter().any(|selected| &selected.grant == member) || failure.is_none() {
+                    return Err(OriginalWriterError::Conflict);
+                }
+                current.service_attachment_member = Some(member.clone());
+            }
         }
         current.operation_cancelled = true;
         let data = encode(current.clone()).map_err(|_| OriginalWriterError::Conflict)?;
@@ -122,6 +125,15 @@ impl PrivateOriginals {
         &self, reference: &PrivateOriginalRef,
         failure: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentFailure>,
         observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+    ) -> Result<(), PrivateOriginalError> {
+        self.record_task_group_cancelled_with_member(reference, failure, observation, None).await
+    }
+
+    pub(super) async fn record_task_group_cancelled_with_member(
+        &self, reference: &PrivateOriginalRef,
+        failure: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentFailure>,
+        observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+        member: Option<&PrivateServiceGrantRef>,
     ) -> Result<(), PrivateOriginalError> {
         if observation.is_some() && failure.is_none() {
             return Err(PrivateOriginalError::Conflict);
@@ -183,7 +195,8 @@ impl PrivateOriginals {
             |stored| {
                 let selected = failed_key.as_ref().is_some_and(|key| key == &stored.key);
                 self.persist_source_cancellation_with_failure(stored,
-                    if selected { failure } else { None }, if selected { observation } else { None })
+                    if selected { failure } else { None }, if selected { observation } else { None },
+                    if selected { member } else { None })
             },
         ).await.map_err(|error| match error {
             OriginalWriterError::WrongOwner => PrivateOriginalError::Denied,
@@ -593,8 +606,18 @@ impl InstalledServiceTask {
     async fn prepare_mcp_review(
         self, config: &meerkat_core::McpServerConfig, selection: ServiceMcpSelection,
         operations: std::collections::BTreeSet<Id>, expires_in_ms: Option<u64>,
-        mut request: ApprovalRequest, tool_policy: Option<ServiceToolPolicySelection>,
+        request: ApprovalRequest, tool_policy: Option<ServiceToolPolicySelection>,
         persistence: Option<ServiceMcpPersistenceProposal>,
+    ) -> Result<PreparedServiceInstruction, PrivateOriginalError> {
+        self.prepare_mcp_review_for_member(config, selection, operations, expires_in_ms,
+            request, tool_policy, persistence, false).await
+    }
+
+    async fn prepare_mcp_review_for_member(
+        self, config: &meerkat_core::McpServerConfig, selection: ServiceMcpSelection,
+        operations: std::collections::BTreeSet<Id>, expires_in_ms: Option<u64>,
+        mut request: ApprovalRequest, tool_policy: Option<ServiceToolPolicySelection>,
+        persistence: Option<ServiceMcpPersistenceProposal>, batch: bool,
     ) -> Result<PreparedServiceInstruction, PrivateOriginalError> {
         self.current().await?;
         let configuration_persistence = match persistence {
@@ -626,7 +649,12 @@ impl InstalledServiceTask {
             .map_err(|_| PrivateOriginalError::Unavailable)?;
         let expires_at_ms = expires_in_ms.map(|ttl| now.checked_add(ttl)
             .ok_or(PrivateOriginalError::Denied)).transpose()?.unwrap_or(self.before_ms).min(self.before_ms);
-        let decision_id = Id::new(self.fresh.as_str()).map_err(|_| PrivateOriginalError::Conflict)?;
+        let task_id = Id::new(self.fresh.as_str()).map_err(|_| PrivateOriginalError::Conflict)?;
+        let decision_id = if batch {
+            crate::installed_host::operator_setup::service_batch_member_id(&self.fresh,
+                Some(&Id::new(config.name.clone()).map_err(|_| PrivateOriginalError::Denied)?))
+                .map_err(application::policy_error)?
+        } else { task_id.clone() };
         let live_attachment = PrivateServiceMcpLiveAttachment {
             destination: self.parent_association.candidate().target.clone(),
         };
@@ -669,7 +697,7 @@ impl InstalledServiceTask {
                 connection: Id::new(config.name.clone()).map_err(|_| PrivateOriginalError::Denied)?,
                 operations,
                 resource: Id::new(config.name.clone()).map_err(|_| PrivateOriginalError::Denied)?,
-                lifetime: RoleLifetime { scope: LifetimeScope::Task { task: decision_id },
+                lifetime: RoleLifetime { scope: LifetimeScope::Task { task: task_id },
                     expires_at_ms: Some(expires_at_ms) },
             },
             // Exact immutable native configuration content, never a physical
@@ -701,6 +729,21 @@ impl InstalledServiceTask {
         grant: PrivateServiceGrantRef, evidence: PrivateSourceEvidence,
         presented: &(impl Fn() -> Result<(), E> + Sync), policy: Option<RecordCondition>,
     ) -> Result<PrivateOriginalRef, E> {
+        let link = ApprovedTaskLink::single(self.task_header(), grant);
+        self.retain_approved_selection(link, evidence, presented, policy).await
+    }
+
+    fn task_header(&self) -> ApprovedTaskHeader {
+        ApprovedTaskHeader { parent: self.parent.clone(), acquisition: self.acquisition.clone(),
+            original_task: self.task.clone(), before_ms: self.before_ms }
+    }
+
+    async fn retain_approved_selection<E: From<PrivateOriginalError>>(self,
+        link: ApprovedTaskLink, evidence: PrivateSourceEvidence,
+        presented: &(impl Fn() -> Result<(), E> + Sync), policy: Option<RecordCondition>,
+    ) -> Result<PrivateOriginalRef, E> {
+        link.validate().map_err(E::from)?;
+        if *link != self.task_header() { return Err(E::from(PrivateOriginalError::Conflict)); }
         let source = self.source.clone();
         source.owner.retain_followup_source(&self.parent_association, || async {
             // Preserve the caller's typed currentness through the owner's
@@ -708,7 +751,9 @@ impl InstalledServiceTask {
             Ok(async {
             let (parent, snapshot) = self.current().await.map_err(E::from)?;
             presented()?;
-            source.require_service_grant_issued(&grant).await.map_err(E::from)?;
+            for grant in link.grants() {
+                source.require_service_grant_issued(grant).await.map_err(E::from)?;
+            }
             presented()?;
             let parent_record = source.decode_record(&parent, &self.parent).map_err(|_| E::from(PrivateOriginalError::Conflict))?;
             let event = PrivateAuthenticatedEvent {
@@ -729,10 +774,9 @@ impl InstalledServiceTask {
                 operation_cancelled: false,
                 service_attachment_failure: None,
                 service_attachment_observation: None,
+            service_attachment_member: None,
                 final_association: None,
-                approved_task: Some(ApprovedTaskLink { parent: self.parent.clone(),
-                    acquisition: self.acquisition.clone(), original_task: self.task.clone(), grant,
-                    before_ms: self.before_ms }),
+                approved_task: Some(link.clone()),
                 service_admission: None,
             bound_service_input: None,
             }).map_err(|_| E::from(PrivateOriginalError::Conflict))?;
@@ -856,7 +900,9 @@ impl PrivateOriginals {
             .ok_or(PrivateOriginalError::Unavailable)?;
         let record = self.decode_record(&stored, reference)?;
         let link = record.approved_task.as_ref().ok_or(PrivateOriginalError::Denied)?;
-        if link.parent.route != reference.route || link.grant.route != reference.route
+        let grant = self.service_control_grant(control)?;
+        link.attachment_member(grant)?;
+        if link.parent.route != reference.route || grant.route != reference.route
             || record.final_association.is_some() || record.service_admission.is_some()
             || control.session_id() != &link.original_task.origin_session_id
             || !self.service_task_submission_current(&record).await?
@@ -865,7 +911,7 @@ impl PrivateOriginals {
             .ok_or(PrivateOriginalError::Unavailable)?;
         let parent = self.decode_record(&parent, &link.parent)?;
         let association = parent.final_association.as_ref().ok_or(PrivateOriginalError::Unavailable)?;
-        self.observe_reviewed_mcp_attachment(&link.grant,
+        self.observe_reviewed_mcp_attachment(&grant,
             &meerkat_authorization_contracts::work_association::OriginalWorkRef {
                 authority: record.source.source_authority.clone(), work: record.event.original.clone(),
             }, &association.candidate().target, control, binding).await?;
@@ -880,7 +926,7 @@ impl PrivateOriginals {
         Ok(())
     }
 
-    fn service_input_host_current(&self) -> Result<(), PrivateOriginalError> {
+    pub(super) fn service_input_host_current(&self) -> Result<(), PrivateOriginalError> {
         let lifetime = self.host_lifetime.get().and_then(Weak::upgrade)
             .ok_or(PrivateOriginalError::Unavailable)?;
         lifetime.validate_current_selection().map_err(|_| PrivateOriginalError::Denied)
@@ -917,12 +963,14 @@ impl PrivateOriginals {
         if let Some(ancestor) = self.cancelled_task_ancestor(&record).await? {
             self.record_task_group_cancelled(&ancestor).await?;
             self.retire_service_attachment(&reference, task).await;
+            self.compensate_rejected_batch(&reference).await?;
             self.reject_service_continuation(&reference).await?;
             return Ok(ServiceInputStep::Done);
         }
         if record.operation_cancelled {
             self.record_task_group_cancelled(&reference).await?;
             self.retire_service_attachment(&reference, task).await;
+            self.compensate_rejected_batch(&reference).await?;
             self.reject_service_continuation(&reference).await?;
             return Ok(ServiceInputStep::Done);
         }
@@ -996,12 +1044,12 @@ impl PrivateOriginals {
             None => {
                 if !self.ensure_service_attachment(store, &reference, task).await? { return Ok(()); }
                 let submission = self.service_instruction(&record, &reference).await?;
-                let Some(context) = self.recheck_service_attachment(&reference, task).await? else {
+                let Some(context) = self.recheck_service_attachments(&reference, task).await? else {
                     return Ok(());
                 };
                 // Existing native submission/source custody remains the only
                 // B admission path. No attachment observation promotes B.
-                self.submit_ready_service_original(submission, task.grant.clone(), context).await?
+                self.submit_ready_service_set(submission, task.clone(), context).await?
             }
         };
         self.publish_service_input(stored, &record, &reference, observed).await
@@ -1021,7 +1069,7 @@ impl PrivateOriginals {
             let observed = match observed {
                 Some(observed) => observed,
                 None => self.submit_service_original(
-                    self.service_instruction(&record, &reference).await?, task.grant.clone()).await?,
+                    self.service_instruction(&record, &reference).await?, task.singleton_grant()?.clone()).await?,
             };
             self.publish_service_input(stored, &record, &reference, observed).await
         }.await;
@@ -1086,6 +1134,10 @@ pub(crate) struct ServiceInputRecoveryPage {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "service_approved_input/selection_tests.rs"]
+mod selection_tests;
 
 #[cfg(test)]
 #[path = "service_approved_input/admission_tests.rs"]

@@ -487,14 +487,14 @@ async fn approved_native(
     assert!(
         fixture
             .source
-            .held_service_attachment(&b, &task)
+            .held_service_attachment(&b, &task.attachments()[0])
             .unwrap()
             .is_none()
     );
     assert!(
         fixture
             .source
-            .attachment_parent(&task)
+            .attachment_parent(&task.attachments()[0])
             .unwrap()
             .service_attachments
             .lock()
@@ -910,7 +910,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             .step_service_input_with_attachment(&fixture.store, &stored)
             .await
             .unwrap();
-        assert!(source.held_service_attachment(&b, &task).unwrap().is_none());
+        assert!(source.held_service_attachment(&b, &task.attachments()[0]).unwrap().is_none());
         assert_eq!(endpoint.starts(), 0);
         assert_eq!(
             fixture.store.get(&stored.key).await.unwrap().unwrap(),
@@ -929,7 +929,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             .unwrap();
         endpoint.wait_for(&endpoint.listed).await;
         let held = source
-            .held_service_attachment(&b, &task)
+            .held_service_attachment(&b, &task.attachments()[0])
             .unwrap()
             .expect("actual accepted attempt retained");
         let receipt = held
@@ -968,7 +968,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             .unwrap();
         assert!(Arc::ptr_eq(
             &held,
-            &source.held_service_attachment(&b, &task).unwrap().unwrap()
+            &source.held_service_attachment(&b, &task.attachments()[0]).unwrap().unwrap()
         ));
         assert_eq!(
             fixture.store.get(&stored.key).await.unwrap().unwrap(),
@@ -1077,7 +1077,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                 assert_eq!(feedback.as_ref().unwrap().text_content(), endpoint.result);
             }
         }
-        assert!(source.held_service_attachment(&b, &task).unwrap().is_none());
+        assert!(source.held_service_attachment(&b, &task.attachments()[0]).unwrap().is_none());
         source
             .step_service_input_with_attachment(&fixture.store, &saved)
             .await
@@ -1332,7 +1332,7 @@ async fn actual_initialize_failure_is_captured_and_delivered_only_to_original() 
         // initialize reply until the test can retain the exact native receipt.
         source.step_service_input_with_attachment(&fixture.store, &stored).await.unwrap();
         endpoint.wait_for(&endpoint.started).await;
-        let held = source.held_service_attachment(&b, &task).unwrap().unwrap();
+        let held = source.held_service_attachment(&b, &task.attachments()[0]).unwrap().unwrap();
         let receipt = held.receipt(|| panic!("one accepted native attempt only"))
             .await.unwrap().unwrap();
         assert!(receipt.outcome.staged && !receipt.outcome.persisted);
@@ -1350,7 +1350,7 @@ async fn actual_initialize_failure_is_captured_and_delivered_only_to_original() 
         endpoint.release();
         assert!(matches!(receipt.attempt.wait("read", WAIT).await,
             McpAttachmentReadiness::Failed { .. }));
-        assert!(Arc::ptr_eq(&held, &source.held_service_attachment(&b, &task).unwrap().unwrap()));
+        assert!(Arc::ptr_eq(&held, &source.held_service_attachment(&b, &task.attachments()[0]).unwrap().unwrap()));
         // Production reopens currentness, reads the real Meta-wrapped observer,
         // and commits its finite projection in the existing cancellation CAS.
         source.step_service_input_with_attachment(&fixture.store, &stored).await.unwrap();
@@ -1372,7 +1372,7 @@ async fn actual_initialize_failure_is_captured_and_delivered_only_to_original() 
         #[cfg(not(target_os = "linux"))]
         let _ = exit;
         assert!(!serde_json::to_string(&saved.data).unwrap().contains(SENTINEL));
-        assert!(source.held_service_attachment(&b, &task).unwrap().is_none());
+        assert!(source.held_service_attachment(&b, &task.attachments()[0]).unwrap().is_none());
         assert_native_inputs(&fixture, runtime_store.as_ref(), &[(a_input.as_str(), &a_binding)])
             .await;
         assert_eq!(fixture.model_requests(), model_requests);
@@ -1510,3 +1510,6 @@ async fn actual_initialize_failure_is_captured_and_delivered_only_to_original() 
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
+
+#[path = "batch_native_tests.rs"]
+mod batch;

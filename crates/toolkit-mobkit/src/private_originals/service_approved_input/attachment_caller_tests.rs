@@ -82,8 +82,8 @@ fn keep_with_login(
     let operations = source.current_service_mcp_control(&control,
         &control.effect_binding(McpAttachmentEffect::Apply), source.owner.clock().now().unwrap().unix_ms, false)
         .unwrap().operations;
-    let held = Arc::new(HeldServiceAttachment::new(b.clone(), task.clone(), control, operations, future, login));
-    source.attachment_parent(&task).unwrap().service_attachments.lock().unwrap().push(held.clone());
+    let held = Arc::new(HeldServiceAttachment::new(b.clone(), task.attachments()[0].clone(), control, operations, future, login));
+    source.attachment_parent(&task.attachments()[0]).unwrap().service_attachments.lock().unwrap().push(held.clone());
     held
 }
 
@@ -236,11 +236,11 @@ async fn only_busy_releases_unentered_attachment_custody_for_later_preparation()
             let held = keep(&fixture.source, &b, &stored, control, Box::pin(async move {
                 started.fetch_add(1, Ordering::SeqCst); Err(answer)
             }));
-            let outcome = fixture.source.ensure_service_attachment(&fixture.store, &b, &held.task).await;
+            let outcome = fixture.source.ensure_service_attachment_member(&fixture.store, &b, &held.task).await;
             if busy { assert!(matches!(outcome, Ok(false))); }
             else {
                 assert!(outcome.is_err());
-                assert!(fixture.source.ensure_service_attachment(&fixture.store, &b, &held.task).await.is_err());
+                assert!(fixture.source.ensure_service_attachment_member(&fixture.store, &b, &held.task).await.is_err());
             }
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             assert_eq!(fixture.source.held_service_attachment(&b, &held.task).unwrap().is_none(), busy);
@@ -634,7 +634,7 @@ async fn attachment_failure_replay(
         assert!(fixture.source.service_task_snapshot(&cancelled).await.unwrap().service_attachment_failure().is_none());
         // Lose process-local attachment custody too. Only durable source facts
         // plus its exact native cancellation evidence can repair settlement.
-        fixture.source.retire_service_attachment(&b, &held.task).await;
+        fixture.source.retire_service_attachment_member(&b, &held.task).await;
         sql.execute_batch("DROP TRIGGER fail_setup_result;").unwrap();
         fixture.source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
         let terminal = fixture.source.service_task_snapshot(&cancelled).await.unwrap();

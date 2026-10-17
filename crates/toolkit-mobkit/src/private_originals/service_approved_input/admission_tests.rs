@@ -28,6 +28,8 @@ mod application_policy_tests;
 mod compensation_tests;
 #[path = "service_recovery_tests.rs"]
 mod service_recovery_tests;
+#[path = "batch_recovery_tests.rs"]
+pub(super) mod batch_recovery_tests;
 fn id(value: &str) -> Id { Id::new(value).unwrap() }
 fn revision(value: &str) -> Revision { Revision::new(value).unwrap() }
 
@@ -540,7 +542,7 @@ async fn public_mcp_review_uses_the_actual_waiting_task_and_separate_no_connecto
         let original = meerkat_authorization_contracts::work_association::OriginalWorkRef {
             authority: route.source_authority.clone(), work: b.original.clone(),
         };
-        let lineage = source.service_grant_lineage(&approved.grant,&original).await.unwrap();
+        let lineage = source.service_grant_lineage(approved.singleton_grant().unwrap(),&original).await.unwrap();
         let resolved = source.owner.grants().resolve_lineage(&lineage,&route.logical_executor,
             route.represented_subject.as_ref()).unwrap();
         let operation = crate::installed_host::application_operations::mcp_connector_operation(
@@ -764,7 +766,7 @@ async fn combined_persistence_review_binds_scope_before_grants_and_retains_exact
         let original = meerkat_authorization_contracts::work_association::OriginalWorkRef {
             authority: route.source_authority.clone(), work: fresh,
         };
-        let lineage = fixture.source.service_grant_lineage(&approved.grant, &original).await.unwrap();
+        let lineage = fixture.source.service_grant_lineage(approved.singleton_grant().unwrap(), &original).await.unwrap();
         let resolved = fixture.source.owner.grants().resolve_lineage(&lineage,
             &route.logical_executor, route.represented_subject.as_ref()).unwrap();
         let operation = crate::installed_host::application_operations::mcp_connector_operation(

@@ -39,6 +39,7 @@ pub(crate) mod source_status;
 pub(crate) mod service_recovery;
 pub use service_approved_input::{
     InstalledServiceTask, PreparedServiceInstruction, ServiceMcpPersistenceProposal,
+    PublicServiceBatchEntry, PreparedPublicServiceBatch,
 };
 pub use crate::installed_host::tool_policy::{ServiceToolPolicySelection, ServiceToolInvocation,
     MemberPolicyLifetime, ServiceToolPolicyVersion, ServiceToolPolicyProposal, ServiceToolPolicyApproval,
@@ -242,6 +243,10 @@ struct SourceRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     service_attachment_observation:
         Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+    /// Exact batch member that supplied the terminal observation. This is
+    /// evidence only, committed with the same cancellation as the failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service_attachment_member: Option<PrivateServiceGrantRef>,
     /// An exact business-task link, never an authority contributor. Created only
     /// by an authenticated reviewed or application-policy access path after
     /// native task child issuance. It never replays the prior original.
@@ -265,7 +270,7 @@ struct SourceRecord {
 struct HeldPrivateOriginal {
     reference: PrivateOriginalRef,
     original: Arc<RetainedToolkitOriginal>,
-    service_mcp: Option<service_grants::RetainedServiceMcpAccess>,
+    service_mcp: Vec<service_grants::RetainedServiceMcpAccess>,
     // Selected during the existing exact canonical binding read. This only
     // requests historical Input persistence, never native admission/custody.
     retain_bound_input: bool,
@@ -315,9 +320,18 @@ impl ApplicationInstallationReadback {
     }
 }
 
+/// One exact product document selected from the actual retained batch review.
+/// Only the operator parent owner can construct this evidence projection.
+pub struct ReviewedBatchInstallation { document: serde_json::Value }
+impl ReviewedBatchInstallation {
+    pub(crate) fn new(document: serde_json::Value) -> Self { Self { document } }
+    pub fn document(&self) -> &serde_json::Value { &self.document }
+}
+
 /// Distinct retained authorization paths for the same package verifier.
 pub enum ServiceInstallationReadbackSource {
     SettledReview(meerkat_core::approval::ApprovalRecord),
+    ReviewedBatchMember(ReviewedBatchInstallation),
     ApplicationPolicy(ApplicationInstallationReadback),
 }
 
@@ -340,7 +354,7 @@ pub trait ServiceInstallationReadback: Send + Sync {
         -> Result<meerkat_core::McpServerConfig, PrivateOriginalError> {
         match source {
             ServiceInstallationReadbackSource::SettledReview(review) => self.readback(review).await,
-            ServiceInstallationReadbackSource::ApplicationPolicy(_) => Err(PrivateOriginalError::Denied),
+            ServiceInstallationReadbackSource::ApplicationPolicy(_) | ServiceInstallationReadbackSource::ReviewedBatchMember(_) => Err(PrivateOriginalError::Denied),
         }
     }
 }
@@ -648,6 +662,7 @@ impl PrivateOriginals {
             operation_cancelled: false,
             service_attachment_failure: None,
             service_attachment_observation: None,
+            service_attachment_member: None,
             approved_task: None,
             service_admission: None,
             bound_service_input: None,
@@ -978,14 +993,14 @@ impl PrivateOriginals {
         reference: PrivateOriginalRef,
         original: Arc<RetainedToolkitOriginal>,
     ) -> Result<(), PrivateOriginalError> {
-        self.hold_binding_with_mcp(reference, original, None).await
+        self.hold_binding_with_mcp(reference, original, Vec::new()).await
     }
 
     async fn hold_binding_with_mcp(
         &self,
         reference: PrivateOriginalRef,
         original: Arc<RetainedToolkitOriginal>,
-        service_mcp: Option<service_grants::RetainedServiceMcpAccess>,
+        service_mcp: Vec<service_grants::RetainedServiceMcpAccess>,
     ) -> Result<(), PrivateOriginalError> {
         let stored = self
             .store
@@ -1180,6 +1195,14 @@ fn decode_source_record(stored: &StoredRecord) -> Result<SourceRecord, PrivateOr
         return Err(PrivateOriginalError::Conflict);
     }
     cold_service_admission::validate_retained_input(&value)?;
+    if let Some(task) = &value.approved_task { task.validate()?; }
+    if let Some(member) = &value.service_attachment_member {
+        if value.service_attachment_failure.is_none() || !value.operation_cancelled
+            || !matches!(&value.approved_task, Some(service_approved_input::ApprovedTaskLink::Batch(batch))
+                if batch.members.iter().any(|selected| &selected.grant == member)) {
+            return Err(PrivateOriginalError::Conflict);
+        }
+    }
     if value.service_attachment_observation.is_some() && value.service_attachment_failure.is_none()
     {
         return Err(PrivateOriginalError::Conflict);

@@ -309,7 +309,7 @@ async fn historical_terminal_source_or_setup_does_not_hide_a_later_same_owner_in
                 let pending = fixture.store.get(&source.key(&old).unwrap()).await.unwrap().unwrap();
                 let original = source.decode_record(&pending, &old).unwrap();
                 let mut altered = original.clone();
-                altered.approved_task.as_mut().unwrap().before_ms -= 1;
+                altered.approved_task.as_mut().unwrap().header_mut().before_ms -= 1;
                 let changed = fixture.store.compare_and_swap(Transition {
                     key: pending.key, expected_revision: pending.revision,
                     expected_digest: Some(pending.content_digest), claim: None,
@@ -347,7 +347,7 @@ async fn historical_terminal_source_or_setup_does_not_hide_a_later_same_owner_in
             // into an accepted empty list.
             let stored = fixture.store.get(&source.key(&old).unwrap()).await.unwrap().unwrap();
             let mut malformed = source.decode_record(&stored, &old).unwrap();
-            malformed.approved_task.as_mut().unwrap().original_task.origin_session_id = meerkat_core::SessionId::new();
+            malformed.approved_task.as_mut().unwrap().header_mut().original_task.origin_session_id = meerkat_core::SessionId::new();
             fixture.store.compare_and_swap(Transition { key: stored.key, expected_revision: stored.revision,
                 expected_digest: Some(stored.content_digest), claim: None, data: encode(malformed).unwrap(),
                 events: vec![], effects: vec![] }).await.unwrap();
@@ -697,7 +697,7 @@ async fn actual_source_cancellation_during_held_read_withholds_the_instruction()
         tokio::pin!(read);
         tokio::select! { _ = paused.entered.notified() => {}, result = &mut read => panic!("read did not hold: {result:?}") }
         let stored = fixture.store.get(&source.key(&b).unwrap()).await.unwrap().unwrap();
-        let parent = source.decode_record(&stored, &b).unwrap().approved_task.unwrap().parent;
+        let parent = source.decode_record(&stored, &b).unwrap().approved_task.unwrap().parent.clone();
         source.record_task_group_cancelled(&parent).await.unwrap();
         paused.release.add_permits(1);
         assert!(matches!(read.await, Err(PrivateOriginalError::Denied)));
@@ -851,6 +851,7 @@ async fn mismatched_task_correlation_is_not_a_disclosure_capability() {
             .approved_task
             .as_mut()
             .unwrap()
+            .header_mut()
             .original_task
             .origin_session_id = meerkat_core::SessionId::new();
         fixture
@@ -1021,7 +1022,7 @@ async fn completed_access_policy_swap_refuses_revoke_then_fresh_review_revokes_o
         for original in [&first, &second] {
             let stored = fixture.store.get(&source.key(original).unwrap()).await.unwrap().unwrap();
             let record = source.decode_record(&stored, original).unwrap();
-            lineages.push(source.service_grant_lineage(&record.approved_task.as_ref().unwrap().grant,
+            lineages.push(source.service_grant_lineage(&record.approved_task.as_ref().unwrap().singleton_grant().unwrap(),
                 &OriginalWorkRef { authority: record.source.source_authority.clone(),
                     work: original.original.clone() }).await.unwrap());
         }
@@ -1174,7 +1175,7 @@ async fn application_access_binds_historical_requester_and_retains_unknown_issua
         let source_row = fixture.store.get(&source.key(&b).unwrap()).await.unwrap().unwrap();
         let record = source.decode_record(&source_row, &b).unwrap();
         let access_key = crate::private_originals::service_grants::tests::fixture_access_key(source,
-            &record.approved_task.as_ref().unwrap().grant).unwrap();
+            &record.approved_task.as_ref().unwrap().singleton_grant().unwrap()).unwrap();
         let access = fixture.store.get(&access_key).await.unwrap().unwrap();
         let mut uncertain = access.data.clone();
         // Model only the existing durable pending observation after a lost
@@ -1221,7 +1222,7 @@ async fn application_access_refuses_a_source_changed_during_its_read() {
         tokio::select! { _ = probe.entered.notified() => {}, _ = &mut read => panic!("canonical read did not hold") }
         let row = fixture.store.get(&key).await.unwrap().unwrap();
         let mut changed = source.decode_record(&row, &b).unwrap();
-        changed.approved_task.as_mut().unwrap().original_task.origin_session_id = meerkat_core::SessionId::new();
+        changed.approved_task.as_mut().unwrap().header_mut().original_task.origin_session_id = meerkat_core::SessionId::new();
         fixture.store.compare_and_swap(Transition { key, expected_revision:row.revision,
             expected_digest:Some(row.content_digest), claim:None, data:encode(changed).unwrap(), events:vec![], effects:vec![] }).await.unwrap();
         probe.release.add_permits(1);

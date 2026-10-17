@@ -42,15 +42,15 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
         let reference = PrivateOriginalRef { route: event.route.clone(), original: event.original.clone(),
             event_sha256: digest(&canonical_json(&event).unwrap()) };
         let key = source.key(&reference).unwrap();
-        let link = ApprovedTaskLink {
-            parent: parent.clone(), acquisition: acquisition.key().clone(), original_task,
+        let link = ApprovedTaskLink::single(ApprovedTaskHeader {
+            parent: parent.clone(), acquisition: acquisition.key().clone(), original_task, before_ms: u64::MAX },
             // Deliberately unresolved: cancellation may not require a current
             // grant, and these coordinates cannot admit or authorize B.
-            grant: PrivateServiceGrantRef { route: parent.route.clone(), decision: Id::new("unissued-b").unwrap(),
-                decision_sha256: "0".repeat(64) }, before_ms: u64::MAX,
-        };
+            PrivateServiceGrantRef { route: parent.route.clone(), decision: Id::new("unissued-b").unwrap(),
+                decision_sha256: "0".repeat(64) });
         let record = SourceRecord { bound_service_input: None, setup_request: None, configured_setup: None, source: parent_record.source.clone(), event,
-            final_association: None, operation_cancelled: false, service_attachment_failure: None, service_attachment_observation: None, approved_task: Some(link),
+            final_association: None, operation_cancelled: false, service_attachment_failure: None, service_attachment_observation: None,
+            service_attachment_member: None, approved_task: Some(link),
             // This exercises the actual canonical admitted-field branch. It
             // does not fabricate native B acceptance or a usable B grant.
             service_admission: admitted_partial_write.is_some().then(|| ServiceInputAdmission {
@@ -70,8 +70,8 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
                 };
                 old.event.occurrence = old.event.original.clone();
                 let old_link = old.approved_task.as_mut().unwrap();
-                old_link.parent.route = old.event.route.clone();
-                old_link.parent.original = EvidenceId::new("unrelated-old-parent").unwrap();
+                old_link.header_mut().parent.route = old.event.route.clone();
+                old_link.header_mut().parent.original = EvidenceId::new("unrelated-old-parent").unwrap();
                 old.service_admission = completed.then(|| ServiceInputAdmission {
                     session_id: "historical-session".into(), input_id: "historical-input".into(),
                 });

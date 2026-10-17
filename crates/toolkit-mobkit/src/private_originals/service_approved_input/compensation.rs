@@ -36,7 +36,7 @@ impl InstalledServiceTask {
                 // Preserve a successful exact replay or a lost source-commit
                 // acknowledgement. A different approval can name the same task
                 // but its parent does not acquire this published child's owner.
-                if link.grant == grant && source.service_compensation_child(&grant, &parent).await?.is_some() {
+                if link.contains(&grant) && source.service_compensation_child(&grant, &parent).await?.is_some() {
                     return Ok(());
                 }
             }
@@ -60,5 +60,72 @@ impl InstalledServiceTask {
             };
             parent_result.and(child_result)
         }).await.map_err(|_| PrivateOriginalError::Unavailable)?
+    }
+}
+
+impl PrivateOriginals {
+    /// Reconcile only the exact rejected batch's effects. The canonical source
+    /// writer excludes first binding, and each child must belong to its actual
+    /// retained parent. Native journal records are the durable cleanup result.
+    pub(super) async fn compensate_rejected_batch(&self, reference: &PrivateOriginalRef)
+        -> Result<(), PrivateOriginalError> {
+        let _writer = self.owner.try_source_writer().map_err(|_| PrivateOriginalError::Unavailable)?;
+        let saved = self.store.get(&self.key(reference)?).await.map_err(store_error)?
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        let record = self.decode_record(&saved, reference)?;
+        let Some(task @ ApprovedTaskLink::Batch(_)) = &record.approved_task else { return Ok(()); };
+        if !record.operation_cancelled { return Err(PrivateOriginalError::Denied); }
+        // An admitted source belongs to the existing continuation/cancellation
+        // owner. Its selected grants are not pre-entry compensation work.
+        if record.service_admission.is_some() { return Ok(()); }
+        // Binding without settled admission is uncertain, never proven nonentry.
+        if record.final_association.is_some() || record.bound_service_input.is_some() { return Err(PrivateOriginalError::Unavailable); }
+        let lifetime = self.host_lifetime.get().and_then(Weak::upgrade).ok_or(PrivateOriginalError::Unavailable)?;
+        let operator = self.service_operator_setup(lifetime).map_err(application::policy_error)?;
+        let machine = self.machine()?;
+        let mut failed = None;
+        for grant in task.grants() {
+            let result = async {
+                let access = self.store.get(&self.access_key(grant)?).await.map_err(store_error)?
+                    .ok_or(PrivateOriginalError::Unavailable)?;
+                let access = self.decode_access(&access, grant)?;
+                if access.parent.len() != 1 { return Err(PrivateOriginalError::Conflict); }
+                let parent = &access.parent[0];
+                let key = StoreKey { realm: self.scope.realm.clone(), owner: self.scope.owner.clone(),
+                    id: parent.grant_id.as_str().to_owned() };
+                let saved = self.store.get(&key).await.map_err(store_error)?.ok_or(PrivateOriginalError::Unavailable)?;
+                let approved = operator.retained_service_approval(&saved).map_err(application::policy_error)?
+                    .ok_or(PrivateOriginalError::Conflict)?;
+                if approved.context.fresh_original != reference.original || approved.context.business_task != task.acquisition
+                    || approved.context.prior_original.work != task.parent.original
+                    || !approved.cleanup.belongs_to(&self.owner)
+                    || approved.cleanup.issued().await.map_err(application::policy_error)?.as_ref() != Some(parent) {
+                    return Err(PrivateOriginalError::Conflict);
+                }
+                let selected = match (&approved.decision, &approved.selection) {
+                    (super::super::service_grants::AccessDecision::Mcp(decision), Some(selection)) =>
+                        self.retained_service_selection(decision, selection, &approved.requested)?,
+                    (super::super::service_grants::AccessDecision::Catalog(decision), None) =>
+                        self.retained_catalog_selection(decision, &approved.requested)?,
+                    _ => return Err(PrivateOriginalError::Conflict),
+                };
+                if &selected.reference != grant { return Err(PrivateOriginalError::Conflict); }
+                let child = self.service_compensation_child(grant, parent).await?
+                    .ok_or(PrivateOriginalError::Unavailable)?;
+                let parent_result = {
+                    let mut custody = machine.try_controller_grant_mutation().map_err(|_| PrivateOriginalError::Unavailable)?;
+                    self.owner.grants().revoke(approved.cleanup.issuer(), parent, &mut custody)
+                        .map_err(|_| PrivateOriginalError::Unavailable)
+                };
+                let child_result = {
+                    let mut custody = machine.try_controller_grant_mutation().map_err(|_| PrivateOriginalError::Unavailable)?;
+                    self.owner.grants().revoke(&child.0, &child.1, &mut custody)
+                        .map_err(|_| PrivateOriginalError::Unavailable)
+                };
+                parent_result.and(child_result)
+            }.await;
+            if let Err(error) = result { failed = Some(error); }
+        }
+        failed.map_or(Ok(()), Err)
     }
 }

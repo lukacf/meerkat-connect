@@ -22,6 +22,45 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+### Public-service batch checkpoint
+
+Development source adds one reviewed set of 2-8 public MCP services to the existing
+acquisition path. Checked jobs supply exact selected exports and operations; one
+actual approval covers the set, catalog and continuation. Each member retains its
+own parent/child grants and native attachment. All required members must be usable
+before one Original continuation, and native admission rechecks the exact set.
+Singleton wire bytes and independent member revocation remain covered. The
+Core `efd313d4` / Meta `669f54fa` graph is unchanged. Exact source checkpoint
+`21c967b9` contains 53 batch paths and the two separately qualified UI afterimages.
+
+Final aggregate `bcafe131` joins 29 distinct passing Rust controls: 21 focused
+(six codec, eight public-parser, five operator-approval and two partial-compensation)
+and eight native (four batch and four singleton regressions). Repeated executions
+are not added to this count. The actual batch controls cover both attachments
+before one Original, exact member revocation with sibling/catalog use preserved,
+queued admission refusal and second-attachment failure. Historical source-custody
+reconstruction occurs after the admitted turn settles; it does not establish
+process restart or a new operation after restoration. Captured contributor checks
+do not establish later C admission. Attachment-observation retirement remains
+distinct from physical child cleanup at normal fixture shutdown.
+
+Both earlier native attempts stay failed: one hit its 60-second fixture deadline
+while awaiting restoration across its own held turn; the next misclassified the
+intentionally shared public refusal output and exhausted its bounded choices.
+The passing fixture checks the exact public refusal after known member revocation,
+zero entries to that server and actual sibling/catalog success. It does not infer
+the internal refusal kind. Production guards and deadlines are unchanged, all
+owned test/transport processes joined, and compiler warnings remain retained.
+
+The separate review renderer preserves the status-read deadline and passes all
+48 JavaScript controls; the exact prior renderer passes 46/48, with two meaningful
+visible-detail failures. Independent UI review is `2c43cb33`; final panel SHA-256
+is `7af2b61109a62a98727fdd573df5d1fab4e2df4f9882482fb8dc567a7358ff33`.
+This is focused source/component evidence, not ordinary-agent multi-service use,
+Browser interaction, CI or released packaging. Ordinary multi-service acceptance
+is pending. No authenticated batch, later resumed-task acquisition or requirement
+completion is claimed.
+
 ### Agent Plugins external-client checkpoint
 
 One independently reviewed development case exports Microsoft's

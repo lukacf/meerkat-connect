@@ -3,8 +3,8 @@
 use super::*;
 
 pub(crate) struct RetainedServiceSelection {
-    decision: PrivateServiceMcpAccessDecision,
-    selection: StoredServiceMcpSelection,
+    decision: AccessDecision,
+    selection: Option<StoredServiceMcpSelection>,
     pub reference: PrivateServiceGrantRef,
 }
 pub(crate) struct ServiceRecoveryChild {
@@ -51,10 +51,19 @@ impl PrivateOriginals {
             )?,
         };
         Ok(RetainedServiceSelection {
-            decision: decision.clone(),
-            selection: selected,
+            decision: AccessDecision::Mcp(decision.clone()),
+            selection: Some(selected),
             reference,
         })
+    }
+
+    pub(crate) fn retained_catalog_selection(&self, decision: &catalog::ServiceCatalogDecision,
+        requested: &ExecutionRestrictions) -> Result<RetainedServiceSelection, PrivateOriginalError> {
+        let mut expected = decision.restrictions(self.route(&decision.route)?, 0)?;
+        expected.delegation_depth = DelegationDepth::remaining(1);
+        if &expected != requested { return Err(PrivateOriginalError::Conflict); }
+        Ok(RetainedServiceSelection { decision: AccessDecision::Catalog(decision.clone()), selection: None,
+            reference: Self::service_catalog_reference(decision)? })
     }
 
     pub(crate) async fn service_recovery_child(
@@ -102,8 +111,8 @@ impl PrivateOriginals {
             });
         }
         if actual != selection.reference
-            || record.decision != AccessDecision::Mcp(selection.decision.clone())
-            || record.mcp.as_ref() != Some(&selection.selection)
+            || record.decision != selection.decision
+            || record.mcp != selection.selection
             || record.application_policy.is_some()
         {
             return Err(PrivateOriginalError::Conflict);
@@ -144,9 +153,15 @@ impl PrivateOriginals {
 
 impl RetainedServiceSelection {
     pub(crate) fn projection(&self) -> serde_json::Value {
-        serde_json::json!({"service":self.selection.server,
-            "selected_account":self.selection.connector.as_ref().map(|binding| binding.account.as_str()),
-            "target":self.decision.permission.target, "operations":self.decision.permission.operations,
-            "resource":self.decision.permission.resource, "lifetime":self.decision.permission.lifetime})
+        match (&self.decision, &self.selection) {
+            (AccessDecision::Mcp(decision), Some(selection)) => serde_json::json!({"service":selection.server,
+                "selected_account":selection.connector.as_ref().map(|binding| binding.account.as_str()),
+                "target":decision.permission.target, "operations":decision.permission.operations,
+                "resource":decision.permission.resource, "lifetime":decision.permission.lifetime}),
+            (AccessDecision::Catalog(decision), None) => serde_json::json!({"service":"public_service_set_catalog",
+                "selected_account":null, "operations":["catalog"], "resource":decision.session.to_string(),
+                "lifetime":decision.lifetime}),
+            _ => serde_json::Value::Null,
+        }
     }
 }

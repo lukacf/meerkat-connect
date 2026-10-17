@@ -617,8 +617,8 @@ async fn operator_recovery_keeps_absent_parent_unresolved_and_allows_cancelled_s
 
 // Admit the test's first Original through the actual installed Console binder.
 // A non-Console submission cannot supply login custody for a qualified Human.
-async fn verified_console_task(
-    fixture: &ContinuationFixture,
+pub(super) async fn verified_console_task<S>(
+    fixture: &ContinuationFixture<S>,
     human: &meerkat_mobkit::runtime::AuthenticatedConsoleHuman,
     logins: crate::private_host::ConsoleLogins,
     access: meerkat_mobkit::access::AccessController,
@@ -673,7 +673,6 @@ async fn verified_console_task(
             output: TurnOutput::Text { text, .. }
         } if text == "The original request completed"
     ));
-    assert_eq!(fixture.inputs().await, Ok(1));
     // ProbeProvider transforms the first authorized response into the captured
     // ContextProbe call; the second authorized response completes this turn.
     assert_eq!(fixture.model_requests(), 2);
@@ -761,6 +760,7 @@ async fn operator_recovery_requires_actual_verified_human_admin_member_and_same_
         assert_eq!(viewer.principal.as_ref(), Some(&human.current().unwrap()));
         assert!(viewer.access_view.as_ref().unwrap().can_administer());
         let task = verified_console_task(&fixture, human, logins.clone(), controller.clone(), &member).await;
+        assert_eq!(fixture.inputs().await, Ok(1));
         let (_grant, parent, _) = issue_before_publication(&fixture, task).await;
         let binding = ConsoleSetupBinding::fixture(fixture.lifetime().clone(), fixture.source.clone(), logins.clone(),
             crate::private_host::PrivateHostClosed(pipe.subscribe()));

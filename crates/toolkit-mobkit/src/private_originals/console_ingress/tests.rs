@@ -82,7 +82,7 @@ async fn native_original_binding_preserves_stock_console_key_and_exact_replay() 
             Arc::new(ObserveBoundInput {
                 inner: Arc::new(OriginalBinder {
                     source: fixture.source.clone(),
-                    grant: None,
+                    grant: None, batch: None,
                     original: original.clone(),
                     held: OnceLock::new(),
                     pending: OnceLock::new(),

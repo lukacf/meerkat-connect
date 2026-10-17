@@ -24,6 +24,7 @@ pub(crate) struct ServiceRecoveryRow {
     pub(super) prior: StoredRecord,
     pub(super) fresh_key: StoreKey,
     pub(super) fresh: Option<StoredRecord>,
+    pub(super) published_member: bool,
     pub(super) selection: RetainedServiceSelection,
     pub(super) parent: Option<GrantLineageRef>,
     pub(super) child: Option<ServiceRecoveryChild>,
@@ -160,7 +161,7 @@ impl PrivateOriginals {
             .try_source_writer()
             .map_err(|_| PrivateOriginalError::Unavailable)?;
         self.recheck_service_recovery(read, row).await?;
-        if !row.can_recover || row.fresh.is_some() || row.parent.is_none() || row.child.is_none() {
+        if !row.can_recover || row.published_member || row.parent.is_none() || row.child.is_none() {
             return Err(PrivateOriginalError::Denied);
         }
         // No admission/current-task test: the authenticated operator can clean
@@ -239,7 +240,7 @@ impl PrivateOriginals {
                 continue;
             }
             let Some(route) = self.routes()?.iter().find(|route| {
-                route.id == approval.decision.route
+                route.id == *approval.decision.route()
                     && same_source_human(
                         human,
                         &route.requester,
@@ -269,7 +270,7 @@ impl PrivateOriginals {
                 Id::new(self.scope.realm.clone()).map_err(|_| PrivateOriginalError::Conflict)?,
                 Id::new(self.scope.owner.clone()).map_err(|_| PrivateOriginalError::Conflict)?,
             );
-            if prior_ref.route != approval.decision.route
+            if prior_ref.route != *approval.decision.route()
                 || claims.original_work != context.prior_original
                 || claims.target != context.live_attachment.destination
                 || record.source.requester != context.operator_and_requester
@@ -285,11 +286,13 @@ impl PrivateOriginals {
             {
                 return Err(PrivateOriginalError::Conflict);
             }
-            let selection = self.retained_service_selection(
-                &approval.decision,
-                &approval.selection,
-                &approval.requested,
-            )?;
+            let selection = match (&approval.decision, &approval.selection) {
+                (super::service_grants::AccessDecision::Mcp(decision), Some(selection)) =>
+                    self.retained_service_selection(decision, selection, &approval.requested)?,
+                (super::service_grants::AccessDecision::Catalog(decision), None) =>
+                    self.retained_catalog_selection(decision, &approval.requested)?,
+                _ => return Err(PrivateOriginalError::Conflict),
+            };
             let fresh_key = StoreKey {
                 realm: self.scope.realm.clone(),
                 owner: self.scope.owner.clone(),
@@ -320,7 +323,24 @@ impl PrivateOriginals {
                 Some(parent) => Some(self.service_recovery_child(&selection, parent).await),
                 None => None,
             };
-            let can_recover = fresh.is_none()
+            let published_member = match (&fresh, &parent) {
+                (Some(fresh), Some(parent)) => {
+                    let published = self.decode_stored(fresh)?;
+                    let link = published.approved_task.as_ref().ok_or(PrivateOriginalError::Conflict)?;
+                    let selected = link.contains(&selection.reference)
+                        && self.service_compensation_child(&selection.reference, parent).await?.is_some();
+                    // A cancelled, provably unbound batch can clean its own
+                    // selected partial effects. Legacy publication stays protected.
+                    let rejected_batch = matches!(link, super::service_approved_input::ApprovedTaskLink::Batch(_))
+                        && published.operation_cancelled && published.final_association.is_none()
+                        && published.service_admission.is_none()
+                        && published.bound_service_input.is_none();
+                    selected && !rejected_batch
+                }
+                (Some(_), None) => true,
+                _ => false,
+            };
+            let can_recover = !published_member
                 && parent.is_some()
                 && child_result.as_ref().is_some_and(Result::is_ok);
             let parent_state = match (&observed, &parent) {
@@ -366,7 +386,7 @@ impl PrivateOriginals {
             );
             let mut projection = selection.projection();
             projection["id"] = serde_json::json!(id);
-            projection["state"] = serde_json::json!(if fresh.is_some() {
+            projection["state"] = serde_json::json!(if published_member {
                 "publication_present"
             } else {
                 "publication_unresolved"
@@ -384,6 +404,7 @@ impl PrivateOriginals {
                 prior,
                 fresh_key,
                 fresh,
+                published_member,
                 selection,
                 parent,
                 child: child_result.and_then(Result::ok),
