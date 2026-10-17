@@ -5,11 +5,40 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
-Development source improves acquisition, protected setup and recovery. The
-reviewed Core retained-resume correction with compatible Meta 0.9.1 and SDKs has
-passed development gateway and controlled installed checks. Published Connect
-0.9.0 binaries are unchanged.
+The fresh V40 journey now completes agent-led discovery of an outside-catalog
+integration, protected installation/access and the original business answer
+through the controlled Console API. The same Original reported overdue invoices
+rising from EUR 2,900 to EUR 4,600, a EUR 1,700 increase led by Linden Works at
+EUR 1,300. Independent recomputation confirms all figures and strict cutoff
+handling. The question was submitted once, without operator follow-ups, direct
+business calls or manual wakes.
 
+V40 used exact public `1779df8f` with ordinary Forge generation and no overlays
+or recovery selection. The task grant is unavailable after protected revocation;
+logout, local session removal, normal Stop and physical cleanup passed independent
+review. Owned sessions/forwards are joined and ledger/sidecar identities unchanged.
+This qualifies the controlled API journey, not Browser/UI completion, installed
+recovery or independent runtime write prevention. Published Connect 0.9.0 binaries
+are unchanged. [Source provenance](../../SOURCE-PROVENANCE.md#unreleased-follow-up-source)
+retains exact source identities, earlier failures and scoped validation.
+
+- **Retained approval recovery:** A reviewed candidate uses one bounded inventory
+  of existing parent/access/source records and the existing native owner. Explicit
+  Console operator policy and an independent local OS-operator SDK selection
+  permit reviewed exact cleanup; neither viewer status nor source absence grants
+  authority. Published sources and other approvals are preserved. Missing parents
+  or partial outcomes remain unresolved, with policy observation kept separate.
+  The repaired UI suite passes 40 controls. The composed candidate compiles and
+  passes 11 of 16 affected auth/SDK controls after the retained fixture and typed
+  error repairs. Five failures remain: a probe-count expectation, two HTTP
+  observation timeouts, duplicate live fixture ownership and terminal SIGHUP.
+  Narrow source fixes and finite HTTP diagnostics are pending qualification. Recovery
+  remains unadopted and not installed-qualified. No standalone
+  realm recovery command is added. Forge/MobkitInstaller's composed optional
+  selection and exact cold-controller pin restoration passes 38 independently
+  reviewed controls; installed adoption remains pending and generator defaults
+  are unchanged. That controller path differs from retained gateway artifact
+  startup, and V40 includes neither new selection nor that owner correction.
 - **Approval failure cleanup:** After an approval worker joins with an error,
   the source owner reconciles the exact result and attempts unpublished-grant
   revocation. Native refusal or uncertainty remains unresolved. An already
@@ -19,8 +48,8 @@ passed development gateway and controlled installed checks. Published Connect
   same fixtures. Independent source and execution review passed. This covers
   returned errors, not process loss, cold recovery or installed Console behavior.
   Login uncertainty remains retained and policy is not rolled back. Historical
-  failed-case cleanup is independently verified below; the original business
-  answer remains pending.
+  failed-case cleanup remains independently verified; V40
+  completes the separate original business answer.
 - **Review expiry:** Console and terminal reviews continue polling their existing
   deadline while displayed. Focused checks and an actual expired Console review
   confirm settlement without extending approval lifetimes or changing authority.
@@ -29,8 +58,8 @@ passed development gateway and controlled installed checks. Published Connect
   access endpoint's stale-offer 409 now reports definite nonentry without retrying
   the mutation. Two prior-source regressions and 36 controlled JavaScript checks
   pass with independent review. Other tabs can still replace an offer; this adds
-  no cross-tab lock or pending-fetch timeout. Installed and browser qualification
-  remain pending, separately from the context-only package under test.
+  no cross-tab lock or pending-fetch timeout. V40 includes these bytes and
+  completes protected API actions; actual Browser interaction remains unqualified.
 - **Operation feedback:** Public and declared-secret-slot requests identify exact
   permitted raw tool names when a current checked selection receives invalid
   names. A controlled Console test now exercises the invalid-name feedback before
@@ -104,8 +133,8 @@ passed development gateway and controlled installed checks. Published Connect
   proposing installation. Both the standalone prompt and existing inspection-tool
   description carry it, preserving the integrated helper's host profile. Source
   review and AST comparison confirm unchanged schema, dispatch and authority. No
-  package pins or capabilities are added. This is source-only evidence; refreshed
-  installed helper behavior and original-task completion remain unqualified.
+  package pins or capabilities are added. V40 consumes the refreshed package and
+  completes original-task use; it does not isolate this guidance as the sole cause.
 - **Approved-service continuation context:** A committed correction adds a
   checked attachment observation, approved operations and effective expiry to
   the existing native injected-context slot. The original reviewed question is
@@ -121,8 +150,8 @@ passed development gateway and controlled installed checks. Published Connect
   an obsolete fixture predicate; a strict fixture-only repair reran the same
   product bytes successfully. Both cases exited naturally with joined cleanup.
   An untagged Meta transport-reader diagnostic remains recorded. V39 then failed
-  both attachments before the context path; a real-agent answer and browser UX
-  remain unqualified.
+  both attachments before the context path. V40 now completes automatic
+  same-Original business use; Browser UX remains unqualified.
 - **Research across setup helpers:** A fresh normal helper can inspect an
   explicitly host-selected prior acquisition after exact matched reconciliation.
   Its historical status stays unconfirmed, and current owner, profile, runtime
@@ -184,68 +213,25 @@ and grants without a model, setup helper or another credential fetch or account
 read. This resolves local credential cleanup, not provider-token revocation or
 full browser-UX and free-form discovery qualification.
 
-The real-model database journey remains incomplete. Earlier fresh attempts were
-invalidated by missed software reviews. A distinct ordinary-reset successor
-failed setup initialization and encountered catalog authority still bound to its
-old helper session. Those failed outcomes remain retained; their initialization
-cause is unproved.
+Earlier operator-invalid runs, reset/catalog refusal, V37 attachment failures,
+V38's missing-context answer failure and V39's initialize failures remain failed
+and closed in [source provenance](../../SOURCE-PROVENANCE.md). V39's later exact
+unpublished-grant cleanup is distinct from product recovery. V40 does not
+reclassify those cases or prove their initialization causes. Paired native
+setup-launch ownership and explicitly selected installed recovery remain separate
+owner-coordinated work.
 
-The preceding fresh Console run made two natural setup proposals with timely
-software and access reviews. Both native attachments failed. The same original
-agent consumed each distinct failure without an operator follow-up or manual
-wake, then returned no figures. Its failed result and closed cleanup remain
-recorded; it qualified a second distinct failure continuation only.
-
-The V38 case used the selected diagnostic development package and the
-existing default catalog path. The unchanged question was submitted once, with
-no package, SQL or answer hints and no manual wake. All four protected reviews
-were timely. The first attachment failed during initialize with a finite closed
-process / code 1 observation delivered to the original agent. The helper then
-inferred an MCP compatibility issue from source and selected a corrected
-dependency closure. Its second reviewed attachment succeeded. This records an
-agent inference and subsequent success, not a controlled diagnosis of every
-historical failure.
-
-The same original agent resumed automatically and searched its catalog, but
-stopped before loading or invoking either read tool because setup completion and
-approved scope were not visible to it. It returned no figures, and a further
-60-second normal observation interval produced no new frames. Exact retained
-input inspection found the unchanged reviewed question and native authority
-binding, without separate model-facing context. The correction above addresses
-that handoff gap; the business journey remains incomplete. The case does not
-qualify helper reset or the new catalog successor mode.
-
-Both grants were revoked through fresh sequential protected actions, logout and
-normal Stop completed, and all owned process and forward handles were joined.
-The first revoke 409 remains recorded as a concurrent harness poll replacing a
-page offer before native mutation. Both later revokes returned 200 with exact
-unavailable/nonrevocable row readbacks. The ledger and three sidecar paths were
-unchanged; failed histories and installed files remain intact. The official
-browser navigation was blocked by the client, so this controlled Console API
-case does not qualify browser UX. Paired launch/cleanup handling remains pending:
-the native attempt-guard change is committed upstream and under independent
-review, with no consumable reviewed handoff yet.
-
-The later V39 controlled Console API case used the corrected context package,
-excluding the separate UI correction. After one unchanged question and timely
-reviews, both attachments failed during initialize with exit code 1. The original agent returned
-no figures and declined another attempt; it never reached the successful-attachment
-context path. Attachment causation remains under investigation. This preserves the
-separate controlled installed qualification, without establishing business use or
-browser UX.
-
-Both observed grants were revoked. Logout returned 503, then the existing protected
-session received 401 and its local session file was removed without replaying
-logout. Normal Stop and all owned-process and forward cleanup completed; ledger
-and sidecar identities were unchanged. Independent review accepted the recorded
-failure and physical closeout. A later read-only record join found additional
-unpublished native issuance, with no revoke record or expected continuation source.
-Returned-error compensation is qualified above. A separately reviewed native
-cleanup has now revoked both exact historical grants, preserving the prior journal
-prefix, identity and runtime data. It ran once after a successful scratch control;
-actual custody was released and all processes joined. Recovery after process loss
-and installed qualification remain pending; pre-cleanup usability was not
-evaluated. Earlier failed results and released assets remain unchanged.
+D3 also retains bounded Linux prebuilt native-addon load/read/write-refusal.
+V40 adds real native-addon MCP acquisition, installation and original-task use:
+`@database-mcp/sqlite` 0.4.2 / `better-sqlite3` 12.11.1 on Linux x64/glibc 2.39,
+Node 24.19.0 ABI 137. Independent review matched the 135-file acquisition inventory, exact installed addon, primary entrypoint
+and runtime to the recorded adapter calls and answer, without a new business probe.
+Portable import with host-mediated same-session continuation and declared
+Compose owner-conversion evidence on macOS and Linux also remain qualified. These are narrower than
+general native compilation, real third-party Agent Plugins client interoperability
+or accepted native application-profile migration. The saved-guidance export above
+already closes the earlier retained-file export gap; no repeat of that proof is
+needed. PKG-006 and PKG-007 remain incomplete.
 
 ## Released 0.9.0 limits
 

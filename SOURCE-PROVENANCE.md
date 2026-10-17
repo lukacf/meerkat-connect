@@ -22,6 +22,86 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+V40 completed the controlled Console API business journey using exact adopted
+public `1779df8f6d95f34e17fd6b24c944d7d1a2ac69c7` (production `5c00e496`) and
+ordinary Forge `3b24a887`, without overlays or a recovery selection. One original
+question led to outside-catalog discovery, protected software/access decisions,
+installation, attachment and automatic same-Original reads and answer. There were
+no operator follow-ups, direct business calls or manual wakes. Independent
+recomputation confirms EUR 2,900 to EUR 4,600 overdue, the EUR 1,700 increase and
+Linden Works' EUR 1,300 contribution, including strict cutoff handling.
+The task grant was revoked with unavailable/nonrevocable readback, logout returned
+303 and the protected local session file is absent. One normal Stop returned
+200. Application/gateway/supervisor absence preceded owned Forge-host SIGTERM;
+all six relevant sessions and both forwards joined, with owned listeners absent.
+Ledger and three sidecar identities were unchanged. Final independent review
+`8bc7e8b1` confirms the answer and cleanup; physical receipt is `f270ccf6`.
+Observed queries were reads; this is not independent write-prevention,
+Browser/UI, helper-successor or installed recovery qualification.
+
+V40 also qualifies one real native-addon MCP slice: `@database-mcp/sqlite` 0.4.2
+with `better-sqlite3` 12.11.1 on Linux x64/glibc 2.39, Node 24.19.0 ABI 137.
+Independent review `05ef0cb7` verified the 135-file acquisition inventory and joined the exact installed
+addon, primary entrypoint and runtime to the already recorded adapter calls and answer, without another business probe.
+This does not establish other targets, compilation-dependent addons or general
+write prevention.
+
+
+The retained approval inventory and protected Console recovery candidate is
+frozen as source manifest
+`8cef2b436dbdd9a2a4d6887d70b7d2a8321bd6258c2991610c94529f2e7dc135`.
+Its 24 source/test afterimages compose the original reviewed candidate with a
+two-file UI repair and one fixture-only repair. The unchanged Core `efd313d4` /
+Meta `669f54fa` graph remains selected. Existing canonical intent records, the
+source writer and actual native authority own recovery; Console adds an explicit
+operator selection and protected presentation, without a second ledger or
+automatic startup revocation. Published sources and other approvals are preserved;
+missing-parent and partial native outcomes remain unresolved. Policy observation
+is separate from cleanup, and aggregate login uncertainty remains unchanged.
+
+The original JavaScript run passed 39 of 40 controls. It caught an empty recovery
+panel mounted without selection during legacy same-login tab retirement. The
+narrow repair passes all 40, retaining the original failing test. The first Rust
+compile exited 101 before tests because five fixture assertions called
+`to_string()` on a typed ID without `Display`. The repair uses `as_str().to_owned()`
+and preserves exact ID matching and all assertions. R2 compiled and passed 11 of
+13 controls. The recovery login fixture failed before task preparation because
+it omitted actual Console source/login custody. The existing valid-token fixture
+used an issuer excluded by Meta's development HS256 policy. Separate fixture
+repairs passed independent source review, with no production authority change;
+those reruns are included in the composed result below. The separate installed-host local SDK
+and inherited-terminal adapter was composed with those repaired afterimages. Its
+complete32 compile exited 101 before tests because one terminal error path passed
+`String` to the typed native-error constructor. The one-file repair retains the
+original IO error, awaits presenter retirement and uses existing `Cleanup` for a
+second error. All other 31 afterimages and assertions are unchanged. Current
+complete32 manifest is
+`7b182c5efacdbc0bfec173e7770f12cc23d8be3e8c196aa44278eebfd1748cc0`;
+that candidate compiled and passed 11 of 16 affected auth/SDK controls. The five
+failures were a probe-count expectation, two HTTP binder-observation timeouts,
+duplicate live fixture supervisor ownership and terminal SIGHUP. Execution
+aggregate `d2b3e4c5` records all runners joined and owned processes absent. The
+four-file successor `496ae8a1` / complete selection `0b282918` corrects the count
+and fixture ordering, adds `O_NOCTTY` with a session-leader regression, and
+records finite HTTP response classifications without changing the stale-alias
+fence or deadlines. It remains pending qualification. The candidate is unadopted;
+no installed or full-process recovery is claimed. Warnings and failed runs remain
+recorded, without a CI or warning-free build claim.
+
+The successful V40 package above excludes this recovery candidate and keeps
+ordinary Forge generation with recovery absent.
+The earlier two-file Forge adapter passed 12 focused factory/Prepare controls.
+Forge/MobkitInstaller's composed owner source `e33ed031` / `40119816` now passes
+38 independently reviewed controls (`53bf78ac`) for explicit optional selection
+and exact cold-controller pin restoration. The older pretest refusal and pytest
+cleanup warnings remain recorded; no clean-stderr claim is made. This is
+source/fixture qualification, not installed adoption, and generator defaults are
+unchanged. V40's selected older Forge source does not include the correction.
+Full controller reconstruction differs from retained gateway artifact startup.
+The local SDK/terminal adapter remains in the pending complete32 candidate and
+adds no standalone realm recovery command. No Core/Meta API change is required.
+Published release assets are unchanged.
+
 Returned-error service approval compensation comes from private checkpoint
 `317806cc7b6e1d9e472cab1a31b0a67d2f572616`, exported as public
 `5c00e4966049c1e994800a858255287e22f9c4f9`. Eight files add exact parent/child
@@ -44,8 +124,8 @@ and API calls in the exact failed closure and acquired replacement. The integrat
 helper retains its host-selected profile. Independent review and AST comparison
 confirm one description-only Python change, unchanged schema/dispatch and no new
 capabilities or version pins; both apply checks pass. No runtime test is claimed.
-Existing installed payloads are unchanged; fresh ordinary-helper behavior and
-original-task completion remain unqualified.
+The later V40 package includes these source bytes and completes original-task
+use. That joint result does not isolate the prompt change as the sole cause.
 
 The V39 controlled Console API case consumed the frozen package built from public
 `05cc5058f77196a8bb591e3e793c9e69af91a41e`, excluding the separate UI change.
@@ -64,7 +144,8 @@ actual custody was released and all processes joined, with independent review.
 This does not qualify product restart recovery. Pre-cleanup usability was not
 evaluated. Attachment diagnosis remains open.
 Source/native and controlled installed context evidence below remains valid,
-without real-agent business or browser UX qualification.
+without reclassifying those failed cases; V40 later qualifies the controlled API
+business journey above, while Browser UX remains separate.
 
 The installed context fixture correction comes from private checkpoint
 `4bae81d2da3a04caca57b5245c567356d171bc6c`, exported as public
