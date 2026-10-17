@@ -708,6 +708,26 @@ fn installed_operation_unavailable(stage: &'static str, error: &OperationAuthori
 }
 
 impl InstalledApplicationPolicy {
+    /// Helper effects use their one canonical setup deadline, never a review TTL.
+    fn allowance_deadline(
+        &self, association: &InputAuthorityAssociation,
+        purpose: LocalPolicyPurpose, now_ms: u64,
+    ) -> Result<u64, OperationAuthorizationError> {
+        if purpose == LocalPolicyPurpose::Operation {
+            if let Some(deadline) = self.originals.helper_operation_deadline(association)
+                .map_err(mcp_control_error)?
+            {
+                if now_ms >= deadline {
+                    return Err(OperationRefused::new(OperationRefusalKind::Denied).into());
+                }
+                return Ok(deadline);
+            }
+        }
+        // Ordinary work and already-admitted controllers retain their existing
+        // policy lifetime. Native grant/restriction minima still apply to all.
+        Ok(now_ms.saturating_add(60_000))
+    }
+
     /// The actual activation/component machine is read locally under the
     /// enclosing native publication. BeginClose uses that same publication.
     /// This method performs no file reads and retains no permission snapshot.
@@ -959,7 +979,7 @@ impl AdmittedWorkPolicyOwner for InstalledApplicationPolicy {
         // its custody; activation close is not last-controller revocation.
         Ok(WorkOwnerAllowance {
             restrictions: ExecutionRestrictions::unrestricted(),
-            expires_at_ms: now_ms.saturating_add(60_000),
+            expires_at_ms: self.allowance_deadline(association, purpose, now_ms)?,
         })
     }
 }
@@ -1221,7 +1241,7 @@ impl OperationPolicyOwner for InstalledApplicationPolicy {
         Ok(LocalPolicyAllowance {
             operation_values: std::iter::once(values).chain(connector_value).collect(),
             restrictions: ExecutionRestrictions::unrestricted(),
-            expires_at_ms: now_ms.saturating_add(60_000),
+            expires_at_ms: self.allowance_deadline(association, purpose, now_ms)?,
             review_tier: OperationReviewTier::R1,
         })
     }

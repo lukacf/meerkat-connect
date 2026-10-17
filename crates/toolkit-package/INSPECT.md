@@ -79,7 +79,19 @@ An agent uses these observations to author its explicit package, activation and 
 
 ## Read an ordinary plugin
 
-`agent-plugin-files` takes `{ "root": "/ABS/host-staging", "directory": "./selected-plugin", "files": ["./plugin.json", "./mcp.json", "./skills/example/SKILL.md"] }` on stdin. The directory must be one direct child. The canonical reader anchors that child below the host root, then keeps every read below the child even if paths are replaced. Requested files must be regular, bounded, UTF-8 text. This mode never enumerates directories or executes imported code.
+`agent-plugin-files` takes `{ "root": "/ABS/host-staging", "directory": "./selected-plugin", "files": ["./plugin.json", "./mcp.json", "./skills/example/SKILL.md"] }` on stdin. The directory must be one direct child. The canonical reader anchors that child below the host root, then keeps every read below the child even if paths are replaced. Requested files must be regular, bounded, UTF-8 text. This exact-file form does not enumerate directories or execute imported code.
+
+To discover unknown skill or supporting-file names, use the exclusive inventory form through the same command:
+
+```json
+{"root":"/ABS/host-staging","directory":"./selected-plugin","inventory":"./"}
+```
+
+The successful response has `status: "inventoried"`, the requested `directory`, `complete: true` and an `inventory` array sorted by plugin-relative path. Each row has `path` and `kind` (`file`, `directory`, `symlink` or `special`); only regular-file rows have a `byte_length` metadata observation. It contains no file text, symlink target, source digest or retained `plugin_source`. The fixed root and selected plugin remain unchanged when the agent makes another call with `inventory: "./skills"`, then a discovered skill directory or a supporting-assets directory. The agent chooses which public files to read using the existing `files` form, always including `./plugin.json`.
+
+Each inventory call enumerates one directory without recursion or content reads. It accepts at most 256 entries, 1024 UTF-8 bytes per returned path, 64 KiB total returned path bytes and 15 components in the requested directory (16 in a returned child). Names must be valid UTF-8 with no control characters, backslash, colon, empty component, `.` or `..`; `./` alone denotes the selected plugin root. Both request forms remain below the fixed staging boundary. A deliberately selected directory symlink may resolve inside the plugin root; listing a symlink only classifies it and never follows it automatically. Selected outside-root directories and special files refuse.
+
+An over-limit listing, unreadable or invalid name, duplicate entry or observed directory metadata change returns `invalid_metadata` with no partial inventory or `complete` field. There is no pagination or silently truncated success. `complete: true` means this single bounded enumeration finished, not that the entire package was inventoried or that file contents are immutable. File type and size are current observations only. Later exact reads recheck containment, type, text and byte limits and retain their own selected-source evidence; inventory alone grants no authority and proves no package compatibility or readiness.
 
 Select 1-16 unique paths, including `./plugin.json`. Each file is at most 32 KiB and the total is at most 128 KiB; the existing 256 KiB encoded output limit still applies. Control characters other than newline, carriage return and tab are refused. Missing requested files refuse the complete request. A guidance-only plugin needs no `mcp.json`.
 

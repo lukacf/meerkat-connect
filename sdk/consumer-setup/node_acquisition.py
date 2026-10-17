@@ -65,6 +65,18 @@ def _target(profile):
     return target
 
 
+def _conditional_lock(lock):
+    return any(isinstance(row, dict) and (row.get("optional") or row.get("optionalDependencies")
+               or any(key in row for key in ("os", "cpu", "libc")))
+               for row in lock["packages"].values())
+
+
+def _npm_target(runtime, node_sha):
+    # This records the existing owned Node probe, not a caller platform choice.
+    return {"node_sha256": node_sha, "node_version": runtime["version"], "node_abi": runtime["abi"],
+            "platform": runtime["platform"], "arch": runtime["arch"], "libc": runtime["libc"]}
+
+
 def _runtime_matches(runtime, target):
     platform, _, arch = TARGETS[target]
     return (isinstance(runtime, dict) and runtime.get("platform") == platform
@@ -180,13 +192,15 @@ def readback(io, request, job_directory):
                 raise ValueError()
         expected = {"artifact.tgz": primary["sha256"], "closure/package-json": sha(project), "closure/package-lock": sha(lock)}
         expected.update({"closure/archive-" + row["sha256"]: row["sha256"] for row in artifacts[1:]})
+        if _conditional_lock(io.decode(lock)):
+            expected["closure/npm-target"] = sha(wire(_npm_target(runtime, profile["node_sha256"])))
         if receipt["files"] != expected:
             raise ValueError()
         root = _inventory(destination, 5)
         optional = {name: "file" for name in ("package.json", "activation.json") if name in root}
         if root != {"artifact.tgz": "file", "acquisition.json": "file", "closure": "directory", **optional}:
             raise ValueError()
-        if _inventory(destination / "closure", ARCHIVE_COUNT + 1) != {name.split("/", 1)[1]: "file" for name in expected if name.startswith("closure/")}:
+        if _inventory(destination / "closure", ARCHIVE_COUNT + 2) != {name.split("/", 1)[1]: "file" for name in expected if name.startswith("closure/")}:
             raise ValueError()
         for name in optional:
             io.read_file(destination, name, 1024 * 1024)
@@ -317,7 +331,7 @@ def _lock_rows(io, raw, request, primary):
         if not isinstance(row, dict):
             raise ValueError()
         if any(row.get(k) for k in
-            ("optional", "dev", "devOptional", "inBundle", "link", "inert", "os", "cpu", "libc", "optionalDependencies")):
+            ("dev", "devOptional", "inBundle", "link", "inert")):
             raise _UnsupportedNpmClosure()
         if not location:
             continue
@@ -336,7 +350,9 @@ def _lock_rows(io, raw, request, primary):
             continue
         seen[expected] = url
         rows.append({"url": url, "integrity": expected})
-    if primary_path not in lock["packages"] or len(rows) + 1 > ARCHIVE_COUNT:
+    # The existing Node plan permits 256 flat closure inputs. Conditional
+    # graphs reserve one of those slots for the exact target.
+    if primary_path not in lock["packages"] or len(rows) + 1 > ARCHIVE_COUNT - int(_conditional_lock(lock)):
         raise ValueError()
     return rows
 
@@ -522,10 +538,10 @@ class NodeAcquisition:
     def archive(self, owner, raw):
         result = owner["npm_archive"](raw)
         metadata = owner["unique_json"](result["files"]["package.json"])
-        # The current installer requires every lock row physically present.
-        # Do not silently prune npm's optional/platform-conditional graph.
+        # Keep archive bytes intact. The pinned canonical owner selects the
+        # target graph only after all lock rows and payloads have been retained.
         if ("npm-shrinkwrap.json" in result["files"]
-                or any(metadata.get(k) for k in ("optionalDependencies", "os", "cpu", "libc", "workspaces"))):
+                or any(metadata.get(k) for k in ("workspaces",))):
             raise _UnsupportedNpmClosure("unsupported_npm_closure")
         return result
 
@@ -607,6 +623,10 @@ class NodeAcquisition:
                 row = {**row, "name": parsed["name"], "version": parsed["version"], "sha256": sha(raw)}
                 files["closure/archive-" + row["sha256"]] = raw
                 artifacts.append(row)
+            if _conditional_lock(self.io.decode(lock_raw)):
+                files["closure/npm-target"] = wire(_npm_target(runtime, sha(self.inputs[self.node])))
+                if total + len(files["closure/npm-target"]) > TOTAL_LIMIT:
+                    raise ValueError()
             owner["npm_archive_closure"](files)
             if self.io.read_file(job_directory / "project", "package.json", DOCUMENT_LIMIT) != project:
                 raise ValueError()
@@ -715,7 +735,7 @@ def runtime_worker(value, *, probe=False, search=False):
     bootstrap = ("const fs=require('node:fs');if(process.platform!==" + json.dumps(system)
         + "||process.arch!==" + json.dumps(arch)
         + "||Number(process.versions.node.split('.')[0])!==24||Number(process.versions.node.split('.')[1])<15)process.exit(73);"
-        + "fs.writeFileSync('../" + output + "',JSON.stringify({platform:process.platform,arch:process.arch,version:process.version}),{flag:'wx'});")
+        + "fs.writeFileSync('../" + output + "',JSON.stringify({platform:process.platform,arch:process.arch,version:process.version,abi:process.versions.modules,libc:process.platform==='linux'?{family:'glibc',version:process.report.getReport().header.glibcVersionRuntime}:null}),{flag:'wx'});")
     args = [str(node), "--max-old-space-size=1024", "-e", bootstrap]
     if not probe:
         for name in ("user.npmrc", "global.npmrc"):

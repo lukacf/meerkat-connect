@@ -31,6 +31,24 @@ impl InstalledServiceTaskSource {
     ) -> Result<Option<InstalledServiceTask>, PrivateOriginalError> {
         self.prepare_selected(call, context, plan, None).await
     }
+    /// Public service review may select this member's already configured setup
+    /// capability for the fresh task. Other preparation surfaces keep their
+    /// existing capture contract and do not validate this optional selection.
+    pub async fn prepare_public_service(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
+    ) -> Result<Option<InstalledServiceTask>, PrivateOriginalError> {
+        let Some(task) = self.prepare_selected(call, context, plan, None).await? else {
+            return Ok(None);
+        };
+        let selected = self.selected.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
+        let owner = selected.lock().map_err(|_| PrivateOriginalError::Unavailable)?
+            .configured().ok_or(PrivateOriginalError::Unavailable)?;
+        let task = task.select_configured_setup(&owner.helper, &owner.helper_member,
+            context.origin_session_id().ok_or(PrivateOriginalError::Denied)?)?;
+        context.check_tool_authorization(call, plan).map_err(|_| PrivateOriginalError::Denied)?;
+        Ok(Some(task))
+    }
     /// Software review has no proposed target principal. Select the waiting
     /// member from this exact helper's existing canonical acquisition custody.
     pub async fn prepare_software(

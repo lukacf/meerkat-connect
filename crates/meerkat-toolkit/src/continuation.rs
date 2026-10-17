@@ -64,9 +64,19 @@ pub struct ContinuationObligation {
     pub(crate) terminal_at_ms: u64,
     pub(crate) outcome: SetupTerminalOutcome,
     /// Present for every terminal outcome once B wins the pre-entry selection.
-    /// The delivery owner must observe this B, never also submit an A result.
+    /// The delivery owner observes B, or authenticates permanent B non-entry
+    /// before delivering the exact recorded attachment failure under A.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) approved_service: Option<crate::setup::ApprovedServiceSelection>,
+    /// Terminal native cause; a source-owner non-entry proof is separately
+    /// required before this can be delivered to the original task.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) service_attachment_failure: Option<crate::setup::ApprovedServiceAttachmentFailure>,
+    /// Optional typed observation from the same terminal record. No server text
+    /// or independent authority is conveyed by these bounded fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) service_attachment_observation:
+        Option<crate::setup::ApprovedServiceAttachmentObservation>,
     /// Bounded helper explanation from the same canonical terminal record.
     /// None preserves the canonical bytes of pre-existing generic obligations.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -121,6 +131,16 @@ impl ContinuationObligation {
     }
     pub fn approved_service(&self) -> Option<&crate::setup::ApprovedServiceSelection> {
         self.approved_service.as_ref()
+    }
+
+    pub fn service_attachment_failure(&self) -> Option<crate::setup::ApprovedServiceAttachmentFailure> {
+        self.service_attachment_failure
+    }
+
+    pub fn service_attachment_observation(
+        &self,
+    ) -> Option<crate::setup::ApprovedServiceAttachmentObservation> {
+        self.service_attachment_observation
     }
 
     /// Human-facing report text, not tool logs or authentication payloads.

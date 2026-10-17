@@ -31,6 +31,54 @@ Include the account or workspace when you know it, the resources involved, the i
   </Tab>
 </Tabs>
 
+## Use several public services in one Console task (development)
+
+<Note>
+This development path covers one reviewed set of 2-8 public MCP services that
+need no provider sign-in. One installed two-service journey has completed through
+the controlled Console API. Browser interaction and authenticated-service batches
+remain separate. The optional warm path below has native controls, but its
+installed acceptance is still pending.
+</Note>
+
+Ask for the useful result in your original conversation, for example:
+
+```text
+Make a background-reading brief for the current top three Hacker News stories.
+Use English Wikipedia for background. Include each story's discussion link,
+a relevant Wikipedia article, and which story I should read first and why.
+```
+
+The agent chooses the integrations and installation jobs. Software installation
+can have its own reviews. The **complete-set access review** then presents all
+selected services together: each connector, declared operation source, remote
+endpoint when applicable, exact operations, and task access deadline. It also
+shows the agent, proposed continuation instruction and tool-catalog access.
+Approve only the complete set you intend to use; no sign-in credentials belong
+in this public-service review.
+
+Read **agent tool permissions** separately from the per-service task access.
+The review covers the complete successor tool policy, including preserved
+permissions, and states that it lasts until superseded. Ending the task does not
+undo that separately reviewed policy. The policy alone does not authorize a
+service call: that call still needs its exact current service grant.
+
+Approval does not establish readiness. Each member must become Ready through
+its own attachment before the original question continues with the complete
+set. An unavailable required service prevents continuation; a download or
+accepted review does not establish readiness. Successful continuation answers
+the same original question without requiring you to repeat it.
+
+A host can separately enable [another public acquisition through the same live
+helper](/guides/host-composition#acquire-another-public-service-through-the-same-live-helper-development).
+Its access review names fresh task-specific setup authority and metadata access
+for both named agents across both named sessions. With that selection, the
+continued task can request another integration. Keeping an earlier connection
+requires selecting it again in the new complete-set review, with fresh grants;
+old access is not inherited. Without the configured selection, later acquisition
+remains unavailable through this continuation. Installed warm acceptance is
+still pending.
+
 ## Set up a service key in the terminal
 
 The terminal can set up library integrations and selected Python/Node stdio packages with declared credential fields. The agent identifies those requirements before the installation review.

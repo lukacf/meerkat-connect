@@ -1273,6 +1273,7 @@ mod tests {
         };
         HelperAdmissionSelection {
             helper: crate::installed_host::acquisition::InstalledSetupSelection {
+                catalog_capability: None,
                 report_capability: None,
                 member: member.clone(),
                 ingress_actor: principal("setup-owner"),
@@ -1619,7 +1620,7 @@ mod tests {
         report: Option<crate::installed_host::acquisition::ConfiguredHelperReportCapability>,
     ) -> (AdmittedHelperWork, HelperNativeBinding) {
         admitted_source_fixture_with_report_basis(owner, service, primary, contributors,
-            base, report, None).await
+            base, report, None, None).await
     }
 
     pub(super) async fn admitted_source_fixture_with_report_basis(
@@ -1628,11 +1629,13 @@ mod tests {
         base: &GrantLineageRef,
         report: Option<crate::installed_host::acquisition::ConfiguredHelperReportCapability>,
         operation_basis: Option<WorkAuthorityBasis>,
+        catalog: Option<crate::installed_host::acquisition::ConfiguredHelperCatalogCapability>,
     ) -> (AdmittedHelperWork, HelperNativeBinding) {
         let origin = fixture_origin(primary);
         let mut selection = binding(primary);
         selection.helper.controller_parent = vec![base.clone()];
         selection.helper.report_capability = report;
+        selection.helper.catalog_capability = catalog;
         if selection.helper.report_capability.is_some() {
             selection.helper.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![] };
         }

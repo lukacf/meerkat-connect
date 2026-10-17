@@ -244,7 +244,7 @@ impl InstalledAcquisition {
             return Err(SetupError::InvalidRecord);
         }
         let submission = originals
-            .submit_setup_helper(&prepared, held, content)
+            .submit_setup_helper(&prepared, held, &snapshot, content)
             .await
             .map_err(|error| {
                 #[cfg(test)]

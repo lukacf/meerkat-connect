@@ -1785,6 +1785,45 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 c.public_review(wrong, accepted, results, operation, owner, VERIFIER.ACQUISITION_ROUTE, task_scope, source_authority)
 
+    def test_approved_service_context_is_exact_and_immediately_before_b(self):
+        v = VERIFIER
+        proposal = {"acquisition": {"id": "selected-acquisition"}, "decision": {
+            "decision": "selected-B", "connection_revision": "a" * 64,
+            "permission": {"connection": "selected-server", "resource": "selected-resource",
+                "operations": ["read"], "lifetime": {"expires_at_ms": 1900000000000}}}}
+        expected = v.installed_approved_service_context(proposal)
+        self.assertEqual({k: expected[k] for k in ("operation", "original", "connection", "resource",
+            "allowed_operations", "expires_at_ms", "configuration_sha256")}, {
+            "operation": "selected-acquisition", "original": "selected-B",
+            "connection": "selected-server", "resource": "selected-resource",
+            "allowed_operations": ["read"], "expires_at_ms": 1900000000000,
+            "configuration_sha256": "a" * 64})
+        user = lambda text: {"role": "user", "content": text}
+        rows = [user("request"), {"role": "assistant", "content": "A finished"},
+                user(v.canonical(expected).decode()), user("request")]
+        self.assertIsNone(v.original_catalog_history(rows, "request", "read", 3,
+                                                    service_context=expected))
+        # An unselected context is not accepted merely because it looks typed.
+        with self.assertRaises(AssertionError):
+            v.original_catalog_history(rows, "request", "read", 3)
+        for key in expected:
+            changed = copy.deepcopy(expected)
+            changed[key] = "wrong" if not isinstance(changed[key], list) else ["other"]
+            wrong = copy.deepcopy(rows)
+            wrong[2]["content"] = v.canonical(changed).decode()
+            with self.subTest(field=key), self.assertRaises(AssertionError):
+                v.original_catalog_history(wrong, "request", "read", 3, service_context=expected)
+        for wrong, fresh in (
+                (rows[:2] + rows[3:], 2),
+                (rows[:2] + [rows[2], rows[2], rows[3]], 4),
+                ([rows[0], rows[2], rows[1], rows[3]], 3),
+                (rows + [rows[2]], 3),
+                (rows[:2] + [{"role": "system", "content": rows[2]["content"]}, rows[3]], 3),
+                (rows[:2] + [user(rows[2]["content"] + " trailing"), rows[3]], 3),
+                (rows[:2] + [user(v.canonical({**expected, "extra": "field"}).decode()), rows[3]], 3)):
+            with self.assertRaises(AssertionError):
+                v.original_catalog_history(wrong, "request", "read", fresh, service_context=expected)
+
     def test_controller_reprepare_feedback_is_single_and_pre_tool_only(self):
         v = VERIFIER
         request, operation = v.ACQUISITION_REQUEST, v.ACQUISITION_OPERATION

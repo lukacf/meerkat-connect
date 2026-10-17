@@ -35,7 +35,8 @@ async fn credential_review_uses_exact_checked_slots_and_launch_and_refuses_retir
         "environment_secret_slots":["FIXTURE_KEY","FIXTURE_TOKEN"]}))).await;
     let selected = fixture.raw_selection().ok().unwrap();
     let selection = CredentialSelection { operations:["actual_read".to_owned()].into(),
-        agent:"original-agent".into(),expires_in_ms:None,tool_policy:None };
+        agent:"original-agent".into(),expires_in_ms:None,tool_policy:Some(serde_json::from_value(json!({
+            "tools":[{"name":"actual_read","consequence":"r0"}],"catalog":"r0"})).unwrap()) };
     let (config, slots) = checked_configuration(&selected, &selection).unwrap();
     assert_eq!(slots.iter().map(|slot| slot.environment_variable().to_owned()).collect::<BTreeSet<_>>(),
         ["FIXTURE_KEY".to_owned(),"FIXTURE_TOKEN".to_owned()].into());
@@ -73,7 +74,8 @@ async fn credential_review_round_trips_the_installation_reader_without_losing_ch
     let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(declaration.clone())).await;
     let selected = fixture.raw_selection().ok().unwrap();
     let selection = CredentialSelection { operations:["actual_read".to_owned()].into(),
-        agent:"original-agent".into(),expires_in_ms:None,tool_policy:None };
+        agent:"original-agent".into(),expires_in_ms:None,tool_policy:Some(serde_json::from_value(json!({
+            "tools":[{"name":"actual_read","consequence":"r0"}],"catalog":"r0"})).unwrap()) };
     let (config, slots) = checked_configuration(&selected, &selection).unwrap();
     let request = credential_review_request(&selected, &config, &selection).unwrap();
     let approvals = ApprovalService::new();
@@ -136,4 +138,213 @@ async fn credential_review_round_trips_the_installation_reader_without_losing_ch
     let mut legacy = approved.clone();
     legacy.request_body.as_mut().unwrap()["phase"] = json!("installed_account_access");
     assert!(read(&legacy, &software.realm, &result).is_err());
+}
+
+// The real Core fenced dispatcher owns preparation and currentness checks.
+// This inert work policy binds only the exact request call. It supplies no
+// captured task, credential persistence owner, service grant or provider.
+struct CredentialRequestWork {
+    current: bool,
+    checks: Arc<std::sync::atomic::AtomicUsize>,
+}
+struct CredentialRequestPrepared {
+    binding: meerkat_core::authorization::PreparedAuthorizationBinding,
+    current: bool,
+    checks: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl meerkat_core::authorization::WorkAuthorization for CredentialRequestWork {
+    fn prepare(&self, binding: &meerkat_core::authorization::PreparedAuthorizationBinding)
+        -> Result<Arc<dyn meerkat_core::authorization::PreparedOperationAuthorization>,
+            meerkat_core::authorization::OperationAuthorizationError> {
+        use meerkat_core::authorization::{AuthorizationOperation, OperationRefused, OperationRefusalKind};
+        if !matches!(&binding.facts().operation, AuthorizationOperation::Tool(tool)
+            if tool.name == SETUP_ACCOUNT_REQUEST) {
+            return Err(OperationRefused::new(OperationRefusalKind::Denied).into());
+        }
+        Ok(Arc::new(CredentialRequestPrepared { binding: binding.clone(),
+            current: self.current, checks: self.checks.clone() }))
+    }
+}
+impl meerkat_core::authorization::PreparedOperationAuthorization for CredentialRequestPrepared {
+    fn review_tier(&self) -> meerkat_core::authorization::OperationReviewTier {
+        meerkat_core::authorization::OperationReviewTier::R1
+    }
+    fn check_current(&self, binding: &meerkat_core::authorization::PreparedAuthorizationBinding)
+        -> Result<(), meerkat_core::authorization::OperationAuthorizationError> {
+        self.checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if !self.current || !self.binding.same_operation(binding) {
+            return Err(meerkat_core::authorization::OperationRefused::new(
+                meerkat_core::authorization::OperationRefusalKind::Denied).into());
+        }
+        Ok(())
+    }
+}
+
+async fn credential_operation_dispatch(owner: &Arc<RequestTool>, session: meerkat_core::SessionId,
+    job: &str, operations: Value, tool_policy: Option<Value>, work: CredentialRequestWork,
+) -> Result<ToolDispatchOutcome, ToolError> {
+    use meerkat_core::{ToolDeadlineChain, ToolDeadlineContributor, ToolDeadlineOwner,
+        ToolExecutionResolutionContext, authorization::WorkAuthorizationContext,
+        exact_operation::OperationExecutionScope, retained_work::RetainedWorkIdentity};
+    let retained = RetainedWorkIdentity::new("fixture:credential-request", meerkat_core::RunId::new(),
+        Vec::new(), Default::default(), None);
+    let work = WorkAuthorizationContext::new(Arc::new(work),
+        OperationExecutionScope::Domain).with_retained_work(retained);
+    let context = ToolDispatchContext::default().with_runtime_identity(session, None)
+        .with_work_authorization(Some(work));
+    let mut request = json!({"job_id":job,"authentication":{"kind":"declared_secret_slots"},
+        "operations":operations,"agent":"Wrong display name","expires_in_ms":60000});
+    if let Some(policy) = tool_policy { request["tool_policy"] = policy; }
+    let args = serde_json::value::to_raw_value(&request).unwrap();
+    let call = ToolCallView { id:"credential-operation-correction",name:SETUP_ACCOUNT_REQUEST,args:&args };
+    let resolution = ToolExecutionResolutionContext::new(ToolDeadlineChain::new(vec![
+        ToolDeadlineContributor::finite(ToolDeadlineOwner::CoreToolDispatch, std::time::Duration::from_secs(2))
+    ]).unwrap());
+    let plan = meerkat_core::resolve_tool_execution_plan_fenced(owner,call,&context,&resolution).unwrap();
+    meerkat_core::dispatch_tool_execution_plan_fenced(owner,call,&context,&plan).await
+}
+
+fn current_credential_work() -> CredentialRequestWork {
+    CredentialRequestWork { current: true, checks: Default::default() }
+}
+
+fn credential_request_owner(checked: Arc<crate::service_install::CheckedInstalls>,
+    selected: &InstalledConnectorSelection) -> (Arc<RequestTool>, mpsc::Receiver<InstalledCredentialRequest>) {
+    let (send, receive) = mpsc::channel(1);
+    (Arc::new(RequestTool { checked,realm:selected.installed.realm.clone(),
+        session:selected.installed.session.clone(),requests:None,public_requests:None,
+        credential_requests:Some(send),tasks:None,application:None }), receive)
+}
+
+#[tokio::test]
+async fn credential_operation_feedback_uses_raw_names_before_protected_review() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
+        "authentication":{"kind":"binding","owner":"process","requirement":"key","credential_audience":"service"},
+        "operation_tools":{"read-item":"actual_read","list-items":"actual_list"},
+        "environment_secret_slots":["PRIVATE_FIXTURE_KEY"]}))).await;
+    let selected = fixture.raw_selection().ok().unwrap();
+    let (owner, mut requests) = credential_request_owner(fixture.owner.clone(), &selected);
+    for policy in [None, Some(json!({"tools":[{"name":"actual_read","consequence":"r1"}],"catalog":null}))] {
+        for operations in [json!(["read-item"]),json!(["unknown_operation"]),json!(["actual_read","unselected_write"])] {
+            let error = credential_operation_dispatch(&owner,selected.installed.session.clone(),
+                &selected.installed.job_id,operations,policy.clone(),current_credential_work()).await.unwrap_err();
+            let ToolError::InvalidArguments { name,reason } = error else {
+                panic!("a current credential raw-name mismatch must produce correctable argument feedback")
+            };
+            assert_eq!(name,SETUP_ACCOUNT_REQUEST);
+            assert!(reason.contains("operation_tools values"));
+            assert!(reason.contains(r#"["actual_list","actual_read"]"#));
+            assert!(reason.contains("has not entered access review"));
+            assert!(!reason.contains("PRIVATE_FIXTURE_KEY"));
+            assert!(!reason.contains("Wrong display name"));
+            assert!(requests.try_recv().is_err());
+        }
+    }
+    // Correct raw names reach the existing missing captured-task refusal.
+    // No credential review or write is authorized by an argument correction.
+    let error = credential_operation_dispatch(&owner,selected.installed.session.clone(),
+        &selected.installed.job_id,json!(["actual_read"]),None,current_credential_work()).await.unwrap_err();
+    assert!(matches!(error,ToolError::AccessDenied { .. }));
+    assert!(requests.try_recv().is_err());
+    let selection = CredentialSelection { operations:["actual_read".to_owned()].into(),
+        agent:"Wrong display name".into(),expires_in_ms:Some(60000),tool_policy:None };
+    let (config, slots) = checked_configuration(&selected,&selection).unwrap();
+    assert_eq!(config.access.as_ref().unwrap().allowed_operations,["actual_read".to_owned()].into());
+    assert_eq!(slots.iter().map(ServiceCredentialSlot::environment_variable).collect::<BTreeSet<_>>(),
+        ["PRIVATE_FIXTURE_KEY"].into());
+    assert!(selected.secret_configuration(&["read-item".to_owned()].into()).is_err(),
+        "feedback never translates or admits a declaration ID");
+    assert!(selected.secret_configuration(&["actual_read".to_owned(),"unselected_write".to_owned()].into()).is_err());
+}
+
+#[tokio::test]
+async fn credential_operation_feedback_discloses_no_names_for_unavailable_or_foreign_selection() {
+    for mode in ["retired","unknown-job","foreign-session","public-authentication","missing-slots","unsupported-launch"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut declaration = json!({
+            "authentication":{"kind":"binding","owner":"process","requirement":"key","credential_audience":"service"},
+            "operation_tools":{"read-item":"private_raw_name"},
+            "environment_secret_slots":["PRIVATE_FIXTURE_KEY"]});
+        if mode=="public-authentication" {
+            declaration["authentication"] = json!({"kind":"none"});
+        }
+        if matches!(mode,"public-authentication"|"missing-slots") {
+            declaration.as_object_mut().unwrap().remove("environment_secret_slots");
+        }
+        let launch = if mode=="unsupported-launch" { json!({"command":"relative-command","args":[]}) }
+            else { json!({"command":"/bin/true","args":["not-executed"]}) };
+        let fixture = crate::stdio::tests::selected_public_fixture_at(root.path(),Some(declaration),false,
+            meerkat_core::SessionId::new(),"selected-owner",launch).await;
+        let selected = fixture.raw_selection().ok().unwrap();
+        let (owner,mut requests) = credential_request_owner(fixture.owner.clone(),&selected);
+        if mode=="retired" { fixture.owner.retire(); }
+        let session = if mode=="foreign-session" { meerkat_core::SessionId::new() }
+            else { selected.installed.session.clone() };
+        let job = if mode=="unknown-job" { "unknown-job" } else { &selected.installed.job_id };
+        let error = credential_operation_dispatch(&owner,session,job,json!(["read-item"]),None,
+            current_credential_work()).await.unwrap_err();
+        if mode=="foreign-session" { assert!(matches!(&error,ToolError::AccessDenied { .. })); }
+        else { assert!(matches!(&error,ToolError::Unavailable { .. }),"{mode}"); }
+        assert!(!error.to_string().contains("private_raw_name"),"{mode}");
+        assert!(!error.to_string().contains("PRIVATE_FIXTURE_KEY"),"{mode}");
+        assert!(requests.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
+async fn credential_operation_feedback_preserves_argument_and_native_currentness_refusals() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = crate::stdio::tests::selected_public_fixture(root.path(),Some(json!({
+        "authentication":{"kind":"binding","owner":"process","requirement":"key","credential_audience":"service"},
+        "operation_tools":{"read-item":"private_raw_name"},
+        "environment_secret_slots":["PRIVATE_FIXTURE_KEY"]}))).await;
+    let selected = fixture.raw_selection().ok().unwrap();
+    let (owner,mut requests) = credential_request_owner(fixture.owner.clone(),&selected);
+    for operations in [json!(["read-item","read-item"]),json!([]),json!(["invalid/name"])] {
+        let error = credential_operation_dispatch(&owner,selected.installed.session.clone(),
+            &selected.installed.job_id,operations,None,current_credential_work()).await.unwrap_err();
+        assert!(matches!(&error,ToolError::InvalidArguments { .. }));
+        assert!(!error.to_string().contains("private_raw_name"));
+        assert!(!error.to_string().contains("PRIVATE_FIXTURE_KEY"));
+        assert!(requests.try_recv().is_err());
+    }
+    let checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let error = credential_operation_dispatch(&owner,selected.installed.session.clone(),
+        &selected.installed.job_id,json!(["read-item"]),None,
+        CredentialRequestWork { current: false, checks: checks.clone() }).await.unwrap_err();
+    assert!(checks.load(std::sync::atomic::Ordering::SeqCst)>0,
+        "the fenced dispatcher must consult the actual prepared work owner");
+    assert!(!matches!(&error,ToolError::InvalidArguments { .. }),
+        "native refusal must precede request correction");
+    assert!(!error.to_string().contains("private_raw_name"));
+    assert!(!error.to_string().contains("PRIVATE_FIXTURE_KEY"));
+    assert!(requests.try_recv().is_err());
+}
+
+
+#[tokio::test]
+async fn console_service_policy_refuses_incomplete_credential_review_without_touching_values() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = crate::stdio::tests::selected_public_fixture(root.path(), Some(json!({
+        "authentication":{"kind":"binding","owner":"process","requirement":"key","credential_audience":"service"},
+        "operation_tools":{"declared/read":"actual_read"},"environment_secret_slots":["FIXTURE_KEY"]}))).await;
+    let selected = fixture.raw_selection().ok().unwrap();
+    let mut selection = CredentialSelection { operations:["actual_read".to_owned()].into(),
+        agent:"original-agent".into(),expires_in_ms:None,tool_policy:None };
+    let (config, _) = checked_configuration(&selected, &selection).unwrap();
+    for policy in [None, Some(json!({"tools":[{"name":"actual_read","consequence":"r0"}],"catalog":null})),
+        Some(json!({"tools":[{"name":"declared/read","consequence":"r0"}],"catalog":"r0"}))] {
+        selection.tool_policy = policy.map(|value| serde_json::from_value(value).unwrap());
+        assert!(credential_review_request(&selected, &config, &selection).is_err(),
+            "an incomplete Console permission proposal must not create a credential review");
+    }
+    selection.tool_policy = Some(serde_json::from_value(json!({
+        "tools":[{"name":"actual_read","consequence":"r0"}],"catalog":"r0"})).unwrap());
+    let request = credential_review_request(&selected, &config, &selection).unwrap();
+    let body = request.request_body.unwrap();
+    assert_eq!(body["application_selection"]["tool_policy"], serde_json::to_value(&selection.tool_policy).unwrap());
+    assert!(body.get("credential_values").is_none());
+    fixture.owner.retire();
+    assert!(credential_review_request(&selected, &config, &selection).is_err());
 }

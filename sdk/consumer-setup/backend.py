@@ -70,9 +70,11 @@ ACQUISITION_ASSETS = {
     "node": {"profile.json", "npm.tgz", "installer.py", "worker.py"},
     "compose": {"profile.json", "runtime.py", "planner", "host-profile.json"},
     "mcpb": {"profile.json", "worker.py"},
+    "node-prebuilt": {"profile.json", "installer.py", "fetch.py", "worker.py"},
 }
 ACQUISITION_SCOPES = {"python": "trusted_pypi_wheel_acquisition", "node": "trusted_npm_registry_acquisition",
-                      "compose": "acquire_agent_selected_container_images", "mcpb": "trusted_public_mcpb_acquisition"}
+                      "compose": "acquire_agent_selected_container_images", "mcpb": "trusted_public_mcpb_acquisition",
+                      "node-prebuilt": "trusted_public_node_prebuilt_acquisition"}
 ACQUISITION_EXCLUSIONS = [
     "Matching retained files do not establish that the historical acquisition completed successfully.",
     "No network, package code, installer, runtime, engine observation, image pull or graph operation is executed.",
@@ -1419,6 +1421,9 @@ def materialize_acquired_source(raw, component_id, result):
 PLUGIN_SOURCE_SCOPE = "observed_public_plugin_files"
 PLUGIN_FILE_COUNT = 16
 PLUGIN_FILES_TOTAL = 128 * 1024
+PLUGIN_INVENTORY_COUNT = 256
+PLUGIN_INVENTORY_PATH_BYTES = 1024
+PLUGIN_INVENTORY_TOTAL_PATH_BYTES = 64 * 1024
 
 
 def plugin_files_request(value):
@@ -1432,6 +1437,27 @@ def plugin_files_request(value):
     # This only bounds the request. The canonical anchored reader owns paths,
     # file selection, portable metadata parsing and required contract versions.
     if len(encoded(value)) > MAX_BODY:
+        raise SetupError("invalid_plugin_request")
+
+
+def plugin_inventory_path(value, max_depth):
+    """Bound portable names in the envelope; the canonical reader owns traversal."""
+    if (type(value) is not str or not value.startswith("./") or ":" in value or "\\" in value
+            or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value)):
+        return False
+    try:
+        if len(value.encode("utf-8")) > PLUGIN_INVENTORY_PATH_BYTES:
+            return False
+    except UnicodeError:
+        return False
+    parts = [] if value == "./" else value[2:].split("/")
+    return len(parts) <= max_depth and all(part not in ("", ".", "..") for part in parts)
+
+
+def plugin_inventory_request(value):
+    keys(value, ("staged_id", "inventory"))
+    if (not selected_name(value["staged_id"]) or not plugin_inventory_path(value["inventory"], 15)
+            or len(encoded(value)) > MAX_BODY):
         raise SetupError("invalid_plugin_request")
 
 
@@ -1501,6 +1527,48 @@ def plugin_files_output(raw, code, files):
     except SetupError as error:
         if error.code == "plugin_metadata_rejected":
             raise
+    except (TypeError, ValueError, KeyError, RecursionError, UnicodeError):
+        pass
+    raise SetupError("plugin_inspection_unavailable")
+
+
+def plugin_inventory_output(raw, code, directory):
+    """Accept only a complete, content-free inventory of the requested directory."""
+    try:
+        if type(code) is not int or type(raw) is not bytes or len(raw) > PACKAGE_INSPECTION_OUTPUT:
+            raise ValueError()
+        # Inventory never parses file contents. A rejection, including an older
+        # inspector without this variant, says nothing about package validity.
+        if code != 0:
+            raise ValueError()
+        value = decode(raw)
+        keys(value, ("schema_version", "scope", "format", "status", "directory", "inventory", "complete"))
+        rows = value["inventory"]
+        if (code != 0 or type(value["schema_version"]) is not int or value["schema_version"] != 1
+                or value["scope"] != "metadata_only" or value["format"] != "agent-plugin-files"
+                or value["status"] != "inventoried" or value["directory"] != directory
+                or value["complete"] is not True or type(rows) is not list
+                or len(rows) > PLUGIN_INVENTORY_COUNT):
+            raise ValueError()
+        prefix = directory if directory == "./" else directory + "/"
+        paths = []
+        for row in rows:
+            if type(row) is not dict or row.get("kind") not in ("file", "directory", "symlink", "special"):
+                raise ValueError()
+            keys(row, ("path", "kind", "byte_length") if row["kind"] == "file" else ("path", "kind"))
+            path = row["path"]
+            if (not plugin_inventory_path(path, 16) or not path.startswith(prefix)
+                    or not path[len(prefix):] or "/" in path[len(prefix):]):
+                raise ValueError()
+            if row["kind"] == "file" and (type(row["byte_length"]) is not int
+                    or not 0 <= row["byte_length"] <= 2**64 - 1):
+                raise ValueError()
+            paths.append(path.encode("utf-8"))
+        if (paths != sorted(set(paths)) or sum(map(len, paths)) > PLUGIN_INVENTORY_TOTAL_PATH_BYTES):
+            raise ValueError()
+        return value
+    except SetupError:
+        pass
     except (TypeError, ValueError, KeyError, RecursionError, UnicodeError):
         pass
     raise SetupError("plugin_inspection_unavailable")
@@ -1715,7 +1783,9 @@ def acquired_inspection_output(raw, code, request):
     value = decode(raw)
     if code == 2 and value == {"error": "acquired_member_unreadable"}:
         raise SetupError("acquired_member_unreadable")
-    common = {"schema_version": 1, "scope": "acquired_primary_archive_only", "profile": request["profile"],
+    scope = ("acquired_primary_archive_only" if request.get("archive_role", "primary") == "primary"
+             else "acquired_dependency_archive_only")
+    common = {"schema_version": 1, "scope": scope, "profile": request["profile"],
               "filename": request["filename"], "archive_sha256": request["archive_sha256"]}
     listing = "after" in request["selection"]
     fields = ("members", "next_after") if listing else ("member", "member_bytes", "member_sha256", "offset", "text", "next_offset")
@@ -2012,8 +2082,9 @@ def acquisition_module(kind):
     # The current setup implementation owns readback. Never import retained code.
     if kind not in ACQUISITION_ASSETS:
         raise SetupError("invalid_recovery_request")
-    spec = importlib.util.spec_from_file_location("consumer_setup_" + kind + "_acquisition",
-        Path(__file__).with_name(kind + "_acquisition.py"))
+    module_name = kind.replace("-", "_") + "_acquisition"
+    spec = importlib.util.spec_from_file_location("consumer_setup_" + module_name,
+        Path(__file__).with_name(module_name + ".py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -2157,6 +2228,8 @@ class Controller:
                  python_acquisition_profile_sha256: str | None = None,
                  node_acquisition_profile: Path | None = None,
                  node_acquisition_profile_sha256: str | None = None,
+                 node_prebuilt_profile: Path | None = None,
+                 node_prebuilt_profile_sha256: str | None = None,
                  compose_acquisition_profile: Path | None = None,
                  compose_acquisition_profile_sha256: str | None = None,
                  mcpb_acquisition_profile: Path | None = None,
@@ -2242,6 +2315,7 @@ class Controller:
         acquisition_modules = {}
         acquisition_profiles = {"python": (python_acquisition_profile, python_acquisition_profile_sha256),
                                 "node": (node_acquisition_profile, node_acquisition_profile_sha256),
+                                "node-prebuilt": (node_prebuilt_profile, node_prebuilt_profile_sha256),
                                 "compose": (compose_acquisition_profile, compose_acquisition_profile_sha256),
                                 "mcpb": (mcpb_acquisition_profile, mcpb_acquisition_profile_sha256)}
         acquisition_identities = {}
@@ -2368,6 +2442,16 @@ class Controller:
                 raise SetupError("invalid_node_search_scope")
             if allow_node_search:
                 node_search = owner
+        node_prebuilt_acquisition = None
+        if not (recovering or _local_read_only) and (node_prebuilt_profile is not None or node_prebuilt_profile_sha256 is not None):
+            if node_acquisition is None or selected is None or "node" not in selected["validators"]:
+                raise SetupError("invalid_node_prebuilt_acquisition_profile")
+            module = acquisition_module("node-prebuilt")
+            acquisition_modules["node-prebuilt"] = module
+            node_prebuilt_acquisition = module.NodePrebuiltAcquisition(node_prebuilt_profile,
+                node_prebuilt_profile_sha256, Path(selected["staging_root"]), io=acquisition_io(),
+                node_owner=node_acquisition, source_reader=self._node_prebuilt_source,
+                selected_node=self.selected_node)
         mcpb_acquisition = None
         if not (recovering or _local_read_only) and (mcpb_acquisition_profile is not None or mcpb_acquisition_profile_sha256 is not None):
             if selected is None or selected.get("mcpb_inspection") is not True or "mcpb" not in selected["validators"]:
@@ -2621,6 +2705,7 @@ class Controller:
         self.observation_revision = 0
         self.job = None
         self.threads = []
+        self._job_threads = {}
         self.closing = False
         self.request_retention_failed = False
         self.recovery_only = _local_read_only if _retained_selections else bool(recoveries)
@@ -2632,6 +2717,7 @@ class Controller:
             compose.bind(self.runner)
         self.python_acquisition = acquisition
         self.node_acquisition = node_acquisition
+        self.node_prebuilt_acquisition = node_prebuilt_acquisition
         self.node_search = node_search
         self.public_github = None
         if allow_public_github_research:
@@ -2649,7 +2735,7 @@ class Controller:
         self.acquisition_bindings = {}
         self.acquisition_intents = {}
         self.acquisition_recovery_summary = {}
-        for kind, owner in (("python", acquisition), ("node", node_acquisition), ("compose", compose_acquisition), ("mcpb", mcpb_acquisition)):
+        for kind, owner in (("python", acquisition), ("node", node_acquisition), ("node-prebuilt", node_prebuilt_acquisition), ("compose", compose_acquisition), ("mcpb", mcpb_acquisition)):
             if owner is not None:
                 owner.bind(workspace)
                 self.acquisition_bindings[kind] = {
@@ -2685,7 +2771,7 @@ class Controller:
                 else:
                     self.acquisition_requests[identifier] = (identity, self.job["id"])
                 if self.recovery_only:
-                    self.acquisition_recovery_summary[kind + "_acquisition"] = {
+                    self.acquisition_recovery_summary[kind.replace("-", "_") + "_acquisition"] = {
                         "available": True, "readback_only": True, "scope": ACQUISITION_SCOPES[kind],
                         "staging_root": record["staging_root"], "workspace": record["workspace"],
                         "host_profile_sha256": record["host"]["profile_sha256"]}
@@ -2728,6 +2814,8 @@ class Controller:
                                   **({"node_search": self.node_search.search_summary()} if self.node_search is not None else {}),
                                   **({"compose_acquisition": {**self.compose_acquisition.summary(), "workspace": str(self.workspace)}}
                                      if self.compose_acquisition is not None else {}),
+                                  **({"node_prebuilt_acquisition": {**self.node_prebuilt_acquisition.summary(), "workspace": str(self.workspace)}}
+                                     if self.node_prebuilt_acquisition is not None else {}),
                                   **({"mcpb_acquisition": {**self.mcpb_acquisition.summary(), "workspace": str(self.workspace)}}
                                      if self.mcpb_acquisition is not None else {}),
                                   **self.acquisition_recovery_summary,
@@ -2737,6 +2825,8 @@ class Controller:
                                   "recovery_manifest": {"available": True, "max_requests": 256},
                                   "operation_in_progress": self.operation_lock.locked(),
                                   **({"acquired_inspection": {"available": True, "scope": "acquired_primary_archive_only",
+                                      "dependency_scope": "acquired_dependency_archive_only",
+                                      "archive_selection": "optional_archive_sha256_from_job_artifacts",
                                       "page_size": 64, "max_text_bytes": SELECTED_DOCUMENT,
                                       "max_chunk_bytes": SELECTED_INLINE_DOCUMENT}}
                                      if self.acquired_inspection_raw is not None else {}),
@@ -2808,6 +2898,51 @@ class Controller:
             return copy.deepcopy({"job": job,
                                   "reconciliation": {"available": self.reconciliation_available(job),
                                                      "observation": self.observations.get(identifier)}})
+
+    def wait_acquisition(self, identifier):
+        """Join this controller's exact acquisition worker without holding state.
+
+        The MCP adapter calls this only with the job returned by acquisition
+        admission. Its existing owner enforces the acquisition deadline and
+        stop checks. Joining also waits for the worker's cleanup and operation
+        lock release; reading a terminal row alone would not establish that.
+        A recovered row without a worker remains historically unconfirmed.
+        """
+        with self.lock:
+            job = self.jobs.get(identifier) if isinstance(identifier, str) else None
+            if job is None or job["kind"] != "acquire":
+                raise SetupError("unknown_acquisition_job", 404)
+            thread = self._job_threads.get(identifier)
+            if thread is None and job["status"] == "running":
+                raise SetupError("acquisition_worker_unavailable", 409)
+        if thread is not None:
+            thread.join()
+        with self.lock:
+            return {"job": copy.deepcopy(job)}
+
+    def wait_selected_install(self, identifier):
+        """Join the admitted selected installer, including verified readback.
+
+        This is the MCP delivery path, not another admission or a retry. The
+        existing worker retains stop and effect ownership; caller cancellation
+        does not request stopping it. No native deadline is changed here.
+        """
+        with self.lock:
+            job = self.jobs.get(identifier) if isinstance(identifier, str) else None
+            intent = self.install_intents.get(identifier) if job is not None else None
+            if (job is None or job["kind"] != "install"
+                    or job["family"] not in ("selected-python", "selected-node", "selected-mcpb")
+                    or intent is None or intent.get("kind") != "selected"):
+                raise SetupError("unknown_selected_install_job", 404)
+            thread = self._job_threads.get(identifier)
+            if thread is None and job["status"] == "running":
+                raise SetupError("selected_install_worker_unavailable", 409)
+        # Join outside state custody so observation, exact replay and explicit
+        # stop remain available. A terminal row precedes final worker cleanup.
+        if thread is not None:
+            thread.join()
+        with self.lock:
+            return {"job": copy.deepcopy(job)}
 
     def reconciliation_available(self, job):
         return bool(job and (job["kind"] == "acquire" and job["id"] in self.acquisition_intents or
@@ -2888,6 +3023,20 @@ class Controller:
     def acquire_node(self, request):
         """Stage an explicitly chosen package using the host's trusted npm."""
         return self._acquire("node", self.node_acquisition, request)
+
+    def acquire_node_prebuilt(self, request):
+        """Derive inert payloads from the exact current owned Node acquisition."""
+        return self._acquire("node-prebuilt", self.node_prebuilt_acquisition, request)
+
+    def _node_prebuilt_source(self, source):
+        # Called only by the entered acquisition worker, which already holds
+        # operation_lock. A retained/recovered or derived job is not a source.
+        with self.lock:
+            job = self.jobs.get(source["job_id"])
+            if not job or job.get("family") != "selected-node":
+                raise SetupError("node_prebuilt_source_unavailable", 409)
+        return self.selected_acquired_source({"profile": "node", "staged_id": source["job_id"],
+                                             "acquired_source": source})
 
     def github_research(self, operation, request):
         with self.lock:
@@ -3745,6 +3894,44 @@ class Controller:
         finally:
             self.operation_lock.release()
 
+    def inspect_schema(self, request):
+        """Hash supplied schema text without asserting its source or meaning."""
+        keys(request, ("schema_json",))
+        try:
+            document = selected_inline_document(request["schema_json"])
+            if len(encoded(request)) > MAX_BODY or document.startswith(b"\xef\xbb\xbf"):
+                raise ValueError()
+            value = decode(document)
+            if type(value) not in (dict, bool):
+                raise ValueError()
+            # A bounded JSON syntax check, not JSON Schema validation. In
+            # particular, references remain inert and no schema is fetched.
+            pending, nodes = [(value, 0)], 0
+            while pending:
+                item, depth = pending.pop()
+                nodes += 1
+                if nodes > 4096 or depth > 32:
+                    raise ValueError()
+                if type(item) is dict:
+                    pending.extend((child, depth + 1) for child in item.values())
+                elif type(item) is list:
+                    pending.extend((child, depth + 1) for child in item)
+            encoded(value)  # Reject nonfinite parsed numbers; do not hash this encoding.
+        except (SetupError, TypeError, ValueError, UnicodeError, RecursionError):
+            raise SetupError("invalid_schema_evidence") from None
+        with self.lock:
+            self.admit_setup()
+            if "package_inspector" not in self.selected_tools():
+                raise SetupError("schema_inspection_unavailable", 409)
+            return {"schema_version": 1, "scope": "supplied_schema_evidence_only",
+                "schema_digest": digest(document), "bytes": len(document),
+                "hash_algorithm": "sha256", "byte_convention": "exact_supplied_utf8",
+                "runtime_observation": "not_established", "schema_validation": "not_performed",
+                "notice": "This digest identifies the exact supplied text, including whitespace. "
+                    "It does not establish schema provenance, runtime equality, readiness or authority. "
+                    "Retain the evidence source and any host observation's hashing convention; "
+                    "do not replace an existing host convention with this one."}
+
     def plugin_source_bytes(self, reference):
         """Read this session's retained observation, never reopen the imported files."""
         plugin_source_reference(reference)
@@ -3809,7 +3996,8 @@ class Controller:
             self.operation_lock.release()
 
     def inspect_plugin(self, request):
-        plugin_files_request(request)
+        inventory = isinstance(request, dict) and "inventory" in request
+        plugin_inventory_request(request) if inventory else plugin_files_request(request)
         with self.lock:
             self.admit_setup()
             tools = self.selected_tools()
@@ -3827,7 +4015,7 @@ class Controller:
             # The canonical reader opens this host-owned root once, then reads
             # the chosen child below that handle. Do not resolve a child here.
             settings = {"root": self.selected["staging_root"], "directory": "./" + request["staged_id"],
-                        "files": request["files"]}
+                        **({"inventory": request["inventory"]} if inventory else {"files": request["files"]})}
             document = encoded(settings)
             with tempfile.TemporaryDirectory(prefix="plugin-inspection-", dir=self.workspace / "tmp") as temporary:
                 path = Path(temporary) / "request.json"
@@ -3841,6 +4029,9 @@ class Controller:
                     self.selected_tools()
                 except Exception:
                     raise SetupError("plugin_inspection_unavailable") from None
+                if inventory:
+                    # Names are observations only, never retained source provenance.
+                    return plugin_inventory_output(raw, code, request["inventory"])
                 report = plugin_files_output(raw, code, request["files"])
             retained = encoded({"schema_version": 1, "scope": PLUGIN_SOURCE_SCOPE,
                                 "staged_id": request["staged_id"],
@@ -3956,9 +4147,11 @@ class Controller:
     def inspect_acquired(self, request):
         if not isinstance(request, dict):
             raise SetupError("invalid_acquired_inspection_request")
-        keys(request, ("job_id", "receipt_sha256", *(("after",) if "after" in request else ("member", "offset"))))
+        keys(request, ("job_id", "receipt_sha256", *(("archive_sha256",) if "archive_sha256" in request else ()),
+                       *(("after",) if "after" in request else ("member", "offset"))))
         if (not isinstance(request["job_id"], str) or not REQUEST_ID.fullmatch(request["job_id"])
-                or not selected_hash(request["receipt_sha256"])):
+                or not selected_hash(request["receipt_sha256"])
+                or "archive_sha256" in request and not selected_hash(request["archive_sha256"])):
             raise SetupError("invalid_acquired_inspection_request")
         listing = "after" in request
         path = request["after"] if listing else request["member"]
@@ -3973,7 +4166,7 @@ class Controller:
             if (not job or job["kind"] != "acquire" or job["family"] not in ("selected-python", "selected-node")
                     or job["id"] not in self.acquisition_intents):
                 raise SetupError("acquired_inspection_unavailable", 409)
-            if self.recovery_only:
+            if self.recovery_only or job.get("recovered"):
                 observation = self.observations.get(job["id"], {})
                 if (not job.get("recovered") or observation.get("status") != "matched"
                         or observation.get("scope") != ACQUISITION_READBACK
@@ -3995,7 +4188,7 @@ class Controller:
             intent = copy.deepcopy(self.acquisition_intents[job["id"]])
             anchor = intent["recovery_anchor"]
             kind = job["family"].removeprefix("selected-")
-            owner = getattr(self, kind + "_acquisition")
+            owner = getattr(self, kind.replace("-", "_") + "_acquisition")
             def verify_python():
                 # Readback proves old payloads, not the executable we enter now.
                 runtime = Path(self.python)
@@ -4027,10 +4220,21 @@ class Controller:
                 raise ValueError()
             record, result = observe()
             primary = result["primary"]
+            selected_sha = request.get("archive_sha256", primary["sha256"])
+            archives = [row for row in result["artifacts"] if row["sha256"] == selected_sha]
+            if len(archives) != 1:
+                raise ValueError()
+            archive = archives[0]
+            is_primary = archive == primary
+            filename = archive["filename"] if kind == "python" else archive["url"].rsplit("/", 1)[-1]
+            relative = ("artifact.whl" if kind == "python" else "artifact.tgz") if is_primary else (
+                "closure/" + filename if kind == "python" else "closure/archive-" + selected_sha)
+            if result["files"].get(relative) != selected_sha:
+                raise ValueError()
             settings = {"installer": tools["installer"], "installer_sha256": self.selected_binding["tools"]["installer"],
-                        "artifact": str(Path(record["staging_root"]) / job["id"] / ("artifact.whl" if kind == "python" else "artifact.tgz")),
-                        "archive_sha256": primary["sha256"], "profile": kind,
-                        "filename": primary["filename"] if kind == "python" else primary["url"].rsplit("/", 1)[-1],
+                        "artifact": str(Path(record["staging_root"]) / job["id"] / relative),
+                        "archive_sha256": selected_sha, "archive_role": "primary" if is_primary else "dependency", "profile": kind,
+                        "filename": filename,
                         "selection": {key: request[key] for key in (("after",) if listing else ("member", "offset"))}}
             raw = encoded(settings)
             with tempfile.TemporaryDirectory(prefix="acquired-inspection-", dir=self.workspace / "tmp") as temporary:
@@ -4062,6 +4266,10 @@ class Controller:
             reference = request["acquired_source"]
             kind = request["profile"]
             job = copy.deepcopy(self.jobs.get(reference["job_id"]))
+            # Derived acquisition identity remains distinct, while its normal
+            # installation profile and canonical validator are still Node.
+            if kind == "node" and job and job.get("family") == "selected-node-prebuilt":
+                kind = "node-prebuilt"
             intent = copy.deepcopy(self.acquisition_intents.get(reference["job_id"]))
             if (self.recovery_only or not job or job["kind"] != "acquire"
                     or job["family"] != "selected-" + kind or job["status"] != "succeeded"
@@ -4078,8 +4286,8 @@ class Controller:
                     or self.selected_binding["runtimes"] != {"python": self.python,
                         "node": self.selected_node, "npm_cli": self.selected_npm_cli}):
                 raise ValueError()
-            owner = getattr(self, kind + "_acquisition")
-            if owner is None or Path(self.python) != owner.python or (kind == "node" and Path(self.selected_node) != owner.node):
+            owner = getattr(self, kind.replace("-", "_") + "_acquisition")
+            if owner is None or Path(self.python) != owner.python or (kind in ("node", "node-prebuilt") and Path(self.selected_node) != owner.node):
                 raise ValueError()
             owner.verify()
             self.selected_tools()
@@ -4666,14 +4874,17 @@ class Controller:
             thread = threading.Thread(target=run, name="consumer-setup-operation", daemon=False)
             thread.start()
             self.threads.append(thread)
+            self._job_threads[job["id"]] = thread
             dispatch_allowed = True
         except BaseException as error:
             dispatch_allowed = False
             job.update(status="unconfirmed", error="operation_unconfirmed")
             self._job_controls.pop(job["id"], None)
             self.operation_lock.release()
-            if thread is not None and thread.ident is not None and thread not in self.threads:
-                self.threads.append(thread)
+            if thread is not None and thread.ident is not None:
+                if thread not in self.threads:
+                    self.threads.append(thread)
+                self._job_threads[job["id"]] = thread
             if not isinstance(error, Exception):
                 raise
         finally:
@@ -5250,6 +5461,7 @@ class Controller:
                   "/api/prepare": self.prepare, "/api/retry_prepare": self.retry_prepare, "/api/help": self.help,
                   "/api/check": self.check, "/api/install": self.install, "/api/reconcile": self.reconcile,
                   "/api/inspect_package": self.inspect_package,
+                  "/api/inspect_schema": self.inspect_schema,
                   "/api/inspect_plugin": self.inspect_plugin,
                   "/api/inspect_mcpb": self.inspect_mcpb,
                   "/api/plugin_source": self.plugin_source,
@@ -5257,6 +5469,7 @@ class Controller:
                   "/api/selected_check": self.selected_check, "/api/selected_install": self.selected_install,
                   "/api/selected_retry": self.selected_retry,
                   "/api/acquire_python": self.acquire_python, "/api/acquire_node": self.acquire_node,
+                  "/api/acquire_node_prebuilt": self.acquire_node_prebuilt,
                   "/api/search_node": self.search_node,
                   "/api/search_github": self.search_github, "/api/read_github": self.read_github,
                   "/api/acquire_compose": self.acquire_compose, "/api/acquire_mcpb": self.acquire_mcpb}
@@ -5471,6 +5684,8 @@ def main(argv=None):
     parser.add_argument("--node-acquisition-profile", type=Path,
                         help="explicit trusted public npm acquisition scope and pinned runtime/npm")
     parser.add_argument("--node-acquisition-profile-sha256")
+    parser.add_argument("--node-prebuilt-profile", type=Path)
+    parser.add_argument("--node-prebuilt-profile-sha256")
     parser.add_argument("--mcpb-acquisition-profile", type=Path,
                         help="explicit trusted public MCPB download origins and pinned Python")
     parser.add_argument("--mcpb-acquisition-profile-sha256")
@@ -5522,6 +5737,8 @@ def main(argv=None):
                                 python_acquisition_profile_sha256=args.python_acquisition_profile_sha256,
                                 node_acquisition_profile=args.node_acquisition_profile,
                                 node_acquisition_profile_sha256=args.node_acquisition_profile_sha256,
+                                node_prebuilt_profile=args.node_prebuilt_profile,
+                                node_prebuilt_profile_sha256=args.node_prebuilt_profile_sha256,
                                 mcpb_acquisition_profile=args.mcpb_acquisition_profile,
                                 mcpb_acquisition_profile_sha256=args.mcpb_acquisition_profile_sha256,
                                 compose_acquisition_profile=args.compose_acquisition_profile,

@@ -99,6 +99,7 @@ def verify_resources(root):
     for key in ("prepare", "python", "node", "npm_cli", "starter", "archive"):
         relative(value[key])
     npm_resources(root, value)
+    node_prebuilt_resources(root, value)
     if tree_entries(root) != value["entries"]:
         raise ResourceError("resource_closure_changed")
     return value, hashlib.sha256(raw).hexdigest()
@@ -115,6 +116,23 @@ def npm_resources(root, manifest):
     if any(path.is_symlink() or not path.is_file() for path in selected.values()):
         raise ResourceError("bundled_npm_acquisition_unavailable")
     return selected
+
+
+def node_prebuilt_resources(root, manifest):
+    """Only an explicitly packaged profile enables this optional acquisition."""
+    name = "node-prebuilt-policy.json"
+    entries = [entry for entry in manifest.get("entries", []) if entry.get("path") == name]
+    path = root / name
+    if not entries and not path.exists() and not path.is_symlink():
+        return None
+    if (len(entries) != 1 or entries[0].get("kind") != "file"
+            or path.is_symlink() or not path.is_file()
+            or not 0 < path.stat().st_size <= 65536
+            or entries[0].get("size") != path.stat().st_size
+            or entries[0].get("sha256") != sha256(path)
+            or npm_resources(root, manifest) is None):
+        raise ResourceError("bundled_node_prebuilt_profile_unavailable")
+    return {"path": path, "sha256": entries[0]["sha256"]}
 
 
 def checked_receipt(host, path, expected):
@@ -192,6 +210,10 @@ def prepare(root, destination, stopped, *, realm_state_root=None, realm=None):
         args.selected_node = str(npm["node"])
         args.selected_npm_cli = str(npm["npm_cli"])
         args.npm_archive = str(npm["npm_archive"])
+    node_prebuilt = node_prebuilt_resources(root, manifest)
+    if node_prebuilt is not None:
+        args.node_prebuilt_policy = str(node_prebuilt["path"])
+        args.node_prebuilt_policy_sha256 = node_prebuilt["sha256"]
     if (realm is None) != (realm_state_root is None):
         raise ResourceError("complete_native_realm_required")
     if realm is not None:
@@ -221,6 +243,10 @@ def prepare(root, destination, stopped, *, realm_state_root=None, realm=None):
             or receipt.get("workspace") != str(destination / "session")
             or receipt.get("release", {}).get("archive_sha256") != sha256(root / manifest["archive"])):
         raise ResourceError("preparation_scope_mismatch")
+    if node_prebuilt is not None and (
+            "node-prebuilt.json" not in receipt.get("files", {})
+            or receipt.get("runtimes", {}).get("node_prebuilt_policy", {}).get("sha256") != node_prebuilt["sha256"]):
+        raise ResourceError("node_prebuilt_preparation_scope_mismatch")
     files = receipt.get("files", {})
     for name, digest in files.items():
         relative(name)

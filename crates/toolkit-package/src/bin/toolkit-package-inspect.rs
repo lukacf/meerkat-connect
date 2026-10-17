@@ -162,6 +162,21 @@ struct PluginFilesInput {
     files: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginInventoryInput {
+    root: String,
+    directory: String,
+    inventory: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PluginInspectionInput {
+    Files(PluginFilesInput),
+    Inventory(PluginInventoryInput),
+}
+
 #[cfg(all(
     feature = "local-artifacts",
     any(target_os = "linux", target_os = "macos")
@@ -306,16 +321,10 @@ fn mcpb_archive(_bytes: &[u8]) -> Result<Value, ValidationError> {
     })
 }
 
-fn plugin_files(bytes: &[u8]) -> Result<Value, ValidationError> {
-    let invalid = |message: &str| ValidationError {
-        path: "agent-plugin-files".into(),
-        message: message.into(),
-    };
-    let input: PluginFilesInput =
-        serde_json::from_slice(bytes).map_err(|_| invalid("invalid plugin file request"))?;
-    let child = input.directory.strip_prefix("./").unwrap_or_default();
-    if !std::path::Path::new(&input.root).is_absolute()
-        || input.root.len() > 4096
+fn plugin_directory(root: &str, directory: &str) -> Result<PluginRoot, ValidationError> {
+    let child = directory.strip_prefix("./").unwrap_or_default();
+    if !std::path::Path::new(root).is_absolute()
+        || root.len() > 4096
         || child.is_empty()
         || child.len() > 128
         || child == "."
@@ -323,11 +332,42 @@ fn plugin_files(bytes: &[u8]) -> Result<Value, ValidationError> {
         || !child
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
-        || input.files.is_empty()
+    {
+        return Err(ValidationError {
+            path: "agent-plugin-files".into(),
+            message: "invalid root or directory selection".into(),
+        });
+    }
+    PluginRoot::open(root)?.open_relative(directory)
+}
+
+fn plugin_files(bytes: &[u8]) -> Result<Value, ValidationError> {
+    let invalid = |message: &str| ValidationError {
+        path: "agent-plugin-files".into(),
+        message: message.into(),
+    };
+    let input: PluginInspectionInput = serde_json::from_value(
+        toolkit_package::strict_mcpb_json(bytes)
+            .map_err(|_| invalid("invalid or duplicate-key plugin inspection request"))?,
+    )
+    .map_err(|_| invalid("invalid plugin inspection request"))?;
+    let input = match input {
+        PluginInspectionInput::Inventory(input) => {
+            let root = plugin_directory(&input.root, &input.directory)?;
+            let inventory = root.inventory(&input.inventory)?;
+            return Ok(json!({
+                "schema_version": 1, "scope": "metadata_only", "format": "agent-plugin-files",
+                "status": "inventoried", "directory": input.inventory,
+                "inventory": inventory, "complete": true,
+            }));
+        }
+        PluginInspectionInput::Files(input) => input,
+    };
+    if input.files.is_empty()
         || input.files.len() > 16
         || input.files.iter().filter(|p| *p == "./plugin.json").count() != 1
     {
-        return Err(invalid("invalid root, directory or file selection"));
+        return Err(invalid("invalid file selection"));
     }
     let mut names = std::collections::BTreeSet::new();
     for path in &input.files {
@@ -342,7 +382,7 @@ fn plugin_files(bytes: &[u8]) -> Result<Value, ValidationError> {
             return Err(invalid("invalid or duplicate file path"));
         }
     }
-    let root = PluginRoot::open(&input.root)?.open_relative(&input.directory)?;
+    let root = plugin_directory(&input.root, &input.directory)?;
     let mut files = Vec::new();
     let mut total = 0;
     let mut diagnostics = false;
@@ -662,7 +702,7 @@ fn main() -> ExitCode {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "Usage: toolkit-package-inspect <integration-package|agent-plugin|agent-plugin-files|mcp-servers|mcpb|mcpb-archive|activation|activation-update|activation-host> < public-metadata.json\nReads at most 1 MiB; emits one JSON report. Explicit agent-plugin-files and mcpb-archive reads stay below the selected trusted root. MCPB archive inspection requires local-artifacts on Linux or macOS. Metadata inspection only, with no package execution or activation. Host compatibility is a declaration check, not authorization or readiness."
+            "Usage: toolkit-package-inspect <integration-package|agent-plugin|agent-plugin-files|mcp-servers|mcpb|mcpb-archive|activation|activation-update|activation-host> < public-metadata.json\nReads at most 1 MiB; emits one JSON report. Explicit agent-plugin-files reads or one-directory inventories and mcpb-archive reads stay below the selected trusted root. MCPB archive inspection requires local-artifacts on Linux or macOS. Metadata inspection only, with no package execution or activation. Host compatibility is a declaration check, not authorization or readiness."
         );
         return ExitCode::SUCCESS;
     }

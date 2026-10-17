@@ -18,7 +18,7 @@ fixture, observed denial outside its selected directory and closed. See the
 [installation evidence](../../docs/verification/20261003-selected-node/final-delivery/acceptance.json)
 and [component acceptance](../../docs/verification/20261003-selected-node/acceptance.json).
 This verifies that selected package and platform, not all Node packages.
-Linux and Windows consumer support is not established.
+That historical MCP example does not establish Linux or Windows server use.
 
 ## Select the document form
 
@@ -82,6 +82,41 @@ installer does not launch the selected server or guess a `profiles` command.
 A failed attempt retains its partial directory and step logs; keep it unused
 and select another new directory after correcting the cause.
 
+## Add an explicitly selected prebuilt native dependency
+
+The optional `setup_acquire_node_prebuilt` capability can supplement an exact
+successful Node acquisition with a public prebuilt addon. It is available only
+when the host selects a pinned download profile. Check the actual tool list and
+`setup_state`; ordinary Node acquisition alone does not enable this capability.
+This source path still needs its own installed consumer evidence before it can
+be described as qualified on a platform.
+
+The agent researches the dependency's publisher, exact release asset and target.
+Submit a new request ID, the original acquisition's job ID and receipt digest,
+the host's exact selected Node target, and explicit payload choices. Each payload
+identifies its npm lock location, original package archive digest, HTTPS asset
+URL, digest-bound `native-asset-<sha256>` ID, and member-to-destination mappings.
+The tool derives member digests from the downloaded bytes. Do not invent them or
+choose an asset merely because its filename looks similar. The selected target
+binds Node executable bytes, version, module ABI, OS, architecture and, on Linux,
+the current glibc version. It does not establish that a binary is safe or loads.
+
+Success returns a new `selected-node-prebuilt` acquisition. It preserves the
+original npm archive, lock and receipt, then adds a pinned manifest and payloads
+in the existing flat closure format. Use this new job and receipt through
+`acquired_source` with the existing selected Node installation profile. The
+original acquisition is unchanged. Recovery can inspect retained evidence but
+does not renew acquisition or installation authority.
+
+Installation keeps npm lifecycle scripts disabled. It verifies the original
+offline npm graph, adds only the selected files without overwriting package
+contents, and verifies the combined graph. Links, path aliases, mismatched
+targets and unbounded archives refuse. Readback checks the retained inputs,
+installed payloads and current selected Node executable hash without loading
+the addon. Protocol startup, operation authorization, resource boundaries and
+original-task completion remain separate checks. A package requiring compilation
+or another installation effect still needs an appropriate supported backend.
+
 ## Reconcile an existing selected installation
 
 The current source installer also supports `--verify-existing`. Earlier
@@ -112,7 +147,9 @@ and process exit. Interruption joins the child and terminates its process group.
 There is no Node, npm, donor, server or runtime-probe execution. `--npm-cli` is
 unnecessary in readback mode; if carried over from the install invocation it is
 ignored. The selected Node path resolves to an executable regular file and binds
-the launch, but its bytes, version and compatibility are not verified.
+the launch. For target-bound optional closures and explicit prebuilt payloads,
+its executable hash must also match the retained target. Readback does not
+execute a probe or verify current OS, libc, ABI or startup compatibility.
 
 Each original metadata document remains limited to 1 MiB. Validator output and
 the receipt use the existing 64 MiB file budget; the MCP file is bounded by the
@@ -121,8 +158,10 @@ and literal arguments. The library's smaller configuration cap does not apply
 to selected installations. Malformed or excessively nested JSON is refused.
 
 The command compares the original and frozen artifact closure, npm project and
-lock, every archive payload at its exact installed location, and the freshly
-derived launch configuration. Nested dependency versions retain their lock
+lock, every included archive payload at its exact installed location, and the
+freshly derived launch configuration. Conditional graphs are recomputed from
+the complete retained archives and target; the receipt must match the exact
+omission reasons, and excluded packages must remain absent. Nested dependency versions retain their lock
 locations. The historical receipt must agree with independently derived bindings;
 it never grants authority. `ready` must contain exactly `installed.json` and
 `mcp.json`; pending or crossed publication, changed inputs or receipt bindings,
@@ -147,11 +186,20 @@ or read its `command` and `args` in a standard MCP client. The host owns the
 launch environment, credentials, resource access, operation approval and joined
 process shutdown. The configuration does not clear inherited environment.
 
-The client sees the whole server. Operation declarations in either selected
-document do not filter its tool list or authorize writes. Initialize, inspect
-the actual tool contract and perform only separately permitted calls. The
-filesystem example supplies a task-owned allowed directory and exercises a read;
-its server also exposes write tools.
+An ordinary client importing this bare configuration sees the whole server.
+Operation declarations in either selected document do not filter its tool list
+or authorize calls. Connect's native protected attachment can separately enforce
+an approved subset of exact MCP tool names through the host's current grant and
+MCP access configuration. Separate write tools do not, by themselves, rule out
+that protected read subset. Initialize and inspect the actual tool contract
+before requesting the needed operations through the host's protected review.
+
+An operation-name allowlist does not constrain query semantics, prevent startup
+effects or provide filesystem confinement. Check whether an allowed query can
+write and whether launching the server has side effects; use separately supplied
+resource controls. The filesystem example supplies a task-owned allowed
+directory and exercises a read; its server also exposes write tools. See
+[operation selection and runtime enforcement](../../sdk/consumer-setup/METADATA.md#operation-selection-and-runtime-enforcement).
 
 Restore the same software choice by repeating the install into another new
 destination with the retained inputs and selected runtimes. Paths in `mcp.json`
@@ -177,6 +225,7 @@ reviewed-node-bundle/
   closure/
     package-json                npm project package.json bytes
     package-lock                npm package-lock.json bytes
+    npm-target                  exact host target, for conditional graphs
     archive-ID                  exact dependency tarball bytes
 ```
 
@@ -195,9 +244,29 @@ export without events, and one `portable_mcp_entries` name for that component.
 Full activation additionally selects its actual local host placement and
 lifecycle/enforcement contracts; the plain software declaration does not invent them. Its artifact digest pins `artifact.tgz`.
 `ArtifactDependencies::PinnedClosure` pins both reserved IDs `package-json` and
-`package-lock`, plus every archive ID. The entrypoint is a relative `.js`, `.mjs`
+`package-lock`, plus every archive ID and `npm-target` for a conditional graph.
+The entrypoint is a relative `.js`, `.mjs`
 or `.cjs` regular file inside the primary package; its arguments are literal.
 There are no generated executable aliases or shell expansion.
+
+
+Target-specific optional graphs require a matching current acquisition worker
+and installer; older deliveries above retain their earlier subset. Keep every
+lock-referenced archive, including excluded optional packages. Before selecting
+the installed graph, the parser validates all archive identities, integrity,
+paths and aggregate limits. `closure/npm-target` records the host-observed Node
+executable SHA-256, version, module ABI, platform, architecture and libc. The
+installer probes the selected Node and requires an exact match before npm runs.
+Use the acquisition-generated record rather than guessing target facts.
+
+A platform-incompatible optional subtree can be omitted with an explicit
+`excluded_optional_packages` reason; required edges and shared required rows
+remain protected. Every package retained in the selected graph must match its exact installed
+files even after npm exits successfully. The full original lock remains
+unchanged. Conditional peer/devOptional graphs, unsupported libc and packages
+requiring native compilation are outside this subset. Explicit prebuilt addons
+remain a separate selection. Acquisition, installation and matching files do
+not supply authentication, a native grant, MCP readiness or task completion.
 
 For the full activation form, start from the [inert package](tests/fixtures/node-install/package.json) and
 [selection](tests/fixtures/node-install/activation.json) examples when composing
@@ -238,7 +307,8 @@ This backend accepts bounded regular npm archive files and directories, exact
 HTTPS registry dependency rows, and literal JavaScript entrypoints. It refuses
 links, workspaces, bundled dependencies, development-only rows, archive path
 aliases and unsupported paths. Lifecycle scripts and binary links are disabled;
-packages requiring those installation steps need another reviewed backend.
+an explicitly selected prebuilt addon can use the optional path above. Packages
+requiring compilation or other installation scripts need another reviewed backend.
 Request/Deployment lifetime on the full path and authentication fields in both
 forms remain declarations, not native observations or permission.
 Existing native runtime and policy owners are unchanged.

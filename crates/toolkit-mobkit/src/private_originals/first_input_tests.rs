@@ -89,6 +89,9 @@ impl FirstFixture {
     pub(crate) async fn for_console_input(human: PrincipalRef) -> Self {
         Box::pin(Self::new_selected_source(true, true, true, None, None, false, None, Some(human), false)).await
     }
+    pub(crate) async fn for_console_operator_input(human: PrincipalRef) -> Self {
+        Box::pin(Self::new_selected_source(true, true, true, None, None, true, None, Some(human), false)).await
+    }
     pub(crate) async fn for_task_parent_service_input() -> Self {
         Box::pin(Self::new_selected_source(true, true, true, None, None, false, None, None, true)).await
     }
@@ -167,10 +170,13 @@ impl FirstFixture {
         owners: &mut Option<(Arc<tempfile::TempDir>, Arc<NativeHostLifetime>)>,
     ) -> Self {
         let facts = meerkat_core::ControllerModelFacts::new(selection(), ENDPOINT.into(), MODEL.into());
+        let console_owned_identity = console_human.is_some();
         let host = if let Some(human) = console_human {
             assert!(select_controller && probe && local_operator && status_fault.is_none()
-                && acquisition.is_none() && !configured_setup && prepare_source.is_none());
-            crate::installed_host::controller_first_input_fixture::open_for_console_input(&facts, human).await
+                && acquisition.is_none() && prepare_source.is_none());
+            if configured_setup {
+                crate::installed_host::controller_first_input_fixture::open_for_console_operator_input(&facts, human).await
+            } else { crate::installed_host::controller_first_input_fixture::open_for_console_input(&facts, human).await }
         } else if task_parent_administration {
             assert!(select_controller && probe && local_operator && status_fault.is_none()
                 && acquisition.is_none() && !configured_setup && prepare_source.is_none());
@@ -234,64 +240,119 @@ impl FirstFixture {
         *opened = Some(bootstrap_fixture(spec, namespace).await);
         let native = opened.as_mut().unwrap();
         let handle = native.mob_handle();
-        let member = MemberIdentity::from(MEMBER);
-        handle.spawn_spec(SpawnMemberSpec::new("worker", member.clone())).await.unwrap();
-        let session = handle.get_member(&member).await.unwrap().unwrap()
-            .bridge_session_id().cloned().unwrap();
-        let actor = service.live_session_actor_witness(&session).await.unwrap();
-        let pin = service.pin_controller_client_for_actor(&actor).await.unwrap_or_else(|error| {
-            if let meerkat_core::service::SessionError::Agent(
-                AgentError::OperationRefused { refusal }
-            ) = &error {
-                panic!("actual actor controller pin refused: {:?}", refusal.kind());
-            }
-            panic!("actual actor controller pin failed: {error:?}");
-        });
-        assert_eq!(pin.selection(), &selection());
-        // Native startup may briefly hold controller custody. The existing
-        // bounded owner helper retries only typed Busy and rechecks references;
-        // no input is submitted until this actual publication succeeds.
-        meerkat_core::publish_token_lifecycle_acquired_for_identity_within(
-            &machine.generated_auth_lease_handle(), pin.selection().credential(),
-            &meerkat_core::auth::PersistedTokens::api_key("synthetic-controller-only-fixture"),
-            tokio::time::Instant::now() + WAIT,
-        ).await.expect("selected fixture credential publishes within its setup deadline");
-        let lease_provider = Arc::new(LocalLeaseProvider::new());
-        let runtime_instance = "toolkit-first-input";
-        let bridge = MobSessionBridge::new(handle.observer()).with_controller_pin_source(service.clone());
-        let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = match status_fault {
-            Some(mode) => Arc::new(observed::ObservedBridge {
-                inner: bridge, fault: Arc::new(DeliveryFault::new(mode)),
-                publication: host.originals.owner.publication(),
-            }),
-            None => Arc::new(bridge),
+        let (session, runtime, member_spec) = if console_owned_identity {
+            // The real Console aggregator validates durable identity against
+            // the live roster. Let its native owner realize both; a raw spawn
+            // followed by an invented ContinuityRecord is not that authority.
+            let bridge = MobSessionBridge::with_session_service(
+                handle.clone(), native.mob_runtime().session_service().cloned().unwrap(),
+            ).with_controller_pin_source(service.clone());
+            let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+                continuity_store: Arc::new(LocalContinuityStore::in_memory().unwrap()),
+                lease_provider: Arc::new(LocalLeaseProvider::new()),
+                runtime_instance_id: "toolkit-first-input".into(), has_runtime_store: true,
+                durability_policy: DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(Arc::new(bridge)), default_timeout: None,
+            }).with_runtime_services(
+                meerkat_mobkit::identity_first::AgentRuntimeServices::new(handle.clone()),
+            ));
+            let identity = AgentIdentity::parse(MEMBER).unwrap();
+            let member_spec = DurableAgentSpec {
+                identity: identity.clone(), profile: ProfileName::from("worker"),
+                addressability: AgentAddressability::Addressable, display_name: None,
+                labels: BTreeMap::new(), context: None, additional_instructions: vec![],
+                initial_message: None, runtime_mode_override: Some(MobRuntimeMode::TurnDriven),
+                backend: None, binding: None, placement: None,
+            };
+            meerkat_mobkit::identity_first::orchestrator::restore_flow(
+                &runtime, std::slice::from_ref(&member_spec), None, None,
+            ).await.unwrap();
+            let status = runtime.status(&identity).await.unwrap();
+            let session = status.session_id.expect("native Console session realized");
+            assert!(status.agent_runtime_id.is_some(), "native Console runtime identity realized");
+            let member = handle.get_member(&MemberIdentity::from(MEMBER)).await.unwrap().unwrap();
+            assert_eq!(member.bridge_session_id(), Some(&session));
+            let actor = service.live_session_actor_witness(&session).await.unwrap();
+            let pin = service.pin_controller_client_for_actor(&actor).await.unwrap_or_else(|error| {
+                if let meerkat_core::service::SessionError::Agent(
+                    AgentError::OperationRefused { refusal }
+                ) = &error {
+                    panic!("actual actor controller pin refused: {:?}", refusal.kind());
+                }
+                panic!("actual actor controller pin failed: {error:?}");
+            });
+            assert_eq!(pin.selection(), &selection());
+            // Native startup may briefly hold controller custody. The existing
+            // bounded owner helper retries only typed Busy and rechecks references;
+            // no input is submitted until this actual publication succeeds.
+            meerkat_core::publish_token_lifecycle_acquired_for_identity_within(
+                &machine.generated_auth_lease_handle(), pin.selection().credential(),
+                &meerkat_core::auth::PersistedTokens::api_key("synthetic-controller-only-fixture"),
+                tokio::time::Instant::now() + WAIT,
+            ).await.expect("selected fixture credential publishes within its setup deadline");
+            (session, runtime, member_spec)
+        } else {
+            let member = MemberIdentity::from(MEMBER);
+            handle.spawn_spec(SpawnMemberSpec::new("worker", member.clone())).await.unwrap();
+            let session = handle.get_member(&member).await.unwrap().unwrap()
+                .bridge_session_id().cloned().unwrap();
+            let actor = service.live_session_actor_witness(&session).await.unwrap();
+            let pin = service.pin_controller_client_for_actor(&actor).await.unwrap_or_else(|error| {
+                if let meerkat_core::service::SessionError::Agent(
+                    AgentError::OperationRefused { refusal }
+                ) = &error {
+                    panic!("actual actor controller pin refused: {:?}", refusal.kind());
+                }
+                panic!("actual actor controller pin failed: {error:?}");
+            });
+            assert_eq!(pin.selection(), &selection());
+            // Native startup may briefly hold controller custody. The existing
+            // bounded owner helper retries only typed Busy and rechecks references;
+            // no input is submitted until this actual publication succeeds.
+            meerkat_core::publish_token_lifecycle_acquired_for_identity_within(
+                &machine.generated_auth_lease_handle(), pin.selection().credential(),
+                &meerkat_core::auth::PersistedTokens::api_key("synthetic-controller-only-fixture"),
+                tokio::time::Instant::now() + WAIT,
+            ).await.expect("selected fixture credential publishes within its setup deadline");
+            let lease_provider = Arc::new(LocalLeaseProvider::new());
+            let runtime_instance = "toolkit-first-input";
+            let bridge = MobSessionBridge::new(handle.observer()).with_controller_pin_source(service.clone());
+            let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = match status_fault {
+                Some(mode) => Arc::new(observed::ObservedBridge {
+                    inner: bridge, fault: Arc::new(DeliveryFault::new(mode)),
+                    publication: host.originals.owner.publication(),
+                }),
+                None => Arc::new(bridge),
+            };
+            let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+                continuity_store: Arc::new(LocalContinuityStore::in_memory().unwrap()),
+                lease_provider: lease_provider.clone(),
+                runtime_instance_id: runtime_instance.into(), has_runtime_store: true,
+                durability_policy: DurabilityPolicy::SyncWriteThrough,
+                bridge: Some(bridge),
+                default_timeout: None,
+            }).with_runtime_services(
+                meerkat_mobkit::identity_first::AgentRuntimeServices::new(handle.clone()),
+            ));
+            let identity = AgentIdentity::parse(MEMBER).unwrap();
+            let member_spec = DurableAgentSpec {
+                identity: identity.clone(), profile: ProfileName::from("worker"),
+                addressability: AgentAddressability::Addressable, display_name: None,
+                labels: BTreeMap::new(), context: None, additional_instructions: vec![],
+                initial_message: None, runtime_mode_override: Some(MobRuntimeMode::TurnDriven),
+                backend: None, binding: None, placement: None,
+            };
+            let lease = lease_provider.acquire_leases(std::slice::from_ref(&identity), runtime_instance)
+                .await.unwrap().remove(&identity).unwrap();
+            let LeaseAcquireResult::Acquired(lease) = lease else { panic!("fixture lease refused") };
+            runtime.register(member_spec.clone(), IdentityLifecycleState::Active, Some(ContinuityRecord {
+                identity: identity.clone(), agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{identity}:0")).unwrap(),
+                session_id: session.clone(), generation: ContinuityGeneration::new(0),
+                checkpoint_version: CheckpointVersion::new(0),
+            }), Some(lease)).await;
+            (session, runtime, member_spec)
         };
-        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
-            continuity_store: Arc::new(LocalContinuityStore::in_memory().unwrap()),
-            lease_provider: lease_provider.clone(),
-            runtime_instance_id: runtime_instance.into(), has_runtime_store: true,
-            durability_policy: DurabilityPolicy::SyncWriteThrough,
-            bridge: Some(bridge),
-            default_timeout: None,
-        }).with_runtime_services(
-            meerkat_mobkit::identity_first::AgentRuntimeServices::new(handle.clone()),
-        ));
-        let identity = AgentIdentity::parse(MEMBER).unwrap();
-        let member_spec = DurableAgentSpec {
-            identity: identity.clone(), profile: ProfileName::from("worker"),
-            addressability: AgentAddressability::Addressable, display_name: None,
-            labels: BTreeMap::new(), context: None, additional_instructions: vec![],
-            initial_message: None, runtime_mode_override: Some(MobRuntimeMode::TurnDriven),
-            backend: None, binding: None, placement: None,
-        };
-        let lease = lease_provider.acquire_leases(std::slice::from_ref(&identity), runtime_instance)
-            .await.unwrap().remove(&identity).unwrap();
-        let LeaseAcquireResult::Acquired(lease) = lease else { panic!("fixture lease refused") };
-        runtime.register(member_spec.clone(), IdentityLifecycleState::Active, Some(ContinuityRecord {
-            identity: identity.clone(), agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{identity}:0")).unwrap(),
-            session_id: session.clone(), generation: ContinuityGeneration::new(0),
-            checkpoint_version: CheckpointVersion::new(0),
-        }), Some(lease)).await;
+        let identity = member_spec.identity.clone();
         native.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
             runtime,
             Arc::new(MutableRosterProvider::new(vec![member_spec])),

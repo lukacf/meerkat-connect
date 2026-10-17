@@ -96,6 +96,177 @@ Installing a package does not grant every operation it exports. Operation
 filtering does not make an unsafe selected operation or unsafe startup behavior
 safe: inspect those behaviors before installation and access approval.
 
+## Recover unpublished service approvals
+
+<Note>
+This is unreleased development functionality. Focused native, verified-Console
+and terminal controls pass; explicit installed recovery consumption remains
+unqualified. Published Connect 0.9.0 and the successful V40 business package do
+not include it.
+</Note>
+
+A failed approval can leave native access without a published task source.
+The installed host can expose the existing canonical records for an explicit
+operator decision. Missing publication alone does not prove abandonment.
+
+Select the applicable adapter when the existing application compiler creates
+its pinned `ApplicationAcquisitionParameters`, before Build/Prepare. These are
+independent opt-ins; omitted values preserve existing behavior. For Console:
+
+```rust
+use meerkat_connect::application_gateway::console_setup::ConsoleSetupSelection;
+
+parameters.console_setup = Some(
+    ConsoleSetupSelection::for_application_issued_access(
+        "https://console.example.org".to_owned(),
+    )
+    .with_operator_service_recovery(),
+);
+```
+
+This retains `recovery_management: "operator_unpublished_service_approvals"`
+alongside the existing origin and requester-leaf policy. The current verified
+human must also be the exact retained operator, with current administrative and
+member access. A viewer or requester-leaf grant alone cannot select operator
+cleanup. Use the host's supported exact-selection producer; do not edit a compiled
+artifact after approval. Ordinary Forge generation does not enable this option.
+Its custom-selection consumption and full-controller reconstruction are separate
+Forge/MobkitInstaller responsibilities.
+
+In the integrated setup panel, open **Unresolved service approvals**, inspect the
+agent, operations, resource, native access and policy observation, then choose
+**Revoke this unresolved approval** for an actionable row. The same current
+login and owner are checked again at entry. A retained published source or another
+approval's child is preserved.
+
+For an application whose configured service operator is the actual local OS
+operator, independently select the inherited-terminal adapter:
+
+```rust
+use toolkit_mobkit::host_gateway::LocalOperatorRecoveryPolicy;
+
+parameters.local_operator_recovery =
+    Some(LocalOperatorRecoveryPolicy::UnpublishedServiceApprovals);
+```
+
+After normal native startup, type `/recover` while that application's inherited
+operator terminal is idle. Choose a displayed row number, review the protected
+request, then enter its exact displayed `approve <approval-id>` or
+`deny <approval-id>` response. `refresh`, `next` when offered, and `back` operate
+only on that host's inventory. The existing terminal keeps sole input ownership.
+A remote Console issuer cannot be treated as the local OS operator.
+
+A trusted Rust host can use its existing `ToolkitGatewayHost` directly:
+`local_service_recovery()` returns the selected owner-bound view; `page(None)`
+reads the first bounded offer, and `revoke(&page, row_id)` consumes a displayed
+row after the host's explicit operator decision. Retain the existing host and
+native owners; do not open another runtime or pass a principal as proof. A custom
+host opts in with `with_local_operator_recovery(...)` before native attachment.
+
+Cleanup attempts exact native grant revocation. It does not uninstall software,
+remove credentials, roll back tool policy or stop running work. An absent parent,
+partial result or lost acknowledgement stays unresolved. Do not replay an old
+offer or retry automatically; obtain a fresh inventory before any later deliberate
+decision. Policy is an offer-time observation, not proof of current policy or
+logout settlement. This adds no standalone `meerkat-connect --realm` recovery
+command or general remote CLI transport.
+
+## Helper catalog access after reset
+
+<Note>
+This setting is unreleased development functionality. Published Connect 0.9.0
+does not support it.
+</Note>
+
+By default, `authorities.helper_catalog` authorizes only the helper session
+captured during preparation. A host that needs catalog access after normal helper
+resets can explicitly select:
+
+```json
+{
+  "helper_catalog": {
+    "issuance_id": "new-helper-catalog-parent",
+    "scope": "current_helper_successors"
+  }
+}
+```
+
+Connect retains this application-owned parent separately from the helper's
+operation grants. For new helper work, native dispatch binds the current helper
+and Connect derives a catalog grant for that exact session. Already retained work
+stays pinned to its original target; this does not retarget or replay it after a
+reset. Parent revocation still applies. Catalog search and loading do not
+authorize tool execution, installation or account use.
+
+The parent leaves resource-domain restrictions open because future helper
+session IDs are not yet known. The trusted Connect binder supplies the exact
+application and current-session domain for each child. Application-domain
+isolation therefore depends on that binding; the parent alone does not enforce it.
+
+If the host also selects explicit `agent_setup.helper_targets`, it must
+independently request the matching catalog target with `target: null`. That
+request authorizes catalog delegation to the selected helper, not direct catalog
+access by the original agent. Keep all other targets unchanged.
+
+Use new issuance IDs for changed selections, including an enclosing agent setup
+selection whose bounds change. Existing grants cannot be reinterpreted or renewed
+in place. Omitted scope and `exact_session` retain the previous behavior; a reset
+alone grants nothing. Host adapters must preserve and validate the new scope and
+the returned `helper.catalog_capability` before advertising this mode.
+
+## Acquire another public service through the same live helper (development)
+
+<Note>
+This optional development path now passes an installed controlled Console API
+case: one session uses X, requests Y through the same helper, reuses X's checked
+job and then uses X+Y with fresh grants. Five displayed grants are revoked and
+all physical owners join. Autonomous choice, Browser interaction, helper reset
+and authenticated-service batches are separate qualifications.
+</Note>
+
+The trusted host uses the existing `AgentSetupCapabilityRequest.helper_targets`
+selection with `OperatorSetup::configure_agent_setup`, or the stopped-host
+`configure_application_agent_setup_with_helper` method. Select the actual helper
+and its required operation targets, including an independent catalog target
+(`target: null`) with its own `issuance_id`. Preserve canonical target order and
+all existing operation grants. A target list or installed job is not authority
+by itself. Normal Forge preparation already emits this optional catalog entry;
+that source support is separate from installed warm acceptance.
+
+For public-service review, `InstalledServiceTaskSource::prepare_public_service`
+captures the current configured selection before the continued task's first
+binding. It requires the same audience and distinct actual agents and sessions.
+`InstalledServiceTask::has_configured_setup` reports the selected proposal, not a
+permit. Use `prepare_public_instruction` and the returned
+`PreparedPublicInstruction::{Single, WithSetup}` through its `request` and
+`approve` methods. The existing multi-service review uses the same selected owner.
+These methods are additive; existing public signatures and struct-literal fields
+are unchanged.
+
+The same protected access review names the new task's setup authority, exact
+service set and task deadline. Its metadata permission covers both named agents
+across both named sessions: the full four combinations, not only two paired
+agent/session entries. Read that scope and the separate persistent tool-policy
+successor before approving. Setup, catalog and service targets remain independently
+authorized. First admission requires the complete selected basis; after admission,
+revoking setup access blocks another acquisition without revoking independent
+business access.
+
+The continued task can request another public integration through that same
+surviving helper. To keep an earlier connection X while adding Y, the helper must
+select both exact checked jobs for the new access review. A still-current X job
+can be selected again without reinstalling it, but the new continued task gets
+fresh grants for both X and Y. Earlier grants are not copied or revived, and every
+required attachment must be Ready before continuation.
+
+Omitted, report-only, initially expired or otherwise valid but ineligible optional
+setup selection keeps legacy public preparation. A selection that changes after
+capture refuses; it does not silently downgrade. Software and authenticated
+preparation keep their previous paths. Legacy singleton and `public_services_v1`
+wire bytes remain unchanged. The setup-enabled `public_services_with_setup_v2`
+and catalog-v2 records are explicit new versions; older readers are not
+transparently forward compatible.
+
 ## Advanced library host setup
 
 Start with the [local installation guide](/library/local-install) for the current

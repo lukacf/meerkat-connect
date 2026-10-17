@@ -960,7 +960,7 @@ fn application_policy_preparation_retains_and_validates_setup_closure() {
         let requester = Id::new("requester").unwrap();
         let mut config = ApplicationAcquisitionSelection {
             schema: 1,
-            console_setup: None,
+            console_setup: None, local_operator_recovery: None,
             standing_policy: None,
             prepared_application_setup: CompiledArtifactReference {
                 name: "application-setup.json".into(),
@@ -978,9 +978,9 @@ fn application_policy_preparation_retains_and_validates_setup_closure() {
         };
         match case {
             "console_valid" | "console_origin_drift" => config.console_setup = Some(
-                crate::application_gateway::console_setup::ConsoleSetupSelection { origin: "https://console.example".into(), access_management: None }),
+                crate::application_gateway::console_setup::ConsoleSetupSelection { origin: "https://console.example".into(), access_management: None, recovery_management: None }),
             "console_invalid_origin" => config.console_setup = Some(
-                crate::application_gateway::console_setup::ConsoleSetupSelection { origin: "https://console.example/path".into(), access_management: None }),
+                crate::application_gateway::console_setup::ConsoleSetupSelection { origin: "https://console.example/path".into(), access_management: None, recovery_management: None }),
             "standing_valid" | "task_parent_valid" | "task_parent_drift" | "standing_drift" | "standing_unknown_mode" => {
                 use crate::application_acquisition::selected_policy::*;
                 config.standing_policy = Some(StandingPolicySelection {

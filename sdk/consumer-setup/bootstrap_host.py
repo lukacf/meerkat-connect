@@ -159,6 +159,22 @@ def bootstrap(args, *, stopped=None):
         raise host.PreparationError("mcpb_acquisition_profile_pair_required")
     if mcpb_profile and any(overlaps(Path(mcpb_profile), path) for path in locations):
         raise host.PreparationError("mcpb_acquisition_profile_overlaps_host_paths")
+    node_prebuilt_profile = getattr(args, "node_prebuilt_profile", None)
+    node_prebuilt_sha256 = getattr(args, "node_prebuilt_profile_sha256", None)
+    acquire_node_prebuilt = node_prebuilt_profile is not None or node_prebuilt_sha256 is not None
+    if acquire_node_prebuilt and (not node_prebuilt_profile or not node_prebuilt_sha256):
+        raise host.PreparationError("node_prebuilt_profile_pair_required")
+    if node_prebuilt_profile and any(overlaps(Path(node_prebuilt_profile), path) for path in locations):
+        raise host.PreparationError("node_prebuilt_profile_overlaps_host_paths")
+    node_prebuilt_policy = getattr(args, "node_prebuilt_policy", None)
+    node_prebuilt_policy_sha256 = getattr(args, "node_prebuilt_policy_sha256", None)
+    if node_prebuilt_policy is not None or node_prebuilt_policy_sha256 is not None:
+        if not node_prebuilt_policy or not node_prebuilt_policy_sha256:
+            raise host.PreparationError("node_prebuilt_policy_pair_required")
+        if acquire_node_prebuilt:
+            raise host.PreparationError("ambiguous_node_prebuilt_selection")
+        if any(overlaps(Path(node_prebuilt_policy), path) for path in locations):
+            raise host.PreparationError("node_prebuilt_policy_overlaps_host_paths")
     pin = host.pinned_path(args.python, args.python_sha256, executable=True)
     snapshot, retained = host.release_snapshot(args.release_archive, args.release_sha256, release, args.target)
     prior_source = None
@@ -227,6 +243,13 @@ def bootstrap(args, *, stopped=None):
         if acquire_mcpb and (preview_receipt["files"].get("mcpb-acquisition.json") != mcpb_sha256
                              or pins.get("mcpb_acquisition_profile", {}).get("sha256") != mcpb_sha256):
             raise BootstrapError("mcpb_acquisition_not_prepared")
+        if acquire_node_prebuilt and (preview_receipt["files"].get("node-prebuilt.json") != node_prebuilt_sha256
+                or pins.get("node_prebuilt_profile", {}).get("sha256") != node_prebuilt_sha256):
+            raise BootstrapError("node_prebuilt_not_prepared")
+        if node_prebuilt_policy is not None and (
+                "node-prebuilt.json" not in preview_receipt["files"]
+                or pins.get("node_prebuilt_policy", {}).get("sha256") != node_prebuilt_policy_sha256):
+            raise BootstrapError("node_prebuilt_policy_not_prepared")
         for name, profile in compose_profiles.items():
             inner = "compose-" + name.replace("_", "-") + ".json"
             outer = "compose-acquisition.json" if name == "acquisition_host" else "compose-execution.json"
@@ -334,6 +357,8 @@ def main(argv=None):
                  "prior-manifest", "prior-manifest-sha256", "prior-request-id",
                  "recover-manifest", "recover-manifest-sha256",
                  "mcpb-acquisition-profile", "mcpb-acquisition-profile-sha256",
+                 "node-prebuilt-profile", "node-prebuilt-profile-sha256",
+                 "node-prebuilt-policy", "node-prebuilt-policy-sha256",
                  "compose-acquisition-host-profile", "compose-acquisition-host-profile-sha256",
                  "compose-backend-profile", "compose-backend-profile-sha256", "compose-graph-workspace",
                  "compose-allowed-actions", "compose-expected-plan-sha256", "compose-delete-state-namespaces",

@@ -18,6 +18,15 @@ Connect's setup agent can research and prepare a package outside the built-in li
 
 The host selects trusted runtimes, permitted acquisition profiles and resource locations. The agent selects the integration, version, entrypoint and operations.
 
+## Inspect acquired dependencies (unreleased)
+
+When the host enables acquired-source inspection and the advertised tool schema
+includes `archive_sha256`, `setup_inspect_acquired` can read a retained dependency
+selected by its exact digest in the acquisition job's `artifacts` array. Omitting
+the selector preserves primary-archive inspection. The agent still selects the
+entrypoint and authors metadata; inspection executes no package code and does
+not establish native-addon or runtime compatibility.
+
 ## Describe the package
 
 Prepare an `IntegrationPackage` in `package.json` and an `ActivationManifest` in `activation.json`. Obtain the canonical package digest with:
@@ -53,6 +62,26 @@ Use `summary.package_content_digest` in the activation manifest. It identifies t
     ```
 
     The npm project uses `private: true` and a dependency on `file:./artifact.tgz`. Retain the version-3 lock and every selected dependency archive. The manifest identifies a JavaScript entrypoint in the primary package. Installation uses the retained closure with offline npm.
+
+    **Unreleased conditional closures:** Matching development acquisition and
+    installer versions also retain `closure/npm-target`, pinned as `npm-target`
+    in the manifest's `PinnedClosure`. Keep the unchanged lock and every
+    lock-referenced archive, including excluded optional packages.
+
+    The target binds the host-observed Node executable hash, version, module ABI,
+    OS, architecture and libc. The installer requires the selected Node target to
+    match and validates every archive before excluding incompatible optional
+    branches with explicit reasons. Required dependencies and shared rows remain
+    protected. Every package retained in the selected graph must match its exact
+    installed files; npm success alone is insufficient. Unconditional graphs keep
+    their existing behavior.
+
+    Do not edit the lock or guess host facts. Conditional peer graphs, unsupported
+    libc and native compilation remain outside this subset; selected prebuilt
+    addons have a separate contract. The installer does not download missing
+    dependencies or choose newer versions. Readback does not probe the reader
+    host's current OS/libc or establish authentication, a native grant or MCP
+    readiness. See the source contracts below for the full supported graph.
   </Tab>
   <Tab title="MCPB">
     ```text
@@ -73,6 +102,18 @@ Exact package schemas and installer contracts are in `crates/toolkit-package/PYT
 Call `setup_selected_check` with the prepared inputs. Review its proposal, then pass the returned proposal ID and digest to `setup_selected_install`. Installation uses a new destination and retains the selected input hashes and resulting launch configuration.
 
 The host then supplies account credentials, approves operation access and attaches the emitted connection through the [native MCP owner](/guides/native-mcp).
+
+A bare configuration exposes the whole server; a declared read operation does
+not hide its write tools or authorize their use. Connect's native protected
+attachment can separately enforce the host-approved subset of exact MCP tool
+names. Inspect the actual schemas and request only the operations needed through
+that protected review; separate write tools do not themselves prevent a scoped
+read grant.
+
+An operation-name allowlist does not constrain query semantics, prevent startup
+effects or provide filesystem confinement. Check those behaviors and apply the
+host's separate resource controls. Installation and effect metadata alone do not
+prove a read-only connection.
 
 ## Inspect the installed server
 

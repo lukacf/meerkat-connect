@@ -110,9 +110,24 @@ never bypasses their process owner.
 For ordinary Agent Plugins, add `"plugin_inspection": true` with a compatible
 `package_inspector`. The combined release's host preparation option
 `--enable-plugin-inspection` checks that support and writes both fields.
-`setup_inspect_plugin` takes a direct `staged_id` plus explicit paths such as
-`["./plugin.json", "./mcp.json", "./skills/example/SKILL.md"]`. It returns exact
-public text, canonical diagnostics and a retained `plugin_source` reference.
+`setup_inspect_plugin` takes a direct `staged_id` and exactly one of `inventory`
+or `files`. Begin with `{"staged_id":"ordinary","inventory":"./"}`, then
+inventory observed directories such as `./skills`, the chosen skill directory
+and its references. The same host-pinned canonical reader returns a complete,
+sorted list of direct children: relative `path`, `kind` (`file`, `directory`,
+`symlink` or `special`), and `byte_length` only for files. Symlink rows disclose
+no target. Inventories contain no text, source digest or `plugin_source` and
+retain no source evidence. They allow at most 256 entries, 1024 UTF-8 bytes per
+path, 64 KiB total path bytes and 15 selected-directory components (16 for a
+child). Unsafe, oversized or observably changing directories return no partial
+success. Unsupported inventory in an older pinned inspector reports
+`plugin_inspection_unavailable`; it says nothing about package validity or
+readiness.
+
+After discovering names, request explicit `files`, always including
+`./plugin.json`, plus relevant observed paths such as `./mcp.json`, a skill's
+`SKILL.md` and its references. Only this variant returns exact public text,
+canonical diagnostics and a retained `plugin_source` reference.
 The plugin need not contain a Toolkit namespace. Guidance-only packages need
 no MCP file; unrecognized extension namespaces remain opaque.
 

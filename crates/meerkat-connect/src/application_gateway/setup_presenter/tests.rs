@@ -338,7 +338,7 @@ async fn account_failure_resumes_the_same_enrollment_and_later_review() {
 // Reuse the real private-pipe lifetime fixture from
 // service_install_tests::console_lifetime. Component opens refuse; this supplies
 // only an actual connection's close observer, not native operation authority.
-async fn presentation_pipe() -> (
+pub(crate) async fn presentation_pipe() -> (
     toolkit_mobkit::private_host::PrivateHostConnection,
     tokio::fs::File,
     tokio::io::BufReader<tokio::fs::File>,

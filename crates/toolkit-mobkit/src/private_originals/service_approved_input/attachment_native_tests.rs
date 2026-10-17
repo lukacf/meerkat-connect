@@ -16,7 +16,7 @@ use meerkat_llm_core::{
 use meerkat_runtime::completion::CompletionOutcome;
 use meerkat_runtime::terminal_status::{InputTerminalReceiptRead, InteractionSelector};
 use meerkat_runtime::input_state::{InputLifecycleState, InputTerminalOutcome, StoredInputState};
-use meerkat_runtime::{LogicalRuntimeId, RuntimeStore};
+use meerkat_runtime::{LogicalRuntimeId, RuntimeStore, SessionServiceRuntimeExt};
 use std::{path::{Path, PathBuf}, sync::atomic::AtomicBool};
 
 type PersistentFixture =
@@ -29,6 +29,7 @@ struct Endpoint {
     released: PathBuf,
     called: PathBuf,
     result: String,
+    fail_before_initialize: bool,
 }
 impl Endpoint {
     fn new() -> Self {
@@ -39,10 +40,16 @@ impl Endpoint {
             released: directory.path().join("released"),
             called: directory.path().join("called"),
             result: format!("public-read-{}", uuid::Uuid::new_v4()),
+            fail_before_initialize: false,
             _directory: directory,
         }
     }
-    fn config(&self, realm: &str) -> meerkat_core::McpServerConfig {
+    fn failing_initialize() -> Self {
+        let mut endpoint = Self::new();
+        endpoint.fail_before_initialize = true;
+        endpoint
+    }
+    fn config(&self, realm: &str, deferred: bool) -> meerkat_core::McpServerConfig {
         // The existing native fixture uses this same line-oriented protocol.
         // Positional arguments keep temporary paths out of shell source.
         let script = r#"printf 'start\n' >> "$1"
@@ -53,7 +60,7 @@ while IFS= read -r line; do
     *'"method":"tools/list"'*)
       printf 'list\n' >> "$2"
       while [ ! -e "$3" ]; do sleep 0.02; done
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"read","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"read","inputSchema":%s}]}}\n' "$id" "$6" ;;
     *'"method":"tools/call"'*)
       printf '%s\n' "$line" >> "$4"
       case "$line" in
@@ -62,6 +69,16 @@ while IFS= read -r line; do
       esac ;;
   esac
 done"#;
+        let script = if self.fail_before_initialize {
+            // Retain the actual native attempt before releasing its initialize
+            // failure. No tool discovery or business operation is performed.
+            r#"printf 'start\n' >> "$1"
+while [ ! -e "$3" ]; do sleep 0.02; done
+printf '%s\n' 'toolkit-native-setup-diagnostic-sentinel' >&2
+exit 3"#
+        } else {
+            script
+        };
         let mut config = reviewed_config_operations(realm, &[Id::new("read").unwrap()].into());
         let connector = config.connector.take();
         let mut config = meerkat_core::McpServerConfig::stdio(
@@ -76,6 +93,10 @@ done"#;
                 self.released.to_str().unwrap().into(),
                 self.called.to_str().unwrap().into(),
                 self.result.clone(),
+                if deferred {
+                    // Real schema volume selects native deferred catalog mode.
+                    serde_json::json!({"type":"object","description":"A harmless read whose exact schema is intentionally large enough for native deferred discovery. The native catalog must load this tool before it can be offered to the Original model."}).to_string()
+                } else { serde_json::json!({"type":"object"}).to_string() },
             ],
             Default::default(),
         );
@@ -121,6 +142,7 @@ impl Drop for Endpoint {
 }
 
 const PUBLIC_READ_CALL: &str = "actual-public-attachment-read";
+const PUBLIC_CATALOG_CALL: &str = "actual-public-attachment-catalog";
 // A fixture bound on fresh model choices, never an authorization allowance.
 const MAX_PUBLIC_READ_CHOICES: usize = 3;
 
@@ -141,11 +163,14 @@ struct PublicReadScript {
     armed: AtomicBool,
     responses: AtomicUsize,
     choices: Mutex<Vec<PublicReadChoice>>,
+    catalog_choices: Mutex<Vec<PublicReadChoice>>,
+    catalog_feedback: Mutex<Option<ToolResult>>,
     answer_controller: Mutex<Option<meerkat_core::OperationId>>,
     endpoint_calls: Mutex<Option<PathBuf>>,
     expected_instruction: Mutex<Option<String>>,
     offered: Mutex<Option<ToolIdentity>>,
     feedback: Mutex<Option<ToolResult>>,
+    injected_contexts: Mutex<Vec<String>>,
 }
 impl PublicReadScript {
     fn provider(self: &Arc<Self>, inner: Arc<dyn LlmClient>) -> Arc<dyn LlmClient> {
@@ -160,7 +185,24 @@ impl PublicReadScript {
     fn endpoint_call_count(&self) -> usize {
         Endpoint::calls_at(self.endpoint_calls.lock().unwrap().as_ref().unwrap()).len()
     }
-    fn choice_count(&self) -> usize { self.choices.lock().unwrap().len() }
+    fn choice_count(&self) -> usize {
+        self.choices.lock().unwrap().len() + self.catalog_choices.lock().unwrap().len()
+    }
+}
+
+
+fn public_failure(result: &ToolResult) -> PublicReadFailure {
+    [PublicReadFailure::ReprepareRequired, PublicReadFailure::AuthorizationUnavailable]
+        .into_iter().find(|kind| {
+            let error = match kind {
+                PublicReadFailure::ReprepareRequired => meerkat_core::ToolError::AuthorizationRefused {
+                    refusal: meerkat_core::OperationRefused::new(meerkat_core::OperationRefusalKind::ReprepareRequired),
+                },
+                PublicReadFailure::AuthorizationUnavailable => meerkat_core::ToolError::OperationAuthorizationUnavailable,
+            };
+            let expected = meerkat_core::ops::terminal_tool_outcome_for_error(result.tool_use_id.clone(), error).result;
+            serde_json::to_value(result).unwrap() == serde_json::to_value(expected).unwrap()
+        }).expect("only exact native operation refusal or unavailable feedback permits a fresh choice")
 }
 
 struct PublicReadProvider {
@@ -212,10 +254,53 @@ impl LlmClient for PublicReadProvider {
                 });
                 assert_eq!(actual.as_deref(), expected.as_deref(),
                     "the current request must retain exact approved B");
+                let user_index = request.request().messages.iter().rposition(|message|
+                    matches!(message, Message::User(user) if !user.transcript_role.is_injected_context()))
+                    .expect("the reviewed user instruction remains a separate message");
+                let context_index = user_index.checked_sub(1).expect("host context precedes B");
+                let Message::User(context) = &request.request().messages[context_index] else {
+                    panic!("host context must be a separate typed user-channel message");
+                };
+                assert!(context.transcript_role.is_injected_context());
+                self.script.injected_contexts.lock().unwrap().push(context.text_content());
                 let offered = request.request().tools.iter().filter(|tool|
                     tool.provenance.as_ref().is_some_and(|source|
                         source.kind == ToolSourceKind::Mcp && source.source_id.as_str() == "mail"))
                     .collect::<Vec<_>>();
+                // A real deferred catalog withholds the MCP tool until the
+                // actual catalog-load call succeeds under this same B input.
+                let catalog = self.script.catalog_choices.lock().unwrap();
+                let catalog_feedback = catalog.last().and_then(|choice| request.request().messages.iter()
+                    .flat_map(|message| match message { Message::ToolResults { results, .. } => results.as_slice(), _ => &[] })
+                    .find(|result| result.tool_use_id == choice.call_id)).cloned();
+                if offered.is_empty() {
+                    assert!(request.request().tools.iter().any(|tool| tool.name.as_str() == "tool_catalog_load"),
+                        "B must receive the real catalog control before its deferred MCP tool");
+                    let prior_feedback = catalog_feedback.as_ref().map(public_failure);
+                    assert!(catalog.len() < MAX_PUBLIC_READ_CHOICES, "bounded catalog choices exhausted");
+                    let call_id = format!("{PUBLIC_CATALOG_CALL}-{}", catalog.len() + 1);
+                    let controller = request.authorization().unwrap().operation_id().clone();
+                    assert!(catalog.iter().all(|choice| choice.controller != controller));
+                    drop(catalog);
+                    assert_eq!(self.script.endpoint_call_count(), 0);
+                    self.script.catalog_choices.lock().unwrap().push(PublicReadChoice {
+                        call_id: call_id.clone(), controller, prior_feedback, endpoint_calls_before: 0,
+                    });
+                    tool_response = true;
+                    return LlmEvent::ToolCallComplete { id: call_id, name: "tool_catalog_load".into(),
+                        args: serde_json::json!({"names":["attachment_public_read"]}), meta: None };
+                }
+                assert!(!catalog.is_empty(), "the real schema must defer this MCP tool until catalog load");
+                if self.script.catalog_feedback.lock().unwrap().is_none() {
+                    let result = catalog_feedback.expect("actual catalog result must precede the exposed MCP tool");
+                    assert!(!result.is_error && result.settlement_failures.is_empty(), "{result:?}");
+                    let loaded: serde_json::Value = serde_json::from_str(&result.text_content()).unwrap();
+                    assert_eq!(loaded["catalog_exact"], true);
+                    assert_eq!(loaded["accepted_names"], serde_json::json!(["attachment_public_read"]));
+                    assert_eq!(loaded["noop_names"], serde_json::json!([]));
+                    *self.script.catalog_feedback.lock().unwrap() = Some(result);
+                }
+                drop(catalog);
                 assert_eq!(offered.len(), 1, "B must see the newly attached public tool");
                 let identity = offered[0].identity();
                 let mut retained = self.script.offered.lock().unwrap();
@@ -243,22 +328,7 @@ impl LlmClient for PublicReadProvider {
                     }
                 } else {
                     let prior_feedback = feedback.map(|result| {
-                        let kind = [PublicReadFailure::ReprepareRequired, PublicReadFailure::AuthorizationUnavailable]
-                            .into_iter().find(|kind| {
-                                let error = match kind {
-                                    PublicReadFailure::ReprepareRequired => meerkat_core::ToolError::AuthorizationRefused {
-                                        refusal: meerkat_core::OperationRefused::new(
-                                            meerkat_core::OperationRefusalKind::ReprepareRequired),
-                                    },
-                                    PublicReadFailure::AuthorizationUnavailable => meerkat_core::ToolError::OperationAuthorizationUnavailable,
-                                };
-                                let expected = meerkat_core::ops::terminal_tool_outcome_for_error(
-                                    result.tool_use_id.clone(), error).result;
-                                serde_json::to_value(&result).unwrap() == serde_json::to_value(expected).unwrap()
-                            }).expect("only exact native operation refusal or unavailable feedback permits a fresh choice");
-                        // The public refusal projection does not prove its kind.
-                        // The final typed native audit must establish this value.
-                        kind
+                        public_failure(&result)
                     });
                     assert!(choices.len() < MAX_PUBLIC_READ_CHOICES, "bounded public read choices exhausted");
                     let endpoint_calls_before = self.script.endpoint_call_count();
@@ -366,7 +436,7 @@ async fn approved_native(
     );
     let snapshot = acquisition(fixture, &dispatch).await;
     let instruction = snapshot.request().request().request.clone();
-    let mut config = endpoint.config(&fixture.scope.realm);
+    let mut config = endpoint.config(&fixture.scope.realm, public);
     if public {
         // Select the existing native NoConnector review branch explicitly.
         // The exact read ceiling remains in the reviewed MCP configuration.
@@ -377,9 +447,9 @@ async fn approved_native(
     }
     let b = if public {
         // Raw MCP access and model-facing application invocation are separate.
-        // Review only this mapped read, retaining the empty bootstrap policy.
-        // The fixture checks the actual offered identity before calling it;
-        // it does not request or use native catalog controls.
+        // Preserve find_and_install from bootstrap and explicitly review both
+        // catalog controls and the mapped invocation. Native task catalog
+        // authority is separate from the durable ordinary member policy.
         approve_b_configuration_with_tool_policy(
             fixture, snapshot, [Id::new("read").unwrap()].into(), config.clone(),
             ServiceToolPolicySelection {
@@ -387,7 +457,7 @@ async fn approved_native(
                     name: config.tool_names.get("read").unwrap().clone(),
                     consequence: meerkat_core::CompiledToolConsequence::R0,
                 }],
-                catalog: None,
+                catalog: Some(meerkat_core::CompiledToolConsequence::R0),
             },
         ).await
     } else {
@@ -417,14 +487,14 @@ async fn approved_native(
     assert!(
         fixture
             .source
-            .held_service_attachment(&b, &task)
+            .held_service_attachment(&b, &task.attachments()[0])
             .unwrap()
             .is_none()
     );
     assert!(
         fixture
             .source
-            .attachment_parent(&task)
+            .attachment_parent(&task.attachments()[0])
             .unwrap()
             .service_attachments
             .lock()
@@ -590,12 +660,57 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
             tools.push((&record.observation.operation_id, target.as_ref()));
         }
     }
+    let catalog_choices = script.catalog_choices.lock().unwrap();
+    assert!(!catalog_choices.is_empty() && catalog_choices.len() <= MAX_PUBLIC_READ_CHOICES);
+    let catalog_tools = tools.iter().filter(|(_, target)| matches!(target,
+        AuditTarget::Tool { tool_name, .. } if tool_name == "tool_catalog_load")).copied().collect::<Vec<_>>();
+    assert_eq!(catalog_tools.len(), catalog_choices.len());
+    let mut catalog_final_run_calls = 0;
+    let mut catalog_end = 0;
+    for (index, ((operation, target), choice)) in catalog_tools.iter().zip(catalog_choices.iter()).enumerate() {
+        let AuditTarget::Tool { call_id, arguments_digest, owners, .. } = target else { unreachable!() };
+        assert_eq!(call_id, &choice.call_id);
+        assert_eq!(choice.endpoint_calls_before, 0);
+        if let AuditTarget::Tool { arguments_digest: first, owners: first_owners, .. } = catalog_tools[0].1 {
+            assert!(arguments_digest == first && owners == first_owners);
+        }
+        let failure = if index + 1 == catalog_choices.len() { None } else {
+            let mut failures = records.iter().filter(|record| &record.observation.operation_id == *operation)
+                .filter_map(|record| match &record.observation.observation {
+                    AuditObservation::Refused { reason: OperationRefusalKind::ReprepareRequired, .. } => Some(PublicReadFailure::ReprepareRequired),
+                    AuditObservation::AuthorizationUnavailable { .. } => Some(PublicReadFailure::AuthorizationUnavailable),
+                    _ => None,
+                });
+            let first = failures.next().expect("an earlier catalog choice needs an exact typed native failure");
+            assert!(failures.all(|kind| kind == first));
+            if let Some(feedback) = catalog_choices[index + 1].prior_feedback { assert_eq!(feedback, first); }
+            Some(first)
+        };
+        let (start, end) = operation_span(&records, operation, target, failure);
+        let operation_run = records[start].observation.run_id.as_ref().unwrap();
+        let controller = records.iter().enumerate().filter(|(_, record)| record.observation.operation_id == choice.controller)
+            .collect::<Vec<_>>();
+        assert_eq!(controller.len(), 3);
+        assert!(controller.iter().all(|(i, record)| *i < start && *i >= catalog_end
+            && record.observation.run_id.as_ref() == Some(operation_run)));
+        assert!(matches!(&controller[0].1.observation.observation, AuditObservation::Prepared { target, .. }
+            if matches!(target.as_ref(), AuditTarget::Model(model) if model.usage == AuditModelUse::ControllerInference)));
+        assert!(matches!(&controller[1].1.observation.observation, AuditObservation::Entry));
+        assert!(matches!(&controller[2].1.observation.observation, AuditObservation::Outcome {
+            outcome: OperationObservedOutcome::HttpResponse { status: 200 }
+        }));
+        if operation_run == run { catalog_final_run_calls += 1; }
+        catalog_end = end;
+    }
+    assert_eq!(script.catalog_feedback.lock().unwrap().as_ref().unwrap().tool_use_id,
+        catalog_choices.last().unwrap().call_id);
+    tools.retain(|(_, target)| !matches!(target, AuditTarget::Tool { tool_name, .. } if tool_name == "tool_catalog_load"));
     let choices = script.choices.lock().unwrap();
     assert!(!choices.is_empty() && choices.len() <= MAX_PUBLIC_READ_CHOICES);
     assert_eq!(tools.len(), choices.len(), "every actual scripted choice has one exact native tool operation");
     let expected_identity = script.offered.lock().unwrap();
     let mut previous: Option<(usize, &meerkat_core::RunId, PublicReadFailure)> = None;
-    let mut final_run_calls = 0;
+    let mut final_run_calls = catalog_final_run_calls;
     for (index, ((operation, target), choice)) in tools.iter().zip(choices.iter()).enumerate() {
         let AuditTarget::Tool { call_id, tool_name, arguments_digest, owners } = target else { unreachable!() };
         assert_eq!(call_id, &choice.call_id);
@@ -619,6 +734,7 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
             Some(first)
         };
         let (tool_start, tool_end) = operation_span(&records, operation, target, failure);
+        assert!(tool_start > catalog_end, "mapped invocation follows actual catalog admission");
         let controller = records.iter().enumerate().filter(|(_, record)|
             record.observation.operation_id == choice.controller).collect::<Vec<_>>();
         assert_eq!(controller.len(), 3, "the actual fixture controller observes prepare, entry and HTTP return");
@@ -751,6 +867,10 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
         }
         None => PersistentFixture::for_live_attachment().await,
     };
+    if public {
+        // Exercise cold source custody with the same actual native service.
+        fixture.source.bind_controller_pin_source(fixture.service.clone()).unwrap();
+    }
     let endpoint = Endpoint::new();
     let outcome = AssertUnwindSafe(Box::pin(tokio::time::timeout(WAIT * 4, async {
         let (b, stored, task, readback, a_input, instruction) = approved_native(&fixture, &endpoint, public).await;
@@ -771,7 +891,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
         assert!(matches!(source.observe_service_input_receipt(&b).await.unwrap(),
             crate::private_originals::PrivateServiceInputObservation::AdmissionUnresolved));
         let model_requests = fixture.model_requests();
-        if let Some(script) = &script { script.arm(instruction, endpoint.called.clone()); }
+        if let Some(script) = &script { script.arm(instruction.clone(), endpoint.called.clone()); }
         let actor = fixture
             .service
             .live_session_actor_witness(&fixture.session)
@@ -790,7 +910,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             .step_service_input_with_attachment(&fixture.store, &stored)
             .await
             .unwrap();
-        assert!(source.held_service_attachment(&b, &task).unwrap().is_none());
+        assert!(source.held_service_attachment(&b, &task.attachments()[0]).unwrap().is_none());
         assert_eq!(endpoint.starts(), 0);
         assert_eq!(
             fixture.store.get(&stored.key).await.unwrap().unwrap(),
@@ -809,7 +929,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             .unwrap();
         endpoint.wait_for(&endpoint.listed).await;
         let held = source
-            .held_service_attachment(&b, &task)
+            .held_service_attachment(&b, &task.attachments()[0])
             .unwrap()
             .expect("actual accepted attempt retained");
         let receipt = held
@@ -848,7 +968,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             .unwrap();
         assert!(Arc::ptr_eq(
             &held,
-            &source.held_service_attachment(&b, &task).unwrap().unwrap()
+            &source.held_service_attachment(&b, &task.attachments()[0]).unwrap().unwrap()
         ));
         assert_eq!(
             fixture.store.get(&stored.key).await.unwrap().unwrap(),
@@ -876,6 +996,11 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                 McpAttachmentReadiness::ToolNotRouted { .. }
             ));
         }
+        let expected_control = if cancel { None } else {
+            Some(source.current_service_mcp_control(&held.control,
+                &held.control.effect_binding(McpAttachmentEffect::Apply),
+                source.owner.clock().now().unwrap().unix_ms, false).unwrap())
+        };
         let current = fixture.store.get(&stored.key).await.unwrap().unwrap();
         source
             .step_service_input_with_attachment(&fixture.store, &current)
@@ -886,10 +1011,32 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
         if cancel {
             assert!(record.operation_cancelled);
             assert!(record.final_association.is_none() && record.service_admission.is_none());
+            assert!(record.bound_service_input.is_none(), "cancelled setup cannot retain success context");
             assert_native_inputs(&fixture, runtime_store.as_ref(), &a_only).await;
             assert_eq!(fixture.model_requests(), model_requests);
         } else {
             assert!(record.final_association.is_some() && record.service_admission.is_some());
+            let meerkat_runtime::Input::Prompt(bound) = record.bound_service_input.as_ref().unwrap().decode().unwrap() else {
+                panic!("approved B must retain its exact prompt input");
+            };
+            assert_eq!(bound.content.text_content(), instruction);
+            assert_eq!(digest(instruction.as_bytes()), record.event.content_sha256);
+            assert_eq!(bound.injected_context.len(), 1);
+            let context = bound.injected_context[0].text_content();
+            let observed: serde_json::Value = serde_json::from_str(&context).unwrap();
+            let canonical = expected_control.as_ref().unwrap();
+            assert_eq!(observed["operation"], task.acquisition.id);
+            assert_eq!(observed["original"], b.original.as_str());
+            assert_eq!(observed["connection"], serde_json::to_value(&canonical.connection).unwrap());
+            assert_eq!(observed["resource"], serde_json::to_value(&canonical.resource).unwrap());
+            assert_eq!(observed["allowed_operations"], serde_json::to_value(&canonical.operations).unwrap());
+            assert_eq!(observed["expires_at_ms"], canonical.expires_at_ms);
+            assert_eq!(observed["configuration_sha256"], serde_json::to_value(&canonical.configuration_revision).unwrap());
+            // Positional launch values and the private fixture result are not
+            // authority facts and must not leak through the host observation.
+            assert!(!context.contains(&endpoint.result));
+            assert!(!context.contains(endpoint.started.to_str().unwrap()));
+            assert!(!context.contains("/bin/sh"));
             let admission = record.service_admission.as_ref().unwrap();
             assert_eq!(admission.session_id, fixture.session.to_string());
             assert_ne!(admission.input_id, a_input);
@@ -921,11 +1068,16 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                 assert_ne!(script.offered.lock().unwrap().as_ref().unwrap().name.as_str(), "read",
                     "the actual catalog supplies the exposed identity, while MCP receives raw read");
                 assert_eq!(script.responses.load(Ordering::SeqCst), 1 + script.choice_count());
+                let contexts = script.injected_contexts.lock().unwrap();
+                assert_eq!(contexts.len(), script.responses.load(Ordering::SeqCst));
+                assert!(contexts.iter().all(|projected| projected == &context),
+                    "the actual provider receives the exact retained host context beside the unchanged instruction");
+                drop(contexts);
                 let feedback = script.feedback.lock().unwrap();
                 assert_eq!(feedback.as_ref().unwrap().text_content(), endpoint.result);
             }
         }
-        assert!(source.held_service_attachment(&b, &task).unwrap().is_none());
+        assert!(source.held_service_attachment(&b, &task.attachments()[0]).unwrap().is_none());
         source
             .step_service_input_with_attachment(&fixture.store, &saved)
             .await
@@ -934,6 +1086,8 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
         let replay = source.decode_record(&replay_saved, &b).unwrap();
         assert!(replay.service_admission == record.service_admission);
         assert!(replay.final_association == record.final_association);
+        assert!(replay.bound_service_input == record.bound_service_input,
+            "acknowledgement replay cannot refresh the host observation");
         if let Some(admission) = &record.service_admission {
             assert_native_inputs(
                 &fixture,
@@ -962,6 +1116,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             if cancel { assert_eq!(script.choice_count(), 0); }
             assert_eq!(script.offered.lock().unwrap().is_some(), !cancel);
             assert_eq!(script.feedback.lock().unwrap().is_some(), !cancel);
+            assert_eq!(script.catalog_feedback.lock().unwrap().is_some(), !cancel);
         }
         assert_eq!(
             endpoint.starts(),
@@ -973,6 +1128,36 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
             readbacks_before_entry + 1
         );
         if public && !cancel {
+            let admission = record.service_admission.as_ref().unwrap();
+            let association = record.final_association.as_ref().unwrap();
+            let input = record.bound_service_input.as_ref().unwrap().decode().unwrap();
+            let actual = fixture.machine.input_state(&fixture.session, input.id()).await.unwrap().unwrap();
+            let retained = source.retained.lock().unwrap().iter()
+                .find(|held| held.reference == b).unwrap().clone();
+            let mut retry = input.clone();
+            let meerkat_runtime::Input::Prompt(prompt) = &mut retry else { panic!("prompt"); };
+            prompt.header.id = InputId::new();
+            source.retain_bound_service_input(&b, &retained.original, &retry).await.unwrap();
+            meerkat_runtime::input_state::verify_exact_replay(&actual.state, &retry).unwrap();
+            let meerkat_runtime::Input::Prompt(prompt) = &mut retry else { panic!("prompt"); };
+            let mut context: serde_json::Value = serde_json::from_str(&prompt.injected_context[0].text_content()).unwrap();
+            context["expires_at_ms"] = serde_json::json!(0);
+            prompt.injected_context[0] = meerkat_core::ContentInput::Text(context.to_string());
+            assert!(matches!(source.retain_bound_service_input(&b, &retained.original, &retry).await,
+                Err(PrivateOriginalError::Conflict)));
+            assert!(meerkat_runtime::input_state::verify_exact_replay(&actual.state, &retry).is_err());
+            drop(retained);
+            // Lose only this settled B's source custody. Native admission and
+            // the existing whole-input record survive; no new input is sent.
+            source.retained.lock().unwrap().retain(|held| held.reference != b);
+            source.owner.forget_task_custody_for_test(association);
+            let restored = source.restore_service_admission(&b).await.unwrap().unwrap();
+            assert_eq!(restored.admission.input_id, admission.input_id);
+            assert_eq!(restored.admission.session_id, admission.session_id);
+            let restored_record = source.decode_record(&fixture.store.get(&stored.key).await.unwrap().unwrap(), &b).unwrap();
+            assert!(restored_record.bound_service_input == record.bound_service_input);
+            assert_eq!(endpoint.calls().len(), 1);
+            assert_eq!(fixture.model_requests(), model_requests + 1 + script.as_ref().unwrap().choice_count());
             // Revoking future operation use must not erase the exact completed
             // native fact. This read neither resubmits B nor resolves execution.
             source.cancel_original_operation(&b).await.unwrap();
@@ -1104,10 +1289,227 @@ async fn actual_pending_attachment_cannot_admit_b_after_parent_cancellation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn actual_public_attachment_calls_read_and_completes_exact_b_once_with_cancellation() {
-    // Real native approval, Apply, readiness, invocation and exact completion;
-    // the controlled local MCP/model do not establish live provider acceptance.
+async fn actual_public_attachment_loads_catalog_calls_mapped_read_and_completes_exact_b_once_with_cancellation() {
+    // Real captured A with find_and_install only, reviewed complete successor,
+    // native catalog scope, Apply, catalog load, mapped invocation and exact B
+    // completion. Controlled MCP/model IO is not live provider acceptance.
     for cancel in [false, true] {
         actual_attachment_case(cancel, true).await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_initialize_failure_is_captured_and_delivered_only_to_original() {
+    use meerkat::surface::SessionServiceDeliveryHost;
+    use meerkat::{
+        ContinuationHostBindings, ContinuationKey, ContinuationOwner, ContinuationStatus,
+        DetachedJobService, MemoryDetachedJobStore, RuntimeDeliveryOwner,
+    };
+    use meerkat_runtime::{InMemoryRuntimeStore, RuntimeDeliveryInbox, SessionServiceRuntimeExt};
+    use meerkat_toolkit::continuation::{ContinuationStep, ContinuationStepOptions};
+    use meerkat_toolkit::setup::{
+        ApprovedServiceAttachmentClass, ApprovedServiceAttachmentFailure,
+        ApprovedServiceAttachmentPhase,
+    };
+
+    const SENTINEL: &str = "toolkit-native-setup-diagnostic-sentinel";
+    let (mut fixture, runtime_store) = PersistentFixture::for_live_attachment().await;
+    let native_handle = fixture.native_for_console_mut().mob_handle();
+    let endpoint = Endpoint::failing_initialize();
+    let mut owner_handle = None;
+    let mut owner_passes = None;
+    let outcome = AssertUnwindSafe(Box::pin(tokio::time::timeout(WAIT * 4, async {
+        let (b, stored, task, readback, a_input, _) =
+            approved_native(&fixture, &endpoint, false).await;
+        let source = &fixture.source;
+        let a_binding = fixture.binding().await.unwrap().unwrap();
+        assert_native_inputs(&fixture, runtime_store.as_ref(), &[(a_input.as_str(), &a_binding)])
+            .await;
+        let model_requests = fixture.model_requests();
+        let actor = fixture.service.live_session_actor_witness(&fixture.session).await.unwrap();
+
+        // This is the ordinary empty-keeper path. The real child holds its
+        // initialize reply until the test can retain the exact native receipt.
+        source.step_service_input_with_attachment(&fixture.store, &stored).await.unwrap();
+        endpoint.wait_for(&endpoint.started).await;
+        let held = source.held_service_attachment(&b, &task.attachments()[0]).unwrap().unwrap();
+        let receipt = held.receipt(|| panic!("one accepted native attempt only"))
+            .await.unwrap().unwrap();
+        assert!(receipt.outcome.staged && !receipt.outcome.persisted);
+        assert_eq!(receipt.attempt.server(), "mail");
+        assert_eq!(receipt.attempt.observe("read").await, McpAttachmentReadiness::Pending);
+        assert_eq!(fixture.service.live_session_actor_witness(&fixture.session).await.as_ref(),
+            Some(&actor));
+        assert_eq!(endpoint.starts(), 1);
+        assert!(!endpoint.listed.exists());
+        assert!(endpoint.calls().is_empty());
+        assert_eq!(readback.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.store.get(&stored.key).await.unwrap().unwrap(), stored);
+        assert_eq!(fixture.model_requests(), model_requests);
+
+        endpoint.release();
+        assert!(matches!(receipt.attempt.wait("read", WAIT).await,
+            McpAttachmentReadiness::Failed { .. }));
+        assert!(Arc::ptr_eq(&held, &source.held_service_attachment(&b, &task.attachments()[0]).unwrap().unwrap()));
+        // Production reopens currentness, reads the real Meta-wrapped observer,
+        // and commits its finite projection in the existing cancellation CAS.
+        source.step_service_input_with_attachment(&fixture.store, &stored).await.unwrap();
+        let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
+        let record = source.decode_record(&saved, &b).unwrap();
+        assert!(record.operation_cancelled);
+        assert!(record.final_association.is_none() && record.service_admission.is_none());
+        assert!(record.bound_service_input.is_none());
+        assert!(record.service_attachment_failure == Some(ApprovedServiceAttachmentFailure::Failed));
+        let observation = record.service_attachment_observation
+            .expect("actual native diagnostics must survive production capture");
+        assert_eq!(observation.phase, ApprovedServiceAttachmentPhase::Initialize);
+        let ApprovedServiceAttachmentClass::Closed { exit } = observation.class else {
+            panic!("actual initialize close must retain its finite class");
+        };
+        // The exact selected Core contract asserts the process status on Linux.
+        #[cfg(target_os = "linux")]
+        assert_eq!(exit, Some(meerkat_toolkit::setup::ApprovedServiceAttachmentExit::Code(3)));
+        #[cfg(not(target_os = "linux"))]
+        let _ = exit;
+        assert!(!serde_json::to_string(&saved.data).unwrap().contains(SENTINEL));
+        assert!(source.held_service_attachment(&b, &task.attachments()[0]).unwrap().is_none());
+        assert_native_inputs(&fixture, runtime_store.as_ref(), &[(a_input.as_str(), &a_binding)])
+            .await;
+        assert_eq!(fixture.model_requests(), model_requests);
+
+        let setup = source.service_setup_store().unwrap();
+        let obligation = setup.committed_continuation(&Id::new(task.acquisition.id.clone()).unwrap())
+            .await.unwrap().unwrap();
+        assert_eq!(obligation.service_attachment_observation(), Some(observation));
+        assert!(obligation.service_attachment_failure() == Some(ApprovedServiceAttachmentFailure::Failed));
+        assert!(source.failed_service_allows_original_result(&obligation).await.unwrap());
+        let exact_digest = obligation.digest().unwrap();
+        let setup_record = fixture.store.get(&task.acquisition).await.unwrap().unwrap();
+        assert!(!serde_json::to_string(&setup_record.data).unwrap().contains(SENTINEL));
+        assert!(!serde_json::to_string(&obligation).unwrap().contains(SENTINEL));
+        source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
+        assert_eq!(fixture.store.get(&stored.key).await.unwrap().unwrap(), saved);
+        assert_eq!(setup.committed_continuation(obligation.operation()).await.unwrap().unwrap()
+            .digest().unwrap(), exact_digest);
+        assert_eq!(endpoint.starts(), 1);
+        assert_eq!(readback.calls.load(Ordering::SeqCst), 1);
+        assert!(endpoint.calls().is_empty());
+
+        // Reuse the actual native continuation host, inbox and retained A owner.
+        // No attachment receipt or delivered result is fabricated here.
+        let adapter = crate::installed_host::acquisition::InstalledNativeContinuation::for_service_continuation_test(
+            fixture.store.clone(), fixture.scope.clone(), source.clone());
+        let state = meerkat_mob_mcp::MobMcpState::new_with_runtime_adapter(fixture.service.clone(),
+            Some(fixture.machine.clone()), meerkat_mob::MobControlPrincipal::Owner).unwrap()
+            .with_host_job_source(meerkat_mob_mcp::HostJobSource::new([adapter.namespace()], adapter.clone()).unwrap())
+            .into_shared();
+        let binding = obligation.continuation().native_original.as_ref().unwrap();
+        let member = binding.member.as_ref().unwrap();
+        state.try_mob_insert_handle(meerkat_mob::MobId::from(member.mob_id.as_str()), native_handle)
+            .await.unwrap();
+        let inbox = RuntimeDeliveryInbox::new(Arc::new(InMemoryRuntimeStore::new()));
+        let bindings = Arc::new(ContinuationHostBindings::default());
+        state.bind_continuations(inbox.clone(), &bindings).unwrap();
+        let service = state.continuation_service().unwrap();
+        adapter.bind_fixture_native(service.clone(), state.clone()).unwrap();
+        let options = ContinuationStepOptions { worker: Id::new("actual-native-failure-result").unwrap(),
+            lease_ms: 30_000, owner_timeout_ms: 1_000, settlement_budget_ms: 1_000 };
+        assert!(setup.step_continuation(obligation.operation(), adapter.as_ref(), &options)
+            .await.is_err());
+        let owner = ContinuationOwner::Member {
+            mob_id: member.mob_id.clone(), identity: member.member.clone(),
+        };
+        let key = ContinuationKey::new(obligation.continuation().delivery_key.to_string()).unwrap();
+        let ContinuationStatus::Pending { receipt, .. } = service.continuation_status(&owner, &key)
+            .await.unwrap() else { panic!("canonical failure must precede native A admission"); };
+        let pending = inbox.list_pending(&LogicalRuntimeId(receipt.address), 2).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        let payload: serde_json::Value = serde_json::from_slice(pending[0].submission.payload()).unwrap();
+        let delivery: meerkat::ContinuationDelivery = serde_json::from_value(payload).unwrap();
+        let expected = serde_json::json!({
+            "outcome": obligation.outcome(),
+            "service_attachment_failure": "failed",
+            "service_attachment_observation": observation,
+            "explanation": "The selected service attachment attempt failed or was rejected. Its replacement instruction was permanently fenced before admission. This is a setup failure result under your original authority, not service readiness or permission to retry. Research any corrected choice and request a separately reviewed setup.",
+        });
+        let expected = String::from_utf8(toolkit_package::canonical_json(&expected).unwrap()).unwrap();
+        assert!(!expected.contains(SENTINEL));
+        assert_eq!(delivery.body, expected.into());
+        let jobs = Arc::new(MemoryDetachedJobStore::new());
+        let host = SessionServiceDeliveryHost::new(&fixture.service, &fixture.machine,
+            DetachedJobService::new(jobs.clone()), None).with_continuation_bindings(bindings.clone());
+        let handle = RuntimeDeliveryOwner::new(jobs, inbox)
+            .with_source_changes(bindings.subscribe_source_changes()).arm(Arc::new(host)).unwrap();
+        owner_passes = Some(handle.subscribe_passes());
+        owner_handle = Some(handle);
+        let status = tokio::time::timeout(WAIT, async {
+            loop {
+                let status = service.continuation_status(&owner, &key).await.unwrap();
+                if matches!(status, ContinuationStatus::Applied { .. }) { break status; }
+                owner_passes.as_mut().unwrap().changed().await.unwrap();
+            }
+        }).await.expect("actual native failure result must resume retained A");
+        let ContinuationStatus::Applied { session, input, .. } = status else { unreachable!() };
+        assert_eq!(session, fixture.session);
+        assert_ne!(input.to_string(), a_input);
+        let delivered = fixture.machine.input_state(&session, &input).await.unwrap().unwrap();
+        assert_eq!(delivered.state.retained_resume.as_ref().unwrap().identity, binding.retained_work);
+        let rows = runtime_store.load_input_states_strict(&LogicalRuntimeId::for_session(&session))
+            .await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.iter().map(|row| row.state.input_id.to_string()).collect::<std::collections::BTreeSet<_>>(),
+            [a_input, input.to_string()].into_iter().collect());
+        for _ in 0..2 {
+            assert!(matches!(setup.step_continuation(obligation.operation(), adapter.as_ref(), &options)
+                .await.unwrap(), ContinuationStep::Acknowledged(_)));
+        }
+        let final_b = fixture.store.get(&stored.key).await.unwrap().unwrap();
+        assert_eq!(final_b, saved);
+        assert_eq!(setup.committed_continuation(obligation.operation()).await.unwrap().unwrap()
+            .digest().unwrap(), exact_digest);
+        // Terminal archival may empty the live spine ledger. Check the same
+        // canonical native input history again after both replay acknowledgements.
+        let after_replay = runtime_store
+            .load_input_states_strict(&LogicalRuntimeId::for_session(&session))
+            .await
+            .unwrap();
+        assert_eq!(after_replay.len(), 2);
+        assert_eq!(
+            after_replay
+                .iter()
+                .map(|row| row.state.input_id.to_string())
+                .collect::<std::collections::BTreeSet<_>>(),
+            rows.iter()
+                .map(|row| row.state.input_id.to_string())
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        assert_eq!(endpoint.starts(), 1);
+        assert!(!endpoint.listed.exists());
+        assert!(endpoint.calls().is_empty());
+        assert_eq!(readback.calls.load(Ordering::SeqCst), 1);
+    }))).catch_unwind().await;
+    endpoint.release();
+    // Dropping a handle aborts its task. Use the native retirement owner to
+    // finish any entered pass and join it before releasing the handle.
+    let owner_joined = match owner_handle.as_ref() {
+        Some(owner) => owner.retire().join(WAIT).await.is_ok(),
+        None => true,
+    };
+    drop(owner_handle);
+    drop(owner_passes);
+    fixture.source.join_service_attachments().await;
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    assert!(
+        owner_joined,
+        "the actual continuation owner must join before test completion"
+    );
+    match outcome {
+        Ok(Ok(())) => (),
+        Ok(Err(_)) => panic!("actual initialize failure control timed out"),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[path = "batch_native_tests.rs"]
+mod batch;

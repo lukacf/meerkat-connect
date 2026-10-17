@@ -120,12 +120,13 @@ impl Fixture {
     async fn with_ancestor() -> Self {
         Self::build_with_ancestors(true, true, true).await
     }
-    async fn with_account() -> Self { Self::build_full(true, true, true, true, false).await }
-    async fn with_public(account: bool) -> Self { Self::build_full(true, true, true, account, true).await }
+    async fn with_account() -> Self { Self::build_full(true, true, true, true, false, false).await }
+    async fn with_public(account: bool) -> Self { Self::build_full(true, true, true, account, true, false).await }
     async fn build_with_ancestors(report: bool, operations: bool, recursive: bool) -> Self {
-        Self::build_full(report, operations, recursive, false, false).await
+        Self::build_full(report, operations, recursive, false, false, false).await
     }
-    async fn build_full(report: bool, operations: bool, recursive: bool, account: bool, public: bool) -> Self {
+    async fn with_catalog() -> Self { Self::build_full(true, true, true, true, true, true).await }
+    async fn build_full(report: bool, operations: bool, recursive: bool, account: bool, public: bool, catalog: bool) -> Self {
         let (directory, owner, base) = fixture();
         let ancestors = if recursive {
             vec![retained(&owner, &base, "recorded-ancestor", "user", &[])]
@@ -179,7 +180,7 @@ impl Fixture {
             } else { None };
             Some(crate::installed_host::acquisition::ConfiguredHelperReportCapability { parent: vec![grant], account_parent, public_parent })
         } else { None };
-        let operation_basis = if operations {
+        let mut operation_basis = if operations {
             use meerkat_authorization_contracts::work_association::{GrantTarget, TargetGrantLineage};
             let issue = |id: &str, action: &str| {
                 let mut bounds = ExecutionRestrictions::unrestricted();
@@ -201,8 +202,20 @@ impl Fixture {
                 }],
             })
         } else { None };
+        let catalog = if catalog {
+            let parent = owner.grants.issue_root(&crate::original_ingress::tests::principal("admin"),
+                EvidenceId::new("independent-successor-catalog-parent").unwrap(),
+                crate::original_ingress::tests::principal("agent"), None,
+                crate::installed_host::application_operations::configured_catalog_parent(
+                    &crate::original_ingress::tests::principal("setup-agent"),
+                    &parent.association().candidate().target.audience),
+            ).unwrap();
+            let WorkAuthorityBasis::TargetedGrantLineages { base, .. } = operation_basis.as_mut().unwrap() else { unreachable!() };
+            *base = None;
+            Some(crate::installed_host::acquisition::ConfiguredHelperCatalogCapability { parent: vec![parent] })
+        } else { None };
         let (admitted, binding) = super::super::tests::admitted_source_fixture_with_report_basis(
-            &owner, &work, &parent, contributors, &base, report, operation_basis,
+            &owner, &work, &parent, contributors, &base, report, operation_basis, catalog,
         ).await;
         let store = FaultStore { inner: SqliteStore::open(&directory.path().join("sources.sqlite3")).unwrap(),
             fault: AtomicU8::new(0) };
@@ -351,3 +364,5 @@ mod report_tests;
 mod origin_tests;
 
 mod account_tests;
+
+mod catalog_tests;

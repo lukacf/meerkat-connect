@@ -98,6 +98,22 @@ pub(crate) fn catalog_read(
     )
 }
 
+/// Explicit host selection for catalog reads by this helper's successors.
+/// Only the application receives this one-level parent; the native binder
+/// narrows its resource to the observed helper session before execution.
+pub(crate) fn configured_catalog_parent(executor: &PrincipalRef, audience: &AudienceRef)
+    -> ExecutionRestrictions
+{
+    ExecutionRestrictions {
+        actions: ExactRestriction::exact([ActionRef { feature: "toolkit".into(), action: "catalog-read".into() }]),
+        resource_domains: ExactRestriction::unrestricted(),
+        processors: ExactRestriction::exact([ProcessorRef::Principal { principal: executor.clone() }]),
+        audiences: ExactRestriction::exact([audience.clone()]),
+        lifetime: LifetimeRestriction::unrestricted(),
+        delegation_depth: DelegationDepth::remaining(1),
+    }
+}
+
 /// Admin-issued capability for the exact setup action and selected destination.
 pub(crate) fn configured_setup_parent(
     executor: &PrincipalRef,

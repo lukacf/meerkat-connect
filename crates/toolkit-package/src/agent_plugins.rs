@@ -347,7 +347,13 @@ impl PortableMcpServer {
 pub struct PortablePluginExport {
     plugin_json: Vec<u8>,
     mcp_json: Option<Vec<u8>>,
-    files: BTreeMap<String, Vec<u8>>,
+    files: BTreeMap<String, PortableIncludedFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PortableIncludedFile {
+    bytes: Vec<u8>,
+    executable: bool,
 }
 
 /// Current filesystem observations only, never an export or readiness receipt.
@@ -365,13 +371,25 @@ pub enum PortableExportCheckState {
 pub struct PortableExportFingerprint {
     pub sha256: ContentDigest,
     pub bytes: u64,
+    /// Unix execute-bit observation, independent of read/write permissions.
+    /// Absent in older observations that did not inspect executable intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<bool>,
 }
 
 impl PortableExportFingerprint {
-    fn of_bytes(bytes: &[u8]) -> Self {
+    fn of_file(bytes: &[u8], executable: bool) -> Self {
+        #[cfg(unix)]
+        let executable = Some(executable);
+        #[cfg(not(unix))]
+        let executable = {
+            let _ = executable;
+            None
+        };
         Self {
             sha256: ContentDigest::of_bytes(bytes),
             bytes: bytes.len() as u64,
+            executable,
         }
     }
 }
@@ -550,8 +568,10 @@ impl PortablePluginExport {
         })
     }
 
-    /// Include an inert file, such as a skill document, read through the
-    /// anchored plugin root. Its bytes are copied exactly and never parsed.
+    /// Include an inert file, such as a skill document or bundled executable,
+    /// read through the anchored plugin root. Bytes and Unix executable intent
+    /// come from the same opened regular file. No executable is ever run here;
+    /// other source permissions, ownership and special mode bits are not copied.
     pub fn with_file(
         mut self,
         root: &PluginRoot,
@@ -564,9 +584,50 @@ impl PortablePluginExport {
                 UnsupportedPortableExport::ReservedFile,
             ));
         }
-        let bytes = root.read(&path, MAX_EXPORT_FILE_BYTES)?;
-        self.files.insert(path, bytes);
+        let file = root.read_export_file(&path, MAX_EXPORT_FILE_BYTES)?;
+        self.files.insert(path, file);
         Ok(self)
+    }
+
+    /// The retained recipe owner has already validated selected text and paths.
+    /// Historical observations carry no executable intent. Files are written
+    /// without execute bits, and this export grants no execution authority.
+    #[cfg(feature = "local-recipes")]
+    pub(crate) fn with_retained_text(
+        mut self,
+        relative: &str,
+        bytes: &[u8],
+    ) -> Result<Self, ValidationError> {
+        let path = format!("./{}", relative_path(relative)?);
+        if path == PLUGIN_FILE || path == MCP_FILE || self.files.contains_key(&path) {
+            return Err(ValidationError::new(
+                "guidance export",
+                "reserved or duplicate file",
+            ));
+        }
+        self.files.insert(
+            path,
+            PortableIncludedFile {
+                bytes: bytes.to_vec(),
+                executable: false,
+            },
+        );
+        Ok(self)
+    }
+
+    /// Fingerprints of every generated document and explicitly included file.
+    /// Paths are relative to the export directory, without a leading `./`.
+    pub fn file_fingerprints(&self) -> BTreeMap<String, PortableExportFingerprint> {
+        self.documents_and_files()
+            .map(|(path, bytes, executable)| {
+                (
+                    path.strip_prefix("./")
+                        .expect("portable relative path")
+                        .to_owned(),
+                    PortableExportFingerprint::of_file(bytes, executable),
+                )
+            })
+            .collect()
     }
 
     pub fn plugin_json(&self) -> &[u8] {
@@ -580,7 +641,21 @@ impl PortablePluginExport {
     pub fn files(&self) -> impl Iterator<Item = (&str, &[u8])> {
         self.files
             .iter()
-            .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+            .map(|(path, file)| (path.as_str(), file.bytes.as_slice()))
+    }
+
+    fn documents_and_files(&self) -> impl Iterator<Item = (&str, &[u8], bool)> {
+        [
+            (PLUGIN_FILE, Some(self.plugin_json())),
+            (MCP_FILE, self.mcp_json()),
+        ]
+        .into_iter()
+        .filter_map(|(path, bytes)| bytes.map(|bytes| (path, bytes, false)))
+        .chain(
+            self.files
+                .iter()
+                .map(|(path, file)| (path.as_str(), file.bytes.as_slice(), file.executable)),
+        )
     }
 
     /// Compare existing files with these exact canonical bytes without writing.
@@ -591,32 +666,27 @@ impl PortablePluginExport {
     /// custody and control its ancestors; this is not an atomic snapshot against
     /// external writers, proof of historical export, or endpoint readiness.
     pub fn inspect_existing(&self, destination: impl AsRef<Path>) -> PortableExportCheck {
-        let expected: BTreeMap<_, _> = [
-            (PLUGIN_FILE, Some(self.plugin_json())),
-            (MCP_FILE, self.mcp_json()),
-        ]
-        .into_iter()
-        .filter_map(|(path, bytes)| bytes.map(|bytes| (path, bytes)))
-        .chain(self.files())
-        .map(|(path, bytes)| {
-            (
-                path.strip_prefix("./")
-                    .expect("portable relative path")
-                    .to_owned(),
-                bytes,
-            )
-        })
-        .collect();
+        let expected: BTreeMap<_, _> = self
+            .documents_and_files()
+            .map(|(path, bytes, executable)| {
+                (
+                    path.strip_prefix("./")
+                        .expect("portable relative path")
+                        .to_owned(),
+                    (bytes, executable),
+                )
+            })
+            .collect();
         let check = PortableExportCheck {
             state: PortableExportCheckState::Unavailable,
             files: expected
                 .iter()
-                .map(|(path, bytes)| {
+                .map(|(path, (bytes, executable))| {
                     (
                         path.clone(),
                         PortableExportFileCheck {
                             state: PortableExportCheckState::Unavailable,
-                            expected: PortableExportFingerprint::of_bytes(bytes),
+                            expected: PortableExportFingerprint::of_file(bytes, *executable),
                             observed: None,
                         },
                     )
@@ -641,6 +711,8 @@ impl PortablePluginExport {
 
     /// Write into a new directory. Writes stay anchored to that directory and
     /// never replace an existing file; an existing destination is refused.
+    /// Unix file creation uses 0755 for executable files and 0644 otherwise,
+    /// filtered by the caller's umask. No chmod widens the resulting access.
     pub fn write_new(&self, destination: impl AsRef<Path>) -> Result<(), ValidationError> {
         use std::io::Write;
         std::fs::create_dir(destination.as_ref()).map_err(|_| {
@@ -651,15 +723,7 @@ impl PortablePluginExport {
                 .map_err(|_| {
                     ValidationError::new("export destination", "cannot open destination")
                 })?;
-        let documents = [
-            (PLUGIN_FILE, Some(self.plugin_json.as_slice())),
-            (MCP_FILE, self.mcp_json.as_deref()),
-        ];
-        let files = documents
-            .into_iter()
-            .filter_map(|(path, bytes)| bytes.map(|bytes| (path, bytes)))
-            .chain(self.files());
-        for (path, bytes) in files {
+        for (path, bytes, executable) in self.documents_and_files() {
             let relative = relative_path(path)?;
             if let Some(parent) = Path::new(relative)
                 .parent()
@@ -671,6 +735,13 @@ impl PortablePluginExport {
             }
             let mut options = cap_std::fs::OpenOptions::new();
             options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use cap_std::fs::OpenOptionsExt;
+                options.mode(if executable { 0o755 } else { 0o644 });
+            }
+            #[cfg(not(unix))]
+            let _ = executable;
             directory
                 .open_with(relative, &options)
                 .and_then(|mut file| file.write_all(bytes))
@@ -774,6 +845,7 @@ mod export_inspection {
         root: &Dir,
         path: &Path,
         expected: &[u8],
+        expected_executable: bool,
         remaining: &mut u64,
     ) -> io::Result<(State, Option<PortableExportFingerprint>)> {
         let mut directory = root.try_clone()?;
@@ -809,12 +881,15 @@ mod export_inspection {
                 *remaining -= bytes.len() as u64;
                 read?;
                 (
-                    if bytes == expected {
+                    if bytes == expected && (before.mode() & 0o111 != 0) == expected_executable {
                         State::Matches
                     } else {
                         State::Mismatch
                     },
-                    Some(PortableExportFingerprint::of_bytes(&bytes)),
+                    Some(PortableExportFingerprint::of_file(
+                        &bytes,
+                        before.mode() & 0o111 != 0,
+                    )),
                 )
             };
             if stamp(&before) != stamp(&file.metadata()?)
@@ -829,7 +904,7 @@ mod export_inspection {
 
     pub(super) fn inspect(
         destination: &Path,
-        expected: &BTreeMap<String, &[u8]>,
+        expected: &BTreeMap<String, (&[u8], bool)>,
         mut check: PortableExportCheck,
     ) -> PortableExportCheck {
         // Path components normalize away trailing separators and dots. Inspect
@@ -920,9 +995,15 @@ mod export_inspection {
             unexpected_entries: unexpected,
         };
         let mut remaining = MAX_TOTAL_BYTES;
-        for (name, expected) in expected {
+        for (name, (expected, executable)) in expected {
             let file = check.files.get_mut(name).expect("canonical expected file");
-            match read_expected(&root, Path::new(name), expected, &mut remaining) {
+            match read_expected(
+                &root,
+                Path::new(name),
+                expected,
+                *executable,
+                &mut remaining,
+            ) {
                 Ok((state, observed)) => {
                     file.state = state;
                     file.observed = observed;
@@ -1121,6 +1202,30 @@ fn string_map(values: &BTreeMap<String, String>) -> Value {
     )
 }
 
+/// A names-only directory observation, not selected source or artifact evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginInventoryKind {
+    File,
+    Directory,
+    Symlink,
+    Special,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PluginInventoryEntry {
+    pub path: String,
+    pub kind: PluginInventoryKind,
+    /// A no-follow metadata observation, not proof of readable text or content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byte_length: Option<u64>,
+}
+
+pub const PLUGIN_INVENTORY_MAX_ENTRIES: usize = 256;
+pub const PLUGIN_INVENTORY_MAX_PATH_BYTES: usize = 1024;
+pub const PLUGIN_INVENTORY_MAX_TOTAL_PATH_BYTES: usize = 64 * 1024;
+pub const PLUGIN_INVENTORY_MAX_DIRECTORY_DEPTH: usize = 15;
+
 /// A resolved directory is a read boundary, not an executable authorization.
 /// Backends must verify selected bytes again when realizing an immutable artifact.
 #[derive(Debug)]
@@ -1159,8 +1264,121 @@ impl PluginRoot {
         })
     }
 
+    /// List exactly one explicitly selected directory without reading file
+    /// contents or recursively visiting children. Symlinks are classified, not
+    /// followed while listing. An explicitly selected directory can resolve
+    /// inside this root under the same containment rules as other reads.
+    ///
+    /// Success means the bounded enumeration finished. It is not an immutable
+    /// snapshot of file contents or an inventory of the whole package. Callers
+    /// must select and read files separately; observed directory changes refuse
+    /// the entire listing rather than publishing a partial observation.
+    pub fn inventory(&self, relative: &str) -> Result<Vec<PluginInventoryEntry>, ValidationError> {
+        let selected = inventory_relative_path(relative, PLUGIN_INVENTORY_MAX_DIRECTORY_DEPTH)?;
+        let directory = self.directory.open_dir(selected).map_err(|_| {
+            inventory_error("directory is absent, unreadable or escapes the plugin root")
+        })?;
+        let before = directory
+            .dir_metadata()
+            .map_err(|_| inventory_error("cannot inspect selected directory"))?;
+        let mut entries = Vec::new();
+        let mut total_path_bytes = 0;
+        for entry in directory
+            .entries()
+            .map_err(|_| inventory_error("cannot enumerate selected directory"))?
+        {
+            if entries.len() >= PLUGIN_INVENTORY_MAX_ENTRIES {
+                return Err(inventory_error(
+                    "directory entry count exceeds the inventory limit",
+                ));
+            }
+            let entry =
+                entry.map_err(|_| inventory_error("directory changed or cannot be enumerated"))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| inventory_error("directory contains a non-UTF-8 entry name"))?;
+            let path = if relative == "./" {
+                format!("./{name}")
+            } else {
+                format!("{relative}/{name}")
+            };
+            inventory_relative_path(&path, PLUGIN_INVENTORY_MAX_DIRECTORY_DEPTH + 1)?;
+            total_path_bytes += path.len();
+            if total_path_bytes > PLUGIN_INVENTORY_MAX_TOTAL_PATH_BYTES {
+                return Err(inventory_error(
+                    "directory path bytes exceed the inventory limit",
+                ));
+            }
+            // cap_std's DirEntry metadata uses a no-follow stat relative to the
+            // enumerated directory. Take type and length from that one result;
+            // no file is opened and no symlink target is read or projected.
+            let metadata = entry.metadata().map_err(|_| {
+                inventory_error("directory changed or entry metadata is unavailable")
+            })?;
+            let kind = if metadata.is_file() {
+                PluginInventoryKind::File
+            } else if metadata.is_dir() {
+                PluginInventoryKind::Directory
+            } else if metadata.file_type().is_symlink() {
+                PluginInventoryKind::Symlink
+            } else {
+                PluginInventoryKind::Special
+            };
+            let byte_length = metadata.is_file().then_some(metadata.len());
+            entries.push(PluginInventoryEntry {
+                path,
+                kind,
+                byte_length,
+            });
+        }
+        let after = directory
+            .dir_metadata()
+            .map_err(|_| inventory_error("cannot inspect selected directory"))?;
+        if !same_inventory_directory_state(&before, &after) {
+            return Err(inventory_error("directory changed during inventory"));
+        }
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        if entries.windows(2).any(|pair| pair[0].path == pair[1].path) {
+            return Err(inventory_error("directory changed during inventory"));
+        }
+        Ok(entries)
+    }
+
     pub fn read(&self, relative: &str, maximum_bytes: u64) -> Result<Vec<u8>, ValidationError> {
-        use std::io::Read;
+        read_package_file(&self.open_regular_file(relative)?, maximum_bytes)
+    }
+
+    fn read_export_file(
+        &self,
+        relative: &str,
+        maximum_bytes: u64,
+    ) -> Result<PortableIncludedFile, ValidationError> {
+        let file = self.open_regular_file(relative)?;
+        let before = file
+            .metadata()
+            .map_err(|_| ValidationError::new("package path", "cannot inspect package file"))?;
+        let bytes = read_package_file(&file, maximum_bytes)?;
+        let after = file
+            .metadata()
+            .map_err(|_| ValidationError::new("package path", "cannot inspect package file"))?;
+        if !same_export_file_state(&before, &after) {
+            return Err(ValidationError::new(
+                "package path",
+                "package file changed during export read",
+            ));
+        }
+        #[cfg(unix)]
+        let executable = {
+            use cap_std::fs::MetadataExt;
+            before.mode() & 0o111 != 0
+        };
+        #[cfg(not(unix))]
+        let executable = false;
+        Ok(PortableIncludedFile { bytes, executable })
+    }
+
+    fn open_regular_file(&self, relative: &str) -> Result<cap_std::fs::File, ValidationError> {
         let relative = relative_path(relative)?;
         // Reject special files before opening them. The descriptor check below
         // also handles replacement between this check and the anchored open.
@@ -1199,21 +1417,96 @@ impl PluginRoot {
                 "package path is not a regular file",
             ));
         }
-        let mut bytes = Vec::new();
-        file.take(maximum_bytes.saturating_add(1))
-            .read_to_end(&mut bytes)
-            .map_err(|_| ValidationError::new("package path", "cannot read package file"))?;
-        if bytes.len() as u64 > maximum_bytes {
-            return Err(ValidationError::new(
-                "package path",
-                "package metadata exceeds the read limit",
-            ));
-        }
-        Ok(bytes)
+        Ok(file)
     }
 
     pub fn read_manifest(&self) -> Result<ImportedPluginManifest, ValidationError> {
         ImportedPluginManifest::parse(&self.read("./plugin.json", 1024 * 1024)?)
+    }
+}
+
+fn inventory_error(message: &str) -> ValidationError {
+    ValidationError::new("plugin inventory", message)
+}
+
+fn inventory_relative_path(value: &str, maximum_depth: usize) -> Result<&str, ValidationError> {
+    if value == "./" {
+        return Ok(".");
+    }
+    let path = value
+        .strip_prefix("./")
+        .ok_or_else(|| inventory_error("inventory paths must start with ./"))?;
+    if value.len() > PLUGIN_INVENTORY_MAX_PATH_BYTES
+        || path.is_empty()
+        || path.contains(['\\', ':'])
+        || path.chars().any(char::is_control)
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || path.split('/').count() > maximum_depth
+    {
+        return Err(inventory_error(
+            "inventory path is invalid or exceeds its limits",
+        ));
+    }
+    Ok(path)
+}
+
+fn same_inventory_directory_state(
+    before: &cap_std::fs::Metadata,
+    after: &cap_std::fs::Metadata,
+) -> bool {
+    #[cfg(unix)]
+    {
+        same_export_file_state(before, after)
+    }
+    #[cfg(not(unix))]
+    {
+        before.is_dir()
+            && after.is_dir()
+            && before.permissions() == after.permissions()
+            && before.modified().ok() == after.modified().ok()
+    }
+}
+
+fn read_package_file(
+    file: &cap_std::fs::File,
+    maximum_bytes: u64,
+) -> Result<Vec<u8>, ValidationError> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.take(maximum_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| ValidationError::new("package path", "cannot read package file"))?;
+    if bytes.len() as u64 > maximum_bytes {
+        return Err(ValidationError::new(
+            "package path",
+            "package metadata exceeds the read limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn same_export_file_state(before: &cap_std::fs::Metadata, after: &cap_std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::MetadataExt;
+        before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.mode() == after.mode()
+            && before.len() == after.len()
+            && before.mtime() == after.mtime()
+            && before.mtime_nsec() == after.mtime_nsec()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec()
+    }
+    #[cfg(not(unix))]
+    {
+        before.is_file()
+            && after.is_file()
+            && before.len() == after.len()
+            && before.permissions() == after.permissions()
+            && before.modified().ok() == after.modified().ok()
     }
 }
 

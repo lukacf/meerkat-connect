@@ -949,7 +949,7 @@ fn final_helper_catalog_projection_adds_only_requested_base_and_keeps_targets() 
     input.helper.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![target.clone()] };
     let phase = input.validate().unwrap().prepare(super::super::tests::prepared(&root)).unwrap();
     let selected = owner_selection(&phase, Some(operator));
-    let request = PreparedHelperCatalogRequest { issuance_id: EvidenceId::new("compiled-helper-catalog-parent").unwrap() };
+    let request = PreparedHelperCatalogRequest { scope: Default::default(), issuance_id: EvidenceId::new("compiled-helper-catalog-parent").unwrap() };
     // Inert output reference, not native issuance/currentness evidence.
     reference.grant_id = request.issuance_id.clone();
     let mut helper = phase.helper().clone();
@@ -988,13 +988,51 @@ fn final_helper_catalog_projection_cannot_replace_an_occupied_base() {
     input.helper.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: Some(prior), targets: vec![] };
     let phase = input.validate().unwrap().prepare(super::super::tests::prepared(&root)).unwrap();
     let selected = owner_selection(&phase, Some(operator));
-    let request = PreparedHelperCatalogRequest { issuance_id: EvidenceId::new("replacement-catalog-parent").unwrap() };
+    let request = PreparedHelperCatalogRequest { scope: Default::default(), issuance_id: EvidenceId::new("replacement-catalog-parent").unwrap() };
     let mut helper = phase.helper().clone();
     let WorkAuthorityBasis::TargetedGrantLineages { base, .. } = &mut helper.operation_basis else { unreachable!() };
     base.as_mut().unwrap()[0].grant_id = request.issuance_id.clone();
     assert!(phase.retain_authorities_with_helper_access(selected.clone(), helper, None, Some(&request)).is_err());
     assert!(phase.final_authorities.get().is_none());
     phase.retain_authorities(selected, phase.helper().clone()).unwrap();
+}
+
+#[test]
+fn final_helper_catalog_successor_parent_requires_explicit_scope_and_preserves_operation_basis() {
+    use meerkat_authorization_contracts::{evidence::EvidenceId, work_association::WorkAuthorityBasis};
+    use toolkit_mobkit::installed_host::{acquisition::ConfiguredHelperCatalogCapability,
+        preparation::{PreparedHelperCatalogRequest, PreparedHelperCatalogScope}};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let mut input = selected(&root);
+    let realm = meerkat_core::mob_realm_id(&input.helper.member.mob_id).unwrap();
+    let operator = meerkat::governed_realm::stock::StockPrincipals::for_local_operator(&realm).unwrap().operator;
+    let mut reference = input.helper.controller_parent[0].clone();
+    reference.root_authority = operator.clone();
+    input.helper.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![] };
+    let phase = input.validate().unwrap().prepare(super::super::tests::prepared(&root)).unwrap();
+    let selected = owner_selection(&phase, Some(operator));
+    let mut request = PreparedHelperCatalogRequest { scope: PreparedHelperCatalogScope::ExactSession,
+        issuance_id: EvidenceId::new("explicit-successor-catalog-parent").unwrap() };
+    reference.grant_id = request.issuance_id.clone();
+    let mut helper = phase.helper().clone();
+    helper.catalog_capability = Some(ConfiguredHelperCatalogCapability { parent: vec![reference.clone()] });
+    assert!(phase.retain_authorities_with_helper_access(selected.clone(), helper.clone(), None, None).is_err());
+    assert!(phase.retain_authorities_with_helper_access(selected.clone(), helper.clone(), None, Some(&request)).is_err());
+    request.scope = PreparedHelperCatalogScope::CurrentHelperSuccessors;
+    for change in 0..3 {
+        let mut changed = helper.clone();
+        match change {
+            0 => changed.catalog_capability.as_mut().unwrap().parent[0].grant_id = EvidenceId::new("unrequested-parent").unwrap(),
+            1 => changed.catalog_capability.as_mut().unwrap().parent[0].root_authority = phase.input.members[0].logical_owner.clone(),
+            _ => changed.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: Some(vec![reference.clone()]), targets: vec![] },
+        }
+        assert!(phase.retain_authorities_with_helper_access(selected.clone(), changed, None, Some(&request)).is_err());
+        assert!(phase.final_authorities.get().is_none());
+    }
+    phase.retain_authorities_with_helper_access(selected, helper.clone(), None, Some(&request)).unwrap();
+    assert!(phase.final_authorities.get().unwrap().helper == helper);
+    assert_eq!(helper.operation_basis, phase.input.helper.operation_basis);
 }
 
 // Read the real Core bundle composition at its public session-builder boundary.

@@ -15,7 +15,7 @@ use meerkat_toolkit::host_lifetime::{
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ConfiguredSetupSelection {
+pub(crate) struct ConfiguredSetupSelection {
     pub capability: CompiledAgentSetupCapability,
     pub session_id: meerkat_core::SessionId,
 }
@@ -406,3 +406,5 @@ impl PrivateOriginals {
 
 #[cfg(test)]
 mod selection_tests;
+
+pub(crate) mod service;

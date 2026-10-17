@@ -30,6 +30,7 @@ fn acquisition(installed: &InstalledToolkitHost, directory: &std::path::Path,
     ]).unwrap();
     let parent = native.routes[0].application_parent.clone().unwrap();
     let helper = InstalledSetupSelection {
+        catalog_capability: None,
         report_capability: None,
         member: native.members[0].member.clone(),
         ingress_actor: native.grant_administrator.clone(),
@@ -166,6 +167,7 @@ async fn production_leaves_reach_actual_bound_owner_but_not_missing_native_conti
             fixture.store.clone(), fixture.scope.clone(), fixture.source.clone(), native,
             InstalledSetupDefaults {
                 helper: InstalledSetupSelection {
+                    catalog_capability: None,
                     report_capability: None,
                     member: native.members[0].member.clone(), ingress_actor: native.grant_administrator.clone(),
                     logical_executor: native.members[0].logical_owner.clone(), represented_subject: None,

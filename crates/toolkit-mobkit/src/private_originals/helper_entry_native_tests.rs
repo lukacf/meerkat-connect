@@ -10,7 +10,7 @@ use toolkit_store::ToolkitStore;
 
 type Fixture = FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>>;
 
-fn enrolled_login() -> (
+pub(super) fn enrolled_login() -> (
     tokio::sync::watch::Sender<bool>,
     ConsoleLogins,
     ConsoleLoginHandle,
@@ -36,7 +36,7 @@ fn enrolled_login() -> (
 
 /// Attach only a lifetime to the actual retained A while physical scripted
 /// output is paused. Its already admitted native authority remains unchanged.
-fn retain_actual_a_login(
+pub(super) fn retain_actual_a_login(
     fixture: &Fixture,
     binding: &InputAuthorityAssociation,
     login: &ConsoleLoginHandle,
@@ -354,4 +354,213 @@ async fn retired_contributor_after_issuance_refuses_actual_helper_final_entry() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn entered_helper_keeps_same_login_until_native_settlement_is_observed() {
     Box::pin(exercise(DeliveryMode::HoldHelperAcceptedReply)).await;
+}
+
+const CATALOG_SEARCH: &str = "reset-helper-search";
+const CATALOG_LOAD: &str = "reset-helper-load";
+
+/// Fixed physical responses only. The real dispatcher, application policy,
+/// source binding, grant owner and native input execute both catalog calls.
+pub(super) struct CatalogProbe {
+    pub(super) successor: bool,
+    pub(super) selected_helper: std::sync::OnceLock<crate::installed_host::acquisition::InstalledSetupSelection>,
+    calls: AtomicUsize,
+    feedback: std::sync::Mutex<BTreeMap<String, meerkat_core::ToolResult>>,
+}
+impl CatalogProbe {
+    fn new(successor: bool) -> Arc<Self> {
+        Arc::new(Self { successor, selected_helper: Default::default(), calls: AtomicUsize::new(0), feedback: Default::default() })
+    }
+    pub(super) fn provider(self: &Arc<Self>, inner: Arc<dyn LlmClient>) -> Arc<dyn LlmClient> {
+        Arc::new(CatalogResponse { inner, probe: self.clone() })
+    }
+}
+
+struct CatalogResponse { inner: Arc<dyn LlmClient>, probe: Arc<CatalogProbe> }
+#[async_trait]
+impl LlmClient for CatalogResponse {
+    async fn prepare_controller_credential(&self) -> Result<(), meerkat_core::auth::AuthError> {
+        self.inner.prepare_controller_credential().await
+    }
+    fn plain_model_route(&self, model: &str) -> Result<PlainModelRoute, meerkat_core::ControllerFactsUnavailable> {
+        self.inner.plain_model_route(model)
+    }
+    fn controller_model_selection(&self) -> Option<ControllerModelSelection> { self.inner.controller_model_selection() }
+    fn project_replay_messages(&self, messages: &[Message]) -> Result<Vec<Message>, LlmError> {
+        self.inner.project_replay_messages(messages)
+    }
+    fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> { self.inner.stream(request) }
+    fn stream_prepared<'a>(&'a self, request: &'a PreparedLlmRequest) -> LlmStream<'a> {
+        use futures::StreamExt;
+        // Original has this exact fixture question. Helper receives the actual
+        // governed acquisition input. This selects scripted model output only.
+        let first_user = request.request().messages.iter().find_map(|message| match message {
+            Message::User(user) => Some(user.text_content()), _ => None,
+        });
+        let stream = self.inner.stream_prepared(request);
+        if first_user.as_deref() == Some(PROMPT) { return stream; }
+        assert!(first_user.is_some(), "the actual helper input must be present");
+        let mut feedback = self.probe.feedback.lock().unwrap();
+        for message in &request.request().messages {
+            if let Message::ToolResults { results, .. } = message {
+                for result in results.iter().filter(|result|
+                    result.tool_use_id == CATALOG_SEARCH || result.tool_use_id == CATALOG_LOAD) {
+                    if let Some(prior) = feedback.insert(result.tool_use_id.clone(), result.clone()) {
+                        assert_eq!(prior.text_content(), result.text_content());
+                        assert_eq!(prior.is_error, result.is_error);
+                    }
+                }
+            }
+        }
+        let choice = if !feedback.contains_key(CATALOG_SEARCH) {
+            Some((0, CATALOG_SEARCH, "tool_catalog_search", serde_json::json!({"query":"peers"})))
+        } else if !feedback.contains_key(CATALOG_LOAD) {
+            Some((1, CATALOG_LOAD, "tool_catalog_load", serde_json::json!({"names":["peers"]})))
+        } else { None };
+        drop(feedback);
+        let Some((ordinal, id, name, args)) = choice else { return stream; };
+        assert!(request.request().tools.iter().any(|tool| tool.name == name));
+        let mut emitted = false;
+        Box::pin(stream.map(move |event| event.map(|event| match event {
+            LlmEvent::TextDelta { .. } => {
+                assert!(!emitted); emitted = true;
+                assert_eq!(self.probe.calls.fetch_add(1, Ordering::SeqCst), ordinal,
+                    "a missing/refused result must not silently retry a catalog call");
+                LlmEvent::ToolCallComplete { id: id.into(), name: name.into(), args: args.clone(), meta: None }
+            }
+            LlmEvent::Done { outcome: LlmDoneOutcome::Success { .. } } => LlmEvent::Done {
+                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
+            },
+            other => other,
+        })))
+    }
+    fn provider(&self) -> Provider { self.inner.provider() }
+    async fn health_check(&self) -> Result<(), LlmError> { self.inner.health_check().await }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fresh_helper_reset_catalog_calls_require_explicit_successor_parent() {
+    use crate::installed_host::{application_operations, operator_setup::{AgentSetupCapabilityRequest, SetupTargetRequest}};
+    use meerkat_authorization_contracts::constraints::{DelegationDepth, OperationRestrictionValues};
+    use meerkat_authorization_contracts::work_association::GrantTarget;
+    // The legacy exact-session selection is a behavioral negative control on
+    // the same public reset path. Only the explicit successor mode succeeds.
+    for successor in [false, true] {
+        let script = acquisition_denial::Script::for_approved();
+        let probe = CatalogProbe::new(successor);
+        let (fixture, history) = Fixture::for_catalog_successor(script.clone(), probe.clone()).await;
+        let deadline = tokio::time::Instant::now() + WAIT;
+        let checked = std::panic::AssertUnwindSafe(tokio::time::timeout_at(deadline, Box::pin(async {
+            use crate::installed_host::controller_first_input_fixture as installed;
+            let helper = AgentIdentity::parse(installed::HELPER).unwrap();
+            let member = MemberIdentity::from(installed::HELPER);
+            let handle = fixture.native.mob_handle();
+            let old_session = handle.get_member(&member).await.unwrap().unwrap().bridge_session_id().cloned().unwrap();
+            assert!(acquisition_approved::native_history(history.as_ref(), &old_session).await.is_empty());
+            let reset = fixture.runtime.reset_tracked(&helper).await.unwrap();
+            assert_ne!(reset.session_id, old_session);
+            assert_eq!(reset.generation, ContinuityGeneration::new(1));
+            assert_eq!(reset.checkpoint_version, CheckpointVersion::new(0));
+            let new_session = handle.get_member(&member).await.unwrap().unwrap().bridge_session_id().cloned().unwrap();
+            assert_eq!(new_session, reset.session_id);
+            assert!(!handle.effective_member_profile(&member).await.unwrap().external_addressable);
+            assert!(acquisition_approved::native_history(history.as_ref(), &new_session).await.is_empty());
+            assert_eq!(fixture.model_requests(), 0);
+            eprintln!("catalog reset mode={successor} old_session={old_session} current_session={new_session}");
+
+            let native = fixture.lifetime().selected_policy().native_host.as_ref().unwrap();
+            let helper_member = native.members.iter().find(|row| row.member.member == installed::HELPER).unwrap();
+            let owner = fixture.source.local_operator_setup(fixture.lifetime().clone()).unwrap()
+                .with_helper_selection(Some(probe.selected_helper.get().unwrap().clone())).unwrap();
+            let selected = owner.configure_agent_setup(&AgentSetupCapabilityRequest {
+                member: native.members[0].member.clone(), route: native.routes[0].id.clone(),
+                issuance_id: EvidenceId::new("reset-original-setup").unwrap(),
+                helper_targets: vec![SetupTargetRequest {
+                    target: None, issuance_id: EvidenceId::new("reset-original-catalog-target").unwrap(),
+                }],
+            }).unwrap();
+            fixture.source.retain_configured_setup(&fixture.submission.original, &fixture.session, selected).await.unwrap();
+            let first = fixture.submit().await;
+            fixture.finish(&first).await.unwrap();
+            let original = fixture.binding().await.unwrap().unwrap();
+            let held = {
+                let helpers = fixture.source.helper_sources.lock().unwrap();
+                assert_eq!(helpers.len(), 1); helpers[0].clone()
+            };
+            let association = held.original().association();
+            assert_eq!(association.candidate().target.context.as_str(), new_session.to_string());
+            assert_eq!(fixture.source.helper_policy_source(association).unwrap().unwrap().contributors, vec![original.clone()]);
+            acquisition_approved::consumed_native_input(history.as_ref(), &new_session, association, None, deadline).await;
+            acquisition_approved::consumed_native_input(history.as_ref(), &fixture.session, &original, None, deadline).await;
+            assert!(acquisition_approved::native_history(history.as_ref(), &old_session).await.is_empty());
+            assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
+            let feedback = probe.feedback.lock().unwrap();
+            assert_eq!(feedback.len(), 2);
+            for id in [CATALOG_SEARCH, CATALOG_LOAD] {
+                let result = &feedback[id];
+                assert_eq!(result.is_error, !successor, "{id}: {}", result.text_content());
+                assert!(result.settlement_failures.is_empty());
+                if !successor { assert!(result.text_content().contains("current authorization"), "{}", result.text_content()); }
+            }
+            if successor {
+                let search: serde_json::Value = serde_json::from_str(&feedback[CATALOG_SEARCH].text_content()).unwrap();
+                assert_eq!(search["catalog_exact"], true);
+                // Peers is InlineOnly. Authorized catalog dispatch preserves
+                // that native eligibility decision rather than loading it.
+                assert_eq!(search["total_matches"], 0);
+                assert_eq!(search["results"], serde_json::json!([]));
+                let load: serde_json::Value = serde_json::from_str(&feedback[CATALOG_LOAD].text_content()).unwrap();
+                assert_eq!(load, serde_json::json!({
+                    "catalog_exact": true, "accepted_names": [], "noop_names": [],
+                    "resolutions": [{"name": "peers", "accepted": false,
+                        "rejected_reason": "not_deferred_eligible"}],
+                }));
+            }
+            drop(feedback);
+            let lineage = association.candidate().authority_basis.lineage_for(None).unwrap();
+            assert_eq!(lineage.len(), if successor { 2 } else { 1 });
+            assert!(association.candidate().authority_basis.lineage_for(Some(&GrantTarget::McpServer { server: "unselected".into() })).is_none());
+            let resolved = fixture.source.owner.grants().resolve_lineage(lineage,
+                &helper_member.logical_owner, association.candidate().represented_subject.as_ref()).unwrap();
+            assert_eq!(resolved.restrictions().delegation_depth, DelegationDepth::remaining(0));
+            resolved.check_current().unwrap();
+            // These are explicit bound exclusions, separate from the actual
+            // native Search/Load results above. Catalog visibility grants no
+            // MCP-call or foreign-executor authority.
+            let check = |operation: &meerkat_authorization::policy::LocalOperationValues| {
+                resolved.restrictions().check_bounds(OperationRestrictionValues {
+                    action: &operation.action, resource_domain: &operation.resource_domain,
+                    processor: &operation.processor, audience: &operation.audience, now_ms: 1,
+                })
+            };
+            let current = application_operations::catalog_read(&native.grant_administrator,
+                &helper_member.logical_owner, &helper_member.audience, &new_session);
+            assert_eq!(check(&current).is_ok(), successor);
+            let old = application_operations::catalog_read(&native.grant_administrator,
+                &helper_member.logical_owner, &helper_member.audience, &old_session);
+            assert_eq!(check(&old).is_ok(), !successor);
+            let mut other = current.clone(); other.action.action = "mcp-call".into();
+            assert!(check(&other).is_err());
+            other = current.clone(); other.processor = meerkat_authorization_contracts::constraints::ProcessorRef::Principal {
+                principal: native.members[0].logical_owner.clone(),
+            };
+            assert!(check(&other).is_err());
+            drop(resolved);
+            if successor {
+                let mut mutation = fixture.machine.try_controller_grant_mutation().unwrap();
+                fixture.source.owner.grants().revoke(&lineage[0].root_authority, &lineage[0], &mut mutation).unwrap();
+                drop(mutation);
+                assert!(fixture.source.owner.grants().resolve_lineage(lineage,
+                    &helper_member.logical_owner, association.candidate().represented_subject.as_ref()).is_err());
+            }
+            assert_eq!(tool_reply(&script)["worker"]["state"], "input_admitted");
+        }))).catch_unwind().await;
+        let cleanup = fixture.shutdown().await;
+        assert!(cleanup.is_ok(), "{cleanup:?}");
+        match checked {
+            Ok(Ok(())) => {},
+            Ok(Err(_)) => panic!("actual catalog reset control timed out"),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
 }

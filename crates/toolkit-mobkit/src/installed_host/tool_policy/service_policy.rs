@@ -241,6 +241,19 @@ fn event(kind: &str, slot: &Slot) -> Result<EventWrite, HostLifetimeError> {
 }
 
 impl ServicePolicyOwner {
+    /// Read this same policy owner's retained outcome. Grant cleanup never
+    /// alters a pending candidate, current policy, or later successor.
+    pub(crate) async fn recovery_observation(&self, proposal: &ServiceToolPolicyProposal,
+        original: &PrivateOriginalRef, acquisition: &StoreKey) -> Result<&'static str, HostLifetimeError>
+    {
+        let (_, slot) = self.read().await?;
+        let matches = |decision: &ActiveMemberToolPolicyDecision| decision.proposal == *proposal
+            && decision.original == *original && decision.acquisition == *acquisition;
+        if slot.pending.as_ref().is_some_and(|pending| matches(&pending.decision)) { return Ok("pending"); }
+        if slot.decision.as_ref().is_some_and(matches) { return Ok("retained_current"); }
+        Ok("superseded_or_unobserved")
+    }
+
     pub(crate) async fn open(store: Arc<dyn ToolkitStore>, scope: StoreScope,
         application: PrincipalRef, provider: Arc<CompiledPolicyProvider>, bootstrap: String,
         participant: Option<Arc<dyn ApplicationServicePolicy>>,

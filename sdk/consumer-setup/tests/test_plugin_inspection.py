@@ -286,6 +286,140 @@ class PluginTests(PluginFixture, unittest.TestCase):
         self.assertIsNone(c.job)
 
 
+def inventory_report(directory="./", rows=None):
+    return {"schema_version": 1, "scope": "metadata_only", "format": "agent-plugin-files",
+            "status": "inventoried", "directory": directory,
+            "inventory": rows if rows is not None else [
+                {"path": "./plugin.json", "kind": "file", "byte_length": 17},
+                {"path": "./skills", "kind": "directory"}], "complete": True}
+
+
+class PluginInventoryTests(PluginFixture, unittest.TestCase):
+    def test_inventory_uses_pinned_reader_without_source_retention(self):
+        c = self.enabled()
+        report = inventory_report()
+        c.runner.override = (0, backend.encoded(report))
+        result = c.inspect_plugin({"staged_id": "ordinary", "inventory": "./"})
+        self.assertEqual(result, report)
+        argv, invocation = c.runner.inspections[0]
+        self.assertEqual(argv, [str(c.workspace / "selected-tools/package_inspector"), "agent-plugin-files"])
+        self.assertEqual(backend.decode(invocation),
+            {"root": str(self.staging), "directory": "./ordinary", "inventory": "./"})
+        self.assertEqual(c.plugin_inspections, {})
+        self.assertEqual(list((c.workspace / "plugin-inspections").iterdir()), [])
+        self.assertEqual(list((c.workspace / "tmp").iterdir()), [])
+        self.assertEqual(c.runner.calls, [])
+        self.assertIsNone(c.job)
+        self.assertFalse(c.operation_lock.locked())
+
+    def test_inventory_request_is_exclusive_and_bounded_before_reader_entry(self):
+        c = self.enabled()
+        request = {"staged_id": "ordinary", "inventory": "./"}
+        for value in (None, 1, "", ".", "/", "skills", "./skills/", "./a/../b", "./a/./b",
+                      "./a//b", "./a:b", "./a\\b", "./bad\n", "./bad\x85", "./bad\ud800",
+                      "./" + "a/" * 15 + "b", "./" + "\u00e9" * 512):
+            with self.subTest(inventory=repr(value)), self.assertRaises(backend.SetupError):
+                c.inspect_plugin({**request, "inventory": value})
+        for value in ({**request, "files": ["./plugin.json"]}, {"staged_id": "ordinary"},
+                      {**request, "root": "/"}, {**request, "directory": "./other"},
+                      {**request, "staged_id": "../ordinary"}):
+            with self.subTest(request=value), self.assertRaises(backend.SetupError):
+                c.inspect_plugin(value)
+        self.assertEqual(c.runner.inspections, [])
+        self.assertEqual(c.plugin_inspections, {})
+
+    def test_inventory_accepts_exact_bounds_and_content_free_kinds(self):
+        c = self.enabled()
+        cases = [("./", []), ("./", [
+            {"path": "./a", "kind": "directory"}, {"path": "./b", "kind": "symlink"},
+            {"path": "./c", "kind": "special"},
+            {"path": "./d", "kind": "file", "byte_length": 2**64 - 1}]),
+            ("./", [{"path": "./" + str(i).zfill(3) + "a" * 251, "kind": "file", "byte_length": 0}
+                    for i in range(256)]),
+            ("./" + "/".join(["a"] * 15), [{"path": "./" + "/".join(["a"] * 16), "kind": "directory"}]),
+            ("./", [{"path": "./" + "\u00e9" * 511, "kind": "file", "byte_length": 0}])]
+        for directory, rows in cases:
+            report = inventory_report(directory, rows)
+            c.runner.override = (0, backend.encoded(report))
+            with self.subTest(directory=directory, count=len(rows)):
+                self.assertEqual(c.inspect_plugin({"staged_id": "ordinary", "inventory": directory}), report)
+        self.assertEqual(c.plugin_inspections, {})
+
+    def test_inventory_refuses_unsafe_or_partial_reader_output_without_retention(self):
+        c = self.enabled()
+        good = inventory_report("./skills", [
+            {"path": "./skills/a", "kind": "directory"},
+            {"path": "./skills/b", "kind": "file", "byte_length": 0}])
+        mutations = [
+            lambda v: v.update(complete=False), lambda v: v.update(complete=1),
+            lambda v: v.update(directory="./other"), lambda v: v.update(status="accepted"),
+            lambda v: v.update(source_digest="f" * 64), lambda v: v.update(files=[]),
+            lambda v: v.update(plugin_source={}), lambda v: v["inventory"].reverse(),
+            lambda v: v["inventory"].append(v["inventory"][0]),
+            lambda v: v["inventory"][0].update(path="./skills"),
+            lambda v: v["inventory"][0].update(path="./skills/a/nested"),
+            lambda v: v["inventory"][0].update(path="./other/a"),
+            lambda v: v["inventory"][0].update(path="./skills/../a"),
+            lambda v: v["inventory"][0].update(path="./skills/a\n"),
+            lambda v: v["inventory"][0].update(path="./skills/a:b"),
+            lambda v: v["inventory"][0].update(kind="unknown"),
+            lambda v: v["inventory"][0].update(byte_length=0),
+            lambda v: v["inventory"][1].update(byte_length=True),
+            lambda v: v["inventory"][1].update(byte_length=-1),
+            lambda v: v["inventory"][1].update(byte_length=2**64),
+            lambda v: v["inventory"][1].pop("byte_length"),
+            lambda v: v["inventory"][1].update(text="PRIVATE"),
+            lambda v: v.update(inventory=[{"path": "./skills/" + str(i).zfill(3), "kind": "directory"}
+                                         for i in range(257)]),
+            lambda v: v.update(inventory=[{"path": "./skills/" + "a" * 1016, "kind": "directory"}]),
+            lambda v: v.update(inventory=[{"path": "./skills/" + str(i).zfill(3) + "a" * 245,
+                                          "kind": "directory"} for i in range(256)]),
+        ]
+        for index, mutate in enumerate(mutations):
+            report = copy.deepcopy(good)
+            mutate(report)
+            c.runner.override = (0, backend.encoded(report))
+            with self.subTest(index=index), self.assertRaisesRegex(backend.SetupError, "plugin_inspection_unavailable"):
+                c.inspect_plugin({"staged_id": "ordinary", "inventory": "./skills"})
+        c.runner.override = (2, backend.encoded({"schema_version": 1, "scope": "metadata_only", "status": "invalid",
+            "error": {"kind": "invalid_metadata", "path": "PRIVATE", "message": "PRIVATE"}}))
+        with self.assertRaises(backend.SetupError) as caught:
+            c.inspect_plugin({"staged_id": "ordinary", "inventory": "./skills"})
+        self.assertEqual(caught.exception.code, "plugin_inspection_unavailable")
+        self.assertNotIn("PRIVATE", json.dumps(backend.setup_error_payload(caught.exception)))
+        self.assertEqual(c.plugin_inspections, {})
+        self.assertEqual(list((c.workspace / "plugin-inspections").iterdir()), [])
+
+    def test_inventory_keeps_existing_admission_and_input_tool_binding(self):
+        for corruption in ("input", "tool"):
+            c = self.enabled()
+            c.runner.override = (0, backend.encoded(inventory_report()))
+            original = c.runner.run_compose
+
+            def changed(argv, **kwargs):
+                result = original(argv, **kwargs)
+                path = kwargs["input_file"] if corruption == "input" else Path(argv[0])
+                path.write_bytes(b"changed")
+                return result
+
+            c.runner.run_compose = changed
+            with self.subTest(corruption=corruption), self.assertRaisesRegex(backend.SetupError, "plugin_inspection_unavailable"):
+                c.inspect_plugin({"staged_id": "ordinary", "inventory": "./"})
+            self.assertEqual(c.plugin_inspections, {})
+            self.assertFalse(c.operation_lock.locked())
+        c = self.enabled()
+        c.operation_lock.acquire()
+        try:
+            with self.assertRaisesRegex(backend.SetupError, "operation_in_progress"):
+                c.inspect_plugin({"staged_id": "ordinary", "inventory": "./"})
+        finally:
+            c.operation_lock.release()
+        c.recovery_only = True
+        with self.assertRaises(backend.SetupError):
+            c.inspect_plugin({"staged_id": "ordinary", "inventory": "./"})
+        self.assertEqual(c.runner.inspections, [])
+
+
 class PluginMcpTests(PluginFixture, unittest.IsolatedAsyncioTestCase):
     async def test_actual_mcp_inspects_then_binds_source_to_selected_install(self):
         from mcp import Client
@@ -325,6 +459,53 @@ class PluginMcpTests(PluginFixture, unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(recovered.runner.calls, [])
         finally:
             await recovery_owner.aclose()
+
+    async def test_actual_mcp_inventory_is_exclusive_and_rejection_is_not_metadata_diagnosis(self):
+        from mcp import Client
+        c = self.enabled()
+        c.runner.override = (0, backend.encoded(inventory_report()))
+        owner = adapter.SetupAdapter(c)
+        try:
+            async with Client(adapter.create_server(owner)) as client:
+                tool = next(t for t in (await client.list_tools()).tools if t.name == "setup_inspect_plugin")
+                self.assertEqual(set(tool.input_schema["properties"]), {"staged_id", "inventory", "files"})
+                self.assertNotIn("oneOf", tool.input_schema)
+                request = {"staged_id": "ordinary", "inventory": "./"}
+                for invalid in ({**request, "files": ["./plugin.json"]}, {"staged_id": "ordinary"}):
+                    refused = await client.call_tool("setup_inspect_plugin", invalid)
+                    self.assertTrue(refused.is_error)
+                self.assertEqual(c.runner.inspections, [])
+                result = await client.call_tool("setup_inspect_plugin", request)
+                self.assertFalse(result.is_error, result)
+                self.assertEqual(result.structured_content, inventory_report())
+                c.runner.override = (2, backend.encoded({"schema_version": 1, "scope": "metadata_only", "status": "invalid",
+                    "error": {"kind": "invalid_metadata", "path": "PRIVATE", "message": "PRIVATE"}}))
+                refused = await client.call_tool("setup_inspect_plugin", request)
+                self.assertTrue(refused.is_error)
+                self.assertEqual(refused.structured_content, {"error": "plugin_inspection_unavailable"})
+                self.assertEqual(c.plugin_inspections, {})
+        finally:
+            await owner.aclose()
+
+    async def test_cancelled_inventory_joins_without_retaining_names_as_source(self):
+        c = self.enabled()
+        c.runner.override = (0, backend.encoded(inventory_report()))
+        c.runner.inspection_block = threading.Event()
+        owner = adapter.SetupAdapter(c)
+        pending = asyncio.create_task(owner.dispatch("/api/inspect_plugin", {"staged_id": "ordinary", "inventory": "./"}))
+        self.assertTrue(await asyncio.to_thread(c.runner.inspection_entered.wait, 2))
+        pending.cancel()
+        c.runner.inspection_block.set()
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                await pending
+        finally:
+            await owner.aclose()
+        self.assertEqual(c.plugin_inspections, {})
+        self.assertEqual(c.runner.calls, [])
+        self.assertIsNone(c.job)
+        self.assertFalse(c.operation_lock.locked())
+        self.assertEqual(list((c.workspace / "tmp").iterdir()), [])
 
     async def test_cancelled_call_settles_only_evidence_and_does_not_start_install(self):
         c = self.enabled()

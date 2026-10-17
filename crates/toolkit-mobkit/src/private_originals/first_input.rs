@@ -41,7 +41,7 @@ impl PrivateOriginals {
         reference: &PrivateOriginalRef,
         context: &GovernedBindContext,
     ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
-        self.binding_for_selected_input(reference, context, None, None, None).await
+        self.binding_for_selected_input(reference, context, None, None, None, None).await
     }
 
     /// A separately authenticated input may select its already issued task
@@ -53,14 +53,22 @@ impl PrivateOriginals {
         grant: &PrivateServiceGrantRef,
         approved_login: Option<crate::private_host::ConsoleLoginHandle>,
     ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
-        self.binding_for_selected_input(reference, context, Some(grant), None, approved_login).await
+        self.binding_for_selected_input(reference, context, Some(grant), None, None, approved_login).await
+    }
+
+    pub(super) async fn binding_for_batch_input(
+        self: &Arc<Self>, reference: &PrivateOriginalRef, context: &GovernedBindContext,
+        task: &service_approved_input::ApprovedTaskLink,
+        approved_login: Option<crate::private_host::ConsoleLoginHandle>,
+    ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
+        self.binding_for_selected_input(reference, context, None, Some(task), None, approved_login).await
     }
 
     pub(super) async fn binding_for_console_input(
         self: &Arc<Self>, reference: &PrivateOriginalRef, context: &GovernedBindContext,
         entry: super::console_ingress::ConsoleEntry,
     ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
-        self.binding_for_selected_input(reference, context, None, Some(entry), None).await
+        self.binding_for_selected_input(reference, context, None, None, Some(entry), None).await
     }
 
     async fn binding_for_selected_input(
@@ -68,13 +76,15 @@ impl PrivateOriginals {
         reference: &PrivateOriginalRef,
         context: &GovernedBindContext,
         grant: Option<&PrivateServiceGrantRef>,
+        batch: Option<&service_approved_input::ApprovedTaskLink>,
         console: Option<super::console_ingress::ConsoleEntry>,
         approved_login: Option<crate::private_host::ConsoleLoginHandle>,
     ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
         let stored = self.store.get(&self.key(reference)?).await.map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
         let record = self.decode_record(&stored, reference)?;
-        let selected_setup = if grant.is_none() {
+        if grant.is_some() && batch.is_some() { return Err(PrivateOriginalError::Conflict); }
+        let selected_setup = if grant.is_none() && batch.is_none() {
             if record.setup_request.is_some() {
                 // An explicit per-original review takes precedence. It is never
                 // upgraded or replaced by configured agent acquisition.
@@ -86,7 +96,12 @@ impl PrivateOriginals {
             if record.setup_request.is_some() { return Err(PrivateOriginalError::Denied); }
             None
         };
-        let selected_basis = match grant {
+        let selected_basis = if let Some(task) = batch {
+            if let Some(setup) = task.setup() {
+                self.issue_service_setup(reference, setup, approved_login.as_ref()).await?;
+            }
+            self.service_batch_basis(reference, task, true).await?.0
+        } else { match grant {
             Some(grant) => {
                 let route = self.route(&reference.route)?;
                 let original = OriginalWorkRef {
@@ -100,12 +115,15 @@ impl PrivateOriginals {
                 Some(basis) => basis.clone(),
                 None => WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![] },
             },
-        };
+        }};
         if let Some(task) = &record.approved_task {
-            if grant != Some(&task.grant) || context.session_id != task.original_task.origin_session_id
+            if (match task {
+                service_approved_input::ApprovedTaskLink::Single(member) => grant != Some(&member.grant) || batch.is_some(),
+                service_approved_input::ApprovedTaskLink::Batch(_) => batch != Some(task) || grant.is_some(),
+            }) || context.session_id != task.original_task.origin_session_id
                 || !self.service_task_submission_current(&record).await?
             { return Err(PrivateOriginalError::Denied); }
-        } else if grant.is_some() { return Err(PrivateOriginalError::Denied); }
+        } else if grant.is_some() || batch.is_some() { return Err(PrivateOriginalError::Denied); }
         if let Some(association) = &record.final_association {
             if association.candidate().authority_basis != selected_basis {
                 return Err(PrivateOriginalError::Conflict);
@@ -281,6 +299,7 @@ impl PrivateOriginals {
             login.check().map_err(|_| PrivateOriginalError::Denied)?;
         }
         let original = match grant {
+            None if batch.is_some() => self.bind_batch_source(reference, batch.unwrap(), association, custody).await?,
             Some(grant) => self.bind_access_source(reference, grant, association, custody).await?,
             None if selected_setup.is_some() => {
                 let original = self.owner.bind_issued_access_async(

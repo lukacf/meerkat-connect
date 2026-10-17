@@ -76,6 +76,11 @@ selected-package job's historical documents with its real decision and
 verification references. Retention is not an installation-success or account
 readiness claim, and the original disclosure-only scope cannot save.
 For researched integrations outside the library, the optional [selected-package workflow](SELECTED.md) accepts pinned Python, Node and self-contained MCPB inputs. MCPB check, installation and readback use the same owner CLI and appear in this session view.
+With acquired inspection enabled, `setup_inspect_acquired` lists and reads
+bounded text from the exact retained Python/Node primary archive. Its optional
+`archive_sha256` selects a dependency from the same job's `artifacts` array.
+This [archive research](ACQUIRED-INSPECTION.md) executes no package code and
+grants no additional installation or runtime authority.
 Add `--browser-port 0` to that adapter to serve this same view over its existing
 controller. See [the shared-session workflow](MCP.md#show-the-same-session-in-a-browser).
 The browser observes agent-started jobs automatically without replacing an
@@ -88,6 +93,15 @@ This lets a multi-integration request retain each installation's result and
 current check observation after another job becomes latest, without repeating
 the install or check. These source tools are available in normal live sessions
 and in explicitly selected [multi-request recovery](MULTI-RECOVERY.md).
+
+In development source, `setup_job` can observe a running job with optional
+`wait_ms` from 0 to 10000, for example
+`setup_job {"job_id":"0123456789abcdef0123456789abcdef","wait_ms":10000}`
+using the returned job ID. Omitted or `0` keeps the immediate response. The wait
+returns the current snapshot after a terminal observation or interval expiry;
+existing caller and read deadlines still apply. Cancelling this observation
+leaves installation running. Use `setup_stop` explicitly to request a stop; a
+terminal observation proves neither Toolkit readiness nor worker cleanup.
 
 This history belongs to the running setup host. A browser reload can reconnect
 to those retained jobs, but restarting the host does not automatically restore a

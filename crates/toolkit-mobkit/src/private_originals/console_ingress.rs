@@ -165,7 +165,7 @@ impl GovernedInputBinder for ConsoleBinder {
             .map_err(|_| "The Console original could not be retained")?;
         self.entry.check()?;
         reservation.settled();
-        let binder = Arc::new(OriginalBinder { source: self.source.clone(), grant: None, original,
+        let binder = Arc::new(OriginalBinder { source: self.source.clone(), grant: None, batch: None, original,
             held: OnceLock::new(), pending: OnceLock::new(),
             authentication: evidence(&route.authentication_domain, &authentication)
                 .map_err(|_| "The Console authentication evidence is invalid")?,
@@ -187,5 +187,7 @@ fn stock_console_event_key(input: &Input) -> Result<IdempotencyKey, String> {
         .ok_or_else(|| "The stock Console input has no idempotency key".to_owned())
 }
 
+#[cfg(test)]
+pub(crate) mod auth_fixture;
 #[cfg(test)]
 mod tests;

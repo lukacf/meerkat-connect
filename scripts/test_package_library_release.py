@@ -320,6 +320,44 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.PackageError, "selected_source_digest_mismatch"):
             self.package("legacy-still-pinned")
 
+    def test_explicit_node_contract_preserves_donor_default_and_source_provenance(self):
+        name = "selected/contracts/NODE-INSTALL.md"
+        path = "crates/toolkit-package/NODE-INSTALL.md"
+        data = b"Selected Node guide.\n[Selected](../../sdk/consumer-setup/SELECTED.md)\n"
+        output = b"Selected Node guide.\n[Selected](SETUP-SELECTED.md)\n"
+        write(self.root / path, data, 0o600)
+        for target in self.targets:
+            with self.subTest(target=target):
+                value = self.explicit_inputs(target)
+                value["sources"][name] = {"path": path, "sha256": sha(data)}
+                before = copy.deepcopy((release.TARGETS, release.PYTHON_KITS, release.PYTHON_SOURCES))
+                result = self.explicit_package(value, name="node-" + target)
+                self.assertEqual((release.TARGETS, release.PYTHON_KITS, release.PYTHON_SOURCES), before)
+                prefix = "toolkit-library-controlled-selected-inputs-" + target + "/"
+                donor = self.donor_files[target]["contracts/NODE-INSTALL.md"][0]
+                with tarfile.open(result["archive"]) as archive:
+                    read = lambda member: archive.extractfile(prefix + member).read()
+                    self.assertEqual(read(name), output)
+                    self.assertEqual(archive.getmember(prefix + name).mode, 0o644)
+                    history = json.loads(read("selected/provenance/document-sources.json"))
+                    self.assertEqual(history["files"][name], {
+                        "source": path, "source_sha256": sha(data), "output_sha256": sha(output)})
+                    retained = json.loads(read("selected/provenance/selection.json"))
+                    self.assertEqual(retained["files"]["contracts/NODE-INSTALL.md"], sha(donor))
+                bad = copy.deepcopy(value)
+                bad["sources"][name]["sha256"] = "0" * 64
+                with self.assertRaisesRegex(release.PackageError, "selected_source_digest_mismatch"):
+                    self.explicit_package(bad, name="node-bad-digest-" + target)
+                omitted = copy.deepcopy(value)
+                del omitted["sources"][name]
+                legacy = self.explicit_package(omitted, name="node-omitted-" + target)
+                with tarfile.open(legacy["archive"]) as archive:
+                    self.assertEqual(archive.extractfile(prefix + name).read(), donor)
+                    history = json.load(archive.extractfile(prefix + "selected/provenance/document-sources.json"))
+                    self.assertEqual(history["files"][name], {
+                        "donor_member": "contracts/NODE-INSTALL.md",
+                        "source_sha256": sha(donor), "output_sha256": sha(donor)})
+
     def test_explicit_selected_installer_source_preserves_mode_history_and_refusals(self):
         value = self.explicit_inputs()
         name, source = "selected/bin/install-library-consumer.py", "scripts/current-installer.py"

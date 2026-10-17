@@ -19,9 +19,8 @@ impl PrivateOriginals {
         let operator = self.service_operator_setup(lifetime.clone())
             .map_err(|_| PrivateOriginalError::Unavailable)?;
         let Some(application) = &access.application_policy else {
-            return operator.retained_service_review(&reference.route,
+            return operator.retained_service_installation_review(&reference.route,
                 &record.event.original_authentication, &access.parent).await
-                .map(ServiceInstallationReadbackSource::SettledReview)
                 .map_err(|_| PrivateOriginalError::Denied);
         };
         let task = record.approved_task.as_ref().ok_or(PrivateOriginalError::Denied)?;
@@ -51,17 +50,28 @@ impl PrivateOriginals {
         let stored = self.store.get(&self.key(reference)?).await.map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
         let record = self.decode_record(&stored, reference)?;
+        let grant = record.approved_task.as_ref().ok_or(PrivateOriginalError::Denied)?.singleton_grant()?.clone();
+        self.read_service_installation_member(reference, &grant).await
+    }
+
+    pub(crate) async fn read_service_installation_member(
+        self: &Arc<Self>, reference: &PrivateOriginalRef, grant: &PrivateServiceGrantRef,
+    ) -> Result<McpServerConfig, PrivateOriginalError> {
+        let stored = self.store.get(&self.key(reference)?).await.map_err(store_error)?
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        let record = self.decode_record(&stored, reference)?;
         let task = record.approved_task.as_ref().ok_or(PrivateOriginalError::Denied)?;
+        task.attachment_member(grant)?;
         if record.final_association.is_some() || record.service_admission.is_some()
             || !self.service_task_submission_current(&record).await? {
             return Err(PrivateOriginalError::Denied);
         }
-        let access_stored = self.store.get(&self.access_key(&task.grant)?).await.map_err(store_error)?
+        let access_stored = self.store.get(&self.access_key(&grant)?).await.map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
-        let access = self.decode_access(&access_stored, &task.grant)?;
+        let access = self.decode_access(&access_stored, &grant)?;
         let AccessDecision::Mcp(decision) = &access.decision else { return Err(PrivateOriginalError::Denied); };
         if decision.live_attachment.is_none() || access.mcp.is_none()
-            || self.access_observation(task.grant.clone(), &access)?.state != PrivateServiceGrantState::GrantIssued {
+            || self.access_observation(grant.clone(), &access)?.state != PrivateServiceGrantState::GrantIssued {
             return Err(PrivateOriginalError::Denied);
         }
         let source = self.installation_readback_source(reference, &record, &access).await?;
@@ -84,7 +94,7 @@ impl PrivateOriginals {
             attachment_preparation_diagnostic("installation_record_changed", Some(&Err::<(), _>(PrivateOriginalError::Denied)));
             return Err(PrivateOriginalError::Denied);
         }
-        let current_access = self.decode_access(&current_access, &task.grant);
+        let current_access = self.decode_access(&current_access, &grant);
         attachment_preparation_diagnostic("installation_access_decode", Some(&current_access));
         if current_access? != access {
             attachment_preparation_diagnostic("installation_access_changed", Some(&Err::<(), _>(PrivateOriginalError::Denied)));
@@ -97,7 +107,7 @@ impl PrivateOriginals {
             attachment_preparation_diagnostic("installation_not_current", Some(&Err::<(), _>(PrivateOriginalError::Denied)));
             return Err(PrivateOriginalError::Denied);
         }
-        let observed = self.access_observation(task.grant.clone(), &access);
+        let observed = self.access_observation(grant.clone(), &access);
         attachment_preparation_diagnostic("installation_grant_observation", Some(&observed));
         if observed?.state != PrivateServiceGrantState::GrantIssued {
             attachment_preparation_diagnostic("installation_grant_not_issued", Some(&Err::<(), _>(PrivateOriginalError::Denied)));

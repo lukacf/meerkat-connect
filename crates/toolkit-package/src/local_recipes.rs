@@ -18,10 +18,10 @@
 
 use crate::{
     ActivationManifest, CatalogOrigin, ContentDigest, EvidenceReference, Id, ImportedMcpServers,
-    ImportedPluginManifest, IntegrationBundle, IntegrationPackage, McpbInstallPlan,
-    NodeInstallPlan, PackageIdentity, PythonInstallPlan, ValidatedManifest, ValidationError,
-    LocalSoftwareDeclaration, LocalSoftwareDocumentKind, ValidatedLocalSoftware,
-    Revision, canonical_json,
+    ImportedPluginManifest, IntegrationBundle, IntegrationPackage, LocalSoftwareDeclaration,
+    LocalSoftwareDocumentKind, McpbInstallPlan, NodeInstallPlan, PackageIdentity,
+    PortablePluginExport, PythonInstallPlan, Revision, ValidatedLocalSoftware, ValidatedManifest,
+    ValidationError, canonical_json,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -239,6 +239,10 @@ struct PluginSourceInspection {
 }
 
 fn validate_plugin_source(bytes: &[u8]) -> Result<(), LocalRecipeError> {
+    parse_plugin_source(bytes).map(|_| ())
+}
+
+fn parse_plugin_source(bytes: &[u8]) -> Result<PluginSourceReport, LocalRecipeError> {
     let invalid =
         || ValidationError::new("plugin source", "invalid retained public file observation");
     let source: PluginSourceObservation =
@@ -345,7 +349,7 @@ fn validate_plugin_source(bytes: &[u8]) -> Result<(), LocalRecipeError> {
     {
         return Err(invalid().into());
     }
-    Ok(())
+    Ok(report)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -701,6 +705,16 @@ impl RetainedLocalSoftware {
     pub fn verification(&self) -> &[EvidenceReference] { &self.documents.verification }
 }
 
+/// Explicit public text selected from one exact retained source observation.
+/// Paths are literal, not patterns. This cannot select root assets or source
+/// directories, and it declares no MCP configuration or executable entrypoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedGuidanceSelection {
+    pub plugin_source_digest: ContentDigest,
+    pub files: Vec<String>,
+}
+
 /// All stored forms share one immutable package-identity namespace.
 #[derive(Debug, Clone)]
 pub enum RetainedLocalRecipe {
@@ -710,6 +724,85 @@ pub enum RetainedLocalRecipe {
 }
 
 impl RetainedLocalRecipe {
+    /// Export only explicitly selected skill text from retained source bytes.
+    /// Callers reopen the exact identity and recipe digest through
+    /// `load_retained_exact` first. Source metadata is canonicalized with all
+    /// namespaces preserved; no MCP document or activation is produced.
+    pub fn export_guidance(
+        &self,
+        selection: &RetainedGuidanceSelection,
+    ) -> Result<PortablePluginExport, LocalRecipeError> {
+        let invalid =
+            || ValidationError::new("guidance export", "invalid retained guidance selection");
+        let source = match self {
+            Self::Recipe(_) => None,
+            Self::Selection(recipe) => recipe.plugin_source_json(),
+            Self::Software(recipe) => recipe.plugin_source_json(),
+        }
+        .ok_or_else(invalid)?;
+        if ContentDigest::of_bytes(source) != selection.plugin_source_digest
+            || selection.files.is_empty()
+            || selection.files.len() > 15
+        {
+            return Err(invalid().into());
+        }
+        let report = parse_plugin_source(source)?;
+        let mut names = BTreeSet::new();
+        for path in &selection.files {
+            let parts = path
+                .strip_prefix("./")
+                .ok_or_else(invalid)?
+                .split('/')
+                .collect::<Vec<_>>();
+            if path.len() > 1024
+                || path.contains(['\\', ':'])
+                || path.chars().any(char::is_control)
+                || parts.len() < 3
+                || parts.len() > 16
+                || parts[0] != "skills"
+                || parts
+                    .iter()
+                    .any(|part| part.is_empty() || matches!(*part, "." | ".."))
+                || !names.insert(path.as_str())
+            {
+                return Err(invalid().into());
+            }
+        }
+        for path in &selection.files {
+            let skill = path[2..]
+                .split('/')
+                .nth(1)
+                .expect("selected skill path checked above");
+            if !names.contains(format!("./skills/{skill}/SKILL.md").as_str())
+                || path[2..]
+                    .match_indices('/')
+                    .any(|(at, _)| names.contains(&path[..at + 2]))
+                || !report.files.iter().any(|file| file.path == *path)
+            {
+                return Err(invalid().into());
+            }
+        }
+        let manifest = report
+            .files
+            .iter()
+            .find(|file| file.path == "./plugin.json")
+            .ok_or_else(invalid)?;
+        let imported = ImportedPluginManifest::parse(manifest.text.as_bytes())?;
+        // The existing constructor validates any Toolkit namespace and permits
+        // metadata-only export without weakening executable selection checks.
+        let mut export = PortablePluginExport::new(&imported.manifest, &Default::default(), None)
+            .map_err(|_| invalid())?;
+        for path in &selection.files {
+            let file = report
+                .files
+                .iter()
+                .find(|file| file.path == *path)
+                .ok_or_else(invalid)?;
+            export = export.with_retained_text(path, file.text.as_bytes())?;
+        }
+        Ok(export)
+    }
+
     /// Version 1 retains its existing bundle digest; versions 2-4 use their exact
     /// document-and-evidence retention digest. Neither is a readiness receipt.
     pub fn digest(&self) -> &ContentDigest {

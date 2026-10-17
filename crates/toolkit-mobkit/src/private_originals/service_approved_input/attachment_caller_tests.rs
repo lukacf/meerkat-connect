@@ -82,8 +82,8 @@ fn keep_with_login(
     let operations = source.current_service_mcp_control(&control,
         &control.effect_binding(McpAttachmentEffect::Apply), source.owner.clock().now().unwrap().unix_ms, false)
         .unwrap().operations;
-    let held = Arc::new(HeldServiceAttachment::new(b.clone(), task.clone(), control, operations, future, login));
-    source.attachment_parent(&task).unwrap().service_attachments.lock().unwrap().push(held.clone());
+    let held = Arc::new(HeldServiceAttachment::new(b.clone(), task.attachments()[0].clone(), control, operations, future, login));
+    source.attachment_parent(&task.attachments()[0]).unwrap().service_attachments.lock().unwrap().push(held.clone());
     held
 }
 
@@ -91,8 +91,7 @@ fn keep_with_login(
 async fn production_recovery_retains_exact_pending_or_refused_attempt_without_binding_b() {
     for readiness in [McpAttachmentReadiness::Pending, McpAttachmentReadiness::Superseded,
         McpAttachmentReadiness::NotCurrent, McpAttachmentReadiness::Retired,
-        McpAttachmentReadiness::ToolNotRouted { connection_generation: 7 },
-        McpAttachmentReadiness::Rejected { detail: "fixture entry refusal".into() }]
+        McpAttachmentReadiness::ToolNotRouted { connection_generation: 7 }]
     {
         let fixture = ContinuationFixture::for_service_input().await;
         let result = AssertUnwindSafe(Box::pin(async {
@@ -214,6 +213,7 @@ async fn held_readiness_cannot_publish_b_after_canonical_task_cancellation() {
         let record = fixture.source.decode_record(&saved, &b).unwrap();
         assert!(record.operation_cancelled);
         assert!(record.final_association.is_none() && record.service_admission.is_none());
+        assert!(record.bound_service_input.is_none(), "stale readiness cannot retain success context");
         assert_eq!(fixture.inputs().await, Ok(1));
         fixture.source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
         assert!(fixture.source.held_service_attachment(&b, &held.task).unwrap().is_none());
@@ -236,11 +236,11 @@ async fn only_busy_releases_unentered_attachment_custody_for_later_preparation()
             let held = keep(&fixture.source, &b, &stored, control, Box::pin(async move {
                 started.fetch_add(1, Ordering::SeqCst); Err(answer)
             }));
-            let outcome = fixture.source.ensure_service_attachment(&fixture.store, &b, &held.task).await;
+            let outcome = fixture.source.ensure_service_attachment_member(&fixture.store, &b, &held.task).await;
             if busy { assert!(matches!(outcome, Ok(false))); }
             else {
                 assert!(outcome.is_err());
-                assert!(fixture.source.ensure_service_attachment(&fixture.store, &b, &held.task).await.is_err());
+                assert!(fixture.source.ensure_service_attachment_member(&fixture.store, &b, &held.task).await.is_err());
             }
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             assert_eq!(fixture.source.held_service_attachment(&b, &held.task).unwrap().is_none(), busy);
@@ -433,3 +433,533 @@ async fn attachment_busy_is_definite_but_failed_stage_keeps_login_retirement_unc
 
 #[path = "attachment_native_tests.rs"]
 mod native;
+
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_attachment_failure_fences_b_and_retains_exact_cause_without_reattachment() {
+    use meerkat_toolkit::setup::ApprovedServiceAttachmentFailure as Failure;
+    for (readiness, expected) in [
+        (McpAttachmentReadiness::Failed { detail: "untrusted startup detail must not be persisted".into() }, Failure::Failed),
+        (McpAttachmentReadiness::Rejected { detail: "untrusted refusal detail must not be persisted".into() }, Failure::Rejected),
+    ] {
+        let fixture = ContinuationFixture::for_service_input().await;
+        let result = AssertUnwindSafe(Box::pin(async {
+            let (b, stored, control) = approved(&fixture).await;
+            let record = fixture.source.decode_stored(&stored).unwrap();
+            let selected = fixture.source.service_task_snapshot(&record).await.unwrap();
+            let observed = observer(readiness);
+            let answer = receipt(observed.clone());
+            let calls = Arc::new(AtomicUsize::new(0));
+            let started = calls.clone();
+            let held = keep(&fixture.source, &b, &stored, control, Box::pin(async move {
+                started.fetch_add(1, Ordering::SeqCst); Ok(answer)
+            }));
+            fixture.source.step_service_input_with_attachment(&fixture.store, &stored).await.unwrap();
+            let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
+            let record = fixture.source.decode_stored(&saved).unwrap();
+            assert!(record.operation_cancelled && record.service_admission.is_none() && record.final_association.is_none());
+            let terminal = fixture.source.service_task_snapshot(&record).await.unwrap();
+            assert_eq!(terminal.state().lifecycle_phase, toolkit_catalog::AcquisitionPhase::Unavailable);
+            assert!(terminal.service_attachment_failure() == Some(expected));
+            assert!(terminal.approved_service() == selected.approved_service());
+            assert_eq!(terminal.request().authority_digest().unwrap(), selected.request().authority_digest().unwrap());
+            let obligation = fixture.source.service_setup_store().unwrap().committed_continuation(
+                &Id::new(terminal.key().id.clone()).unwrap()).await.unwrap().unwrap();
+            assert!(fixture.source.failed_service_allows_original_result(&obligation).await.unwrap());
+            let encoded = String::from_utf8(toolkit_package::canonical_json(&obligation).unwrap()).unwrap();
+            assert!(!encoded.contains("untrusted"));
+            assert!(fixture.source.held_service_attachment(&b, &held.task).unwrap().is_none());
+            fixture.source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(*observed.operations.lock().unwrap(), vec!["read"]);
+            assert_eq!(fixture.inputs().await, Ok(1), "failure settlement itself never submits A or B");
+        })).catch_unwind().await;
+        let cleanup = fixture.shutdown().await;
+        assert!(cleanup.is_ok(), "{cleanup:?}");
+        if let Err(panic) = result { std::panic::resume_unwind(panic); }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_attachment_failure_after_cancellation_cannot_stamp_failure_provenance() {
+    let fixture = ContinuationFixture::for_service_input().await;
+    let result = AssertUnwindSafe(Box::pin(async {
+        let (b, stored, control) = approved(&fixture).await;
+        let observed = Arc::new(Observer { value: Mutex::new(McpAttachmentReadiness::Failed { detail: "late failure".into() }),
+            operations: Mutex::new(vec![]), held: Some((tokio::sync::Notify::new(), tokio::sync::Notify::new())) });
+        let answer = receipt(observed.clone());
+        keep(&fixture.source, &b, &stored, control, Box::pin(async move { Ok(answer) }));
+        let mut work = Box::pin(fixture.source.step_service_input_with_attachment(&fixture.store, &stored));
+        tokio::select! {
+            result = &mut work => panic!("readiness should be held: {result:?}"),
+            _ = observed.held.as_ref().unwrap().0.notified() => (),
+        }
+        fixture.source.record_task_group_cancelled(&b).await.unwrap();
+        observed.held.as_ref().unwrap().1.notify_one();
+        assert!(tokio::time::timeout(WAIT, work).await.unwrap().is_err());
+        let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
+        let record = fixture.source.decode_stored(&saved).unwrap();
+        assert!(record.operation_cancelled && record.final_association.is_none() && record.service_admission.is_none());
+        fixture
+            .source
+            .reject_failed_service_attachment_with_observation(
+                &b,
+                meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Failed,
+                Some(
+                    serde_json::from_value(serde_json::json!({
+                        "phase": "initialize", "class": {"kind": "unknown"},
+                    }))
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.store.get(&stored.key).await.unwrap().unwrap(),
+            saved
+        );
+        let task = fixture.source.service_task_snapshot(&record).await.unwrap();
+        assert!(task.service_attachment_failure().is_none());
+        assert!(task.service_attachment_observation().is_none());
+        fixture.source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
+        let task = fixture.source.service_task_snapshot(&record).await.unwrap();
+        assert!(task.service_attachment_failure().is_none());
+        assert_eq!(fixture.inputs().await, Ok(1));
+    })).catch_unwind().await;
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    if let Err(panic) = result { std::panic::resume_unwind(panic); }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_attachment_failure_cannot_use_an_unsettled_cancellation_as_nonentry() {
+    let fixture = ContinuationFixture::for_service_input().await;
+    let result = AssertUnwindSafe(Box::pin(async {
+        let (b, stored, control) = approved(&fixture).await;
+        let answer = receipt(observer(McpAttachmentReadiness::Failed { detail: "startup failed".into() }));
+        keep(&fixture.source, &b, &stored, control, Box::pin(async move { Ok(answer) }));
+        let sql = rusqlite::Connection::open(&fixture.source_path).unwrap();
+        sql.execute_batch(&format!(
+            "CREATE TRIGGER fail_cancel BEFORE UPDATE OF data ON toolkit_records \
+             WHEN NEW.id = '{}' AND json_extract(NEW.data, '$.body.operation_cancelled') = 1 \
+             BEGIN SELECT RAISE(FAIL, 'cancellation not durable'); END;", stored.key.id)).unwrap();
+        assert!(fixture.source.step_service_input_with_attachment(&fixture.store, &stored).await.is_err());
+        assert!(
+            fixture
+                .source
+                .reject_failed_service_attachment_with_observation(
+                    &b,
+                    meerkat_toolkit::setup::ApprovedServiceAttachmentFailure::Failed,
+                    Some(
+                        serde_json::from_value(serde_json::json!({
+                            "phase": "initialize", "class": {"kind": "protocol_error"},
+                        }))
+                        .unwrap()
+                    )
+                )
+                .await
+                .is_err()
+        );
+        let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
+        let record = fixture.source.decode_stored(&saved).unwrap();
+        assert!(!record.operation_cancelled && record.final_association.is_none() && record.service_admission.is_none());
+        assert!(record.service_attachment_observation.is_none());
+        let task = fixture.source.service_task_snapshot(&record).await.unwrap();
+        assert!(task.service_attachment_failure().is_none());
+        assert!(fixture.source.service_setup_store().unwrap().committed_continuation(
+            &Id::new(task.key().id.clone()).unwrap()).await.unwrap().is_none());
+        assert_eq!(fixture.inputs().await, Ok(1));
+        sql.execute_batch("DROP TRIGGER fail_cancel;").unwrap();
+    })).catch_unwind().await;
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    if let Err(panic) = result { std::panic::resume_unwind(panic); }
+}
+
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_attachment_failure_replays_after_cancel_commit_before_result_commit() {
+    attachment_failure_replay(None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_attachment_observation_replays_from_exact_cancellation_cas() {
+    attachment_failure_replay(Some(serde_json::from_value(serde_json::json!({
+        "phase": "tool_discovery", "class": {"kind": "closed", "exit": {"kind": "signal", "value": 15}},
+    })).unwrap())).await;
+}
+
+async fn attachment_failure_replay(
+    observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+) {
+    use meerkat_toolkit::setup::ApprovedServiceAttachmentFailure;
+    let fixture = ContinuationFixture::for_service_input().await;
+    let result = AssertUnwindSafe(Box::pin(async {
+        let (b, stored, control) = approved(&fixture).await;
+        let before = fixture.source.decode_stored(&stored).unwrap();
+        assert!(before.service_attachment_failure.is_none());
+        assert!(stored.data.body.get("service_attachment_failure").is_none(), "legacy source bytes omit None");
+        assert_eq!(toolkit_package::canonical_json(&before).unwrap(),
+            toolkit_package::canonical_json(&stored.data.body).unwrap());
+        let task = fixture.source.service_task_snapshot(&before).await.unwrap();
+        let answer = receipt(observer(McpAttachmentReadiness::Failed { detail: "fixture terminal cause".into() }));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = calls.clone();
+        let held = keep(&fixture.source, &b, &stored, control, Box::pin(async move {
+            started.fetch_add(1, Ordering::SeqCst); Ok(answer)
+        }));
+        let sql = rusqlite::Connection::open(&fixture.source_path).unwrap();
+        sql.execute_batch(&format!(
+            "CREATE TRIGGER fail_setup_result BEFORE UPDATE OF data ON toolkit_records \
+             WHEN NEW.id = '{}' AND json_extract(NEW.data, '$.body.service_attachment_failure') IS NOT NULL \
+             BEGIN SELECT RAISE(FAIL, 'setup result write unavailable'); END;", task.key().id)).unwrap();
+        let result = if observation.is_some() {
+            // This scripted observer supplies no metadata. The explicit
+            // synthetic value exercises partial-commit replay in the writer.
+            let reply = held.receipt(|| Ok(())).await.unwrap().unwrap();
+            let ServiceAttachmentReadiness::Failed { failure, observation: None } = fixture.source
+                .service_attachment_ready(&held, &reply).await.unwrap()
+                else { panic!("scripted native readiness must fail"); };
+            fixture.source.attachment_current_after_read(&held).await.unwrap();
+            fixture.source.reject_failed_service_attachment_with_observation(&b, failure, observation).await
+        } else {
+            fixture.source.step_service_input_with_attachment(&fixture.store, &stored).await
+        };
+        assert!(result.is_err());
+        let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
+        let cancelled = fixture.source.decode_stored(&saved).unwrap();
+        assert_eq!(cancelled.service_attachment_observation, observation);
+        assert!(cancelled.operation_cancelled && cancelled.service_attachment_failure == Some(ApprovedServiceAttachmentFailure::Failed));
+        assert!(cancelled.final_association.is_none() && cancelled.service_admission.is_none());
+        assert!(fixture.source.service_task_snapshot(&cancelled).await.unwrap().service_attachment_failure().is_none());
+        // Lose process-local attachment custody too. Only durable source facts
+        // plus its exact native cancellation evidence can repair settlement.
+        fixture.source.retire_service_attachment_member(&b, &held.task).await;
+        sql.execute_batch("DROP TRIGGER fail_setup_result;").unwrap();
+        fixture.source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
+        let terminal = fixture.source.service_task_snapshot(&cancelled).await.unwrap();
+        assert!(terminal.service_attachment_failure() == Some(ApprovedServiceAttachmentFailure::Failed));
+        assert_eq!(terminal.service_attachment_observation(), observation);
+        assert_eq!(terminal.state().lifecycle_phase, toolkit_catalog::AcquisitionPhase::Unavailable);
+        let obligation = fixture.source.service_setup_store().unwrap().committed_continuation(
+            &Id::new(task.key().id.clone()).unwrap()).await.unwrap().unwrap();
+        assert!(fixture.source.failed_service_allows_original_result(&obligation).await.unwrap());
+        assert_eq!(obligation.service_attachment_observation(), observation);
+        let digest = obligation.digest().unwrap();
+        // Repeated settlement cannot enrich or replace the first committed
+        // observation, including a legacy None, after cancellation/retirement.
+        fixture.source.reject_failed_service_attachment_with_observation(&b,
+            ApprovedServiceAttachmentFailure::Rejected,
+            Some(serde_json::from_value(serde_json::json!({
+                "phase": "launch", "class": {"kind": "spawn_failed"},
+            })).unwrap())).await.unwrap();
+        assert_eq!(fixture.source.service_setup_store().unwrap().committed_continuation(
+            obligation.operation()).await.unwrap().unwrap().digest().unwrap(), digest);
+        fixture.source.step_service_input_with_attachment(&fixture.store, &saved).await.unwrap();
+        assert_eq!(fixture.store.get(&stored.key).await.unwrap().unwrap(), saved,
+            "generic cancellation replay keeps the atomically retained cause and evidence");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.inputs().await, Ok(1));
+    })).catch_unwind().await;
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    if let Err(panic) = result { std::panic::resume_unwind(panic); }
+}
+
+// These controls substitute only the optional native observation. The physical
+// Core/Meta control is separate in attachment_native_tests.rs.
+struct MetadataObserver {
+    readiness: McpAttachmentReadiness,
+    metadata: Option<McpStdioSetupFailure>,
+    held: Option<(tokio::sync::Notify, tokio::sync::Notify)>,
+    reads: AtomicUsize,
+    tails: AtomicUsize,
+}
+#[async_trait::async_trait]
+impl McpAttachmentAttemptObserver for MetadataObserver {
+    async fn observe(&self, _: &str) -> McpAttachmentReadiness {
+        self.readiness.clone()
+    }
+    async fn wait(&self, _: &str, _: Duration) -> McpAttachmentReadiness {
+        self.readiness.clone()
+    }
+    async fn setup_failure(&self) -> Option<McpStdioSetupFailure> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if let Some((entered, release)) = &self.held {
+            entered.notify_one();
+            release.notified().await;
+        }
+        self.metadata.clone()
+    }
+    async fn stderr_tail(&self) -> Option<meerkat_core::mcp_attachment::McpStdioStderrTail> {
+        self.tails.fetch_add(1, Ordering::SeqCst);
+        panic!("Connect must never request sensitive stderr");
+    }
+}
+fn metadata_observer(held: bool, rejected: bool, present: bool) -> Arc<MetadataObserver> {
+    Arc::new(MetadataObserver {
+        readiness: if rejected {
+            McpAttachmentReadiness::Rejected {
+                detail: "untrusted-readiness-sentinel".into(),
+            }
+        } else {
+            McpAttachmentReadiness::Failed {
+                detail: "untrusted-readiness-sentinel".into(),
+            }
+        },
+        metadata: present.then(|| {
+            McpStdioSetupFailure::new(
+                "untrusted-server-sentinel",
+                913,
+                McpStdioSetupPhase::Initialize,
+                McpStdioSetupFailureClass::Closed {
+                    exit: Some(McpStdioExit::Code(3)),
+                },
+                true,
+            )
+        }),
+        held: held.then(|| (tokio::sync::Notify::new(), tokio::sync::Notify::new())),
+        reads: AtomicUsize::new(0),
+        tails: AtomicUsize::new(0),
+    })
+}
+fn metadata_receipt(observer: Arc<MetadataObserver>) -> LiveMcpAttachmentReceipt {
+    LiveMcpAttachmentReceipt {
+        outcome: McpAttachmentOutcome {
+            persisted: false,
+            staged: true,
+        },
+        attempt: McpAttachmentAttempt::new("mail", observer),
+    }
+}
+
+#[test]
+fn setup_failure_projection_keeps_only_known_typed_fields() {
+    use meerkat_toolkit::setup::{
+        ApprovedServiceAttachmentClass as Class, ApprovedServiceAttachmentExit as Exit,
+        ApprovedServiceAttachmentPhase as Phase,
+    };
+    let classes = [
+        (
+            McpStdioSetupFailureClass::SpawnFailed,
+            Class::SpawnFailed {},
+        ),
+        (
+            McpStdioSetupFailureClass::Closed {
+                exit: Some(McpStdioExit::Code(3)),
+            },
+            Class::Closed {
+                exit: Some(Exit::Code(3)),
+            },
+        ),
+        (
+            McpStdioSetupFailureClass::Closed {
+                exit: Some(McpStdioExit::Signal(15)),
+            },
+            Class::Closed {
+                exit: Some(Exit::Signal(15)),
+            },
+        ),
+        (
+            McpStdioSetupFailureClass::Closed { exit: None },
+            Class::Closed { exit: None },
+        ),
+        (
+            McpStdioSetupFailureClass::Rejected { code: -32601 },
+            Class::Rejected {},
+        ),
+        (
+            McpStdioSetupFailureClass::ProtocolError,
+            Class::ProtocolError {},
+        ),
+        (McpStdioSetupFailureClass::TimedOut, Class::TimedOut {}),
+        (McpStdioSetupFailureClass::Unknown, Class::Unknown {}),
+    ];
+    for (native_phase, phase) in [
+        (McpStdioSetupPhase::Launch, Phase::Launch),
+        (McpStdioSetupPhase::Initialize, Phase::Initialize),
+        (McpStdioSetupPhase::ToolDiscovery, Phase::ToolDiscovery),
+    ] {
+        for (native_class, class) in classes {
+            let projected = project_setup_failure(McpStdioSetupFailure::new(
+                "untrusted-server-sentinel",
+                913,
+                native_phase,
+                native_class,
+                true,
+            ))
+            .unwrap();
+            assert_eq!(projected.phase, phase);
+            assert_eq!(projected.class, class);
+            let encoded = serde_json::to_value(projected).unwrap();
+            assert_eq!(encoded.as_object().unwrap().len(), 2);
+            assert!(!encoded.to_string().contains("sentinel"));
+            assert!(encoded.get("attempt").is_none());
+            assert!(encoded.get("stderr_tail_retained").is_none());
+            assert!(encoded["class"].get("code").is_none());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_metadata_is_committed_with_the_exact_terminal_failure() {
+    use meerkat_toolkit::setup::ApprovedServiceAttachmentFailure;
+    for (rejected, present) in [(false, true), (true, true), (false, false)] {
+        let fixture = ContinuationFixture::for_service_input().await;
+        let result = AssertUnwindSafe(Box::pin(async {
+            let (b, stored, control) = approved(&fixture).await;
+            let observed = metadata_observer(false, rejected, present);
+            let expected = observed.metadata.clone().and_then(project_setup_failure);
+            let answer = metadata_receipt(observed.clone());
+            let held = keep(
+                &fixture.source,
+                &b,
+                &stored,
+                control,
+                Box::pin(async move { Ok(answer) }),
+            );
+            fixture
+                .source
+                .step_service_input_with_attachment(&fixture.store, &stored)
+                .await
+                .unwrap();
+            let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
+            let record = fixture.source.decode_stored(&saved).unwrap();
+            assert_eq!(record.service_attachment_observation, expected);
+            assert!(record.operation_cancelled && record.service_admission.is_none());
+            assert!(record.final_association.is_none());
+            assert!(
+                record.service_attachment_failure
+                    == Some(if rejected {
+                        ApprovedServiceAttachmentFailure::Rejected
+                    } else {
+                        ApprovedServiceAttachmentFailure::Failed
+                    })
+            );
+            let task = fixture.source.service_task_snapshot(&record).await.unwrap();
+            assert_eq!(task.service_attachment_observation(), expected);
+            let obligation = fixture
+                .source
+                .service_setup_store()
+                .unwrap()
+                .committed_continuation(&Id::new(task.key().id.clone()).unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(obligation.service_attachment_observation(), expected);
+            let encoded = toolkit_package::canonical_json(&obligation).unwrap();
+            assert!(!String::from_utf8(encoded).unwrap().contains("sentinel"));
+            assert!(
+                fixture
+                    .source
+                    .held_service_attachment(&b, &held.task)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(observed.reads.load(Ordering::SeqCst), 1);
+            assert_eq!(observed.tails.load(Ordering::SeqCst), 0);
+            assert_eq!(fixture.inputs().await, Ok(1));
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = fixture.shutdown().await;
+        assert!(cleanup.is_ok(), "{cleanup:?}");
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn optional_metadata_timeout_preserves_the_timely_terminal_failure() {
+    let fixture = ContinuationFixture::for_service_input().await;
+    let result = AssertUnwindSafe(Box::pin(async {
+        let (b, stored, control) = approved(&fixture).await;
+        let observed = metadata_observer(true, false, true);
+        let answer = metadata_receipt(observed.clone());
+        keep(
+            &fixture.source,
+            &b,
+            &stored,
+            control,
+            Box::pin(async move { Ok(answer) }),
+        );
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture
+                .source
+                .step_service_input_with_attachment(&fixture.store, &stored),
+        )
+        .await
+        .expect("optional metadata is bounded by the readiness deadline")
+        .unwrap();
+        let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
+        let record = fixture.source.decode_stored(&saved).unwrap();
+        assert!(record.operation_cancelled && record.service_attachment_failure.is_some());
+        assert!(record.service_attachment_observation.is_none());
+        assert!(record.final_association.is_none() && record.service_admission.is_none());
+        let task = fixture.source.service_task_snapshot(&record).await.unwrap();
+        assert!(task.service_attachment_failure().is_some());
+        assert!(task.service_attachment_observation().is_none());
+        assert_eq!(observed.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(observed.tails.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.inputs().await, Ok(1));
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_during_metadata_read_cannot_stamp_failure_provenance() {
+    let fixture = ContinuationFixture::for_service_input().await;
+    let result = AssertUnwindSafe(Box::pin(async {
+        let (b, stored, control) = approved(&fixture).await;
+        let observed = metadata_observer(true, false, true);
+        let answer = metadata_receipt(observed.clone());
+        keep(
+            &fixture.source,
+            &b,
+            &stored,
+            control,
+            Box::pin(async move { Ok(answer) }),
+        );
+        let mut work = Box::pin(
+            fixture
+                .source
+                .step_service_input_with_attachment(&fixture.store, &stored),
+        );
+        tokio::select! {
+            result = &mut work => panic!("metadata should be held: {result:?}"),
+            _ = observed.held.as_ref().unwrap().0.notified() => (),
+        }
+        fixture
+            .source
+            .record_task_group_cancelled(&b)
+            .await
+            .unwrap();
+        observed.held.as_ref().unwrap().1.notify_one();
+        assert!(tokio::time::timeout(WAIT, work).await.unwrap().is_err());
+        let saved = fixture.store.get(&stored.key).await.unwrap().unwrap();
+        let record = fixture.source.decode_stored(&saved).unwrap();
+        assert!(record.operation_cancelled && record.service_attachment_failure.is_none());
+        assert!(record.service_attachment_observation.is_none());
+        let task = fixture.source.service_task_snapshot(&record).await.unwrap();
+        assert!(task.service_attachment_failure().is_none());
+        assert!(task.service_attachment_observation().is_none());
+        assert_eq!(observed.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(observed.tails.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.inputs().await, Ok(1));
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}

@@ -72,7 +72,9 @@ impl PrivateOriginals {
         self.owner.check_historical_task_child(association).map_err(writer_error)
     }
 
-    /// Called only for an exact committed non-B obligation. Existing warm
+    /// Called for an exact committed A result. A selected B requires its
+    /// durable native-failure cause and authenticated permanent non-entry.
+    /// Existing warm
     /// custody keeps its prior native path. Cold reconstruction is deliberately
     /// limited to a single selected input/contributor with no named ancestors;
     /// there is no authoritative source-reference inventory for wider batches.
@@ -81,7 +83,9 @@ impl PrivateOriginals {
     pub(crate) async fn restore_setup_continuation_source(&self, obligation: &ContinuationObligation)
         -> Result<bool, ContinuationError>
     {
-        if obligation.approved_service().is_some() { return Err(ContinuationError::Denied); }
+        if obligation.approved_service().is_some()
+            && !self.failed_service_allows_original_result(obligation).await?
+        { return Err(ContinuationError::Denied); }
         self.restore_setup_source(obligation).await.map_err(continuation_error)
     }
 

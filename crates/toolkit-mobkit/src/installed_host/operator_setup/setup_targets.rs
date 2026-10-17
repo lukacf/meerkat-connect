@@ -48,13 +48,25 @@ pub(crate) fn validate_targets<'a>(targets: impl IntoIterator<Item = &'a Option<
 }
 
 pub(super) fn helper_intents(source: &ToolkitOriginalOwner, helper: &InstalledSetupSelection,
-    audience: &AudienceRef, targets: impl IntoIterator<Item = Option<GrantTarget>>)
+    application: &meerkat_core::PrincipalRef, audience: &AudienceRef,
+    targets: impl IntoIterator<Item = Option<GrantTarget>>)
     -> Result<Vec<SetupTargetIntent>, HostLifetimeError>
 {
     let targets = targets.into_iter().collect::<Vec<_>>();
     validate_targets(targets.iter())?;
     targets.into_iter().map(|target| {
-        let requested = if target.as_ref() == Some(&ConfiguredHelperReportCapability::target()) {
+        let requested = if target.is_none() && helper.catalog_capability.is_some() {
+            let capability = helper.catalog_capability.as_ref().ok_or(HostLifetimeError::Denied)?;
+            capability.validate(&helper.operation_basis)?;
+            let expected = application_operations::configured_catalog_parent(&helper.logical_executor, audience);
+            let current = source.grants().resolve_lineage(&capability.parent, application,
+                helper.represented_subject.as_ref()).map_err(|_| HostLifetimeError::Denied)?;
+            if current.restrictions() != &expected { return Err(HostLifetimeError::Denied); }
+            current.check_current().map_err(|_| HostLifetimeError::Unavailable)?;
+            // Only an independently requested/reviewed Original helper target
+            // copies this catalog-only scope. Existing grants stay immutable.
+            expected
+        } else if target.as_ref() == Some(&ConfiguredHelperReportCapability::target()) {
             if helper.report_capability.is_none() { return Err(HostLifetimeError::Denied); }
             configured_report::report_parent(&helper.logical_executor, audience)
         } else if target.as_ref() == Some(&ConfiguredHelperReportCapability::account_target()) {

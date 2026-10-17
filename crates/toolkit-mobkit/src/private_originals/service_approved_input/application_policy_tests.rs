@@ -284,7 +284,7 @@ async fn positive(source_kind: ApplicationServiceSource, connector: bool) {
         assert_eq!(approved.before_ms, before_ms);
         assert_eq!(approved.original_task.origin_session_id, fixture.session);
         let work = OriginalWorkRef { authority: route.source_authority.clone(), work: fresh.clone() };
-        let lineage = fixture.source.service_grant_lineage(&approved.grant, &work).await.unwrap();
+        let lineage = fixture.source.service_grant_lineage(approved.singleton_grant().unwrap(), &work).await.unwrap();
         assert_eq!(lineage.len(), 2);
         assert!(lineage[..1] == configured_parent[..], "native child attenuates the selected parent");
         let resolved = fixture.source.owner.grants().resolve_lineage(&lineage,

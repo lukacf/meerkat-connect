@@ -8,7 +8,7 @@ use meerkat_mobkit::http_console::{ConsoleViewerContext, ConsoleViewerResolver};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
-use toolkit_mobkit::{host_gateway::{ConsoleAccessPolicy, ConsolePageRead, ConsoleSetupBinding, ConsoleStatusPage}, private_host::{ConsoleLoginHandle, PrivateHostClosed},
+use toolkit_mobkit::{host_gateway::{ConsoleAccessPolicy, ConsoleRecoveryPolicy, ConsolePageRead, ConsoleSetupBinding, ConsoleStatusPage}, private_host::{ConsoleLoginHandle, PrivateHostClosed},
     private_originals::InstalledServiceTask};
 use crate::{ConnectError, approval::{ApprovalPresenter, ApprovalPrompt, ApprovalPromptOutcome}, stdio::{Exchange, PromptBridge, PromptAnswer},
     installed_service_review::account_request::{InstalledAccountRequest, InstalledAccountRequests,
@@ -25,12 +25,20 @@ pub struct ConsoleSetupSelection {
     pub origin: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_management: Option<ConsoleAccessPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_management: Option<ConsoleRecoveryPolicy>,
 }
 impl ConsoleSetupSelection {
     /// The supplying application selects this policy when producing its pinned
     /// Console artifact. It is never inferred from a browser or old artifact.
     pub fn for_application_issued_access(origin: String) -> Self {
-        Self { origin, access_management: Some(ConsoleAccessPolicy::RequesterIssuedLeaves) }
+        Self { origin, access_management: Some(ConsoleAccessPolicy::RequesterIssuedLeaves), recovery_management: None }
+    }
+    /// Explicit administrator recovery for the operator's own retained intent.
+    /// Existing artifacts and the requester-only constructor remain unchanged.
+    pub fn with_operator_service_recovery(mut self) -> Self {
+        self.recovery_management = Some(ConsoleRecoveryPolicy::OperatorUnpublishedServiceApprovals);
+        self
     }
     pub fn validate(&self) -> Result<(), ConnectError> {
         let url = reqwest::Url::parse(&self.origin).map_err(|_| unavailable())?;
@@ -213,7 +221,8 @@ impl Active {
 impl ConsoleSetup {
     pub(crate) fn new(selection: ConsoleSetupSelection, binding: ConsoleSetupBinding) -> Result<Self, ConnectError> {
         selection.validate()?;
-        let binding = binding.with_access_policy(selection.access_management);
+        let binding = binding.with_access_policy(selection.access_management)
+            .with_recovery_policy(selection.recovery_management);
         Ok(Self(Arc::new(Panel { selection, binding, viewer: OnceLock::new(),
             active: Mutex::new(None), next: AtomicU64::new(1), pages: Mutex::new(Vec::new()) })))
     }

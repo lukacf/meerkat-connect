@@ -1351,7 +1351,7 @@ ACQUISITION_REQUEST = ("Install the supplied Agno Hacker News integration for "
 ORIGINAL_A_FINISH = "The setup worker owns acquisition. The original task is waiting for service access."
 ORIGINAL_STORY_CALL = "original-public-story"
 ACQUISITION_MCP_TOOLS = ("setup_prepare", "setup_help", "setup_check", "setup_install",
-    "setup_job", "setup_reconcile")
+    "setup_job", "setup_reconcile", "setup_inspect_schema")
 ACQUISITION_HELPER_TOOLS = ACQUISITION_MCP_TOOLS + ("setup_report", "toolkit_request_public_service")
 RESOURCE_REFUSAL = ("Installed Connect resources are unavailable or changed; "
                     "reinstall the complete product. No setup command was started.")
@@ -1874,10 +1874,35 @@ ORIGINAL_CONTROLLER_FEEDBACK = (
 )
 
 
-def original_catalog_history(messages, request, operation, fresh, *, allow_controller_recovery=False):
-    """Keep exactly A/B business inputs; allow only their bounded native notices."""
-    require(all(row["role"] != "user" or row.get("content") == request
-                for row in messages[:fresh]), "unexpected original input before B")
+def installed_approved_service_context(proposal):
+    """Expected display facts from the fixture's independently checked proposal.
+
+    This controls the synthetic provider only. Native readiness, currentness,
+    permission and B's completed input remain separate acceptance predicates.
+    """
+    decision = proposal["decision"]
+    permission = decision["permission"]
+    return {"schema": "toolkit.approved-service-context.v1",
+        "operation": proposal["acquisition"]["id"], "original": decision["decision"],
+        "connection": permission["connection"], "resource": permission["resource"],
+        "allowed_operations": list(permission["operations"]),
+        "expires_at_ms": permission["lifetime"]["expires_at_ms"],
+        "configuration_sha256": decision["connection_revision"],
+        "attachment": "observed_usable_before_input_admission",
+        "meaning": "The host completed the approved integration attachment checks for this continuation. This context accompanies the unchanged reviewed user instruction. Native authorization is still checked on each use. This observation does not guarantee future readiness, extend permission, establish filesystem isolation or complete the user's task."}
+
+
+def original_catalog_history(messages, request, operation, fresh, *, allow_controller_recovery=False,
+                             service_context=None):
+    """Keep A/B, one exact approved context before B, and bounded native notices."""
+    context_index = None
+    if service_context is not None:
+        context_index = fresh - 1
+        require(fresh > 0 and messages[context_index] == {
+            "role": "user", "content": canonical(service_context).decode()},
+            "approved host context is missing, changed or not immediately before B")
+    require(all(row["role"] != "user" or row.get("content") == request or i == context_index
+                for i, row in enumerate(messages[:fresh])), "unexpected original input before B")
     load_positions = [i for i, row in enumerate(messages) if row["role"] == "tool"
                       and row["tool_call_id"] == "original-catalog-load"]
     require(len(load_positions) <= 1, "duplicate original catalog load result")
@@ -1995,6 +2020,11 @@ class InstalledAcquisitionProvider:
     original_catalog = False
     controller_reprepare = False
 
+    def checked_original_catalog_history(self, messages, fresh):
+        return original_catalog_history(messages, self.request_text, self.operation, fresh,
+            allow_controller_recovery=self.controller_reprepare,
+            service_context=getattr(self, "expected_service_context", None))
+
     def __init__(self, directory, events):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         self.directory, self.events = directory, events
@@ -2005,6 +2035,7 @@ class InstalledAcquisitionProvider:
         self.finished = threading.Event()
         self.business_response_prepared = threading.Event()
         self.business_observation = None
+        self.expected_service_context = None
         self.deadline = time.monotonic() + INSTALLED_LIMIT + ACQUISITION_LIMIT
         owner = self
 
@@ -2149,8 +2180,7 @@ class InstalledAcquisitionProvider:
             require(any(message["role"] == "assistant" and message.get("content") == ORIGINAL_A_FINISH
                         for message in messages[first + 1:fresh]), "fresh B input lacks A's actual final history")
             if self.original_catalog:
-                recovery_index = original_catalog_history(messages, self.request_text, self.operation, fresh,
-                    allow_controller_recovery=self.controller_reprepare)
+                recovery_index = self.checked_original_catalog_history(messages, fresh)
                 search, loaded = "original-catalog-search", "original-catalog-load"
                 if search not in results:
                     return call(search, "tool_catalog_search", {"query": self.operation, "limit": 50})
@@ -2246,6 +2276,21 @@ class InstalledAcquisitionProvider:
                 threading.Event().wait(2.0)
                 return job_id, call(label + "-poll-" + str(phase), "setup_job", {"job_id": job_id})
             return job_id, None
+
+        if "schema-evidence" not in results:
+            require("prepare-family" not in self.issued,
+                    "schema evidence call must precede package preparation")
+            return call("schema-evidence", "setup_inspect_schema", {"schema_json": "{}"})
+        schema = results["schema-evidence"]
+        expected_schema = {"schema_version": 1, "scope": "supplied_schema_evidence_only",
+            "schema_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "bytes": 2, "hash_algorithm": "sha256", "byte_convention": "exact_supplied_utf8",
+            "runtime_observation": "not_established", "schema_validation": "not_performed"}
+        require("schema-evidence" in self.issued and isinstance(schema, dict)
+                and set(schema) == set(expected_schema) | {"notice"}
+                and all(schema[key] == value for key, value in expected_schema.items())
+                and isinstance(schema["notice"], str) and bool(schema["notice"]),
+                "installed helper did not return exact supplied-schema evidence and limits")
 
         if "prepare-family" not in results:
             require(any(identifier.startswith("helper-catalog-search-") for identifier in results)
@@ -2542,6 +2587,12 @@ class InstalledFixtureRule:
             require(hashlib.sha256(canonical(proposal)).hexdigest() == request.proposal_sha256,
                     "actual proposal digest mismatch")
             self.check(proposal)
+            # Bind the finite display expectation before the SDK can submit the
+            # reviewed answer. It is never derived from a model message.
+            with self.provider.lock:
+                require(self.provider.expected_service_context is None,
+                        "approved context expectation was already selected")
+                self.provider.expected_service_context = installed_approved_service_context(proposal)
         except BaseException:
             self.release_untransferred()
             raise
@@ -2767,6 +2818,7 @@ async def run_installed_acquisition(private, finalizer, provider, directory, eve
             "authenticated_event": event_pin, "original": dataclasses.asdict(retained.original), "admission": admission,
             "proposal": proposal_pin, "ack": ack, "observation": observed, "custody": custody,
             "rule_releases_after_joined": rule.releases, "helper_result": provider.results["public-task-access"],
+            "schema_evidence": provider.results["schema-evidence"],
             "business": business, "fresh_original": dataclasses.asdict(b_original),
             "native_b": terminal_observation, "native_receipt_reads": receipt_reads,
             "service_readiness": "not_independently_observed",
@@ -3035,6 +3087,9 @@ async def _run_installed_product(args, candidate, package, resource_manifest, *,
                     private, finalizer, provider, directory, events, process)
             else:
                 console.application_tool_policy = finalizer.application_tool_policy
+                if hasattr(console, "observe_completed_setup"):
+                    console.observe_completed_setup(
+                        finalizer.completed_setup, finalizer.evidence["completed_setup"])
                 report["console_journey"] = await console.run(
                     private, provider, directory, events, process, runtime.rust_http_base_url)
             observe()
@@ -3153,7 +3208,7 @@ def main():
     parser.add_argument("--toolkit-python", required=True, type=Path)
     parser.add_argument("--meta-python", "--mobkit-python", dest="mobkit_python", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--case", choices=("core", "all", "memory-cleanup", "shutdown-reader", "private-protocol", "installed-product", "installed-console", "installed-console-credentials", "installed-console-browser"), default="core")
+    parser.add_argument("--case", choices=("core", "all", "memory-cleanup", "shutdown-reader", "private-protocol", "installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm"), default="core")
     parser.add_argument("--installed-staging", type=Path)
     parser.add_argument("--installed-staging-sha256")
     parser.add_argument("--browser-forge-source", type=Path)
@@ -3167,7 +3222,7 @@ def main():
         parser.error("Forge Browser source inputs apply only to installed-console-browser")
     if sys.platform != "darwin" and not sys.platform.startswith("linux"):
         parser.error("verifier supports explicit macOS /dev/fd or Linux /proc/self/fd inventory only")
-    installed = args.case in ("installed-product", "installed-console", "installed-console-credentials", "installed-console-browser")
+    installed = args.case in ("installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm")
     if installed:
         if args.raw_gateway is not None or args.installed_staging is None or args.installed_staging_sha256 is None:
             parser.error("installed-product needs the exact staging path/hash and no unrelated raw gateway")
@@ -3229,17 +3284,25 @@ def main():
             report.update(installed_candidate=candidate, installed_inputs=inputs,
                 execution_claim="installed SDK acquisition and one public read; success requires exact native input completion; no live authentication or general service support claim")
             console = None
-            if args.case in ("installed-console", "installed-console-credentials", "installed-console-browser"):
+            if args.case in ("installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm"):
                 module_path = Path(__file__).with_name("verify_installed_console.py")
                 spec = importlib.util.spec_from_file_location("connect_installed_console", module_path)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 report["console_verifier"] = artifact_pin(module_path)
-                scenario = (module.TrelloConsoleScenario if args.case == "installed-console-credentials"
-                            else module.ConsoleScenario)
-                console = (module.BrowserConsoleScenario(sys.modules[__name__], module.loopback_origin(),
-                    args.browser_forge_source, args.browser_forge_source_sha256) if browser else
-                    scenario(sys.modules[__name__], module.loopback_origin()))
+                if args.case == "installed-console-warm":
+                    warm_path = Path(__file__).with_name("verify_installed_warm.py")
+                    warm_spec = importlib.util.spec_from_file_location("connect_installed_warm", warm_path)
+                    warm_module = importlib.util.module_from_spec(warm_spec)
+                    warm_spec.loader.exec_module(warm_module)
+                    report["warm_verifier"] = artifact_pin(warm_path)
+                    console = warm_module.create_scenario(sys.modules[__name__], module, module.loopback_origin())
+                else:
+                    scenario = (module.TrelloConsoleScenario if args.case == "installed-console-credentials"
+                                else module.ConsoleScenario)
+                    console = (module.BrowserConsoleScenario(sys.modules[__name__], module.loopback_origin(),
+                        args.browser_forge_source, args.browser_forge_source_sha256) if browser else
+                        scenario(sys.modules[__name__], module.loopback_origin()))
                 report["execution_claim"] = console.scope
             for corrupt in ((False,) if console is not None else (False, True)):
                 result = (asyncio.run(_run_installed_product(args, candidate, package, resource_manifest,
@@ -3251,6 +3314,8 @@ def main():
                     break
             if console is not None:
                 require(digest(module_path) == report["console_verifier"]["sha256"], "Console verifier helper changed during verification")
+            if args.case == "installed-console-warm":
+                require(digest(warm_path) == report["warm_verifier"]["sha256"], "Warm verifier changed during verification")
             require(installed_candidate(args)[0] == candidate, "selected staged candidate changed during verification")
             for row in report["sdk_sources"]:
                 require(digest(Path(row["path"])) == row["sha256"], "selected SDK source changed during verification")

@@ -6,9 +6,11 @@
 
 mod prepared_application;
 mod console_setup;
+mod local_recovery;
+pub use local_recovery::{LocalRecoveryPageRead, LocalOperatorRecoveryPolicy, LocalServiceRecovery, LocalServiceRecoveryPage, LocalServiceRecoveryResult};
 mod prepared_runtime;
 pub use prepared_runtime::PreparedGatewayRuntime;
-pub use console_setup::{ConsoleAccessPolicy, ConsoleAccessSnapshot, ConsolePageRead, ConsoleSetupBinding, ConsoleStatusPage};
+pub use console_setup::{ConsoleAccessPolicy, ConsoleRecoveryPolicy, ConsoleAccessSnapshot, ConsoleServiceRecoverySnapshot, ConsolePageRead, ConsoleSetupBinding, ConsoleStatusPage};
 pub use prepared_application::PreparedSetupApplication;
 
 use crate::{
@@ -64,6 +66,7 @@ pub struct ToolkitGatewayHost {
     setup_application: Option<PreparedSetupApplication>,
     setup_member_factory: Option<SetupMemberFactoryComposition>,
     console_routes: Option<console_setup::ConsoleRouteComposition>,
+    local_recovery: Option<LocalOperatorRecoveryPolicy>,
     // Process-local transport observation only, never an activation or grant.
     prepared_application_selected: OnceLock<()>,
     acquisition_recovery: crate::installed_host::acquisition::recovery::AcquisitionRecovery,
@@ -469,6 +472,7 @@ impl ToolkitGatewayHost {
             setup_application: None,
             setup_member_factory: None,
             console_routes: None,
+            local_recovery: None,
             prepared_application_selected: OnceLock::new(),
             acquisition_recovery: Default::default(),
         }

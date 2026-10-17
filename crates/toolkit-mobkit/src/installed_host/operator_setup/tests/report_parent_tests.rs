@@ -25,6 +25,7 @@ impl Fixture {
                     delegation_depth: DelegationDepth::remaining(1), ..ExecutionRestrictions::unrestricted()
                 }).unwrap();
             let helper = InstalledSetupSelection {
+                catalog_capability: None,
                 report_capability: None, member: native.members[0].member.clone(),
                 ingress_actor: super::super::super::tests::principal("helper-ingress"),
                 logical_executor: native.members[0].logical_owner.clone(), represented_subject: None,
