@@ -58,6 +58,28 @@ retained execution. Earlier evidence scopes and failures remain unchanged. D3
 and PKG-006 stay open. See the
 [portability reference](docs/site/reference/portability.mdx#qualified-external-client-example).
 
+### Console status-read deadline
+
+The development panel now applies one 30-second deadline across status response
+headers and JSON body, aborting only the owned observation. It uses the existing
+unavailable/First-page recovery and excludes late results. Protected action
+requests and their polling fence are unchanged; timeout does not cancel setup or
+establish any action outcome. Source packet `e0cb0da2` changes only the panel and
+its existing JavaScript tests; panel SHA-256 is
+`d400884c21408dad387c98e224ed08555996c8b69650fe5d3d00def29ec7ce2e`.
+
+On Node 25.9.0, all 45 component controls pass, including the 40 earlier controls.
+The same fixtures against the exact prior panel retain three behavioral failures.
+Independent source/component review is `712b916f`. A separate unchanged-timer,
+real-fetch loopback check expires held headers/body at 30.006/30.004 seconds,
+observes both held sockets close before cleanup, and completes a fresh read in
+6.843 milliseconds. Receipt `54e4e47a` records natural exit, joined servers/sockets
+and absent process/group/listeners; independent outcome review is `9f8961aa`.
+This is component/Node transport evidence, not Browser interaction, authentication,
+native effects, installed packaging,
+CI, complete UX-002 coverage or a release. Requirement status and 0.9.0 assets
+remain unchanged.
+
 ### Native acquisition and recovery checkpoints
 
 V40 completed the controlled Console API business journey using exact adopted

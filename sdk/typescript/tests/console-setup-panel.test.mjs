@@ -106,6 +106,123 @@ test("status transport is a finite GET and does not start account work", async (
   assert.equal(calls[0].options.method, "GET"); assert.equal(calls[0].options.body, undefined);
 });
 
+// Only the status reader's clock is controlled. Poll timers retain the existing
+// page fixture, and protected POST promises are never timed out by this clock.
+function statusReadClock(t) {
+  const originalSet = globalThis.setTimeout; const originalClear = globalThis.clearTimeout;
+  const timers = new Map(); const owned = new Set(); const cleared = []; let now = 0;
+  t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
+    if (delay !== 30000) return originalSet(callback, delay, ...args);
+    const id = {}; owned.add(id); timers.set(id, { callback, due: now + delay }); return id;
+  });
+  t.mock.method(globalThis, "clearTimeout", id => {
+    if (!owned.has(id)) return originalClear(id);
+    cleared.push(id); timers.delete(id);
+  });
+  return { timers, cleared, advance(ms) {
+    now += ms;
+    for (const [id, timer] of [...timers]) if (timer.due <= now) {
+      timers.delete(id); timer.callback();
+    }
+  } };
+}
+const nextTurn = () => new Promise(resolve => setImmediate(resolve));
+
+test("status read deadline releases a held header response and consumes late rejection", async t => {
+  const clock = statusReadClock(t); const headers = deferred(); const calls = []; let settled;
+  const read = readSourceStatus((path, options) => { calls.push({ path, options }); return headers.promise; })
+    .then(value => { settled = { value }; }, error => { settled = { error }; });
+  t.after(async () => { headers.reject(Error("late status transport failure")); await read; await nextTurn(); });
+  clock.advance(29999); await nextTurn(); assert.equal(settled, undefined);
+  clock.advance(1); await nextTurn();
+  assert.ok(settled?.error, "the status observer must stop waiting at its deadline");
+  assert.equal(calls.length, 1); assert.equal(calls[0].path, "/host/toolkit/setup/data");
+  assert.equal(calls[0].options.method, "GET"); assert.equal(calls[0].options.signal.aborted, true);
+  assert.equal(clock.timers.size, 0); assert.equal(clock.cleared.length, 1);
+});
+
+test("status read uses one header-and-body deadline and ignores a late body", async t => {
+  const clock = statusReadClock(t); const headers = deferred(); const body = deferred(); let signal; let settled; let inspected = 0;
+  const late = {}; Object.defineProperty(late, "projection", { get() { inspected++; return snapshot("Late body"); } });
+  const read = readSourceStatus((_path, options) => { signal = options.signal; return headers.promise; })
+    .then(value => { settled = { value }; }, error => { settled = { error }; });
+  t.after(async () => { headers.resolve({ ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => body.promise }); body.resolve(late); await read; await nextTurn(); });
+  clock.advance(20000);
+  headers.resolve({ ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => body.promise });
+  await nextTurn(); assert.equal(settled, undefined);
+  clock.advance(9999); await nextTurn(); assert.equal(settled, undefined);
+  clock.advance(1); await nextTurn();
+  assert.ok(settled?.error, "receiving headers must not restart or remove the response deadline");
+  assert.equal(signal.aborted, true); assert.equal(clock.timers.size, 0); assert.equal(clock.cleared.length, 1);
+  body.resolve(late); await nextTurn(); assert.equal(inspected, 0, "expired bodies must not be projected or validated later");
+});
+
+test("status read clears its deadline on success and each observed refusal", async t => {
+  const clock = statusReadClock(t); const signals = [];
+  const expected = { projection: snapshot() };
+  const cases = [
+    () => new Response(JSON.stringify(expected), { headers: { "content-type": "application/json" } }),
+    () => new Response("denied", { status: 403 }),
+    () => new Response("not json", { headers: { "content-type": "application/json" } }),
+    () => { throw Error("transport refused synchronously"); },
+  ];
+  for (const [index, response] of cases.entries()) {
+    const read = readSourceStatus((_path, options) => { signals.push(options.signal); return response(); });
+    if (index === 0) assert.deepEqual(await read, expected); else await assert.rejects(read);
+    assert.equal(clock.timers.size, 0); assert.equal(clock.cleared.length, index + 1);
+  }
+  clock.advance(30000); assert.equal(signals.some(signal => signal.aborted), false);
+  await assert.rejects(readSourceStatus(() => assert.fail("invalid selection must not fetch"), { page_id: 1, direction: "unknown" }));
+  assert.equal(clock.cleared.length, 4, "invalid selection never starts a response timer");
+});
+
+test("a timed-out status page requires explicit First page and cannot install a late offer", async t => {
+  const fixture = pageFixture(t); const { container, timers } = fixture;
+  const clock = statusReadClock(t); const body = deferred(); const calls = [];
+  const envelope = (id, title) => ({ projection: snapshot(title), review: review(title),
+    page: { page_id: id, first: true, has_next: true } });
+  const page = mountSourceStatusPage(container, undefined, (path, options) => {
+    calls.push({ path, options });
+    if (calls.length === 2) return { ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => body.promise };
+    return new Response(JSON.stringify(envelope(calls.length, calls.length === 1 ? "Original review" : "Fresh review")),
+      { headers: { "content-type": "application/json" } });
+  });
+  t.after(async () => { page.dispose(); body.resolve(envelope(99, "Late stale review")); await nextTurn(); });
+  const tick = () => { const callback = [...timers.values()][0]; assert.ok(callback); timers.clear(); return callback(); };
+  const button = text => [...container.querySelectorAll("button")].find(node => node.textContent === text);
+  await nextTurn(); assert.match(container.textContent, /Original review/);
+  const polling = tick(); await nextTurn();
+  t.after(async () => { body.resolve(envelope(99, "Late stale review")); await polling; });
+  assert.equal(calls.length, 2); assert.equal(button("First page").disabled, true);
+  assert.equal(calls[1].path, "/host/toolkit/setup/data"); assert.equal(calls[1].options.method, "POST");
+  assert.deepEqual(JSON.parse(calls[1].options.body), { page_id: 1, direction: "refresh" });
+  clock.advance(30000); await nextTurn();
+  assert.match(container.textContent, /Task setup status is unavailable/, "a stalled body must release navigation into explicit recovery");
+  assert.doesNotMatch(container.textContent, /Original review|Late stale review/);
+  assert.equal(button("First page").disabled, false); assert.equal(button("Refresh status").disabled, true);
+  assert.equal(calls[1].options.signal.aborted, true);
+  await polling; await tick(); await tick(); assert.equal(calls.length, 2, "polling must not automatically recover or replay the failed page");
+  button("First page").click(); await nextTurn();
+  assert.equal(calls.length, 3); assert.equal(calls[2].options.method, "GET"); assert.equal(calls[2].options.body, undefined);
+  assert.match(container.textContent, /Fresh review/);
+  body.resolve(envelope(99, "Late stale review")); await nextTurn();
+  assert.match(container.textContent, /Fresh review/); assert.doesNotMatch(container.textContent, /Late stale review/);
+  assert.equal(clock.timers.size, 0);
+});
+
+test("a retired page's default status read expires without restoring its DOM or polling", async t => {
+  const fixture = pageFixture(t); const { container, timers, transition } = fixture;
+  const clock = statusReadClock(t); const held = deferred(); let signal; let calls = 0;
+  const page = mountSourceStatusPage(container, undefined, (_path, options) => { calls++; signal = options.signal; return held.promise; });
+  t.after(async () => { page.dispose(); held.reject(Error("late retired read")); await nextTurn(); });
+  await nextTurn(); transition("pagehide"); assert.equal(container.textContent, "");
+  clock.advance(30000); await nextTurn();
+  assert.equal(signal?.aborted, true, "a retired mount must not leave the default read unbounded");
+  assert.equal(container.textContent, ""); assert.equal(timers.size, 0); assert.equal(calls, 1);
+  assert.equal(clock.timers.size, 0); assert.equal(clock.cleared.length, 1);
+  held.reject(Error("late retired read")); await nextTurn(); assert.equal(container.textContent, "");
+});
+
 test("software approval displays the actual checked package and preserves native decisions", t => {
   const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
   t.after(() => account.dispose());

@@ -72,13 +72,21 @@ retains exact source identities, earlier failures and scoped validation.
 - **Review expiry:** Console and terminal reviews continue polling their existing
   deadline while displayed. Focused checks and an actual expired Console review
   confirm settlement without extending approval lifetimes or changing authority.
+- **Bounded status observations:** A stalled status read now expires after 30
+  seconds across headers and body, aborting only that read and restoring explicit
+  First-page recovery. Late results cannot replace the current view. All 45
+  JavaScript controls pass; three prior-source regressions fail as expected. A
+  real Node loopback check confirms both held requests close before teardown and
+  a fresh read succeeds. Protected actions and their polling fence are unchanged.
+  This is component/Node transport evidence, not Browser interaction, native
+  effect completion or full UX-002 qualification.
 - **Protected action ordering:** Panel reads pause while this document has a
   protected action pending, then refresh current state after settlement. The
   access endpoint's stale-offer 409 now reports definite nonentry without retrying
   the mutation. Two prior-source regressions and 36 controlled JavaScript checks
   pass with independent review. Other tabs can still replace an offer; this adds
-  no cross-tab lock or pending-fetch timeout. V40 includes these bytes and
-  completes protected API actions. The official hidden in-app Browser was
+  no cross-tab lock or claim that observation timeout cancels an action. V40
+  includes these bytes and completes protected API actions. The official hidden in-app Browser was
   unavailable before any tab, read or UI action in a separate synthetic-transport
   fixture. The fixture stopped naturally with joined owners; no mouse or
   substitute driver was used. Actual Browser interaction remains unqualified.

@@ -93,14 +93,36 @@ export async function readSourceStatus(fetcher = fetch, selection) {
     if (selection !== undefined && (!selection || Object.keys(selection).some(key => !["page_id", "direction"].includes(key))
         || !Number.isSafeInteger(selection.page_id) || selection.page_id < 1
         || !["refresh", "next"].includes(selection.direction))) throw new TypeError("Invalid page selection");
-    const response = await fetcher(SOURCE_STATUS_DATA_PATH, {
-        method: selection ? "POST" : "GET", credentials: "same-origin", cache: "no-store", redirect: "error",
-        headers: selection ? { Accept: "application/json", "Content-Type": "application/json" } : { Accept: "application/json" },
-        ...(selection ? { body: JSON.stringify(selection) } : {}),
+    const controller = new AbortController();
+    let timer;
+    const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+            // Abort only this status observation, never setup or a protected
+            // action. A late server result cannot establish an effect outcome.
+            controller.abort();
+            reject(new Error("Task setup status read timed out"));
+        }, 30000);
     });
-    if (!response.ok || !response.headers.get("content-type")?.startsWith("application/json")) throw new Error("Task setup status read was not authorized or available");
-    const envelope = await response.json(); validateProjection(envelope.projection); checkedPage(envelope.page);
-    return envelope;
+    try {
+        const observation = (async () => {
+            const response = await fetcher(SOURCE_STATUS_DATA_PATH, {
+                method: selection ? "POST" : "GET", credentials: "same-origin", cache: "no-store", redirect: "error",
+                headers: selection ? { Accept: "application/json", "Content-Type": "application/json" } : { Accept: "application/json" },
+                ...(selection ? { body: JSON.stringify(selection) } : {}), signal: controller.signal,
+            });
+            if (controller.signal.aborted) throw new Error("Task setup status read expired");
+            if (!response.ok || !response.headers.get("content-type")?.startsWith("application/json")) throw new Error("Task setup status read was not authorized or available");
+            const envelope = await response.json();
+            if (controller.signal.aborted) throw new Error("Task setup status read expired");
+            validateProjection(envelope.projection); checkedPage(envelope.page);
+            return envelope;
+        })();
+        // One deadline covers both headers and body. The race observes late
+        // rejection too; only its first result can reach the mounted panel.
+        return await Promise.race([observation, deadline]);
+    } finally {
+        clearTimeout(timer);
+    }
 }
 // This transport projects the existing retained prompt. It creates no task,
 // native approval or account selector and stores no bearer or callback query.
