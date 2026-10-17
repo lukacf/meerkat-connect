@@ -22,6 +22,20 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+Returned-error service approval compensation comes from private checkpoint
+`317806cc7b6e1d9e472cab1a31b0a67d2f572616`, exported as public
+`5c00e4966049c1e994800a858255287e22f9c4f9`. Eight files add exact parent/child
+cleanup attempts after joined approval failure, preserve published replay and
+other approvals, and recheck grants before publication. Native refusal or
+uncertainty remains unresolved. The unchanged Core `efd313d4` /
+Meta `669f54fa` graph passes seven focused native/SQLite tests. A comparison using
+only the prior approval body with the same fixtures compiles and fails at missing
+revocations. Independent source and execution review passed, with all runners
+and transport owners joined. This qualifies returned errors only; it does not
+qualify process loss, cold recovery, installed Console behavior or logout recovery.
+Historical V39 cleanup is recorded separately below. Login uncertainty stays retained and
+tool-policy publication is not rolled back. Published assets are unchanged.
+
 Generic startup recovery guidance comes from private checkpoint
 `4cefacce44f38c5d7c599eb881c2fe9c6ed7704f`, exported as public
 `4b165d9b4381da642bac497e368d1513b1ed72be`. The standalone prompt and existing
@@ -42,8 +56,13 @@ session refusal and exact local session cleanup. Normal Stop, owned processes an
 forwards are closed, with ledger and sidecar identities unchanged. Independent
 review accepted this finite failure and physical closeout. A subsequent read-only
 record join found additional unpublished native issuance without a revoke record
-or the expected continuation source. That approval-preparation cleanup gap remains
-open; current usability was not evaluated. Attachment diagnosis remains open.
+or the expected continuation source. Returned-error compensation is qualified
+above. A separate native cleanup now appends exactly the two historical
+revocations, preserving the prior journal prefix, identity/incarnation and runtime
+bytes. The identical binary passed one scratch run before one canonical run;
+actual custody was released and all processes joined, with independent review.
+This does not qualify product restart recovery. Pre-cleanup usability was not
+evaluated. Attachment diagnosis remains open.
 Source/native and controlled installed context evidence below remains valid,
 without real-agent business or browser UX qualification.
 

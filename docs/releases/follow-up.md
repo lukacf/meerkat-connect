@@ -10,6 +10,17 @@ reviewed Core retained-resume correction with compatible Meta 0.9.1 and SDKs has
 passed development gateway and controlled installed checks. Published Connect
 0.9.0 binaries are unchanged.
 
+- **Approval failure cleanup:** After an approval worker joins with an error,
+  the source owner reconciles the exact result and attempts unpublished-grant
+  revocation. Native refusal or uncertainty remains unresolved. An already
+  published exact source and another approval's child are preserved; late
+  publication rechecks grant eligibility. Seven focused native/SQLite tests pass,
+  and the prior approval body fails the missing-revocations assertion with the
+  same fixtures. Independent source and execution review passed. This covers
+  returned errors, not process loss, cold recovery or installed Console behavior.
+  Login uncertainty remains retained and policy is not rolled back. Historical
+  failed-case cleanup is independently verified below; the original business
+  answer remains pending.
 - **Review expiry:** Console and terminal reviews continue polling their existing
   deadline while displayed. Focused checks and an actual expired Console review
   confirm settlement without extending approval lifetimes or changing authority.
@@ -229,8 +240,12 @@ logout. Normal Stop and all owned-process and forward cleanup completed; ledger
 and sidecar identities were unchanged. Independent review accepted the recorded
 failure and physical closeout. A later read-only record join found additional
 unpublished native issuance, with no revoke record or expected continuation source.
-That approval-preparation cleanup gap remains follow-up work; current usability
-was not evaluated. Earlier failed results and released assets remain unchanged.
+Returned-error compensation is qualified above. A separately reviewed native
+cleanup has now revoked both exact historical grants, preserving the prior journal
+prefix, identity and runtime data. It ran once after a successful scratch control;
+actual custody was released and all processes joined. Recovery after process loss
+and installed qualification remain pending; pre-cleanup usability was not
+evaluated. Earlier failed results and released assets remain unchanged.
 
 ## Released 0.9.0 limits
 
