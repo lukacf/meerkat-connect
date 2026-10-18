@@ -2009,6 +2009,15 @@ def exact_catalog_load(value, expected):
                 "native load refused or contradicted the selected name")
 
 
+def pending_setup_search(value):
+    return (isinstance(value, dict)
+            and set(value) == {"catalog_exact", "total_matches", "results", "pending_sources", "empty_result_status"}
+            and value["catalog_exact"] is True
+            and type(value["total_matches"]) is int and value["total_matches"] == 0
+            and value["results"] == [] and value["pending_sources"] == ["toolkit-setup"]
+            and value["empty_result_status"] == "pending_source")
+
+
 class InstalledAcquisitionProvider:
     """Controlled model responses; every tool result comes from the real child."""
     request_text = ACQUISITION_REQUEST
@@ -2247,7 +2256,9 @@ class InstalledAcquisitionProvider:
                         if identifier.startswith("helper-catalog-search-")]
             loads = [value for identifier, value in results.items()
                      if identifier.startswith("helper-catalog-load-")]
-            require(len(searches) < 10 and len(loads) < 10, "native catalog did not expose selected setup tools")
+            require(len(loads) < 10, "native catalog did not expose selected setup tools")
+            require(all(pending_setup_search(value) for value in searches[:-1]),
+                    "another Search followed a result other than the exact pending setup source")
             found = searches[-1] if searches else None
             observed_names = {}
             if found is not None:
@@ -2260,6 +2271,8 @@ class InstalledAcquisitionProvider:
                 return call("helper-catalog-load-" + str(phase), "tool_catalog_load",
                             {"names": [observed_names[name] for name in ACQUISITION_MCP_TOOLS]})
             if searches:
+                require(pending_setup_search(found),
+                        "native catalog did not resolve selected setup tools or report the exact pending setup source")
                 threading.Event().wait(0.25)
             return call("helper-catalog-search-" + str(phase), "tool_catalog_search", {"query": "setup", "limit": 50})
 
@@ -2941,6 +2954,8 @@ async def _run_installed_product(args, candidate, package, resource_manifest, *,
             specs.append(META_IDENTITY.DurableAgentSpec(identity="original", profile="original", runtime_mode_override="turn_driven"))
         plan, plan_pin, source_pin = installed_plan(directory, [spec.to_dict() for spec in specs], acquisition=not corrupt, console=console,
             catalog_policy=console is None and not corrupt)
+        if console is not None and hasattr(console, "prepare_plan"):
+            plan, plan_pin, source_pin = console.prepare_plan(directory, plan, plan_pin, source_pin)
         report["preparation_plan"] = plan_pin
         callbacks = []
 
@@ -3087,6 +3102,8 @@ async def _run_installed_product(args, candidate, package, resource_manifest, *,
                     private, finalizer, provider, directory, events, process)
             else:
                 console.application_tool_policy = finalizer.application_tool_policy
+                if hasattr(console, "observe_preparation"):
+                    console.observe_preparation(attempt, finalizer, gateway, process, observe)
                 if hasattr(console, "observe_completed_setup"):
                     console.observe_completed_setup(
                         finalizer.completed_setup, finalizer.evidence["completed_setup"])
@@ -3208,12 +3225,20 @@ def main():
     parser.add_argument("--toolkit-python", required=True, type=Path)
     parser.add_argument("--meta-python", "--mobkit-python", dest="mobkit_python", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--case", choices=("core", "all", "memory-cleanup", "shutdown-reader", "private-protocol", "installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build"), default="core")
+    parser.add_argument("--case", choices=("core", "all", "memory-cleanup", "shutdown-reader", "private-protocol", "installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build", "installed-console-helper-reset"), default="core")
     parser.add_argument("--installed-staging", type=Path)
     parser.add_argument("--installed-staging-sha256")
     parser.add_argument("--browser-forge-source", type=Path)
     parser.add_argument("--browser-forge-source-sha256")
+    parser.add_argument("--helper-reset-forge-source", type=Path)
+    parser.add_argument("--helper-reset-forge-source-sha256")
     args = parser.parse_args()
+    helper_reset = args.case == "installed-console-helper-reset"
+    if helper_reset:
+        if args.helper_reset_forge_source is None or not args.helper_reset_forge_source_sha256:
+            parser.error("Helper reset needs exact selected Forge adapter source receipt/hash")
+    elif args.helper_reset_forge_source is not None or args.helper_reset_forge_source_sha256 is not None:
+        parser.error("Helper-reset Forge inputs apply only to installed-console-helper-reset")
     browser = args.case == "installed-console-browser"
     if browser:
         if args.browser_forge_source is None or not args.browser_forge_source_sha256:
@@ -3222,7 +3247,7 @@ def main():
         parser.error("Forge Browser source inputs apply only to installed-console-browser")
     if sys.platform != "darwin" and not sys.platform.startswith("linux"):
         parser.error("verifier supports explicit macOS /dev/fd or Linux /proc/self/fd inventory only")
-    installed = args.case in ("installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build")
+    installed = args.case in ("installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build", "installed-console-helper-reset")
     if installed:
         if args.raw_gateway is not None or args.installed_staging is None or args.installed_staging_sha256 is None:
             parser.error("installed-product needs the exact staging path/hash and no unrelated raw gateway")
@@ -3232,6 +3257,8 @@ def main():
     path_names += ["installed_staging"] if installed else ["raw_gateway"]
     if browser:
         path_names.append("browser_forge_source")
+    if helper_reset:
+        path_names.append("helper_reset_forge_source")
     for name in path_names:
         value = getattr(args, name)
         if not value.is_absolute():
@@ -3284,13 +3311,21 @@ def main():
             report.update(installed_candidate=candidate, installed_inputs=inputs,
                 execution_claim="installed SDK acquisition and one public read; success requires exact native input completion; no live authentication or general service support claim")
             console = None
-            if args.case in ("installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build"):
+            if args.case in ("installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build", "installed-console-helper-reset"):
                 module_path = Path(__file__).with_name("verify_installed_console.py")
                 spec = importlib.util.spec_from_file_location("connect_installed_console", module_path)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 report["console_verifier"] = artifact_pin(module_path)
-                if args.case == "installed-console-source-build":
+                if helper_reset:
+                    reset_path = Path(__file__).with_name("verify_installed_helper_reset.py")
+                    reset_spec = importlib.util.spec_from_file_location("connect_installed_helper_reset", reset_path)
+                    reset_module = importlib.util.module_from_spec(reset_spec)
+                    reset_spec.loader.exec_module(reset_module)
+                    report["helper_reset_verifier"] = artifact_pin(reset_path)
+                    console = reset_module.create_scenario(sys.modules[__name__], module, module.loopback_origin(),
+                        args.helper_reset_forge_source, args.helper_reset_forge_source_sha256)
+                elif args.case == "installed-console-source-build":
                     warm_path = Path(__file__).with_name("verify_installed_warm.py")
                     warm_spec = importlib.util.spec_from_file_location("connect_installed_warm", warm_path)
                     warm_module = importlib.util.module_from_spec(warm_spec)
@@ -3331,6 +3366,9 @@ def main():
             if args.case == "installed-console-source-build":
                 require(digest(warm_path) == report["warm_observation_helpers"]["sha256"], "Observation helpers changed during verification")
                 require(digest(source_path) == report["source_build_verifier"]["sha256"], "Source-build verifier changed during verification")
+            if helper_reset:
+                require(digest(reset_path) == report["helper_reset_verifier"]["sha256"], "Reset verifier changed during verification")
+                console.check_sources()
             require(installed_candidate(args)[0] == candidate, "selected staged candidate changed during verification")
             for row in report["sdk_sources"]:
                 require(digest(Path(row["path"])) == row["sha256"], "selected SDK source changed during verification")
