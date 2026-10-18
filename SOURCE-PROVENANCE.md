@@ -436,6 +436,52 @@ will count exact durable input identities and preserve replay checks. The earlie
 turn failure and cleanup provider panic did not recur; they remain unresolved.
 Temporary diagnostics, dependency changes and published 0.9.0 assets are excluded.
 
+### r5 development observations
+
+Development-only Core `ab4d62274a8dd759842de2a25b7ac97a77d358ea` and Meta
+`67fa040723ec60568ded5bac3ed7ea82e459db6c` compile with the prior 556-package and
+complete feature map unchanged. Outcome `4efac7a4`, independently reviewed in
+`0867cc23`, fails the planning turn-settlement assertion with the displayed
+reason "operation unavailable under current authorization" before the durable-input
+checks. Core shares that text across ReprepareRequired, Denied and MalformedFacts.
+The subtype and producer are lost in Meta's string outcome, and the result does
+not prove the targeted r5 correction ran.
+
+Outcome `77f562cf`, reviewed in `7612722e`, reuses the exact same compiled binary.
+Both original Find calls, helper catalog loads, three exact schemas per helper
+and selected checks pass. Two independent approvals and one held physical
+preparation are observed. The SDK fixture incorrectly expects a ToolCall approval
+owner and raw arguments; production uses the exact helper Session owner and the
+reviewed proposal with tool/call identity. Its separate install error is still
+unexplained. Both SDK cleanup-empty assertions pass, all temporary diagnostics
+restore and recorded owners join. Shared completion is not qualified.
+
+Later focused outcome `f1c8cfee` compiles and runs all eight selected cases on
+the same r5 graph. All five explicit planning-source controls (`a63cd576` plus
+the test-only UUID correction `879bc43a`) and both delivery-claim controls
+(`c24818d6`) pass. The earlier parent-source compile `dd9bab43` entered no tests.
+The SDK executable is now `68c5496f`, despite an unchanged filename suffix.
+
+With corrected approval assertions, the full SDK passes exact helper Session
+ownership, A cancellation and B install/job/report tool results. It times out on
+the combined completion, B readback and original-task continuation condition at
+`native_case.rs:1679`; the raw log does not isolate the missing condition. No
+provider panic or install refusal appears. Strict cleanup-empty passes and all
+recorded owners join. Shared completion and process restart remain unqualified.
+A separate delivery retry successor (`d15e4ed2`) preserves exact proven
+nonadmission after a definite record-revision conflict; it has not run yet.
+The local source adopts only the 11 planning-source paths from `a63cd576` with
+`879bc43a`, as checked against the executed source. Delivery claim/retry changes,
+SDK fixture changes, development dependencies and temporary diagnostics remain
+excluded from this checkpoint.
+Historical positive acceptance stays separate from new operation authority.
+The Core owner confirms that the exact historical governed-input lookup is absent
+and proposes an additive 0.9.4 query; no code is available yet. Cold recovery needs
+that supported lookup and integration with the existing recovery worker. Missing
+or error evidence remains pending. No private Core codec or second index is added.
+These observations do not alter published 0.9.0 assets or the adopted dependency
+selection. CI-triggering publication remains held for the Core/Meta lead.
+
 ### Explicit Node build plans
 
 Private Toolkit checkpoint `07172f52e03b4a3c0ec9f383651bbfde4ebc2364` contributes 19 source/test

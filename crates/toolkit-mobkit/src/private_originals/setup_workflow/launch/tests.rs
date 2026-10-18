@@ -495,6 +495,17 @@ async fn exercise(case: u8) {
             ));
             f.finish(&Ok::<_, String>(admitted)).await.unwrap();
             assert_eq!(f.inputs().await.unwrap(), 3);
+            let g_row = f.store.get(&f.source.key(&c.planning.submission.original).unwrap()).await.unwrap().unwrap();
+            let g_record = f.source.decode_record(&g_row, &c.planning.submission.original).unwrap();
+            let Some(crate::private_originals::planning_source_evidence::PlanningSourceEvidence::Lead { parent }) =
+                &g_record.planning_source_evidence else { panic!("actual planning selection retains G evidence"); };
+            let p_row = f.store.get(&f.source.key(parent).unwrap()).await.unwrap().unwrap();
+            let p_record = f.source.decode_record(&p_row, parent).unwrap();
+            assert!(p_record.final_association.as_ref() == Some(c.planning.parent.association()));
+            assert!(p_record.planning_source_evidence.is_none() && p_record.bound_service_input.is_none(),
+                "selecting G cannot retrofit the already-admitted ordinary P");
+            assert!(g_record.bound_service_input.as_ref().unwrap().decode().unwrap()
+                .header().authority_association == g_record.final_association);
             let held = f
                 .source
                 .retained

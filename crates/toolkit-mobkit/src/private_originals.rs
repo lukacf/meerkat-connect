@@ -29,6 +29,7 @@ pub(crate) mod service_grants;
 mod governed_submit;
 mod cold_service_admission;
 mod cold_setup_admission;
+mod planning_source_evidence;
 mod console_ingress;
 mod controller_setup;
 mod setup_request;
@@ -86,7 +87,8 @@ pub(crate) fn same_source_origin(left: &StoredRecord, right: &StoredRecord) -> b
         (Some(left), Some(right)) => left.source == right.source && left.event == right.event
             && left.approved_task == right.approved_task
             && left.setup_request == right.setup_request
-            && left.configured_setup == right.configured_setup,
+            && left.configured_setup == right.configured_setup
+            && left.planning_source_evidence == right.planning_source_evidence,
         _ => false,
     }
 }
@@ -275,7 +277,11 @@ struct SourceRecord {
     approved_task: Option<service_approved_input::ApprovedTaskLink>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     service_admission: Option<service_approved_input::ServiceInputAdmission>,
-    /// Exact bound B or selected stock-operator setup A input retained before
+    /// Explicit host selection to retain planning-source input evidence.
+    /// It grants neither source custody nor permission to deliver context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    planning_source_evidence: Option<planning_source_evidence::PlanningSourceEvidence>,
+    /// Exact bound B, selected stock-operator setup A or selected planning input retained before
     /// native submission. The legacy field name remains stable on disk. This
     /// is historical evidence, with no process ingress or resume capability.
     /// Older rows without it cannot be used for cold admission recovery.
@@ -693,6 +699,7 @@ impl PrivateOriginals {
             approved_task: None,
             service_admission: None,
             bound_service_input: None,
+            planning_source_evidence: None,
         })?;
         // An existing final binding changes the record, but not the original
         // admission payload. The store compares that frozen initial request.
@@ -941,6 +948,8 @@ impl PrivateOriginals {
     ) -> Result<(), OriginalWriterError> {
         let c = association.candidate();
         self.check_setup_source_binding(record, association)?;
+        planning_source_evidence::check_binding(record, association)
+            .map_err(|_| OriginalWriterError::Conflict)?;
         let route = &record.source;
         let evidence_matches =
             |actual: &meerkat_authorization_contracts::evidence::HistoricalEvidenceRef,
@@ -1087,7 +1096,8 @@ impl PrivateOriginals {
         if record.final_association.as_ref() != Some(original.association()) {
             return Err(PrivateOriginalError::Conflict);
         }
-        let retain_bound_input = record.approved_task.is_some()
+        let retain_bound_input = record.planning_source_evidence.is_some()
+            || record.approved_task.is_some()
             || self.stock_setup_source(&record, &reference)?;
         let mut retained = self
             .retained
@@ -1273,6 +1283,7 @@ fn decode_source_record(stored: &StoredRecord) -> Result<SourceRecord, PrivateOr
     {
         return Err(PrivateOriginalError::Conflict);
     }
+    planning_source_evidence::validate(&value)?;
     cold_service_admission::validate_retained_input(&value)?;
     configured_setup::service::ServiceSetupChildObservation::validate_set(&value)?;
     if let Some(task) = &value.approved_task { task.validate()?; }

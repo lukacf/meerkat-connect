@@ -840,6 +840,7 @@ impl InstalledServiceTask {
                 approved_task: Some(link.clone()),
                 service_admission: None,
             bound_service_input: None,
+                planning_source_evidence: None,
             }).map_err(|_| E::from(PrivateOriginalError::Conflict))?;
             let mut conditions = vec![RecordCondition { key: parent.key, revision: parent.revision,
                 content_digest: parent.content_digest, claim: None, dispatch_claim: None }, snapshot.condition()];

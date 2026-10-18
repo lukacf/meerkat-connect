@@ -624,7 +624,8 @@ impl OriginalBinder {
                 "Toolkit could not bind this authenticated original".to_owned()
             })?;
         // The actual binder owns both this Input and its pending guard. The
-        // source retains only approved B or selected stock setup A evidence.
+        // source retains only approved B, selected stock setup A or explicitly
+        // selected planning-source evidence.
         // Refused/uncertain persistence drops the guard before native entry.
         let workflow = planning.map(|planning| planning.stage(&held, context))
             .transpose().map_err(|_| "The planning workflow could not retain pending source custody".to_owned())?;

@@ -160,6 +160,9 @@ impl PrivateOriginals {
             interests: Mutex::new(Vec::new()),
         });
         candidate.check_for_binding(self, &candidate.submission.original)?;
+        // This actual host planning choice opts G into exact input evidence.
+        // A legacy already-bound G remains usable without retrofitting a body.
+        self.select_workflow_lead_evidence(&candidate.submission.original, &parent.reference).await?;
         // Intern this process custody on the actual authenticated P owner.
         // Equal terms cannot construct permission, and repeated host lookups
         // must select the same launch-interest reservations for A and B.

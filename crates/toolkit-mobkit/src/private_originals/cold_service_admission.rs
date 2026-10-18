@@ -58,7 +58,8 @@ pub(super) fn source_event_key(record: &SourceRecord) -> Result<IdempotencyKey, 
 pub(super) fn validate_retained_input(record: &SourceRecord) -> Result<(), PrivateOriginalError> {
     let Some(saved) = &record.bound_service_input else { return Ok(()); };
     let Input::Prompt(input) = saved.decode()? else { return Err(PrivateOriginalError::Conflict); };
-    if (record.approved_task.is_none() && record.setup_request.is_none() && record.configured_setup.is_none())
+    if (record.approved_task.is_none() && record.setup_request.is_none()
+        && record.configured_setup.is_none() && record.planning_source_evidence.is_none())
         || input.header.authority_association != record.final_association
         || input.header.idempotency_key.as_ref() != Some(&source_event_key(record)?)
         || !matches!(&input.content, meerkat_core::ContentInput::Text(text)
@@ -100,7 +101,14 @@ impl PrivateOriginals {
         if record.final_association.as_ref() != Some(original.association()) {
             return Err(PrivateOriginalError::Conflict);
         }
-        if record.approved_task.is_none() {
+        if record.planning_source_evidence.is_some() {
+            // This profile is an explicit host submission. A Console login is
+            // an independent live owner and cannot be recreated from evidence.
+            if self.retained.lock().map_err(|_| PrivateOriginalError::Unavailable)?.iter()
+                .any(|held| Arc::ptr_eq(&held.original, original) && held.console_login.get().is_some())
+            { return Err(PrivateOriginalError::Denied); }
+            self.check_planning_evidence_source(&record, reference)?;
+        } else if record.approved_task.is_none() {
             // Preserve ordinary fresh input behavior for other source classes.
             // They receive no new cold-recovery evidence or classification.
             if !self.stock_setup_source(&record, reference)? { return Ok(()); }

@@ -63,6 +63,31 @@ impl ToolkitOriginalOwner {
         sources: &[OriginalCancellationSource],
         admitted: &AdmittedOriginal<'_>,
     ) -> Result<Arc<RetainedToolkitOriginal>, OriginalWriterError> {
+        self.promote_historical_source(association, custody, sources, admitted, OriginalGrantBinding::Task { issuer: None })
+    }
+
+    /// Only the canonical, explicitly selected planning P restoration calls
+    /// this after native has verified its exact historical input. Keep its
+    /// ControllerOnly class; neither a task leaf nor a revoke issuer is added.
+    /// The caller resolves its controller before native B/M/D and checks that
+    /// observation atomically inside the callback. This method never resolves
+    /// grants or waits for their owner while native custody is held.
+    pub(crate) fn promote_historical_controller_only(
+        &self, association: &InputAuthorityAssociation, custody: AuthenticatedOriginal,
+        sources: &[OriginalCancellationSource], admitted: &AdmittedOriginal<'_>,
+    ) -> Result<Arc<RetainedToolkitOriginal>, OriginalWriterError> {
+        let claims = association.candidate();
+        if !controller_only_basis(&claims.authority_basis) || !claims.contributing_work.is_empty() {
+            return Err(OriginalWriterError::UnsupportedMandate);
+        }
+        self.promote_historical_source(association, custody, sources, admitted, OriginalGrantBinding::ControllerOnly)
+    }
+
+    fn promote_historical_source(
+        &self, association: &InputAuthorityAssociation, custody: AuthenticatedOriginal,
+        sources: &[OriginalCancellationSource], admitted: &AdmittedOriginal<'_>,
+        class: OriginalGrantBinding,
+    ) -> Result<Arc<RetainedToolkitOriginal>, OriginalWriterError> {
         self.check_source(association, &custody,
             &association.candidate().requester, &association.candidate().ingress_actor)?;
         if admitted.association() != association
@@ -99,13 +124,19 @@ impl ToolkitOriginalOwner {
                 }
             }
         }
-        Self::check_task_lineage_isolation(association, &originals)?;
+        if !matches!(&class, OriginalGrantBinding::ControllerOnly) {
+            Self::check_task_lineage_isolation(association, &originals)?;
+        }
         let claims = association.candidate();
         if let Some(record) = originals.iter_mut().find(|entry|
             entry.names(&claims.ingress_namespace.realm, &claims.original_work))
         {
             let OriginalRecord::Bound(held) = record else { return Err(OriginalWriterError::Unavailable); };
-            if held.association() != association || !matches!(held.grant_binding, OriginalGrantBinding::Task { .. } | OriginalGrantBinding::ServiceSet { .. }) {
+            let matching_class = match &class {
+                OriginalGrantBinding::ControllerOnly => matches!(held.grant_binding, OriginalGrantBinding::ControllerOnly),
+                _ => matches!(held.grant_binding, OriginalGrantBinding::Task { .. } | OriginalGrantBinding::ServiceSet { .. }),
+            };
+            if held.association() != association || !matching_class {
                 return Err(OriginalWriterError::Conflict);
             }
             if held.source_custody == Some(SourceCustody::Candidate) {
@@ -118,8 +149,9 @@ impl ToolkitOriginalOwner {
         }
         let retained = Arc::new(RetainedToolkitOriginal {
             association: association.clone(), custody,
-            // Historical admission does not recover a task-revoke issuer.
-            grant_binding: OriginalGrantBinding::Task { issuer: None },
+            // Historical admission preserves the selected class and cannot
+            // recover a task-revoke issuer.
+            grant_binding: class,
         });
         originals.push(OriginalRecord::Bound(HeldOriginal {
             retained: retained.clone(), source_custody: Some(SourceCustody::Admitted),
@@ -156,5 +188,19 @@ impl ToolkitOriginalOwner {
 
     pub(crate) fn lock_originals_for_test(&self) -> impl Drop + '_ {
         self.originals.lock().unwrap()
+    }
+}
+
+#[cfg(test)]
+impl ToolkitOriginalOwner {
+    pub(crate) fn forget_controller_custody_for_test(&self, association: &InputAuthorityAssociation) {
+        let _publication = self.publication.begin_owner_change().unwrap();
+        let mut originals = self.originals.lock().unwrap();
+        let index = originals.iter().position(|entry|
+            entry.bound().is_some_and(|held| held.association() == association)).unwrap();
+        let held = originals[index].bound().unwrap();
+        assert!(matches!(held.grant_binding, OriginalGrantBinding::ControllerOnly));
+        assert!(held.source_custody != Some(SourceCustody::Candidate));
+        originals.remove(index);
     }
 }

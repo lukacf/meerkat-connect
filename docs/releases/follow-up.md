@@ -36,16 +36,19 @@ context transfer and automatic observation, plus a default-off field in the
 existing SDK test host. It excludes the unfinished planning fixture chain,
 dev-dependency/lock changes and temporary diagnostics.
 
-The separate full SDK case still fails at A's catalog-load authorization and
-helper barrier before typed approval. The newer planning case on Meta `a8ff89da`
-and the same Core previously refused Find after B's successful host and canonical
-admission. Its fixture now uses the actual compiled setup policy revision and a
-request deadline within the existing workflow deadline. The latest run passes
-Find, G identity and turn checks, then fails a cumulative count taken from Core's
-live ledger. The fixture correction will use durable input identities instead.
-The earlier turn failure and cleanup provider panic remain unexplained. Both SDK
-cleanup-empty assertions pass, but neither case qualifies shared completion. Earlier outcomes
-retain their own scope. Online creation and active retirement remain open.
+The development-only r5 pair, Core `ab4d6227` / Meta `67fa0407`, compiles with
+unchanged package/feature resolution. The planning case still fails at native
+turn settlement with a shared authorization-refusal message, before its corrected
+durable-ID assertions. Core uses the same display for ReprepareRequired, Denied
+and MalformedFacts; the subtype and producer are not identified yet.
+
+The latest independent full SDK case passes both Find calls, both helper catalogs,
+selected checks, exact independent approvals, cancellation of one caller, and the
+surviving caller's install, job and report calls. It times out on the combined
+readback and original-task continuation condition; the missing substep is not yet
+identified. Its strict cleanup-empty assertion passes. The earlier install
+refusal does not recur but remains unexplained. Neither complete shared journey
+is qualified; online creation and active retirement remain open.
 
 The newer selection passes both focused gateway cleanup controls and builds the
 actual resource-bound gateway. Staging with refreshed resources and matching SDK
@@ -77,19 +80,24 @@ exact native cancellation proves no spawn or a normally closed child. Every new
 attempt still validates current registration and full resources. The correction
 and its tests are checkpointed locally; installed reset remains unqualified.
 
-The latest planning run passes Find, actual G identity and all turn checks, then
-fails a cumulative-input assertion that incorrectly reads Core's live ledger.
-Completed inputs may already be archived there. The test correction will read
-exact durable identities while preserving counts and replay checks. The earlier
-turn failure did not recur and remains unexplained; automatic SDK delivery is
-still unqualified.
+The durable-input fixture correction retains exact counts and replay checks;
+the current planning failure occurs before those assertions. Automatic SDK
+delivery remains unqualified.
 
-Cold process recovery is separate from retained in-process task ownership. It
-requires durable native input identity and actual restored planning authority.
-The next implementation retains exact host-selected planning inputs through the
-existing source owner; absent historical evidence cannot authorize resubmission.
-[Source provenance](../../SOURCE-PROVENANCE.md#retained-context-and-automatic-observation)
-records the validation scope and earlier failures.
+Cold process recovery is separate from retained in-process task ownership.
+Acknowledging historical native acceptance requires exact durable evidence,
+without restoring operation authority. The Core owner confirms the missing
+public query for the internally qualified input key and proposes an additive
+0.9.4 API. No implementation is available yet. Restoring current
+planning authority additionally needs exact host-selected inputs and current
+member ownership. The explicit parent-source implementation is adopted locally
+with five passing focused controls. Two delivery-claim controls also pass, but
+that separate source correction is not adopted yet. They cover exact retained evidence and reject negative evidence
+from unowned or stale claims. A subsequent retry correction still needs runtime
+validation. Existing recovery owns eventual durable waiter/effect paging and
+stop/join; missing evidence cannot authorize resubmission.
+[Source provenance](../../SOURCE-PROVENANCE.md#r5-development-observations)
+records the current results separately from adopted source.
 
 The planning-input source is now checkpointed. Seven focused native controls
 pass after correcting a binding path that applied the configured helper's root
