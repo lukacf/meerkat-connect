@@ -1,4 +1,4 @@
-//! Real router cancellation receipts qualify preparation reuse only. These
+//! Real router finish receipts qualify preparation reuse only. These
 //! controls do not attribute an installed reset failure or retire a live router
 //! merely because its registration has been replaced.
 use super::*;
@@ -251,4 +251,86 @@ async fn native_unspawned_initial_cancel_returns_custody_before_resource_revalid
 #[tokio::test]
 async fn native_closed_initial_cancel_returns_custody_before_resource_revalidation() {
     initial_cancel_with_changed_resources(true).await;
+}
+
+#[tokio::test]
+async fn native_healthy_initial_settle_returns_custody_before_resource_revalidation() {
+    run("ready", "normal", false, |case| Box::pin(async move {
+        let session = case.fixture.register().await;
+        let first = case.route(&session);
+        case.add(first, ExternalToolDeltaPhase::Applied).await;
+        let first_pid = case.native_pids()[0];
+        assert_eq!(case.native_pids(), vec![first_pid]);
+        assert!(case.protocol.pids().is_empty());
+
+        // Change only an inert manifest-listed leaf after the actual native
+        // Initial child is installed. Neither fixture child executes this file.
+        let resource = case.protocol.selected_root.join("starter/start.py");
+        let original = fs::read(&resource).unwrap();
+        let mut changed = original.clone();
+        changed[0] ^= 1;
+        fs::write(&resource, &changed).unwrap();
+        let manifest = fs::read(case.protocol.selected_root.join("resources.json")).unwrap();
+        assert!(InstalledResources::verify(case.protocol.selected_root.clone(), &digest(&manifest)).is_err());
+
+        let closed = case.close(first).await;
+        case.assert_settled(closed);
+        {
+            let report = &case.reports[closed];
+            let mut settlements = report.guards().iter()
+                .filter(|record| record.stage == McpGuardStage::Settle);
+            let record = settlements.next()
+                .expect("the actual installed Initial has a native Settle record");
+            assert!(settlements.next().is_none(), "one installed Initial has one consuming finish");
+            assert_eq!(record.completion, McpGuardCompletion::Completed);
+            let disposition = record.disposition.as_ref().unwrap();
+            assert_eq!(disposition.key, case.probe.requests.lock().unwrap()[0].key);
+            assert!(matches!(disposition.open, McpAttemptOpenOutcome::Installed { .. }));
+            let McpAttemptProcessEnd::Closed(receipt) = &disposition.process else {
+                panic!("native custody must supply the actual child close: {disposition:?}");
+            };
+            assert!(McpServerCloseOutcome::Stdio(receipt.clone()).is_settled());
+            assert!(matches!(&receipt.leader, McpStdioLeaderOutcome::Reaped(status) if status.success()));
+            assert!(receipt.sigterm.is_none() && receipt.sigkill.is_none());
+        }
+        assert!(case.protocol.output.join(format!("{first_pid}.native-ended")).exists());
+        assert_eq!(fs::read(&resource).unwrap(), changed);
+
+        case.fixture.retire(&session).await;
+        let next_session = case.fixture.register().await;
+        assert_ne!(session, next_session);
+        let refused = case.route(&next_session);
+        case.add(refused, ExternalToolDeltaPhase::Failed).await;
+        case.close(refused).await;
+        {
+            let requests = case.probe.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[1].owner.session_id, next_session);
+        }
+        assert_eq!(case.native_pids(), vec![first_pid],
+            "changed resources refuse the next current begin before native spawn");
+        assert!(case.protocol.pids().is_empty(),
+            "returning closed custody does not authorize a changed successor offer");
+
+        fs::write(&resource, &original).unwrap();
+        let next = case.route(&next_session);
+        case.add(next, ExternalToolDeltaPhase::Applied).await;
+        {
+            let requests = case.probe.requests.lock().unwrap();
+            assert_eq!(requests.len(), 3);
+            assert_eq!(requests[2].owner.session_id, next_session);
+            assert_ne!(requests[0].key, requests[2].key);
+        }
+        assert_eq!(case.native_pids().len(), 2);
+        assert_eq!(case.protocol.pids().len(), 1,
+            "healthy Initial keeps started custody and needs one actual successor offer");
+        let closed = case.close(next).await;
+        case.assert_settled(closed);
+        let owner = case.attempts.take_closed_owner()
+            .expect("the original owner returns after actual Offered close");
+        case.protocol.owner = Some(owner);
+        let owner = case.protocol.owner.as_ref().unwrap();
+        assert!(!owner.poisoned && !owner.has_pending_round());
+        assert_eq!(owner.resources.root, case.protocol.selected_root);
+    })).await;
 }
