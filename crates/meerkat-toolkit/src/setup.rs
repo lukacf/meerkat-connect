@@ -31,6 +31,8 @@ pub use installed_input::{SetupInvocationTerms, canonical_setup_input_reference}
 mod work_executor;
 mod work_preparation;
 mod shared_preparation;
+mod workflow;
+pub use workflow::{SetupWorkflowJoin, SetupWorkflowRef, SetupWorkflowSnapshot, SetupWorkflowTerms, SetupWorkflowWaiter};
 pub use shared_preparation::{SetupWorkContext, SharedPreparationCompletion, SharedPreparationMember, SharedPreparationSelection};
 
 pub use work_executor::{SetupWorkHost, WorkAdmissionStep, WorkAdmissionStepOptions};

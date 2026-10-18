@@ -10,10 +10,13 @@ Shared preparation is now checkpointed as work in progress on
 and [Meta f04125c4](https://github.com/lukacf/meerkat-meta/commit/f04125c45e732b3ef05aab2ac2a0f642fc1b08a1).
 It adds exact preparation membership and retained native/source ownership.
 Sixteen earlier owner controls, one SQLite reopen/cancel/complete control and five
-focused disposition controls pass. The two-requester SDK case still fails during
-helper admission, before cancellation and sibling-survival checks. Its passing
-cleanup assertion does not qualify the unfinished shared flow. One pre-spawn
-lead, gateway/reset consumption and remote restart remain open.
+focused disposition controls pass. Five additional SQLite workflow controls
+cover concurrent joins, replay/reopen, sealing and late delivery obligations.
+The two-requester SDK case still fails: the diagnostic identifies helper A's
+admission refusal as `PolicyChanged`. Cancellation and sibling survival remain
+unreached. Its passing cleanup assertion does not qualify the unfinished shared
+flow. One pre-spawn lead, native context delivery, gateway/reset consumption and
+remote restart remain open.
 [Source provenance](../../SOURCE-PROVENANCE.md#shared-preparation-and-source-owner-currentness-work-in-progress)
 records the precise scope. Published 0.9.0 assets remain unchanged.
 

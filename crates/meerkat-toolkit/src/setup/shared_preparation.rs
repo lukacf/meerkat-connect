@@ -38,6 +38,8 @@ impl SetupWorkContext {
     pub fn backend(&self) -> &SetupWorkBackendPin { &self.backend }
     pub fn parent(&self) -> &WorkItemRef { &self.parent }
     pub fn child(&self) -> &WorkItemRef { &self.child }
+    pub(crate) fn parent_owner(&self) -> &WorkOwnerKey { &self.parent_owner }
+    pub(crate) fn cycle_label(&self) -> &str { &self.cycle_label }
 
     pub(crate) fn check_structure(&self) -> Result<(), SetupError> {
         if self.parent == self.child

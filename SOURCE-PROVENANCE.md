@@ -39,7 +39,7 @@ still refuses access. Temporary runtime diagnostics are excluded.
 Sixteen earlier phase/currentness/close/poison controls and a separate SQLite
 owner-reopen/cancel/complete control pass. The latest five disposition controls
 pass after the held-lock regression failed on the prior production code.
-The clean shared SDK case remains failed: both Original finds succeed, then an
+The earlier clean shared SDK case failed: both Original finds succeed, then an
 unattributed helper submission reports `ControllerReadinessUnavailable`. Only
 A-helper progresses before the two-helper barrier times out. Independent
 cancellation and sibling survival are unreached. The in-test cleanup check and
@@ -50,6 +50,25 @@ This is a draft source checkpoint. Shared SDK completion, a single pre-spawn
 planning lead with durable per-waiter context delivery, installed gateway/reset
 consumption and remote restart remain open. Earlier successful installed journeys
 retain their original source selections. Published 0.9.0 assets are unchanged.
+
+### Durable workflow storage (work in progress)
+
+Private Toolkit checkpoint `8aed9b48ac1d3aaf045d134cc88196f7ffe80c3b` contributes
+five source paths for exact workflow terms and waiter membership in the existing
+SetupStore and outbox. Concurrent joins create one launch plus separate delivery
+obligations. Exact replay does not duplicate effects; changed terms refuse.
+Sealing and final departure cannot reopen a completed group. After reopening, an
+unacknowledged launch needs reconciliation and a late waiter gets a fresh pending
+delivery rather than inheriting an earlier result.
+
+All five focused SQLite controls pass in outcome `6c8e61ce`, independently
+reviewed in `f65e7fbe`. Native planning-lead
+launch, actual context delivery and per-waiter operation authority remain unwired.
+The same run's temporary diagnostic identifies helper A's SDK admission refusal
+as `PolicyChanged`, with matching prepared/native sessions. Helper B progresses,
+but the two-helper barrier still times out. The SDK remains failed; cleanup's
+in-test assertion and outer command joins are not individual native receipt
+proof. The diagnostic is excluded from source. Published assets are unchanged.
 
 ### Explicit Node build plans
 

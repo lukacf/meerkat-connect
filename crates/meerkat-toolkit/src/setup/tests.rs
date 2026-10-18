@@ -1330,6 +1330,7 @@ mod work_preparation;
 
 mod work_executor;
 mod shared_preparation;
+mod workflow;
 mod shared_preparation_missing;
 
 #[tokio::test]
