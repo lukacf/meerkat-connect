@@ -106,7 +106,7 @@ direct children reaped at exit 0; the Python owner is gone and the retained work
 count is zero. Temporary diagnostics were restored. These observations do not
 replace the distinct earlier failed runs above or establish shared SDK success.
 
-A separate planning-lead source candidate remains isolated from this public
+The planning-lead source candidate was initially isolated from the public
 checkpoint. Its first compile failed (`9e3626e5`, review `183c1879`) before any
 control ran. A two-path correction fixed a missing import and used SetupStore's
 existing public load-and-validation contract. The retry (`20e23085`, review
@@ -119,9 +119,41 @@ remaining five launch controls did not run. The fixture's cleanup assertion and
 outer command joins pass, without exported inner shutdown receipt bodies. These
 results do not establish actual G admission, protected context delivery or
 physical MCP cleanup. Private documentation checkpoint
-`b0f631451172e9905f70e1588fa4d49d226378ed` records this failed outcome. No candidate
-launch source or temporary diagnostics are included here. Published 0.9.0 assets
-remain unchanged.
+`b0f631451172e9905f70e1588fa4d49d226378ed` records this failed outcome.
+
+### Corrected planning-input launch
+
+Private Toolkit checkpoint `ee0c39810f433fee1bbc7e850237f1cf988fe9bd`
+contributes 15 source/test paths for retained planning input, exact source and
+grant ownership, first-producer selection, and native admission/reconciliation.
+The initial diagnostic compile failed with a moved-value error before any test
+ran (`4a302e04`). Its corrected diagnostic (`cda335ae`, review `a024d058`)
+identified the actual launch failure: the ordinary configured-helper binding
+check rejected the independently issued planning root before native admission.
+
+The correction uses a typed planning-binding path through the same persistence
+and publication owner. It validates the actual retained planning source,
+controller, grant lineage, deadline and native session, while preserving the
+ordinary configured-helper checks. A negative control uses a different valid
+issued root, rather than malformed metadata.
+
+Outcome `985706c4`, independently reviewed in `a6943d55`, compiles and passes
+all seven selected native launch controls. They cover one fresh admission and
+sealed waiter delivery obligations, refusal of the distinct issued root,
+reconciliation of expired in-flight admission without resubmission, final-waiter
+departure before admission, cancellation before handoff, exact first-producer
+selection, and admission from a live B when A is unavailable. The earlier five
+custody passes remain separate; they were not repeated in this run.
+
+All seven in-test native cleanup checks pass and command/transport owners join.
+Individual inner shutdown receipt bodies were not exported, so this is not
+independent physical-process cleanup proof. The fixture uses the existing P/A/G
+session: it proves native planning-input admission, not a new planning agent or
+conversation isolation. Dedicated member/session creation, authorized A/B context
+delivery, per-waiter effects and the complete shared SDK journey remain open.
+The cancellation/store/recovery successor is separate and is not included in
+this checkpoint. Temporary diagnostics and native dependency changes are
+excluded. Published 0.9.0 assets remain unchanged.
 
 ### Explicit Node build plans
 

@@ -45,6 +45,7 @@ pub(crate) mod helper_originals;
 mod retained_resume;
 mod historical_admission;
 pub(crate) mod shared_entry;
+pub(crate) mod workflow_custody;
 
 pub(crate) fn controller_only_basis(basis: &WorkAuthorityBasis) -> bool {
     matches!(basis, WorkAuthorityBasis::TargetedGrantLineages { base: None, targets } if targets.is_empty())

@@ -24,12 +24,17 @@ survival remain unreached. Both native attempts close with their direct children
 reaped, the Python owner exits and the worker count reaches zero. This cleanup
 evidence does not qualify the unfinished shared flow.
 
-A separate, unadopted planning-lead candidate now compiles and passes five focused
-local authority-custody controls. Its first native launch control fails the
-expected fresh-admission assertion; the returned classification needs targeted
-diagnosis. The other five launch controls have not run. These results do not
-establish an admitted shared lead or actual context delivery. One pre-spawn lead,
-per-waiter delivery, gateway/reset consumption and remote restart remain open.
+The planning-input source is now checkpointed. Seven focused native controls
+pass after correcting a binding path that applied the configured helper's root
+check to an independently issued planning grant. They cover admission, refusal
+of another valid root, lost-reply reconciliation, cancellation and exact
+first-producer selection. Five earlier local authority-custody controls also
+pass. The original compile and launch failures remain recorded.
+
+These controls admit a real planning input in an existing session. Dedicated
+planning-member/session creation, authorized per-waiter context delivery and
+operation authority remain open, along with shared SDK completion, gateway/reset
+consumption and remote restart.
 [Source provenance](../../SOURCE-PROVENANCE.md#shared-preparation-and-source-owner-currentness-work-in-progress)
 records the precise scope. Published 0.9.0 assets remain unchanged.
 

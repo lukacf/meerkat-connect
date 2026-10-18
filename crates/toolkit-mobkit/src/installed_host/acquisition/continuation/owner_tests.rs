@@ -41,12 +41,13 @@ fn revision(value: &str) -> Revision { Revision::new(value).unwrap() }
 pub(crate) struct ContextProbe {
     captured: Mutex<Option<ToolDispatchContext>>,
     exact_catalog: bool,
+    next_input: Arc<AtomicBool>,
 }
 impl ContextProbe {
     pub(crate) fn with_exact_catalog() -> Self {
         // This probe owns one immutable definition and the default catalog
         // mirrors that complete list. It never supplies a deferred entry.
-        Self { captured: Mutex::new(None), exact_catalog: true }
+        Self { captured: Mutex::new(None), exact_catalog: true, next_input: Arc::new(AtomicBool::new(false)) }
     }
     pub(crate) fn definition() -> ToolDef {
         ToolDef::new(PROBE, "Capture the staged continuation fixture context", serde_json::json!({
@@ -55,6 +56,12 @@ impl ContextProbe {
     }
     pub(crate) fn captured(&self) -> ToolDispatchContext {
         self.captured.lock().unwrap().clone().expect("native plan resolver captured the staged context")
+    }
+    /// The owning test has joined the prior turn and retained its actual
+    /// context before explicitly requesting a probe for one additional input.
+    pub(crate) fn arm_next_input(&self) {
+        self.captured.lock().unwrap().take().expect("prior input was captured");
+        self.next_input.store(true, Ordering::SeqCst);
     }
 }
 #[async_trait]
@@ -85,10 +92,14 @@ impl AgentToolDispatcher for ContextProbe {
 
 /// The existing provider still performs its native model authorization and
 /// observation. Only its first scripted response is changed to a probe call.
-pub(crate) struct ProbeProvider { inner: Arc<dyn LlmClient>, first: AtomicBool }
+pub(crate) struct ProbeProvider { inner: Arc<dyn LlmClient>, first: Arc<AtomicBool> }
 impl ProbeProvider {
     pub(crate) fn new(inner: Arc<dyn LlmClient>) -> Self {
-        Self { inner, first: AtomicBool::new(true) }
+        Self { inner, first: Arc::new(AtomicBool::new(true)) }
+    }
+    pub(crate) fn with_probe(inner: Arc<dyn LlmClient>, probe: &ContextProbe) -> Self {
+        probe.next_input.store(true, Ordering::SeqCst);
+        Self { inner, first: probe.next_input.clone() }
     }
 }
 #[async_trait]

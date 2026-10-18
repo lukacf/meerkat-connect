@@ -1090,6 +1090,12 @@ impl OperationPolicyOwner for InstalledApplicationPolicy {
                 error
             })?;
         }
+        // The workflow owner stages A's exact call relationship before native
+        // preparation. This contributes only a current narrowing grant; native
+        // policy still resolves this unchanged G association and admitted ceiling.
+        let workflow_call = if purpose == LocalPolicyPurpose::Operation {
+            self.originals.workflow_call_for_policy(association, binding).map_err(mcp_control_error)?
+        } else { None };
         let claims = association.candidate();
         let mut connector_value = None;
         let values = match (&binding.facts().operation, purpose) {
@@ -1280,12 +1286,16 @@ impl OperationPolicyOwner for InstalledApplicationPolicy {
             }
             _ => return Err(OperationAuthorizationError::Unavailable),
         };
-        Ok(LocalPolicyAllowance {
+        let mut allowance = LocalPolicyAllowance {
             operation_values: std::iter::once(values).chain(connector_value).collect(),
             restrictions: ExecutionRestrictions::unrestricted(),
             expires_at_ms: self.allowance_deadline(association, purpose, now_ms)?,
             review_tier: OperationReviewTier::R1,
-        })
+        };
+        if let Some(call) = workflow_call {
+            call.narrow_allowance(&mut allowance, now_ms)?;
+        }
+        Ok(allowance)
     }
 }
 

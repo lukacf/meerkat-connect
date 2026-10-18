@@ -38,6 +38,9 @@ pub(crate) enum SetupWorkerObservation {
         deduplicated: bool,
         source_settlement: PrivateSourceSettlement,
     },
+    /// Only the shared planning input was admitted. Each waiter's canonical
+    /// context-delivery intent and individual decision remain pending.
+    WorkflowLead { observation: crate::private_originals::WorkflowLaunchObservation },
     AdmissionUnresolved,
     NativeOutcomeUnavailable,
 }
@@ -87,6 +90,26 @@ impl InstalledAcquisition {
             .ok_or(SetupError::Rejected)?;
         let content = String::from_utf8(canonical_json(snapshot.request().request())?)
             .map_err(|_| SetupError::InvalidRecord)?;
+        let originals = &self.host.originals;
+        let original = originals.acquisition_original(context).await.map_err(source_error)?;
+        if let Some(planning) = originals.retained_workflow_selection(
+            &original.original, &snapshot.request().host().correlation,
+        ).map_err(source_error)? {
+            // Durable membership is independent for every A/B/C request. The
+            // existing single launch outbox arbitrates G, without creating a
+            // per-waiter helper or interpreting a workflow receipt as consent.
+            let membership = store.workflow_waiter(
+                planning.terms(), &snapshot, original.source_record.key.clone(),
+            )?;
+            let joined = store.join_setup_workflow(
+                planning.terms(), &membership,
+                SetupAccess { evidence: &admission.evidence, context: &current, references: self.references.as_ref() },
+                &self.work_backend,
+            ).await?;
+            planning.retain_launch_interest(&joined.snapshot, &membership, &original).await.map_err(source_error)?;
+            let observation = planning.launch(&joined.snapshot).await.map_err(source_error)?;
+            return Ok(SetupWorkerObservation::WorkflowLead { observation });
+        }
         let preparation = self
             .prepare_bound_work(
                 &store,

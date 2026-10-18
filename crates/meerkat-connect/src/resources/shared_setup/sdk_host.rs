@@ -592,6 +592,7 @@ impl InstalledOriginalTaskOwner for SdkLaunchOwner {
         Ok(InstalledOriginalTaskBinding {
             continuation,
             work_context: Some(launch.work.clone()),
+            planning: None,
         })
     }
 }

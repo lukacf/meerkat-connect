@@ -45,7 +45,7 @@ pub trait InstalledOriginalTaskOwner: SetupContinuationDelivery {
         -> Result<InstalledOriginalTaskBinding, ToolAdmissionError>
     {
         Ok(InstalledOriginalTaskBinding {
-            continuation: self.original_task(invocation).await?, work_context: None,
+            continuation: self.original_task(invocation).await?, work_context: None, planning: None,
         })
     }
 }
@@ -56,6 +56,9 @@ pub trait InstalledOriginalTaskOwner: SetupContinuationDelivery {
 pub struct InstalledOriginalTaskBinding {
     pub continuation: TaskContinuation,
     pub work_context: Option<meerkat_toolkit::setup::SetupWorkContext>,
+    /// Optional actual host-owned planning source. Explicit None preserves the
+    /// singleton path; unavailable or conflicting Some is never downgraded.
+    pub planning: Option<Arc<crate::private_originals::InstalledWorkflowPlanning>>,
 }
 
 /// Trusted optional application configuration, not model input. These are
@@ -234,7 +237,11 @@ impl SetupToolHost for InstalledSetupAdmission {
         let binding = self.continuation.original_binding(InstalledOriginalInvocation {
             reference: &original.reference, association: original.original.association(), context, correlation: &correlation,
         }).await?;
-        let InstalledOriginalTaskBinding { continuation, work_context } = binding;
+        let InstalledOriginalTaskBinding { continuation, work_context, planning } = binding;
+        let environment_revision = match &planning {
+            Some(planning) => revision(&(environment_revision, planning.binding_digest().map_err(source_admission_error)?))?,
+            None => environment_revision,
+        };
         if continuation.native_original.is_none() { return Err(ToolAdmissionError::Denied); }
         if let Some(work) = &work_context {
             let native = continuation.native_original.as_ref().ok_or(ToolAdmissionError::Denied)?;
@@ -267,12 +274,15 @@ impl SetupToolHost for InstalledSetupAdmission {
                     issued_at_ms: current.now_ms, expires_at_ms, ceiling: self.ceiling.clone(),
                 }).map_err(|_| ToolAdmissionError::Unavailable)?;
                 let host = HostSetupRequest { target: facts.target, correlation, parent_operation: None,
-                    setup_helper: facts.helper, work_context, continuation,
+                    setup_helper: facts.helper, work_context: work_context.clone(), continuation,
                     environment_revision, limits: SetupLimits { deadline_ms: expires_at_ms,
                         max_workers: self.limits.max_workers, max_effect_attempts: self.limits.max_effect_attempts } };
                 (host, evidence)
             }
         };
+        self.originals.retain_workflow_selection(
+            &original, &host.correlation, planning.as_ref(), work_context.as_ref(),
+        ).map_err(source_admission_error)?;
         Ok(HostToolAdmission { host, evidence, context: HostAdmissionContext { now_ms: after.now_ms, ..current } })
     }
 }

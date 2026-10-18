@@ -211,7 +211,7 @@ impl FirstFixture {
         let client: Arc<dyn LlmClient> = if let Some(script) = &acquisition {
             script.provider(provider.clone())
         } else { match &probe {
-            Some(_) => Arc::new(crate::installed_host::acquisition::ProbeProvider::new(provider.clone())),
+            Some(probe) => Arc::new(crate::installed_host::acquisition::ProbeProvider::with_probe(provider.clone(), probe)),
             None => provider.clone(),
         }};
         builder.default_llm_client = Some(client);

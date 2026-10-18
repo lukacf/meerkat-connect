@@ -20,6 +20,9 @@ pub(crate) mod acquisition;
 pub(crate) mod setup_results;
 mod setup_admission;
 pub(crate) mod setup_helpers;
+pub(crate) mod setup_workflow;
+pub use setup_workflow::InstalledWorkflowPlanning;
+pub(crate) use setup_workflow::WorkflowLaunchObservation;
 pub(crate) mod service_grants;
 mod governed_submit;
 mod cold_service_admission;
@@ -290,6 +293,9 @@ struct HeldPrivateOriginal {
     unresolved: Mutex<Vec<Arc<governed_submit::PendingOriginalAdmission>>>,
     service_attachments: Mutex<Vec<Arc<service_approved_input::attachment::HeldServiceAttachment>>>,
     shared_preparations: Mutex<Vec<service_approved_input::shared_preparation::HeldSharedPreparation>>,
+    setup_workflow: OnceLock<Arc<setup_workflow::HeldSetupWorkflow>>,
+    workflow_selections: Mutex<Vec<setup_workflow::InvocationPlanning>>,
+    workflow_plans: Mutex<Vec<Arc<setup_workflow::InstalledWorkflowPlanning>>>,
 }
 
 /// Exact software selection retained with an application access decision.
@@ -806,6 +812,27 @@ impl PrivateOriginals {
         association: &meerkat_authorization_contracts::work_association::InputAuthorityAssociation,
         allow_existing: bool,
     ) -> Result<Option<Arc<StoredRecord>>, OriginalWriterError> {
+        self.persist_or_observe_selected_binding(reference, association, allow_existing, None).await
+    }
+
+    /// The live planning owner selects its own issued lineage. It cannot enter
+    /// through configured setup discovery or a portable association alone.
+    pub(super) async fn persist_or_observe_workflow_binding(
+        &self,
+        reference: &PrivateOriginalRef,
+        association: &meerkat_authorization_contracts::work_association::InputAuthorityAssociation,
+        planning: &InstalledWorkflowPlanning,
+    ) -> Result<Option<Arc<StoredRecord>>, OriginalWriterError> {
+        self.persist_or_observe_selected_binding(reference, association, true, Some(planning)).await
+    }
+
+    async fn persist_or_observe_selected_binding(
+        &self,
+        reference: &PrivateOriginalRef,
+        association: &meerkat_authorization_contracts::work_association::InputAuthorityAssociation,
+        allow_existing: bool,
+        planning: Option<&InstalledWorkflowPlanning>,
+    ) -> Result<Option<Arc<StoredRecord>>, OriginalWriterError> {
         let key = self
             .key(reference)
             .map_err(|_| OriginalWriterError::WrongOwner)?;
@@ -835,7 +862,10 @@ impl PrivateOriginals {
                 ).await
             }.map_err(|_| OriginalWriterError::Unavailable)?;
         }
-        self.check_configured_setup_binding(reference, &record, association)?;
+        match planning {
+            Some(planning) => planning.check_persistence_binding(self, reference, &record, association)?,
+            None => self.check_configured_setup_binding(reference, &record, association)?,
+        }
         if self.approved_task_is_cancelled(&record).await
             .map_err(|_| OriginalWriterError::Unavailable)?
         {
@@ -1053,6 +1083,9 @@ impl PrivateOriginals {
             unresolved: Mutex::new(Vec::new()),
             service_attachments: Mutex::new(Vec::new()),
             shared_preparations: Mutex::new(Vec::new()),
+            setup_workflow: OnceLock::new(),
+            workflow_selections: Mutex::new(Vec::new()),
+            workflow_plans: Mutex::new(Vec::new()),
         }));
         Ok(())
     }
