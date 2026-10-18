@@ -8,7 +8,7 @@ use meerkat_core::{SessionId, lifecycle::InputId};
 use meerkat_mobkit::identity_first::{AgentAddressability, GovernedAdmission};
 use meerkat_runtime::{SessionServiceRuntimeExt, identifiers::IdempotencyKey,
     input_state::verify_exact_replay};
-use toolkit_store::{EffectIntent, ReplaySafety, StoredEffect};
+use toolkit_store::{EffectClaimKind, EffectIntent, EffectLease, ReplaySafety, StoredEffect};
 
 #[cfg(test)]
 mod tests;
@@ -46,7 +46,6 @@ pub(super) struct DeliverySlot {
     bound: OnceLock<Input>,
     run: Mutex<Option<Arc<DeliveryRun>>>,
     native: Mutex<Option<Arc<DeliveryNative>>>,
-    retry_ready: AtomicBool,
 }
 
 pub(super) struct DeliveryRun {
@@ -63,6 +62,12 @@ enum DeliveryJoin {
 enum NativeDecision { NeverSubmitted, Submitted, NotAdmitted, Accepted }
 
 struct DeliveryNative {
+    // Only an observed successful Dispatch claim can support nonadmission.
+    // A lost claim response or a competing owner's lease cannot fill this.
+    claim: OnceLock<StoredEffect>,
+    // Only this owner's successful NotApplied acknowledgment enables retry.
+    // Generic Pending also follows RetrySafe and is not sufficient.
+    not_applied: OnceLock<StoredEffect>,
     decision: Mutex<NativeDecision>,
     joined: AtomicBool,
     custody: Arc<DeliveryCustody>,
@@ -96,7 +101,6 @@ impl InstalledWorkflowContext {
                     digest(&canonical_json(&(&key, &self.attempt.admission))
                         .map_err(|_| PrivateOriginalError::Conflict)?))),
                 workflow, bound: OnceLock::new(), run: Mutex::new(None), native: Mutex::new(None),
-                retry_ready: AtomicBool::new(false),
             });
             *held = Some(slot.clone());
             Ok(slot)
@@ -197,8 +201,7 @@ impl DeliverySlot {
         -> Result<WorkflowDeliveryObservation, PrivateOriginalError>
     {
         let effect = self.effect(source, attempt).await?;
-        if effect.status != EffectStatus::Pending
-            || (effect.attempt > 0 && !self.retry_ready.load(Ordering::Acquire)) {
+        if !delivery_claim_ready(&self.native, &effect)? {
             return self.reconcile(source, attempt, &effect).await;
         }
         transfer.with_recipient(source, |workflow| {
@@ -213,24 +216,10 @@ impl DeliverySlot {
         // Validates exact historical membership; a committed donor may now be
         // departed. The final fence chooses any still-live recipient interest.
         let _ = snapshot.departed(&attempt.envelope.membership).map_err(|_| PrivateOriginalError::Conflict)?;
-        let native = Arc::new(DeliveryNative {
-            decision: Mutex::new(NativeDecision::NeverSubmitted), joined: AtomicBool::new(false),
-            custody: Arc::new(DeliveryCustody::default()),
-        });
-        *owned_native.lock().map_err(|_| PrivateOriginalError::Unavailable)? = Some(native.clone());
-        *self.native.lock().map_err(|_| PrivateOriginalError::Unavailable)? = Some(native.clone());
-        // The retained task and NeverSubmitted witness exist before the store
-        // await, including a committed claim whose response is lost.
-        self.retry_ready.store(false, Ordering::Release);
-        let claim = match source.store.claim_effect(&effect.key, snapshot.revision(),
-            "installed-context-delivery", 60_000).await {
-            Ok(EffectClaimOutcome::Claimed(claim)) => claim,
-            Ok(EffectClaimOutcome::NeedsReconciliation(_))
-            | Err(StoreError::Claimed | StoreError::Conflict | StoreError::EffectState) =>
-                return Ok(WorkflowDeliveryObservation::Pending),
-            Err(error) => return Err(store_error(error)),
+        let Some((native, lease)) = claim_delivery_effect(source.store.as_ref(), &effect,
+            snapshot.revision(), &self.native, owned_native).await? else {
+            return Ok(WorkflowDeliveryObservation::Pending);
         };
-        let lease = claim.lease.ok_or(PrivateOriginalError::Unavailable)?;
         let route = source.route(&transfer.selected.planning_source.route)?;
         let controller = source.owner.workflow_controller(&self.workflow.planning).map_err(custody_error)?;
         let binder = Arc::new(DeliveryBinder {
@@ -311,15 +300,14 @@ impl DeliverySlot {
             }
             native.custody.unresolved.lock().map_err(|_| PrivateOriginalError::Unavailable)?.clear();
             if let Some(entry) = native.custody.entry.get() { entry.settle().map_err(custody_error)?; }
+            // Exact admitted input evidence is historical: it can settle
+            // this same delivery after closure without a negative claim witness.
             true
         } else {
-            let decision = *native.decision.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
-            if !matches!(decision, NativeDecision::NeverSubmitted | NativeDecision::NotAdmitted)
-                || !native.custody.unresolved.lock().map_err(|_| PrivateOriginalError::Unavailable)?.is_empty()
-                || native.custody.pending.lock().map_err(|_| PrivateOriginalError::Unavailable)?.is_some()
-                || native.custody.entry.get().is_some_and(|entry| !entry.settled()) {
-                return Ok(WorkflowDeliveryObservation::Pending);
-            }
+            // Absence belongs to this dispatch attempt only if its actual
+            // claim was received and still names the effect being reconciled.
+            // No claim response, a losing claim, or an older attempt is unknown.
+            if !native.can_reconcile_absence_for(effect)? { return Ok(WorkflowDeliveryObservation::Pending); }
             false
         };
         let claim = match source.store.claim_reconciliation(&effect.key, "installed-context-observe", 60_000).await {
@@ -328,12 +316,12 @@ impl DeliverySlot {
                 return Ok(if applied { self.admitted() } else { WorkflowDeliveryObservation::Pending }),
             Err(error) => return Err(store_error(error)),
         };
-        let lease = claim.lease.ok_or(PrivateOriginalError::Unavailable)?;
-        source.store.reconcile_effect(&lease, if applied { Reconciliation::Applied { receipt } }
+        let lease = exact_reconciliation_lease(effect, &claim)?;
+        let resolved = source.store.reconcile_effect(lease, if applied { Reconciliation::Applied { receipt } }
             else { Reconciliation::NotApplied { evidence: receipt } }).await.map_err(store_error)?;
         if applied { Ok(self.admitted()) }
         else {
-            self.retry_ready.store(true, Ordering::Release);
+            native.record_not_applied(resolved)?;
             Ok(WorkflowDeliveryObservation::NotApplied)
         }
     }
@@ -345,6 +333,130 @@ impl DeliverySlot {
         }
         Ok(())
     }
+}
+
+/// Canonical Pending alone cannot grant a retry: RetrySafe can also produce it.
+/// The exact joined native attempt must retain our successful NotApplied reply.
+fn delivery_claim_ready(retained: &Mutex<Option<Arc<DeliveryNative>>>, effect: &StoredEffect)
+    -> Result<bool, PrivateOriginalError>
+{
+    if effect.status != EffectStatus::Pending { return Ok(false); }
+    if effect.attempt == 0 { return Ok(true); }
+    let native = retained.lock().map_err(|_| PrivateOriginalError::Unavailable)?.clone();
+    match native { Some(native) => native.can_retry(effect), None => Ok(false) }
+}
+
+/// The retained DeliveryRun serializes this boundary with every observation.
+/// Only a definite record-CAS Conflict permits restoring the previous witness;
+/// every ambiguous or competing claim leaves the new unowned witness in place.
+async fn claim_delivery_effect(store: &dyn toolkit_store::ToolkitStore, effect: &StoredEffect,
+    record_revision: u64, retained: &Mutex<Option<Arc<DeliveryNative>>>,
+    owned: &Mutex<Option<Arc<DeliveryNative>>>)
+    -> Result<Option<(Arc<DeliveryNative>, EffectLease)>, PrivateOriginalError>
+{
+    if !delivery_claim_ready(retained, effect)? { return Ok(None); }
+    let prior = retained.lock().map_err(|_| PrivateOriginalError::Unavailable)?.clone();
+    let native = Arc::new(DeliveryNative {
+        claim: OnceLock::new(), not_applied: OnceLock::new(),
+        decision: Mutex::new(NativeDecision::NeverSubmitted), joined: AtomicBool::new(false),
+        custody: Arc::new(DeliveryCustody::default()),
+    });
+    *owned.lock().map_err(|_| PrivateOriginalError::Unavailable)? = Some(native.clone());
+    *retained.lock().map_err(|_| PrivateOriginalError::Unavailable)? = Some(native.clone());
+    // Install unknown custody before the await, including a committed claim
+    // whose response is lost. The old proof cannot settle that new attempt.
+    let claim = match store.claim_effect(&effect.key, record_revision,
+        "installed-context-delivery", 60_000).await {
+        Ok(EffectClaimOutcome::Claimed(claim)) => claim,
+        Err(StoreError::Conflict) => {
+            // The store's record revision check precedes every effect write.
+            // Restore exact custody, never a free retry flag. A later drive
+            // rereads the effect and rejects a newer or changed attempt.
+            *retained.lock().map_err(|_| PrivateOriginalError::Unavailable)? = prior;
+            return Ok(None);
+        }
+        Ok(EffectClaimOutcome::NeedsReconciliation(_))
+        | Err(StoreError::Claimed | StoreError::EffectState) => return Ok(None),
+        Err(error) => return Err(store_error(error)),
+    };
+    let lease = native.record_claim(effect, claim)?;
+    Ok(Some((native, lease)))
+}
+
+impl DeliveryNative {
+    fn record_not_applied(&self, resolved: StoredEffect) -> Result<(), PrivateOriginalError> {
+        if resolved.status != EffectStatus::Pending || resolved.lease.is_some()
+            || resolved.outcome.is_some() || !self.can_reconcile_absence_for(&resolved)? {
+            return Err(PrivateOriginalError::Conflict);
+        }
+        // Repeated exact observation can acknowledge the same attempt again.
+        // Preserve the first successful reply; its timestamps are not authority.
+        self.not_applied.get_or_init(|| resolved);
+        Ok(())
+    }
+
+    fn can_retry(&self, effect: &StoredEffect) -> Result<bool, PrivateOriginalError> {
+        let exact = self.not_applied.get().is_some_and(|resolved|
+            resolved.key == effect.key && resolved.intent == effect.intent
+            && resolved.request_digest == effect.request_digest && resolved.attempt == effect.attempt);
+        Ok(effect.status == EffectStatus::Pending && exact && self.can_reconcile_absence_for(effect)?)
+    }
+
+    fn record_claim(&self, prior: &StoredEffect, claimed: StoredEffect)
+        -> Result<EffectLease, PrivateOriginalError>
+    {
+        if prior.status != EffectStatus::Pending
+            || prior.attempt.checked_add(1) != Some(claimed.attempt)
+            || claimed.key != prior.key || claimed.intent != prior.intent
+            || claimed.request_digest != prior.request_digest
+            || claimed.request_digest != claimed.intent.digest().map_err(store_error)?
+            || claimed.status != EffectStatus::InFlight
+        { return Err(PrivateOriginalError::Conflict); }
+        let lease = claimed.lease.as_ref().ok_or(PrivateOriginalError::Unavailable)?;
+        if lease.kind != EffectClaimKind::Dispatch || lease.key != claimed.key {
+            return Err(PrivateOriginalError::Conflict);
+        }
+        let lease = lease.clone();
+        self.claim.set(claimed).map_err(|_| PrivateOriginalError::Conflict)?;
+        Ok(lease)
+    }
+
+    // Native absence is a separate required read in the caller. This checks
+    // only the joined dispatch attempt that can support that negative read.
+    fn can_reconcile_absence_for(&self, effect: &StoredEffect) -> Result<bool, PrivateOriginalError> {
+        if !self.joined.load(Ordering::Acquire) || !self.owns_claim(effect) { return Ok(false); }
+        let decision = *self.decision.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+        Ok(matches!(decision, NativeDecision::NeverSubmitted | NativeDecision::NotAdmitted)
+            && self.custody.unresolved.lock().map_err(|_| PrivateOriginalError::Unavailable)?.is_empty()
+            && self.custody.pending.lock().map_err(|_| PrivateOriginalError::Unavailable)?.is_none()
+            && self.custody.entry.get().is_none_or(|entry| entry.settled()))
+    }
+
+    fn owns_claim(&self, effect: &StoredEffect) -> bool {
+        self.claim.get().is_some_and(|claim| claim.key == effect.key
+            && claim.intent == effect.intent && claim.request_digest == effect.request_digest
+            && claim.attempt == effect.attempt)
+    }
+}
+
+/// The native observation belongs to the exact effect attempt read before the
+/// claim await. A lease fences the returned attempt, not an earlier observation.
+/// This is shared by positive and negative reconciliation; it grants no retry.
+fn exact_reconciliation_lease<'a>(observed: &StoredEffect, claimed: &'a StoredEffect)
+    -> Result<&'a EffectLease, PrivateOriginalError>
+{
+    if observed.attempt == 0 || claimed.attempt != observed.attempt
+        || claimed.key != observed.key || claimed.intent != observed.intent
+        || claimed.request_digest != observed.request_digest
+        || claimed.request_digest != claimed.intent.digest().map_err(store_error)?
+        || claimed.status != EffectStatus::Uncertain
+    { return Err(PrivateOriginalError::Conflict); }
+    let lease = claimed.lease.as_ref().ok_or(PrivateOriginalError::Unavailable)?;
+    if lease.kind != EffectClaimKind::Reconcile || lease.key != claimed.key {
+        return Err(PrivateOriginalError::Conflict);
+    }
+    // The store validates its own lease fence and expiry at the actual write.
+    Ok(lease)
 }
 
 impl DeliveryRun {

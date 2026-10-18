@@ -468,15 +468,35 @@ the combined completion, B readback and original-task continuation condition at
 `native_case.rs:1679`; the raw log does not isolate the missing condition. No
 provider panic or install refusal appears. Strict cleanup-empty passes and all
 recorded owners join. Shared completion and process restart remain unqualified.
-A separate delivery retry successor (`d15e4ed2`) preserves exact proven
-nonadmission after a definite record-revision conflict; it has not run yet.
-The local source adopts only the 11 planning-source paths from `a63cd576` with
-`879bc43a`, as checked against the executed source. Delivery claim/retry changes,
-SDK fixture changes, development dependencies and temporary diagnostics remain
-excluded from this checkpoint.
+The local planning-source checkpoint adopts the 11 paths from `a63cd576` with
+`879bc43a`, as checked against the executed source.
+
+The subsequent outcome `54b6c948` compiles the same r5 graph and passes all four
+actual-store delivery claim/retry controls. Independent outcome review
+`550f3a4a` verifies all 99 saved references and exact source restoration;
+independent source review remains `0277c259`. This checkpoint adopts the exact two
+source paths from `c24818d6` plus `d15e4ed2`. Only a definite pre-claim revision
+conflict preserves the earlier successful NotApplied witness; foreign or older
+attempts, ambiguous claim responses and generic Pending/RetrySafe state cannot
+manufacture that evidence. The final delivery source SHA-256 is
+`fa89f7f8f47c316bae358bf4f34081de40e9ae4682d7f99a5fed366ad6a3b5e2`,
+and its test source is
+`3824645b3375641cf7a8380387affa9a26f148ad758a6245765cbd3d29bfc139`.
+
+That run's full SDK case still fails after 50.17 seconds. Its bounded retained
+projection shows preparation completion, job succeeded and one original-task
+continuation, but no B delivery acknowledgment. The native delegate returned
+authorized once and admission Timeout once; no reconciliation return was
+recorded. The report is unavailable at revision 2. The diagnostic does not add
+a fresh timeout-time read or establish nonentry from an absent return. The SDK
+executable is `3ac3d0ee`. Strict cleanup-empty passes, all recorded owners join,
+and both temporary SDK diagnostic paths restore exactly. Planning, idle G and
+installed reset are not selected. SDK fixture changes, development dependencies
+and temporary diagnostics remain excluded from the local source checkpoint.
 Historical positive acceptance stays separate from new operation authority.
 The Core owner confirms that the exact historical governed-input lookup is absent
-and proposes an additive 0.9.4 query; no code is available yet. Cold recovery needs
+and has assigned the additive 0.9.4 query to Core for a reviewed development
+pair. No consumable implementation is available yet. Cold recovery needs
 that supported lookup and integration with the existing recovery worker. Missing
 or error evidence remains pending. No private Core codec or second index is added.
 These observations do not alter published 0.9.0 assets or the adopted dependency

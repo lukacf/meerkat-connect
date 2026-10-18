@@ -42,13 +42,15 @@ turn settlement with a shared authorization-refusal message, before its correcte
 durable-ID assertions. Core uses the same display for ReprepareRequired, Denied
 and MalformedFacts; the subtype and producer are not identified yet.
 
-The latest independent full SDK case passes both Find calls, both helper catalogs,
-selected checks, exact independent approvals, cancellation of one caller, and the
-surviving caller's install, job and report calls. It times out on the combined
-readback and original-task continuation condition; the missing substep is not yet
-identified. Its strict cleanup-empty assertion passes. The earlier install
-refusal does not recur but remains unexplained. Neither complete shared journey
-is qualified; online creation and active retirement remain open.
+The latest full SDK diagnostic passes both Find calls, both helper catalogs,
+selected checks, exact independent approvals, cancellation of one caller and the
+surviving caller's install, job and report calls. Preparation completed successfully
+and the original-task script continued once, but the delivery acknowledgment
+remains absent. The native owner returned admission Timeout after authorization;
+no reconciliation return was recorded. The combined acceptance condition still
+fails, with strict cleanup-empty passing. Delivery admission and acknowledgment
+recovery remain under investigation. The earlier install refusal remains unexplained. Neither complete
+shared journey is qualified; online creation and active retirement remain open.
 
 The newer selection passes both focused gateway cleanup controls and builds the
 actual resource-bound gateway. Staging with refreshed resources and matching SDK
@@ -88,13 +90,15 @@ Cold process recovery is separate from retained in-process task ownership.
 Acknowledging historical native acceptance requires exact durable evidence,
 without restoring operation authority. The Core owner confirms the missing
 public query for the internally qualified input key and proposes an additive
-0.9.4 API. No implementation is available yet. Restoring current
+0.9.4 API. Its implementation is assigned to the Core owner for a reviewed
+development pair; no consumable implementation is available yet. Restoring current
 planning authority additionally needs exact host-selected inputs and current
 member ownership. The explicit parent-source implementation is adopted locally
-with five passing focused controls. Two delivery-claim controls also pass, but
-that separate source correction is not adopted yet. They cover exact retained evidence and reject negative evidence
-from unowned or stale claims. A subsequent retry correction still needs runtime
-validation. Existing recovery owns eventual durable waiter/effect paging and
+with five passing focused controls. The separate two-path delivery claim/retry
+correction is adopted locally after four passing actual-store controls. Exact
+proven nonadmission survives a definite pre-claim revision conflict; foreign or
+older attempts, ambiguous responses and generic Pending/RetrySafe state cannot
+supply that proof. Existing recovery owns eventual durable waiter/effect paging and
 stop/join; missing evidence cannot authorize resubmission.
 [Source provenance](../../SOURCE-PROVENANCE.md#r5-development-observations)
 records the current results separately from adopted source.
