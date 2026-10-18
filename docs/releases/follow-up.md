@@ -53,10 +53,15 @@ evidence of a runtime channel defect. Strict cleanup and owner joins passed.
 Source review identifies a prerequisite gap: the SDK fixture never publishes
 native Ready, which enabled context transfer needs to acquire its recovery owner.
 This does not identify the unique producer of the generic refusal. The supported
-in-process completion API is under Core/Meta review. A source-reviewed SDK
-adaptation uses native held creation and retains actual returned owners through
-cancellation and close. Its seven selected cases await the actual completion API
-and execution. No automatic context assertion passed.
+in-process completion API is now offered in development-only
+[Meta r7](https://github.com/lukacf/meerkat-meta/commit/d66f444ef4c4bc50af6a18ac727791aaf21a4541),
+with the same Core `75a23265` and unchanged Python/TypeScript SDK trees. Connect is
+adapting SDK and stdio hosts to consume that one-use native completion under the
+existing host close boundary and start the same retained recovery owner. Actual
+held owners remain retained through cancellation and close. Seven SDK cases,
+refusal after host/runtime/admission close, and the actual stdio recovery
+regression are selected next. This consumer is not yet executed; automatic
+context delivery remains unqualified.
 
 The latest full SDK diagnostic passes both Find calls, both helper catalogs,
 selected checks, exact independent approvals, cancellation of one caller and the
@@ -94,22 +99,39 @@ controls now pass on the unchanged r6 graph, with independent outcome review.
 The new controls require exact cancellation, refuse changed resources before
 another spawn, then restore the original bytes and require successful reuse.
 The existing live-helper control also reaches actual healthy closure on its
-small test bundle. A changed gateway and fresh installed reset remain pending;
-this does not yet qualify reset after an initialized helper or healthy closure
-with the full installed bundle. Earlier failed installed runs remain recorded.
+small test bundle. A fresh production gateway containing the correction now
+builds successfully on the same complete r6 graph. Its exact executable is
+`f8aeb885`; the build, restored source and joined build owners are verified.
+The fresh-stage idle rerun now reaches one Find, 12 exact pending Search results,
+a successful thirteenth Search, Load and schema inspection, with both native
+interactions completing. Its verifier still fails: it counts a session-history
+projection of Find as a second live execution. The recorded native calls have
+16 distinct IDs; the duplicate display has an explicit session_history source.
+A narrow provenance-filter correction and affected rerun are next. The existing
+installed-product positive and corruption negative are selected independently.
+Full reset acceptance, reset after an initialized helper and the complete
+installed-product check remain unqualified; earlier failures are retained.
 
-Native shutdown acknowledges host/runtime cleanup and exits normally; the
-provider and current command groups settle without forced cleanup. Success-only
-SDK reader, listener and descendant assertions remain unentered. The missing
-pre-reset child observation does not prove old-helper transport join. Complete
-installed reset recovery remains unqualified.
+Both failed installed runs retain actual native shutdown acknowledgments and
+normal gateway exit. The latest provider and three command groups join without
+forced cleanup. Success-only SDK reader, listener and descendant assertions
+remain unentered. A missing pre-reset child observation does not prove old-helper
+transport join. Complete installed reset recovery remains unqualified.
 
 Connect has accepted the Core lead's proposed `DomainBound::OwnedBy` adoption for
 0.9.4. Catalog, setup and report/account/public parent grants will bind the actual
 application resource authority while retaining exact session/origin children.
-New issuance IDs are required; old unrestricted grants and historical children
-cannot be silently relabeled or reparented. The actual Core API, migration
-handling and cross-application refusal tests remain to be qualified.
+Current Connect accepts a supplied application principal but does not establish
+that distinct applications receive distinct principals. That contract belongs at
+the authenticated installer/activation admission boundary; paths or deployment
+labels cannot establish identity. Copies of one application may retain its identity.
+The cross-application control must exercise two distinct application authorities
+in the same native grant domain, including an otherwise valid foreign child
+refused as OutsideBounds. New issuance IDs and an explicitly selected preparation
+are required; old unrestricted grants and historical children cannot be silently
+relabeled or reparented. Python/TypeScript readers preserve native bound objects;
+Rust constructor and recovery expectations must migrate together. The actual
+Core API, identity contract and migration remain to be qualified.
 
 The Core owner conditionally confirmed an R1 Find-fenced durable transfer commit
 as a disclosure boundary, with recipient-only scope and exact payload/reconciliation
