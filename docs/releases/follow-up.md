@@ -60,18 +60,21 @@ independently reviewed consumer adapts SDK and stdio hosts to consume that compl
 existing host close boundary and start the same retained recovery owner. Actual
 held owners remain retained through cancellation and close. Seven SDK cases,
 refusal after host/runtime/admission close, and the actual stdio recovery
-regression are selected next. This consumer is not yet executed; automatic
-context delivery remains unqualified.
+regression were selected. The actual r7 dependency graph passes validation, but
+compilation fails in the new audit fixture because InputId has no Ord implementation.
+None of the nine cases ran. A duplicate-detection collection correction and the
+same native cases are next; automatic context delivery remains unqualified.
 
 A separate admission-recovery gap is confirmed: retaining an uncertain Original
-does not schedule recovery, and abandoned candidates have no enforced settlement
-budget. The Core lead accepted the source-owner contract: from first custody,
-Connect must drive the same input to proven admission or permanently withdraw
-source custody within its budget. Withdrawal preserves the uncertain native input
-and binding, prevents resurrection or fresh duplicate submission, and makes no
-claim of native cancellation. The entered native operation remains owned until
-actual settlement or close. Connect implementation is next; r7 startup alone does
-not close this gap.
+does not schedule recovery, and abandoned candidates have no enforced recovery
+bound. The Core lead's latest direction bounds pending by the owner's
+recovery steps, not elapsed time. Withdrawal must remain monotone for the same
+Original across cold reconstruction. If the canonical store cannot be read, the
+answer is Unavailable, never indefinite Pending or guessed NotRetained. Withdrawal
+preserves the uncertain native input and binding, prevents resurrection or fresh
+duplicate submission, and makes no claim of native cancellation. Entered operations
+remain owned until actual settlement or close. The final contract and Connect's
+durable ordering remain open; r7 startup alone does not close this gap.
 
 The latest full SDK diagnostic passes both Find calls, both helper catalogs,
 selected checks, exact independent approvals, cancellation of one caller and the
@@ -120,8 +123,14 @@ interactions completing. Its verifier still fails: it counts a session-history
 projection of Find as a second live execution. The recorded native calls have
 16 distinct IDs; the duplicate display has an explicit session_history source.
 A narrow provenance-filter correction has independent review; its affected rerun
-also filters the outer checker's count by native source. The separate installed-product
-positive fails in its controlled provider after ten exact pending catalog replies;
+also filters the outer checker's count by native source. That rerun passes native
+completion, then fails a second checker assumption: it expects one successor offer.
+The actual unused Initial is cancelled before spawn and correctly reused as a new
+Initial with zero offers. The reviewed correction requires exact old/new attempt
+identities, native cancellation and settlement joins, and final local drain. Its
+14 recorded controls pass; the complete affected rerun is still required.
+The separate installed-product positive fails in its controlled provider after ten
+exact pending catalog replies;
 Load, Inspect and service use remain unentered, as does the corruption case.
 The reviewed driver correction accepts only exact pending replies until the
 existing acquisition and request bounds. Its native rerun remains required.
