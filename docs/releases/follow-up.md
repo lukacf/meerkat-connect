@@ -45,6 +45,14 @@ ReprepareRequired events still appear in the passing r6 run, without an
 agent-identity mapping in the log. Admission success does not establish successful
 setup-agent model execution or automatic context delivery.
 
+The subsequent automatic-delivery SDK selection reused that exact compiled
+artifact. One case failed on caller B's actual Find refusal, `tool_unavailable`;
+four cases remained unentered. The fixture then panicked on that refusal,
+producing the displayed result-channel loss. That display is not independent
+evidence of a runtime channel defect. Strict cleanup and owner joins passed.
+The exact refusal producer remains under investigation, and no automatic
+context assertion passed.
+
 The latest full SDK diagnostic passes both Find calls, both helper catalogs,
 selected checks, exact independent approvals, cancellation of one caller and the
 surviving caller's install, job and report calls. Preparation completed successfully
@@ -77,8 +85,8 @@ checks. Later waiter effects still require that waiter's authority. Three focuse
 controls pass for retained commit, cancelled delivery observation and stale absence
 observation. The automatic recovery path now also passes a control that retains
 slow pre-delivery work across dropped polls while another operation proceeds.
-Automatic SDK delivery controls remain unentered; the passing independent r6
-planning-admission case allows those dependent cases to proceed. This is
+The first automatic SDK case now fails before its context assertions; four remain
+unentered. The independent r6 planning-admission pass remains separate. This is
 implementation progress, not native end-to-end delivery proof.
 
 All six selected native cancellation controls now have passing observations. The
