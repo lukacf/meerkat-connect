@@ -80,18 +80,24 @@ so its cause remains open. The source files are restored afterward and all
 command owners join. Exact operation-stage diagnosis is next; neither failure
 qualifies automatic context delivery or permits r7 adoption.
 
-A separate admission-recovery gap is confirmed: retaining an uncertain Original
-does not schedule recovery, and abandoned candidates have no enforced recovery
-bound. The Core lead's latest direction bounds pending by the owner's
-recovery steps, not elapsed time. Withdrawal must remain monotone for the same
-Original across cold reconstruction. If the canonical store cannot be read, the
-answer is Unavailable, never indefinite Pending or guessed NotRetained. Withdrawal
-preserves the uncertain native input and binding, prevents resurrection or fresh
-duplicate submission, and makes no claim of native cancellation. Entered operations
-remain owned until actual settlement or close. The final contract and Connect's
-durable ordering remain open; r7 startup alone does not close this gap.
+A separate admission-recovery gap remains: retaining an uncertain Original does
+not schedule recovery. The [reviewed #14 contract](/private/tmp/connect-lead-healthy-watch-pusq5c_i/20261018T225357.132122-claude-gcp-lead-f82ce4.json.txt)
+(`e85a4dda`) now fixes the owner obligation. Only a Candidate enrolled in the
+source owner's bounded settlement may answer AdmissionPending; unenrolled
+candidates, including `retain_unresolved`, remain NotRetained. The owner must
+specify its enrollment event, recovery trigger, cadence and step budget, stop and
+join settlement,
+and answer no candidate as Pending after close. Every promotion or permanent
+withdrawal must announce source-custody change. Promotion requires verified native
+admission of the exact input. Withdrawal is terminal across restart, preserves
+the uncertain input and binding, prevents resurrection or a fresh duplicate, and
+claims no native nonadmission, cancellation or settlement. Unreadable canonical
+storage returns Unavailable, never guessed NotRetained or indefinite Pending.
+Entered native operations remain separately owned until actual settlement or
+close. The exact Core 0.9.4 API revision and Connect's durable-ordering
+implementation remain pending; r7 startup alone does not close this gap.
 
-The latest full SDK diagnostic passes both Find calls, both helper catalogs,
+An earlier full SDK diagnostic passes both Find calls, both helper catalogs,
 selected checks, exact independent approvals, cancellation of one caller and the
 surviving caller's install, job and report calls. Preparation completed successfully
 and the original-task script continued once, but the delivery acknowledgment
@@ -148,11 +154,15 @@ replies end in an exact completed-empty result, so the second request cannot
 complete. The old process closes normally in 125 ms; Connect's whole finish
 callback takes 12.302 seconds and eventually restores custody. The gateway and
 command owners join cleanly. Success-only final source and SDK cleanup checks
-remain unentered. A narrow correction is under review: return healthy Initial
-custody without repeating the full resource scan, while retaining exact native
-settlement predicates and resource validation before every next use. Changed
-resource refusal, restored-resource reuse and a fresh installed reset must pass
-before adoption. Earlier verifier failures remain in the qualification report.
+remain unentered. The narrow healthy Initial correction now passes
+[six actual native controls](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-healthy-initial-six-uxxhr5gd/FINAL.json)
+(`b0d9d479`), with [independent review](/private/tmp/connect-healthy-six-outcome-7unm14pq/REVIEW.json)
+(`1d589982`). It returns healthy Initial custody without repeating the full
+resource scan; exact native settlement predicates and validation before every
+next use remain. The controls prove changed-resource refusal before another
+spawn and one Offered successor after restoring the exact bytes. A fresh gateway
+and full initialized-reset rerun remain required before adoption. Earlier verifier
+failures remain in the qualification report.
 
 The installed-product positive and resource-corruption negative also pass. The
 positive follows 34 exact pending catalog replies, installs the selected
