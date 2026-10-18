@@ -34,17 +34,32 @@ The qualified follow-on includes seven toolkit-mobkit Rust paths and its guide,
 excluding unfinished SDK fixtures, dev-dependency/lock changes and diagnostics.
 The latest full SDK case fails at A's catalog-load authorization refusal and the
 helper barrier; its typed-approval assertions are unentered. The generic readiness
-event remains unattributed. The separate planning case returns NotHeld for original-b,
-without the underlying construction reason. Both strict cleanup assertions pass;
-raw inner receipts are absent. The earlier approval-body failure remains recorded.
-Neither case qualifies shared completion. Protected waiter-context delivery, online
-creation, active retirement and gateway/reset remain open.
+event remains unattributed. A newer planning selection on Meta `a8ff89da` and the
+same Core passes bootstrap and parent admission, then fails at actual Find calls.
+A focused diagnostic exposes `access_denied` for both calls: `find_and_install`
+is not allowed by policy. The exact producer is under diagnosis. Both strict SDK
+cleanup assertions pass; raw inner receipts are absent.
+Earlier NotHeld and approval-body failures remain recorded. Neither case qualifies
+shared completion. Protected waiter-context delivery, online creation and active
+retirement remain open.
+
+The newer selection passes both focused gateway cleanup controls and builds the
+actual resource-bound gateway. Staging with refreshed resources and matching SDK
+sources passes. Installed reset remains failed. After correcting the missing
+launcher case and private-file permissions, preparation and policy validation
+pass, but `meta/reset` times out before any model request. A later helper-spawn
+log reports selected activation unavailable; their relationship is under diagnosis.
+The overall shutdown result also remains failed despite joined process owners.
+These results do not qualify installed reset or a release.
 
 The Core owner conditionally confirmed an R1 Find-fenced durable transfer commit
 as a disclosure boundary, with recipient-only scope and exact payload/reconciliation
 checks. The selected host policy already authorizes Find at native R1; its compiled
-R2 consequence label is separate and unchanged. Transfer remains unimplemented.
-Later waiter effects still require that waiter's authority.
+R2 consequence label is separate and unchanged. Transfer and delivery are isolated
+review candidates, without a compilation or full-SDK acceptance result. Automatic
+coordinator/recovery delivery is still being wired through those same retained
+owners; explicit calls in controls do not prove that product path. Later waiter
+effects still require that waiter's authority.
 [Source provenance](../../SOURCE-PROVENANCE.md#public-locator-and-admitted-source-rebind)
 records the distinct outcomes, limits and retained historical failures.
 

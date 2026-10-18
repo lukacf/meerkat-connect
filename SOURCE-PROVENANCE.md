@@ -309,12 +309,40 @@ Independent reviews `01a8aef5` and `06b70670` confirm both strict cleanup assert
 source restoration and recorded owner joins; raw inner receipts are absent.
 Neither SDK case qualifies shared completion.
 
+On Meta `a8ff89dae54f6e48d28f68aacc6078e11c684959` with the same Core,
+focused outcome `785dc246` (independent review `bc9a3e59`) passes both gateway
+cleanup controls. The planning case now passes bootstrap and parent admission,
+then fails at both actual Find calls; their result bodies were discarded by the
+assertion. Focused diagnostic `238bbef4` compiles and exposes `access_denied` for
+both calls, with `Tool 'find_and_install' is not allowed by policy`. Its assertion
+message change is restored afterward. All three original selectors entered, the
+planning cleanup-empty assertion passes, and diagnostic process owners join.
+This does not identify the exact policy producer or erase the earlier NotHeld
+result.
+
+Actual gateway binary outcome `c48ded63` (review `59188a34`) and staging pass with
+binary `e102d6f7`, refreshed resources `7f7d8a04` and exact matching SDK sources.
+Installed outcome `9aae37e0` stops at a missing launcher case before gateway entry.
+After the parent-only hookup correction, `59484d81` reaches native readiness but
+fails before model/reset work in Forge's retained-source reader. Exact remote
+metadata `547f5411` records the three source copies as `0644`; unchanged-reader
+controls `f4166260` refuse those modes and accept the same bytes at `0600`.
+Third attempt `f6d5f8a5` uses fresh private copies and the same staged product.
+Authentication, preparation and policy validation pass, but the `meta/reset` HTTP
+request times out before any model request. A later helper-spawn log reports
+selected activation unavailable; their relationship is under diagnosis. Its 143
+saved references validate and recorded process owners join. Overall shutdown
+remains refused with exit 1; joined processes and native cleanup flags do not
+convert it into success. Review `cef06797` retains that distinction for the prior
+attempt. No installed reset or new release is qualified.
+
 The Core owner conditionally confirmed completed disclosure at an R1 Find-fenced
 durable transfer commit, with recipient-only scope, immutable payload validation
 and settled-attempt reconciliation. Later G/P consumption need not import A/B as
 contributors. The selected host policy already authorizes Find at native R1; its
-compiled R2 consequence label is separate and unchanged. Transfer remains
-unimplemented, and later waiter effects still recheck authority.
+compiled R2 consequence label is separate and unchanged. Transfer and delivery
+remain isolated, uncompiled review candidates; later waiter effects still recheck
+authority.
 These development results do not change published 0.9.0 assets or supply a new
 released selection.
 
