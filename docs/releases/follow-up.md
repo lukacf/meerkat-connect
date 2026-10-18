@@ -5,7 +5,7 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
-Shared preparation is now checkpointed as work in progress on
+An earlier shared-preparation checkpoint used
 [Core 95343786](https://github.com/lukacf/meerkat/commit/953437864bbb21b135661a0e61a09b5aa1f6ba01)
 and [Meta f04125c4](https://github.com/lukacf/meerkat-meta/commit/f04125c45e732b3ef05aab2ac2a0f642fc1b08a1).
 It adds exact preparation membership and retained native/source ownership.
@@ -31,7 +31,7 @@ restored. Healthy admitted-source rebind preserves publication, while new
 admission and native currentness checks remain required.
 
 The earlier qualified follow-on includes seven toolkit-mobkit Rust paths and its
-guide. The latest local checkpoint adds 14 toolkit-mobkit paths for retained
+guide. A subsequent checkpoint added 14 toolkit-mobkit paths for retained
 context transfer and automatic observation, plus a default-off field in the
 existing SDK test host. It excludes the unfinished planning fixture chain,
 dev-dependency/lock changes and temporary diagnostics.
@@ -53,8 +53,10 @@ evidence of a runtime channel defect. Strict cleanup and owner joins passed.
 Source review identifies a prerequisite gap: the SDK fixture never publishes
 native Ready, which enabled context transfer needs to acquire its recovery owner.
 This does not identify the unique producer of the generic refusal. The supported
-in-process completion API is under Core/Meta review. No automatic context
-assertion passed.
+in-process completion API is under Core/Meta review. A source-reviewed SDK
+adaptation uses native held creation and retains actual returned owners through
+cancellation and close. Its seven selected cases await the actual completion API
+and execution. No automatic context assertion passed.
 
 The latest full SDK diagnostic passes both Find calls, both helper catalogs,
 selected checks, exact independent approvals, cancellation of one caller and the
@@ -110,18 +112,25 @@ public query for the internally qualified input key and proposes an additive
 0.9.4 API. That query is now available in the development-only
 [Core r6 revision](https://github.com/lukacf/meerkat/commit/75a23265f6125f3ce61560ba8388c076a1caccf1),
 paired with [Meta r6](https://github.com/lukacf/meerkat-meta/commit/263ecad41260a0b89c5dd0b8caa251164369be22).
-Connect's consumer for an already restored committed transfer now passes actual
-admission/retirement and negative-evidence controls on r6. A separate cold-recovery
-path is being implemented through an explicit host-selected private reader and the existing worker's canonical paging, including
-workflows created after startup. The query verifies historical admission
-without reviving an actor, granting custody or authorizing resubmission. No
-complete process-restart journey is claimed. The real stdio worker candidate
-compiles, but its first test fails before Ready because it reads a compatibility
-session projection rather than the authoritative runtime transcript; 18 checks
-remain unentered. A reviewed test-only correction reads Core's verified committed
-snapshot and keeps full transcript/input equality. The same 19 checks are selected
-for the corrected run. The in-process completion seam remains separate. Restoring
-current
+Connect's recovery worker now reconciles exact historical acceptance after its
+original host closes and the store reopens. An explicit host-selected private
+reader and canonical paging find committed records, including workflows created
+after startup. A blocked first read does not starve another selected record;
+stop prevents new reads and join retains entered work. The query revives no actor,
+grants no custody and authorizes no resubmission.
+
+Three earlier controls and 16 affected checks pass with independent review on
+this r6 pair. The first three include the real stdio driver reaching native Ready,
+retired-recipient admission, store reopening, paging and stop/join. The remaining
+checks cover changed envelopes, cancellation and negative historical evidence.
+Full canonical transcript/input equality stays intact. The 29 source and
+development-graph paths are checkpointed locally at
+`af9dfad568a87ba135c4fbf5fa32a1064b357278`. This is component qualification using
+host-selected readers and controlled committed uncertain records. An installed
+abrupt-process-loss journey and full SDK continuation remain unqualified. Earlier
+fixture failures are retained; the corrected checks read the authoritative runtime
+snapshot and distinguish controlled source writes from recovery observation.
+The supported in-process completion API remains separate. Restoring current
 planning authority additionally needs exact host-selected inputs and current
 member ownership. The explicit parent-source implementation is adopted locally
 with five passing focused controls. The separate two-path delivery claim/retry
