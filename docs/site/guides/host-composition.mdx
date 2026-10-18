@@ -123,6 +123,12 @@ reservation and planning owners separately enforce current authority.
 | Complete the captured member inside the actual held full-roster callback, before release | Await `InstalledWorkflowMember::complete_held_member` with that member's `HeldIdentityMember` |
 | After the parent is admitted, retain its independently authorized planning selection for the exact original invocation | `PrivateOriginals::prepare_workflow_planning`, returned as `InstalledOriginalTaskBinding::planning` by `InstalledOriginalTaskOwner::original_binding` |
 
+`PreparedGatewayRuntime::adopt` binds the prepared construction to the final
+host. It does not publish native readiness or start acquisition recovery. The
+native host lifecycle must complete that step. The supported in-process Rust
+composition for it is under review; the member-selection steps above do not yet
+constitute a complete in-process startup.
+
 The gateway validates the selection before reserving it, then selects its exact
 host lifetime in the existing source owner and composes the restriction with its
 existing registration hook. Invalid reservations leave the lifetime unselected.
@@ -165,8 +171,11 @@ The development SDKs return one of two states:
 | `operations_cancelled` | The source cancellation and selected workflow departure completed. |
 | `operations_cancelled_cleanup_pending` | Cancellation and departure completed; the host still owns unfinished workflow cleanup. |
 
-Keep the existing host recovery worker running for pending cleanup. Repeating
-cancellation is not required to drive it. Neither state means every entered
+The host starts its acquisition recovery worker only after native bootstrap
+publishes readiness. Prepared-owner adoption alone does not start it; preserve
+the [native lifecycle completion](#select-a-fresh-planning-member-unreleased)
+when composing the host. Keep that existing worker running for pending cleanup.
+Repeating cancellation is not required to drive it. Neither state means every entered
 operation, process or model run has stopped. Sibling requests and shared access
 retain their own owners. A timeout leaves the outcome unknown; the SDK does not
 repeat the command automatically.
