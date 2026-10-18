@@ -36,11 +36,14 @@ context transfer and automatic observation, plus a default-off field in the
 existing SDK test host. It excludes the unfinished planning fixture chain,
 dev-dependency/lock changes and temporary diagnostics.
 
-The development-only r5 pair, Core `ab4d6227` / Meta `67fa0407`, compiles with
-unchanged package/feature resolution. The planning case still fails at native
-turn settlement with a shared authorization-refusal message, before its corrected
-durable-ID assertions. Core uses the same display for ReprepareRequired, Denied
-and MalformedFacts; the subtype and producer are not identified yet.
+The development-only r6 pair, Core `75a23265` / Meta `263ecad4`, now passes
+compilation, 12 selected Toolkit controls and an independent SDK planning-admission
+case. Its complete 556-package and feature graph is verified. The latter case
+reaches exact durable IDs, shared workflow and independent membership/replay
+assertions. The earlier r5 planning failure remains recorded. Two structured
+ReprepareRequired events still appear in the passing r6 run, without an
+agent-identity mapping in the log. Admission success does not establish successful
+setup-agent model execution or automatic context delivery.
 
 The latest full SDK diagnostic passes both Find calls, both helper catalogs,
 selected checks, exact independent approvals, cancellation of one caller and the
@@ -74,8 +77,9 @@ checks. Later waiter effects still require that waiter's authority. Three focuse
 controls pass for retained commit, cancelled delivery observation and stale absence
 observation. The automatic recovery path now also passes a control that retains
 slow pre-delivery work across dropped polls while another operation proceeds.
-Five automatic SDK delivery controls remain unentered behind the failing planning
-case. This is implementation progress, not native end-to-end delivery proof.
+Automatic SDK delivery controls remain unentered; the passing independent r6
+planning-admission case allows those dependent cases to proceed. This is
+implementation progress, not native end-to-end delivery proof.
 
 All six selected native cancellation controls now have passing observations. The
 affected rerun checks Core's pre-factory refusal, stale-session refusal and
@@ -84,9 +88,9 @@ exact native cancellation proves no spawn or a normally closed child. Every new
 attempt still validates current registration and full resources. The correction
 and its tests are checkpointed locally; installed reset remains unqualified.
 
-The durable-input fixture correction retains exact counts and replay checks;
-the current planning failure occurs before those assertions. Automatic SDK
-delivery remains unqualified.
+The durable-input fixture correction retains exact counts and replay checks, now
+reached by the passing r6 planning-admission case. Automatic SDK delivery remains
+unqualified.
 
 Cold process recovery is separate from retained in-process task ownership.
 Acknowledging historical native acceptance requires exact durable evidence,
@@ -95,12 +99,14 @@ public query for the internally qualified input key and proposes an additive
 0.9.4 API. That query is now available in the development-only
 [Core r6 revision](https://github.com/lukacf/meerkat/commit/75a23265f6125f3ce61560ba8388c076a1caccf1),
 paired with [Meta r6](https://github.com/lukacf/meerkat-meta/commit/263ecad41260a0b89c5dd0b8caa251164369be22).
-Connect's consumer for an already restored committed transfer has passed source
-review. A separate cold-recovery path is being implemented through an explicit
-host-selected private reader and the existing worker's canonical paging, including
+Connect's consumer for an already restored committed transfer now passes actual
+admission/retirement and negative-evidence controls on r6. A separate cold-recovery
+path is being implemented through an explicit host-selected private reader and the existing worker's canonical paging, including
 workflows created after startup. The query verifies historical admission
 without reviving an actor, granting custody or authorizing resubmission. No
-Connect r6 runtime result or Ready completion seam is claimed. Restoring current
+complete process-restart journey is claimed. The existing real stdio gateway
+provides a Ready path for the automatic worker test under review; an in-process
+Ready completion seam remains separate. Restoring current
 planning authority additionally needs exact host-selected inputs and current
 member ownership. The explicit parent-source implementation is adopted locally
 with five passing focused controls. The separate two-path delivery claim/retry
@@ -133,7 +139,8 @@ paging, replay, cancellation, changed membership, retired-agent refusal and
 worker stop/join behavior. Seven focused tests and the remaining eleven use the
 same compiled source; cleanup assertions and command/transport ownership pass.
 The earlier failed diagnostic remains recorded. No new native API was required;
-full shared SDK delivery, r6 execution and process-restart completion remain open.
+full shared SDK delivery and process-restart completion remain open. The separate
+narrow r6 execution above does not extend these r5 interest-restoration results.
 
 The installer target is published Core/Meta 0.9.4, with Linux x86_64 qualification
 first and macOS arm64 separately. The manual-only
