@@ -12,11 +12,17 @@ It adds exact preparation membership and retained native/source ownership.
 Sixteen earlier owner controls, one SQLite reopen/cancel/complete control and five
 focused disposition controls pass. Five additional SQLite workflow controls
 cover concurrent joins, replay/reopen, sealing and late delivery obligations.
-The two-requester SDK case still fails: the diagnostic identifies helper A's
-admission refusal as `PolicyChanged`. Cancellation and sibling survival remain
-unreached. Its passing cleanup assertion does not qualify the unfinished shared
-flow. One pre-spawn lead, native context delivery, gateway/reset consumption and
-remote restart remain open.
+Six helper admission controls now pass after a meaningful prior-code failure.
+The correction retries once only when native policy-change refusal confirms
+nonadmission, preserving the same input and deadline. Cancellation, expiry and
+uncertain acceptance retain their distinct outcomes.
+
+The two-requester SDK case still fails. Both initial finds succeed, but helper A's
+selected check returns `operation_authorization_unavailable`; a separate generic
+helper admission refusal remains unattributed. Cancellation and sibling survival
+remain unreached. Its passing cleanup assertion does not qualify the unfinished
+shared flow. One pre-spawn lead, native context delivery, gateway/reset consumption
+and remote restart remain open.
 [Source provenance](../../SOURCE-PROVENANCE.md#shared-preparation-and-source-owner-currentness-work-in-progress)
 records the precise scope. Published 0.9.0 assets remain unchanged.
 

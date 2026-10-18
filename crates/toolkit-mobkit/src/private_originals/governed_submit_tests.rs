@@ -87,6 +87,20 @@ pub(in crate::private_originals) enum DeliveryMode {
     // These two controls target only the fixture's actual helper session.
     HoldHelperBeforeLookup,
     HoldHelperAcceptedReply,
+    // These controls invalidate the actual controller-admission observation.
+    HelperPolicyChangesOnce,
+    HelperPolicyChangesAlways,
+    HelperPolicyChangesThenUnresolved,
+    HelperPolicyChangesThenRetirement,
+    HelperPolicyChangesThenDeadline,
+}
+
+impl DeliveryMode {
+    fn helper_reprepare(self) -> bool {
+        matches!(self, Self::HelperPolicyChangesOnce | Self::HelperPolicyChangesAlways
+            | Self::HelperPolicyChangesThenUnresolved | Self::HelperPolicyChangesThenRetirement
+            | Self::HelperPolicyChangesThenDeadline)
+    }
 }
 
 struct DeliveryFault {
@@ -98,6 +112,11 @@ struct DeliveryFault {
     helper_session: std::sync::OnceLock<SessionId>,
     helper_input: Mutex<Option<InputId>>,
     helper_returns: AtomicUsize,
+    helper_inputs: Mutex<Vec<serde_json::Value>>,
+    helper_policy_changed: AtomicUsize,
+    helper_admission_change: Mutex<Option<InputAuthorityAssociation>>,
+    publication_changes: AtomicUsize,
+    publication_change_failures: AtomicUsize,
 }
 impl DeliveryFault {
     fn new(mode: DeliveryMode) -> Self {
@@ -110,6 +129,11 @@ impl DeliveryFault {
             helper_session: std::sync::OnceLock::new(),
             helper_input: Mutex::new(None),
             helper_returns: AtomicUsize::new(0),
+            helper_inputs: Mutex::new(Vec::new()),
+            helper_policy_changed: AtomicUsize::new(0),
+            helper_admission_change: Mutex::new(None),
+            publication_changes: AtomicUsize::new(0),
+            publication_change_failures: AtomicUsize::new(0),
         }
     }
 }

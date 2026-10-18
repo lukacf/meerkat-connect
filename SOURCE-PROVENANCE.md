@@ -57,7 +57,7 @@ Private Toolkit checkpoint `8aed9b48ac1d3aaf045d134cc88196f7ffe80c3b` contribute
 five source paths for exact workflow terms and waiter membership in the existing
 SetupStore and outbox. Concurrent joins create one launch plus separate delivery
 obligations. Exact replay does not duplicate effects; changed terms refuse.
-Sealing and final departure cannot reopen a completed group. After reopening, an
+A join racing final departure cannot reopen a sealed group. After reopening, an
 unacknowledged launch needs reconciliation and a late waiter gets a fresh pending
 delivery rather than inheriting an earlier result.
 
@@ -69,6 +69,31 @@ as `PolicyChanged`, with matching prepared/native sessions. Helper B progresses,
 but the two-helper barrier still times out. The SDK remains failed; cleanup's
 in-test assertion and outer command joins are not individual native receipt
 proof. The diagnostic is excluded from source. Published assets are unchanged.
+
+### Helper admission after a policy change
+
+Private Toolkit checkpoint `0d3b1a6a54c9091100f63e30408fd5dfa1acab78` contributes
+two production paths and five native fixture paths. A helper submission may retry
+once after exact same-session `PolicyChanged` nonadmission. It preserves the
+actual input, source, event key and original deadline. Uncertain acceptance,
+other refusal categories and further policy changes do not trigger another
+submission.
+
+The corrected prior-code comparison `08d1bdbe` reaches an actual native
+policy-change refusal and fails at the intended missing-admission assertion.
+The earlier comparison `858fda8b` failed a fixture prerequisite and is not counted
+as a qualified negative. The repaired run `74a1d715` passes all six focused
+controls: classification, same-input reprepare, persistent refusal, lost accepted
+reply, contributor retirement and original expiry. Independent review `707e318b`
+confirms those focused results and their native source/effect assertions.
+
+The same run's SDK scenario remains failed. Both Original finds succeed; helper
+A's selected check returns `operation_authorization_unavailable`. A separate
+generic helper admission refusal has no member or precise reason attribution.
+The barrier expires before independent cancellation or sibling survival. The
+in-test cleanup assertion and command/transport joins pass, without exported
+individual native process receipt bodies. These results qualify the helper
+repair, not shared SDK completion. Published 0.9.0 assets are unchanged.
 
 ### Explicit Node build plans
 

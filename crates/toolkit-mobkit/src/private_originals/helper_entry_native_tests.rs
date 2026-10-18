@@ -356,6 +356,201 @@ async fn entered_helper_keeps_same_login_until_native_settlement_is_observed() {
     Box::pin(exercise(DeliveryMode::HoldHelperAcceptedReply)).await;
 }
 
+// Each control uses the existing reviewed Original and its one actual helper.
+// The fixture can invalidate a real admission observation or lose an accepted
+// reply; it cannot invent a native refusal, source, input or admission receipt.
+async fn exercise_helper_reprepare(mode: DeliveryMode) {
+    let (_connection, logins, login) = enrolled_login();
+    let script = if matches!(mode, DeliveryMode::HelperPolicyChangesThenDeadline) {
+        acquisition_denial::Script::paused_for_expiring_helper_entry(4_000)
+    } else {
+        acquisition_denial::Script::paused_for_helper_entry()
+    };
+    let fault = Arc::new(DeliveryFault::new(mode));
+    let (fixture, history) = Fixture::for_helper_entry(script.clone(), fault.clone()).await;
+    let deadline = tokio::time::Instant::now() + WAIT * 3;
+    let checked = std::panic::AssertUnwindSafe(tokio::time::timeout_at(
+        deadline,
+        Box::pin(async {
+            let helper = AgentIdentity::parse(
+                crate::installed_host::controller_first_input_fixture::HELPER,
+            ).unwrap();
+            let helper_session = fault.helper_session.get().unwrap().clone();
+            let helper_before = fixture.runtime.completion_cursor(&helper).await;
+            assert!(acquisition_approved::native_history(history.as_ref(), &helper_session).await.is_empty());
+            let (_prepared, _parent) = acquisition_approved::select_reviewed_setup(&fixture).await;
+            let first = fixture.submit().await;
+            let Ok(PrivateOriginalSubmission::Admitted {
+                input_id: original_input, deduplicated: false,
+                source_settlement: PrivateSourceSettlement::FreshAcceptancePromoted, ..
+            }) = &first else {
+                panic!("actual Original admission required: {}", submission_context(&first));
+            };
+            script.first_response_waiting().await;
+            let binding = fixture.binding().await.unwrap().unwrap();
+            retain_actual_a_login(&fixture, &binding, &login);
+            script.release_first_response();
+            fault.entered.notified().await;
+            assert_eq!(fault.helper_returns.load(Ordering::SeqCst), 1);
+            assert_eq!(fault.helper_policy_changed.load(Ordering::SeqCst), 1,
+                "the actual native first return must be same-session PolicyChanged");
+            assert_eq!(fault.accepted.load(Ordering::SeqCst), 0);
+            assert_eq!(fault.publication_changes.load(Ordering::SeqCst), 1,
+                "the real controller-admission observation was invalidated once");
+            assert!(fault.helper_admission_change.lock().unwrap().is_none(),
+                "the actual policy callback consumed the exact helper fault");
+            assert!(acquisition_approved::native_history(history.as_ref(), &helper_session).await.is_empty());
+            let held = issued_helper(&fixture, &helper_session, &binding).await;
+            let saved_helper = held.source_record().as_ref().clone();
+            let helper_input = fault.helper_input.lock().unwrap().clone().unwrap();
+            assert_ne!(helper_input.to_string(), *original_input);
+            let input_before = fault.helper_inputs.lock().unwrap().clone();
+            assert_eq!(input_before.len(), 1);
+            let acquisitions_before = fixture.store.list_records(
+                &acquisition_approved::scope(&fixture), None, 10,
+            ).await.unwrap();
+            assert_eq!(acquisitions_before.len(), 1,
+                "the completed preparation remains owned by one canonical acquisition");
+            let effects_before = fixture.store.list_effects(
+                &acquisitions_before[0].key, None, 16,
+            ).await.unwrap();
+            assert!(effects_before.len() < 16, "the bounded effect inventory must be complete");
+            let work_effects: Vec<_> = effects_before.iter()
+                .filter(|effect| effect.intent.kind == "work_admission_requested").collect();
+            assert_eq!(work_effects.len(), 1, "one actual work-admission effect");
+            assert_eq!(work_effects[0].status, toolkit_store::EffectStatus::Succeeded);
+            assert!(matches!(&work_effects[0].outcome, Some(toolkit_store::EffectOutcome::Succeeded { .. })));
+            let operation_deadline = fixture.source.helper_operation_deadline(
+                held.original().association(),
+            ).unwrap().unwrap();
+            let retirement = if matches!(mode, DeliveryMode::HelperPolicyChangesThenRetirement) {
+                let retirement = logins.fixture_retire(1).unwrap();
+                assert!(login.check().is_err());
+                Some(retirement)
+            } else { None };
+            if matches!(mode, DeliveryMode::HelperPolicyChangesThenDeadline) {
+                let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+                assert!(operation_deadline > now_ms,
+                    "the first real refusal must precede the retained deadline");
+                tokio::time::sleep(Duration::from_millis(operation_deadline - now_ms + 20)).await;
+            }
+            // Never await a login drain while Meta still owns this bridge call.
+            fault.release.add_permits(1);
+            if let Some(retirement) = retirement {
+                let retired = retirement.await.unwrap();
+                assert!(retired.fenced && retired.reservations_drained && !retired.uncertain);
+            }
+            fixture.finish(&first).await.unwrap();
+            let deadline_expired = matches!(mode, DeliveryMode::HelperPolicyChangesThenDeadline);
+            if deadline_expired {
+                let (feedback, planned, entered) = script.observations();
+                assert_eq!(feedback.len(), 1, "{feedback:?}");
+                assert!(feedback[0].is_error, "{feedback:?}");
+                assert!(planned > 0);
+                assert_eq!(entered, 1);
+                let actual: serde_json::Value = serde_json::from_str(&feedback[0].text_content()).unwrap();
+                let expected = meerkat_core::ToolError::AccessDenied {
+                    name: crate::FIND_AND_INSTALL.into(),
+                }.to_error_payload();
+                assert_eq!(actual, expected, "expiry is a denial, not a renewed attempt");
+            } else {
+                let reply = tool_reply(&script);
+                assert_eq!(reply["created"], true);
+                let expected = match mode {
+                    DeliveryMode::HelperPolicyChangesOnce => "input_admitted",
+                    DeliveryMode::HelperPolicyChangesAlways => "retry_safe",
+                    DeliveryMode::HelperPolicyChangesThenUnresolved => "admission_unresolved",
+                    DeliveryMode::HelperPolicyChangesThenRetirement => "native_outcome_unavailable",
+                    _ => unreachable!(),
+                };
+                assert_eq!(reply["worker"]["state"], expected, "{reply}");
+                if matches!(mode, DeliveryMode::HelperPolicyChangesOnce) {
+                    assert_eq!(reply["worker"]["deduplicated"], false);
+                    assert_eq!(reply["worker"]["source_settlement"], "fresh_acceptance_promoted");
+                }
+            }
+            // Expiry refuses before the second dispatch. Retired-login custody
+            // instead refuses inside the second real bridge at its final entry.
+            let attempts = if deadline_expired { 1 } else { 2 };
+            let inputs = fault.helper_inputs.lock().unwrap().clone();
+            assert_eq!(inputs.len(), attempts);
+            assert_eq!(fault.helper_returns.load(Ordering::SeqCst), attempts);
+            for input in &inputs {
+                assert_eq!(input, &input_before[0],
+                    "one actual Input ID, content, authority, timestamp and event key across re-entry");
+            }
+            let always = matches!(mode, DeliveryMode::HelperPolicyChangesAlways);
+            assert_eq!(fault.helper_policy_changed.load(Ordering::SeqCst), if always { 2 } else { 1 });
+            assert_eq!(fault.publication_changes.load(Ordering::SeqCst), if always { 2 } else { 1 });
+            let accepted = matches!(mode,
+                DeliveryMode::HelperPolicyChangesOnce | DeliveryMode::HelperPolicyChangesThenUnresolved);
+            assert_eq!(fault.accepted.load(Ordering::SeqCst), usize::from(accepted));
+            let rows = acquisition_approved::native_history(history.as_ref(), &helper_session).await;
+            if accepted {
+                assert_eq!(rows.len(), 1, "one actual native input even if its reply was lost");
+                assert_eq!(rows[0].state.input_id, helper_input);
+                assert_eq!(rows[0].state.authority_contributors.len(), 1);
+                assert_eq!(rows[0].state.authority_contributors[0].association(), held.original().association());
+            } else {
+                assert!(rows.is_empty(), "a definite refusal or later fence creates no helper row");
+                assert_eq!(fixture.runtime.completion_cursor(&helper).await, helper_before);
+            }
+            if matches!(mode, DeliveryMode::HelperPolicyChangesOnce) {
+                let completed = fixture.runtime.wait_for_completion(&helper, helper_before, WAIT).await.unwrap();
+                assert_ne!(completed, helper_before);
+                let consumed = acquisition_approved::consumed_native_input(
+                    history.as_ref(), &helper_session, held.original().association(),
+                    Some(&helper_input.to_string()), deadline,
+                ).await;
+                assert_eq!(consumed.state.input_id, helper_input);
+            }
+            assert_eq!(fixture.source.helper_operation_deadline(held.original().association()).unwrap(), Some(operation_deadline));
+            assert_eq!(fixture.store.get(&saved_helper.key).await.unwrap().unwrap(), saved_helper);
+            assert_eq!(fixture.source.helper_sources.lock().unwrap().len(), 1);
+            assert_eq!(fixture.store.list_records(&acquisition_approved::scope(&fixture), None, 10).await.unwrap(), acquisitions_before,
+                "in-call reprepare does not create or replace the completed preparation/effect");
+            assert_eq!(fixture.store.list_effects(&acquisitions_before[0].key, None, 16).await.unwrap(), effects_before,
+                "same succeeded effect identity, attempt, lease, request and receipt after helper attempts");
+            assert_eq!(fixture.binding().await.unwrap(), Some(binding));
+            // No new model call is issued here. retry_safe describes only this
+            // original/execution-scope/call-id invocation, not future replay.
+        }),
+    )).catch_unwind().await;
+    script.release_first_response();
+    fault.release.add_permits(1);
+    let cleanup = fixture.shutdown().await;
+    assert!(fault.helper_admission_change.lock().unwrap().is_none(),
+        "no pending admission fault after actual owner cleanup");
+    assert_eq!(fault.publication_change_failures.load(Ordering::SeqCst), 0);
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    match checked {
+        Ok(Ok(())) => {},
+        Ok(Err(_)) => panic!("actual helper reprepare control timed out"),
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn helper_policy_change_reprepares_same_input_once_after_native_nonadmission() {
+    Box::pin(exercise_helper_reprepare(DeliveryMode::HelperPolicyChangesOnce)).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persistent_helper_policy_change_is_bounded_without_duplicate_work_or_input() {
+    Box::pin(exercise_helper_reprepare(DeliveryMode::HelperPolicyChangesAlways)).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_helper_acceptance_after_reprepare_stays_uncertain_without_third_dispatch() {
+    Box::pin(exercise_helper_reprepare(DeliveryMode::HelperPolicyChangesThenUnresolved)).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retired_contributor_between_helper_attempts_refuses_reentry() {
+    Box::pin(exercise_helper_reprepare(DeliveryMode::HelperPolicyChangesThenRetirement)).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn original_helper_deadline_between_attempts_refuses_reentry_without_extension() {
+    Box::pin(exercise_helper_reprepare(DeliveryMode::HelperPolicyChangesThenDeadline)).await;
+}
+
 const CATALOG_SEARCH: &str = "reset-helper-search";
 const CATALOG_LOAD: &str = "reset-helper-load";
 

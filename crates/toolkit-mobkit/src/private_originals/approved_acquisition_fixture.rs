@@ -52,7 +52,8 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         fault: Arc<DeliveryFault>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
         assert!(matches!(fault.mode,
-            DeliveryMode::HoldHelperBeforeLookup | DeliveryMode::HoldHelperAcceptedReply));
+            DeliveryMode::HoldHelperBeforeLookup | DeliveryMode::HoldHelperAcceptedReply)
+            || fault.mode.helper_reprepare());
         Self::for_acquisition_mode(script, None, false, Some(fault), None, None, None).await
     }
 
@@ -127,7 +128,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         assert!(!private_helper_entry || (report.is_none() && !configured_report));
         assert!(warm_report.is_none() || (configured_report && report.is_some()));
         assert!(warm_provider.is_none() || warm_report.is_some());
-        let host = match &report {
+        let mut host = match &report {
             Some(report) if warm_report.is_some() => installed::open_for_warm_helper_profile(
                 &facts, script.dispatcher(), report.dispatcher(), warm_report.unwrap(),
             ).await,
@@ -176,6 +177,13 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         let mob_tools = builder.default_mob_tools.clone();
         *builder.default_agent_llm_client_decorator.write().unwrap() =
             Some(fixture_controller_decorator());
+        if let Some(fault) = fault.as_ref().filter(|fault| fault.mode.helper_reprepare()) {
+            host.configuration.operation_owner = Arc::new(observed::AdmissionChangingOwner {
+                inner: host.configuration.operation_owner.clone(),
+                fault: fault.clone(),
+                publication: host.originals.owner.publication(),
+            });
+        }
         // Select the governed persistent machine before publishing any adapter.
         // The facade wires the SAME stores into the factory and concrete service.
         let persistence = meerkat::PersistenceBundle::new_with_local_grant_authorization(

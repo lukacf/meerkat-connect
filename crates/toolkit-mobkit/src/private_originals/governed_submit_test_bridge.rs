@@ -22,6 +22,12 @@ impl ObservedBridge {
         custody: GovernedDeliveryCustody,
         internal: bool,
     ) -> Result<GovernedDelivery, BridgeAdmissionError> {
+        if self.fault.mode.helper_reprepare() {
+            if self.fault.helper_session.get() != Some(session_id) {
+                return self.delegate_governed_delivery(runtime_id, session_id, input, custody, internal).await;
+            }
+            return self.observe_helper_reprepare(runtime_id, session_id, input, custody, internal).await;
+        }
         if matches!(self.fault.mode, DeliveryMode::RefuseSecondBeforeLookup)
             && self.fault.accepted.load(Ordering::SeqCst) >= 1
         {
@@ -66,7 +72,10 @@ impl ObservedBridge {
         }
         let accepted = self.fault.accepted.fetch_add(1, Ordering::SeqCst) + 1;
         match self.fault.mode {
-            DeliveryMode::Normal | DeliveryMode::HoldHelperBeforeLookup | DeliveryMode::RefuseSecondBeforeLookup => {}
+            DeliveryMode::Normal | DeliveryMode::HoldHelperBeforeLookup | DeliveryMode::RefuseSecondBeforeLookup
+                | DeliveryMode::HelperPolicyChangesOnce | DeliveryMode::HelperPolicyChangesAlways
+                | DeliveryMode::HelperPolicyChangesThenUnresolved | DeliveryMode::HelperPolicyChangesThenRetirement
+                | DeliveryMode::HelperPolicyChangesThenDeadline => {}
             DeliveryMode::HoldAccepted | DeliveryMode::HoldHelperAcceptedReply => {
                 // Native admission is real and its reply is retained unchanged.
                 // IdentityRuntime owns the entry permit and finishes it only
@@ -99,6 +108,98 @@ impl ObservedBridge {
         real
     }
 
+    async fn observe_helper_reprepare(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        session_id: &SessionId,
+        input: meerkat_runtime::Input,
+        custody: GovernedDeliveryCustody,
+        internal: bool,
+    ) -> Result<GovernedDelivery, BridgeAdmissionError> {
+        let ordinal = {
+            let mut inputs = self.fault.helper_inputs.lock().unwrap();
+            // Capture the actual bound input, without reconstructing authority.
+            inputs.push(serde_json::to_value(&input).unwrap());
+            inputs.len()
+        };
+        if ordinal == 1 {
+            *self.fault.helper_input.lock().unwrap() = Some(input.id().clone());
+        }
+        let _change_arm = if ordinal == 1
+            || matches!(self.fault.mode, DeliveryMode::HelperPolicyChangesAlways)
+        {
+            let association = input.header().authority_association.as_ref()
+                .expect("actual bound helper association").clone();
+            assert_eq!(association.candidate().target.context.as_str(), session_id.to_string());
+            assert!(self.fault.helper_admission_change.lock().unwrap().replace(association).is_none());
+            Some(AdmissionChangeArm(self.fault.clone()))
+        } else {
+            None
+        };
+        let real = self.delegate_governed_delivery(runtime_id, session_id, input, custody, internal).await;
+        self.fault.helper_returns.fetch_add(1, Ordering::SeqCst);
+        // Only closed native result fields are retained. The adapter neither
+        // creates a refusal nor substitutes the desired reason for another one.
+        let mut observed = serde_json::json!({
+            "event": "fixture_helper_native_return", "attempt": ordinal,
+            "category": "other_bridge_error",
+        });
+        match &real {
+            Ok(delivery) => {
+                observed["category"] = serde_json::json!("native_return");
+                observed["admission_present"] = serde_json::json!(delivery.admission.is_some());
+                if let Some(admission) = &delivery.admission {
+                    observed["deduplicated"] = serde_json::json!(admission.deduplicated);
+                    observed["session_matches"] = serde_json::json!(&admission.session_id == session_id);
+                }
+            }
+            Err(BridgeAdmissionError::GovernedInput(GovernedInputError::Mob(error))) => {
+                observed["category"] = serde_json::json!("mob_error");
+                if let meerkat_mob::MobError::MemberInputRefused { session_id: actual, error } = error.as_ref() {
+                    observed["category"] = serde_json::json!("member_input_refused");
+                    observed["session_matches"] = serde_json::json!(actual == session_id);
+                    match error {
+                        meerkat_runtime::RuntimeDriverError::ControllerReadinessUnavailable { reason } => {
+                            observed["readiness"] = serde_json::json!(format!("{reason:?}"));
+                        }
+                        meerkat_runtime::RuntimeDriverError::InputRefused { refusal } => {
+                            observed["refusal_kind"] = serde_json::json!(format!("{:?}", refusal.kind()));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        eprintln!("{observed}");
+        let policy_changed = matches!(&real,
+            Err(BridgeAdmissionError::GovernedInput(GovernedInputError::Mob(error)))
+            if matches!(error.as_ref(), meerkat_mob::MobError::MemberInputRefused {
+                session_id: refused_session,
+                error: meerkat_runtime::RuntimeDriverError::ControllerReadinessUnavailable {
+                    reason: meerkat_core::authorization::ControllerReadinessFailure::PolicyChanged,
+                },
+            } if refused_session == session_id));
+        if policy_changed {
+            self.fault.helper_policy_changed.fetch_add(1, Ordering::SeqCst);
+            self.fault.refused.fetch_add(1, Ordering::SeqCst);
+        }
+        let fresh = matches!(&real, Ok(GovernedDelivery { admission: Some(a), .. }) if !a.deduplicated);
+        if fresh { self.fault.accepted.fetch_add(1, Ordering::SeqCst); }
+        if ordinal == 1 {
+            // The test inspects the actual return before allowing re-entry. A
+            // wrong return still reaches this gate and fails the owning checks.
+            self.fault.entered.notify_one();
+            self.fault.release.acquire().await.unwrap().forget();
+        }
+        if fresh && matches!(self.fault.mode, DeliveryMode::HelperPolicyChangesThenUnresolved) {
+            return Err(BridgeAdmissionError::GovernedInput(GovernedInputError::AdmissionUnresolved {
+                detail: "injected loss after actual helper fresh acceptance".into(),
+            }));
+        }
+        real
+    }
+
     async fn delegate_governed_delivery(
         &self,
         runtime_id: &AgentRuntimeId,
@@ -116,6 +217,80 @@ impl ObservedBridge {
                 .begin_governed_delivery(runtime_id, session_id, input, custody)
                 .await
         }
+    }
+}
+
+/// Scope the one exact helper admission fault to its actual bridge call,
+/// including cancellation before the operation owner consumes it.
+struct AdmissionChangeArm(Arc<DeliveryFault>);
+impl Drop for AdmissionChangeArm {
+    fn drop(&mut self) { self.0.helper_admission_change.lock().unwrap().take(); }
+}
+
+/// Forward the real policy unchanged, then invalidate its enclosing native
+/// admission observation. The earlier source/grant lookups remain unblocked.
+/// Native detects the changed stamp and produces the actual typed refusal.
+pub(super) struct AdmissionChangingOwner {
+    pub inner: Arc<dyn OperationPolicyOwner>,
+    pub fault: Arc<DeliveryFault>,
+    pub publication: meerkat_authorization::publication::LocalAuthorizationPublication,
+}
+impl OperationPolicyOwner for AdmissionChangingOwner {
+    fn authorize_controller_admission(
+        &self,
+        association: &InputAuthorityAssociation,
+        facts: &meerkat_core::ControllerModelFacts,
+        now_ms: u64,
+    ) -> Result<ControllerAdmissionAllowance, meerkat_core::OperationAuthorizationError> {
+        let allowance = self.inner.authorize_controller_admission(association, facts, now_ms)?;
+        let selected = {
+            let mut selected = self.fault.helper_admission_change.lock().unwrap();
+            if selected.as_ref() == Some(association) { selected.take(); true } else { false }
+        };
+        if selected {
+            // No semantic policy fact is changed. This bounded fault advances
+            // the actual stamp after its genuine policy read, before Core's
+            // enclosing currentness check. No lock or writer crosses an await.
+            match self.publication.try_begin_owner_change() {
+                Ok(change) => {
+                    drop(change);
+                    self.fault.publication_changes.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(_) => { self.fault.publication_change_failures.fetch_add(1, Ordering::SeqCst); }
+            }
+        }
+        Ok(allowance)
+    }
+
+    fn authorize_tool_application(
+        &self, control: &meerkat_core::ToolApplicationControlRequest,
+        binding: &PreparedAuthorizationBinding, now_ms: u64,
+    ) -> Result<LocalPolicyAllowance, meerkat_core::OperationAuthorizationError> {
+        self.inner.authorize_tool_application(control, binding, now_ms)
+    }
+    fn authorize_context_control(
+        &self, control: &meerkat_core::service::SystemContextControlRequest,
+        binding: &PreparedAuthorizationBinding, now_ms: u64,
+    ) -> Result<LocalPolicyAllowance, meerkat_core::OperationAuthorizationError> {
+        self.inner.authorize_context_control(control, binding, now_ms)
+    }
+    fn authorize_mcp_attachment(
+        &self, control: &meerkat_core::mcp_attachment_control::McpAttachmentControlRequest,
+        binding: &PreparedAuthorizationBinding, now_ms: u64,
+    ) -> Result<LocalPolicyAllowance, meerkat_core::OperationAuthorizationError> {
+        self.inner.authorize_mcp_attachment(control, binding, now_ms)
+    }
+    fn authorize_operation(
+        &self, association: &InputAuthorityAssociation,
+        binding: &PreparedAuthorizationBinding, purpose: LocalPolicyPurpose, now_ms: u64,
+    ) -> Result<LocalPolicyAllowance, meerkat_core::OperationAuthorizationError> {
+        self.inner.authorize_operation(association, binding, purpose, now_ms)
+    }
+    fn review_action_account(
+        &self, association: &InputAuthorityAssociation,
+        binding: &PreparedAuthorizationBinding, now_ms: u64,
+    ) -> Result<Option<String>, meerkat_core::OperationAuthorizationError> {
+        self.inner.review_action_account(association, binding, now_ms)
     }
 }
 

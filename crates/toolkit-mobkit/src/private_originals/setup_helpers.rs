@@ -47,6 +47,13 @@ impl PreparedHelperController {
     }
 }
 
+/// Helper-local admission observation. Exhausted reprepare proves only that
+/// this exact invocation was not admitted; it starts no background replay.
+pub(crate) enum SetupHelperSubmission {
+    Native(PrivateOriginalSubmission),
+    ReprepareRequired,
+}
+
 /// Kept by the existing source adapter when native cannot settle admission.
 /// Its guard owns only source custody. Native remains the input/turn owner.
 pub(crate) struct HeldSetupHelper {
@@ -599,7 +606,11 @@ impl PrivateOriginals {
         held: Arc<HeldSetupHelper>,
         snapshot: &meerkat_toolkit::setup::SetupSnapshot,
         content: String,
-    ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
+        source_deadline: tokio::time::Instant,
+    ) -> Result<SetupHelperSubmission, PrivateOriginalError> {
+        if tokio::time::Instant::now() >= source_deadline {
+            return Err(PrivateOriginalError::Denied);
+        }
         if !prepared
             .source
             .upgrade()
@@ -642,16 +653,38 @@ impl PrivateOriginals {
             session_id: prepared.session_id.clone(),
             controller: prepared.controller.clone(),
             entry_fence,
+            source_deadline,
         });
-        let result = runtime
-            .dispatch_governed_with_turn_ticket(
-                &identity,
-                Some(alias),
-                Input::Prompt(PromptInput::new(content, None)),
-                binder,
-            )
-            .await;
-        Ok(match result {
+        // Keep one raw input identity and event content. A definite policy
+        // change may rebuild its current binding once, never its source/key.
+        let input = Input::Prompt(PromptInput::new(content, None));
+        let mut reprepared = false;
+        let result = loop {
+            // Meta may await the current member/controller before calling the
+            // binder. Check here as well as inside that actual binder.
+            if tokio::time::Instant::now() >= source_deadline {
+                return Err(PrivateOriginalError::Denied);
+            }
+            let result = runtime
+                .dispatch_governed_with_turn_ticket(
+                    &identity,
+                    Some(alias),
+                    input.clone(),
+                    binder.clone(),
+                )
+                .await;
+            if result.as_ref().err().is_some_and(|error| {
+                helper_admission_reprepare_required(error, &prepared.session_id)
+            }) {
+                if reprepared {
+                    return Ok(SetupHelperSubmission::ReprepareRequired);
+                }
+                reprepared = true;
+                continue;
+            }
+            break result;
+        };
+        Ok(SetupHelperSubmission::Native(match result {
             Ok(outcome) => PrivateOriginalSubmission::Admitted {
                 session_id: outcome.admission.session_id.to_string(),
                 input_id: outcome.admission.input_id.to_string(),
@@ -677,7 +710,88 @@ impl PrivateOriginals {
                 aa1_helper_send_failure(&error);
                 PrivateOriginalSubmission::NativeOutcomeUnavailable
             }
-        })
+        }))
+    }
+}
+
+// The selected Meta governed door propagates this native error only after
+// NotAdmitted withdraws its candidate. Uncertain/admitted/missing receipts are
+// AdmissionUnresolved instead. A bare runtime readiness error is not sufficient.
+fn helper_admission_reprepare_required(
+    error: &IdentityRuntimeError,
+    expected_session: &SessionId,
+) -> bool {
+    matches!(error,
+        IdentityRuntimeError::GovernedInput(GovernedInputError::Mob(error))
+        if matches!(error.as_ref(), meerkat_mob::MobError::MemberInputRefused {
+            session_id,
+            error: meerkat_runtime::RuntimeDriverError::ControllerReadinessUnavailable {
+                reason: meerkat_runtime::traits::ControllerReadinessFailure::PolicyChanged,
+            },
+        } if session_id == expected_session))
+}
+
+#[cfg(test)]
+mod reprepare_tests {
+    use super::*;
+    use meerkat_runtime::traits::ControllerReadinessFailure;
+
+    #[test]
+    fn reprepare_requires_exact_session_policy_changed_nonadmission() {
+        let expected = SessionId::new();
+        let readiness = |session_id, reason| {
+            IdentityRuntimeError::GovernedInput(GovernedInputError::Mob(Box::new(
+                meerkat_mob::MobError::MemberInputRefused {
+                    session_id,
+                    error: meerkat_runtime::RuntimeDriverError::ControllerReadinessUnavailable {
+                        reason,
+                    },
+                },
+            )))
+        };
+        assert!(helper_admission_reprepare_required(
+            &readiness(expected.clone(), ControllerReadinessFailure::PolicyChanged),
+            &expected,
+        ));
+        assert!(!helper_admission_reprepare_required(
+            &readiness(SessionId::new(), ControllerReadinessFailure::PolicyChanged),
+            &expected,
+        ));
+        for reason in [
+            ControllerReadinessFailure::PolicyUnavailable,
+            ControllerReadinessFailure::ExecutorUnavailable,
+            ControllerReadinessFailure::FactsUnavailable,
+            ControllerReadinessFailure::Busy,
+            ControllerReadinessFailure::AuthorityUnavailable,
+            ControllerReadinessFailure::AuthorityChanged,
+            ControllerReadinessFailure::UnsupportedScope,
+            ControllerReadinessFailure::CredentialUnusable {
+                disposition: meerkat_core::handles::CredentialUseDisposition::LeaseAbsent,
+            },
+            ControllerReadinessFailure::CredentialPreparationFailed {
+                kind: meerkat_core::auth::AuthErrorKind::LeaseAbsent,
+            },
+            ControllerReadinessFailure::ReplacementNotEmpty,
+        ] {
+            assert!(!helper_admission_reprepare_required(
+                &readiness(expected.clone(), reason),
+                &expected,
+            ));
+        }
+        for error in [
+            GovernedInputError::AdmissionUnresolved {
+                detail: "acceptance answer unavailable".into(),
+            },
+            GovernedInputError::Bind("binding unavailable".into()),
+            GovernedInputError::Unsupported("no governed controller".into()),
+            GovernedInputError::BindingChanged,
+            GovernedInputError::Unbound,
+        ] {
+            assert!(!helper_admission_reprepare_required(
+                &IdentityRuntimeError::GovernedInput(error),
+                &expected,
+            ));
+        }
     }
 }
 
@@ -754,6 +868,7 @@ struct SubmitHelperBinder {
     session_id: SessionId,
     controller: ControllerModelClient,
     entry_fence: Option<Arc<dyn meerkat_mobkit::identity_first::GovernedEntryFence>>,
+    source_deadline: tokio::time::Instant,
 }
 
 #[async_trait]
@@ -763,6 +878,9 @@ impl GovernedInputBinder for SubmitHelperBinder {
         context: &GovernedBindContext,
         input: Input,
     ) -> Result<BoundGovernedInput, String> {
+        if tokio::time::Instant::now() >= self.source_deadline {
+            return Err("Toolkit helper submission deadline elapsed".into());
+        }
         if context.session_id != self.session_id
             || context.controller.selection() != self.controller.selection()
         {

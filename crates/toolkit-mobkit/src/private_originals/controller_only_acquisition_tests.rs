@@ -36,6 +36,11 @@ impl Script {
         self.owner.lock().unwrap().as_ref().unwrap().clone()
     }
     pub(super) fn paused_for_helper_entry() -> Arc<Self> { Self::new_with_hold(true) }
+    pub(super) fn paused_for_expiring_helper_entry(timeout_ms: u64) -> Arc<Self> {
+        let mut script = Self::new_with_hold(true);
+        Arc::get_mut(&mut script).unwrap().setup_timeout_ms = Some(timeout_ms);
+        script
+    }
     pub(super) async fn first_response_waiting(&self) {
         assert!(self.hold_first_response);
         self.first_response_entered.notified().await;

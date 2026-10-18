@@ -245,13 +245,22 @@ impl InstalledAcquisition {
             return Err(SetupError::InvalidRecord);
         }
         let submission = originals
-            .submit_setup_helper(&prepared, held, &snapshot, content)
+            .submit_setup_helper(&prepared, held, &snapshot, content, source_deadline)
             .await
             .map_err(|error| {
                 #[cfg(test)]
                 aa1_private_failure("advance.submit_helper", error);
                 source_error(error)
             })?;
+        let crate::private_originals::setup_helpers::SetupHelperSubmission::Native(submission) =
+            submission
+        else {
+            // Both in-call attempts were definitely not admitted. Only this
+            // same current invocation can replay its completed work/source;
+            // a later model call has another correlation, and no worker is
+            // scheduled here. The original deadline and effect stay unchanged.
+            return Ok(SetupWorkerObservation::RetrySafe);
+        };
         Ok(match submission {
             PrivateOriginalSubmission::Admitted {
                 deduplicated,
