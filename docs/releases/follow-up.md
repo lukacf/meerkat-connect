@@ -50,8 +50,11 @@ artifact. One case failed on caller B's actual Find refusal, `tool_unavailable`;
 four cases remained unentered. The fixture then panicked on that refusal,
 producing the displayed result-channel loss. That display is not independent
 evidence of a runtime channel defect. Strict cleanup and owner joins passed.
-The exact refusal producer remains under investigation, and no automatic
-context assertion passed.
+Source review identifies a prerequisite gap: the SDK fixture never publishes
+native Ready, which enabled context transfer needs to acquire its recovery owner.
+This does not identify the unique producer of the generic refusal. The supported
+in-process completion API is under Core/Meta review. No automatic context
+assertion passed.
 
 The latest full SDK diagnostic passes both Find calls, both helper catalogs,
 selected checks, exact independent approvals, cancellation of one caller and the
@@ -112,9 +115,13 @@ admission/retirement and negative-evidence controls on r6. A separate cold-recov
 path is being implemented through an explicit host-selected private reader and the existing worker's canonical paging, including
 workflows created after startup. The query verifies historical admission
 without reviving an actor, granting custody or authorizing resubmission. No
-complete process-restart journey is claimed. The existing real stdio gateway
-provides a Ready path for the automatic worker test under review; an in-process
-Ready completion seam remains separate. Restoring current
+complete process-restart journey is claimed. The real stdio worker candidate
+compiles, but its first test fails before Ready because it reads a compatibility
+session projection rather than the authoritative runtime transcript; 18 checks
+remain unentered. A reviewed test-only correction reads Core's verified committed
+snapshot and keeps full transcript/input equality. The same 19 checks are selected
+for the corrected run. The in-process completion seam remains separate. Restoring
+current
 planning authority additionally needs exact host-selected inputs and current
 member ownership. The explicit parent-source implementation is adopted locally
 with five passing focused controls. The separate two-path delivery claim/retry
