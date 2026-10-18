@@ -89,9 +89,14 @@ The reviewed two-path correction removes the redundant scan only when exact
 native Initial cancellation proves no spawn or normal successful child closure.
 Every next attachment still verifies current registration and all installed
 resources before use. Healthy settlement and successor protocol behavior remain
-unchanged. Two new changed-resource controls and the prior six cancellation
-controls are selected, followed by the rebuilt installed reset. These new runs
-have not passed yet; the earlier first-pending-response failure remains recorded.
+unchanged. Both new changed-resource controls and the prior six cancellation
+controls now pass on the unchanged r6 graph, with independent outcome review.
+The new controls require exact cancellation, refuse changed resources before
+another spawn, then restore the original bytes and require successful reuse.
+The existing live-helper control also reaches actual healthy closure on its
+small test bundle. A changed gateway and fresh installed reset remain pending;
+this does not yet qualify reset after an initialized helper or healthy closure
+with the full installed bundle. Earlier failed installed runs remain recorded.
 
 Native shutdown acknowledges host/runtime cleanup and exits normally; the
 provider and current command groups settle without forced cleanup. Success-only
@@ -205,6 +210,15 @@ release inputs remain unbound; no CI run or publication is selected. The earlier
 r6 rehearsal remains local development
 work: original records and embedded host paths are retained explicitly, without
 a neutral-provenance or installed-qualification claim.
+
+The candidate acceptance and publication helpers are now checkpointed locally
+in public source at `3eb2a7ab`, with independent source and guide review. Fifty
+controlled offline tests pass. Acceptance verifies original attested bytes and
+uses the selected Meta reader; publication retains those bytes through upload,
+checks the selected public repository/release and refuses conflicting assets.
+Partial failure retains observations without claiming a complete inventory.
+Real attestation, published Meta reader acceptance and public readback remain
+unexecuted. These helpers do not authorize CI or publication.
 
 [Source provenance](../../SOURCE-PROVENANCE.md#r5-development-observations)
 records the current results separately from adopted source.
