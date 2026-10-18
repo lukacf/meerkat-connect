@@ -46,8 +46,10 @@ The latest full SDK diagnostic passes both Find calls, both helper catalogs,
 selected checks, exact independent approvals, cancellation of one caller and the
 surviving caller's install, job and report calls. Preparation completed successfully
 and the original-task script continued once, but the delivery acknowledgment
-remains absent. The native owner returned admission Timeout after authorization;
-no reconciliation return was recorded. The combined acceptance condition still
+remains absent. Connect's delivery adapter returned its Timeout variant after
+authorization; no reconciliation return was recorded. This variant can describe
+an immediate observation that is not Applied with the matching receipt. It does
+not by itself establish an elapsed native timeout. The combined acceptance condition still
 fails, with strict cleanup-empty passing. Delivery admission and acknowledgment
 recovery remain under investigation. The earlier install refusal remains unexplained. Neither complete
 shared journey is qualified; online creation and active retirement remain open.

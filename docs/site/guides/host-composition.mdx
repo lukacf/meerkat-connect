@@ -125,9 +125,12 @@ reservation and planning owners separately enforce current authority.
 
 `PreparedGatewayRuntime::adopt` binds the prepared construction to the final
 host. It does not publish native readiness or start acquisition recovery. The
-native host lifecycle must complete that step. The supported in-process Rust
-composition for it is under review; the member-selection steps above do not yet
-constitute a complete in-process startup.
+native host lifecycle must complete that step. The current Meta API has no
+public in-process bootstrap-completion value. A proposed runtime-owned, one-use
+completion would be published inside the runtime and host close boundaries; it
+would not assert readiness of gateway-owned surfaces. Until that API is supplied,
+the member-selection steps above do not constitute a complete in-process startup.
+Do not start a second recovery loop or manufacture a gateway readiness value.
 
 The gateway validates the selection before reserving it, then selects its exact
 host lifetime in the existing source owner and composes the restriction with its
