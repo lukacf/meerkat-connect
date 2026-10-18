@@ -112,6 +112,22 @@ separate parent/caller probe capture and actual bootstrap controller-pin wiring.
 Earlier failed runs remain recorded. This is source-custody recovery, not restored
 workflow interest, automatic delivery or a complete process-restart journey.
 
+The first restored-interest control now isolates a different problem: Connect
+compares outer client Arc identity across repeated native pins, while Meta's
+default taint wrapper allocates a new outer client for each pin. Association and
+controller selections match. Core does not promise stable outer allocation; the
+owner is reviewing validation and adoption of the exact native-returned pin and
+its route through the existing protected callback. The diagnostic compiles but
+fails, and the other 15 interest/page controls remain unentered. No identity
+relaxation, new API or successful interest recovery is claimed.
+
+The installer target is published Core/Meta 0.9.4, with Linux x86_64 qualification
+first and macOS arm64 separately. A clean GitHub-hosted Connect release workflow
+with attestation is being drafted for the native lead's allocated slot. No CI
+run or publication is selected. The earlier r6 rehearsal remains local development
+work: original records and embedded host paths are retained explicitly, without
+a neutral-provenance or installed-qualification claim.
+
 [Source provenance](../../SOURCE-PROVENANCE.md#r5-development-observations)
 records the current results separately from adopted source.
 
