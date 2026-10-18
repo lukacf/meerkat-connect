@@ -8,6 +8,11 @@ use meerkat_core::{AgentToolDispatcher, ToolCallView, ToolDispatchContext, ToolR
 use std::sync::{Mutex, atomic::AtomicBool};
 use toolkit_store::ToolkitStore;
 
+#[async_trait]
+trait FindDispatchProbe: Send + Sync {
+    async fn inspect(&self, call: ToolCallView<'_>, context: &ToolDispatchContext);
+}
+
 const CALL: &str = "controller-only-find-and-install";
 
 pub(super) struct Script {
@@ -60,6 +65,7 @@ impl Script {
             inner: tools.acquisition_tool(),
             resolved: AtomicUsize::new(0),
             entered: AtomicUsize::new(0),
+            probe: Mutex::new(None),
         });
         Arc::new(Self {
             tools,
@@ -97,6 +103,7 @@ struct ObservedLeaf {
     inner: Arc<dyn AgentToolDispatcher>,
     resolved: AtomicUsize,
     entered: AtomicUsize,
+    probe: Mutex<Option<Arc<dyn FindDispatchProbe>>>,
 }
 #[async_trait]
 impl AgentToolDispatcher for ObservedLeaf {
@@ -171,6 +178,8 @@ impl AgentToolDispatcher for ObservedLeaf {
         context: &ToolDispatchContext,
     ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
         self.entered.fetch_add(1, Ordering::SeqCst);
+        let probe = self.probe.lock().unwrap().clone();
+        if let Some(probe) = probe { probe.inspect(call, context).await; }
         self.inner.dispatch_with_context(call, context).await
     }
     async fn dispatch_resolved_with_context(
@@ -180,6 +189,8 @@ impl AgentToolDispatcher for ObservedLeaf {
         plan: &meerkat_core::ResolvedToolExecutionPlan,
     ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
         self.entered.fetch_add(1, Ordering::SeqCst);
+        let probe = self.probe.lock().unwrap().clone();
+        if let Some(probe) = probe { probe.inspect(call, context).await; }
         self.inner
             .dispatch_resolved_with_context(call, context, plan)
             .await
@@ -465,3 +476,6 @@ async fn controller_only_original_denies_enrolled_acquisition_in_its_real_turn()
         Err(payload) => std::panic::resume_unwind(payload),
     }
 }
+
+#[path = "controller_only_acquisition_tests/context_transfer_tests.rs"]
+mod context_transfer_tests;

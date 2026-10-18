@@ -790,8 +790,18 @@ impl GatewayHostComposition for ToolkitGatewayHost {
             let closing = closing?;
             self.owner.join_close(&closing.handle).await
         };
+        let recovery_close = async {
+            let recovered = self.acquisition_recovery.join().await;
+            // Stop above excludes new transfer registration before this census,
+            // even when initialization never started the recovery worker.
+            if let Some(originals) = &self.private_originals {
+                originals.join_workflow_context_transfers(false).await
+                    .map_err(|_| HostLifetimeError::NotSettled)?;
+            }
+            recovered
+        };
         let (recovery, native) = tokio::join!(
-            tokio::time::timeout(std::time::Duration::from_secs(30), self.acquisition_recovery.join()),
+            tokio::time::timeout(std::time::Duration::from_secs(30), recovery_close),
             native_close,
         );
         let settled = native.map_err(host_error)?;

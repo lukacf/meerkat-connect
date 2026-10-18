@@ -30,20 +30,21 @@ production fails the expected publication-stamp assertion; corrected source is
 restored. Healthy admitted-source rebind preserves publication, while new
 admission and native currentness checks remain required.
 
-The qualified follow-on includes seven toolkit-mobkit Rust paths and its guide,
-excluding unfinished SDK fixtures, dev-dependency/lock changes and diagnostics.
-The latest full SDK case fails at A's catalog-load authorization refusal and the
-helper barrier; its typed-approval assertions are unentered. The generic readiness
-event remains unattributed. A newer planning selection on Meta `a8ff89da` and the
-same Core passes bootstrap and parent admission, then fails at actual Find calls.
-A focused diagnostic exposes `access_denied` for both calls. A later diagnostic
-shows B passes host and canonical acquisition admission, then re-enters the host
-before refusal. The downstream check is under diagnosis; the result does not
-establish initial native Find-policy refusal. Both strict SDK
-cleanup assertions pass; raw inner receipts are absent.
-Earlier NotHeld and approval-body failures remain recorded. Neither case qualifies
-shared completion. Protected waiter-context delivery, online creation and active
-retirement remain open.
+The earlier qualified follow-on includes seven toolkit-mobkit Rust paths and its
+guide. The latest local checkpoint adds 14 toolkit-mobkit paths for retained
+context transfer and automatic observation, plus a default-off field in the
+existing SDK test host. It excludes the unfinished planning fixture chain,
+dev-dependency/lock changes and temporary diagnostics.
+
+The separate full SDK case still fails at A's catalog-load authorization and
+helper barrier before typed approval. The newer planning case on Meta `a8ff89da`
+and the same Core previously refused Find after B's successful host and canonical
+admission. Its fixture now uses the actual compiled setup policy revision and a
+request deadline within the existing workflow deadline. The affected case fails
+at a generic native turn-result assertion, followed by a provider assertion during
+cleanup; its exact native outcome remains under diagnosis. Both SDK cleanup-empty
+assertions pass, but neither case qualifies shared completion. Earlier outcomes
+retain their own scope. Online creation and active retirement remain open.
 
 The newer selection passes both focused gateway cleanup controls and builds the
 actual resource-bound gateway. Staging with refreshed resources and matching SDK
@@ -61,17 +62,25 @@ failures remain recorded. This does not qualify the complete reset journey.
 
 The Core owner conditionally confirmed an R1 Find-fenced durable transfer commit
 as a disclosure boundary, with recipient-only scope and exact payload/reconciliation
-checks. The selected host policy already authorizes Find at native R1; its compiled
-R2 consequence label is separate and unchanged. Three focused transfer controls
-now pass for retained commit, cancelled delivery observation and stale absence
-observation. The first compilation failure is retained; minimal test corrections
-preserve the dependency graph and compare the actual admission-state type.
-Automatic coordinator/recovery delivery is a separate unqualified
-candidate; review corrected cancellation of slow pre-delivery reads and preserved
-typed refusals. Explicit calls in controls do not prove that product path. Later
-waiter effects still require that waiter's authority.
-[Source provenance](../../SOURCE-PROVENANCE.md#public-locator-and-admitted-source-rebind)
-records the distinct outcomes, limits and retained historical failures.
+checks. Later waiter effects still require that waiter's authority. Three focused
+controls pass for retained commit, cancelled delivery observation and stale absence
+observation. The automatic recovery path now also passes a control that retains
+slow pre-delivery work across dropped polls while another operation proceeds.
+Five automatic SDK delivery controls remain unentered behind the failing planning
+case. This is implementation progress, not native end-to-end delivery proof.
+
+Five native reset controls pass. A sixth reaches successful replacement attachment
+but fails an incorrect factory-call count: Core refuses the blocked replacement
+before invoking Connect's factory. Its reviewed test correction requires the actual
+native refusal/NotSpawned receipt and awaits rerun. These native controls do not
+upgrade the failed installed reset above.
+
+Cold process recovery is separate from retained in-process task ownership. It
+requires durable native input identity and actual restored planning authority.
+The next implementation retains exact host-selected planning inputs through the
+existing source owner; absent historical evidence cannot authorize resubmission.
+[Source provenance](../../SOURCE-PROVENANCE.md#retained-context-and-automatic-observation)
+records the validation scope and earlier failures.
 
 The planning-input source is now checkpointed. Seven focused native controls
 pass after correcting a binding path that applied the configured helper's root

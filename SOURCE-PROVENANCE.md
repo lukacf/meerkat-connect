@@ -356,7 +356,7 @@ The Core owner conditionally confirmed completed disclosure at an R1 Find-fenced
 durable transfer commit, with recipient-only scope, immutable payload validation
 and settled-attempt reconciliation. Later G/P consumption need not import A/B as
 contributors. The selected host policy already authorizes Find at native R1; its
-compiled R2 consequence label is separate and unchanged. Transfer and delivery
+compiled R2 consequence label is separate and unchanged. At this earlier checkpoint, transfer and delivery
 remain isolated review candidates. Their first compile (`8421e8d7`) fails on an
 unlinked test import and a test admission-state type mismatch; zero of three
 selected controls enter. All 50 saved references independently validate and
@@ -368,13 +368,49 @@ acquisition admissions succeed and the same correlation re-enters the host.
 That places the failure downstream; it does not prove initial native Find-policy
 refusal. A's later setup-facts denial follows the primary panic. All four controls
 enter, the planning cleanup assertion passes, temporary diagnostics restore and
-recorded command/transport/cache owners join. Automatic delivery remains untested.
+recorded command/transport/cache owners join. Automatic delivery is untested at
+that checkpoint.
 The separate automatic-delivery candidate retains slow pre-dispatch observation
 before polling can cancel it, distinguishes typed refusals from pending work and
 skips never-entered transfers in recovery. These are source-review outcomes,
 not runtime qualification. Later waiter effects still recheck authority.
 These development results do not change published 0.9.0 assets or supply a new
 released selection.
+
+### Retained context and automatic observation
+
+Private Toolkit checkpoint `586ccf3d7eefb39e8d8b789ec36d14967f313f7f` contributes
+14 toolkit-mobkit source/test paths from the exact clean source compiled in
+`881f9741`, plus `context_transfer: None` in the existing Connect SDK test host.
+This preserves the test host's default-off behavior without adopting the unfinished
+planning fixture chain. Cargo manifests, locks, temporary diagnostics and gateway
+candidates are excluded.
+
+The implementation retains a Find-fenced exact context commit and the same native
+delivery attempt when a polling observer drops. Existing coordinator/recovery
+owners advance that work; later G/P consumption and waiter effects keep their own
+authority checks. The earlier three transfer controls pass. Outcome `881f9741`
+adds a passing slow-advance control, then fails a reset fixture's factory-call
+count after actual replacement attachment. Exact-artifact continuation `507c8d83`
+passes the other five reset controls and fails the planning case at a generic
+native turn-result assertion. The five dependent automatic SDK delivery controls
+remain unentered. Independent reviews `2c9ff2bc` and `0afcec60` verify exact source,
+artifact reuse, saved references and joined outer owners.
+
+The planning fixture had two corrected inputs: actual compiled setup policy
+revision and a request deadline within the existing workflow deadline. The newer
+failure does not export its exact native outcome or establish a Find refusal
+cause. The SDK cleanup-empty assertion passes before the primary panic resumes;
+a provider panic during cleanup remains recorded. The first reset test awaited
+cleanup but skipped its final assertion after the primary panic. Its separate
+reviewed correction checks Core's pre-factory PriorGuardUnsettled/NotSpawned
+receipt and runs cleanup assertion on every exit; its rerun is pending.
+
+This is a local implementation checkpoint. Native end-to-end automatic delivery,
+full shared setup, installed reset and cold-process recovery remain unqualified.
+Cold recovery needs exact retained planning inputs and actual current authority,
+not only stored workflow membership or a content hash. No published 0.9.0 asset
+or released dependency selection changes.
 
 ### Explicit Node build plans
 

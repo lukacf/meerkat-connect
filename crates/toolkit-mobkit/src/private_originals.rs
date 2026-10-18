@@ -21,7 +21,9 @@ pub(crate) mod setup_results;
 mod setup_admission;
 pub(crate) mod setup_helpers;
 pub(crate) mod setup_workflow;
-pub use setup_workflow::{InstalledWorkflowPlanning, InstalledWorkflowMember};
+#[cfg(test)]
+pub(crate) use setup_workflow::OwnedTransferCommit;
+pub use setup_workflow::{InstalledWorkflowPlanning, InstalledWorkflowMember, InstalledWorkflowContextTransfer, InstalledWorkflowContext, WorkflowContextObservation, WorkflowDeliveryObservation};
 pub(crate) use setup_workflow::WorkflowLaunchObservation;
 pub(crate) mod service_grants;
 mod governed_submit;

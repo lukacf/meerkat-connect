@@ -46,6 +46,7 @@ pub trait InstalledOriginalTaskOwner: SetupContinuationDelivery {
     {
         Ok(InstalledOriginalTaskBinding {
             continuation: self.original_task(invocation).await?, work_context: None, planning: None,
+            context_transfer: None,
         })
     }
 }
@@ -59,6 +60,10 @@ pub struct InstalledOriginalTaskBinding {
     /// Optional actual host-owned planning source. Explicit None preserves the
     /// singleton path; unavailable or conflicting Some is never downgraded.
     pub planning: Option<Arc<crate::private_originals::InstalledWorkflowPlanning>>,
+    /// Explicit host permission for this exact invocation's inline request to
+    /// its fixed G/P recipient. Planning selection alone never permits copying.
+    /// Native current Find authority remains required at the durable commit.
+    pub context_transfer: Option<Arc<crate::private_originals::InstalledWorkflowContextTransfer>>,
 }
 
 /// Trusted optional application configuration, not model input. These are
@@ -237,9 +242,18 @@ impl SetupToolHost for InstalledSetupAdmission {
         let binding = self.continuation.original_binding(InstalledOriginalInvocation {
             reference: &original.reference, association: original.original.association(), context, correlation: &correlation,
         }).await?;
-        let InstalledOriginalTaskBinding { continuation, work_context, planning } = binding;
+        let InstalledOriginalTaskBinding { continuation, work_context, planning, context_transfer } = binding;
+        if let Some(transfer) = &context_transfer {
+            transfer.check_invocation(&self.originals, &original, &correlation,
+                planning.as_ref().ok_or(ToolAdmissionError::Denied)?, &self.backend, &self.ceiling)
+                .map_err(source_admission_error)?;
+        }
         let environment_revision = match &planning {
             Some(planning) => revision(&(environment_revision, planning.binding_digest().map_err(source_admission_error)?))?,
+            None => environment_revision,
+        };
+        let environment_revision = match &context_transfer {
+            Some(transfer) => revision(&(environment_revision, transfer.binding_digest().map_err(source_admission_error)?))?,
             None => environment_revision,
         };
         if continuation.native_original.is_none() { return Err(ToolAdmissionError::Denied); }
@@ -280,8 +294,8 @@ impl SetupToolHost for InstalledSetupAdmission {
                 (host, evidence)
             }
         };
-        self.originals.retain_workflow_selection(
-            &original, &host.correlation, planning.as_ref(), work_context.as_ref(),
+        self.originals.retain_workflow_binding(
+            &original, &host.correlation, planning.as_ref(), context_transfer.as_ref(), work_context.as_ref(),
         ).map_err(source_admission_error)?;
         Ok(HostToolAdmission { host, evidence, context: HostAdmissionContext { now_ms: after.now_ms, ..current } })
     }

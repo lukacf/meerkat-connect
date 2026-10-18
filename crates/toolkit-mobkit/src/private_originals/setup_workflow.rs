@@ -23,7 +23,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod member;
 pub use member::InstalledWorkflowMember;
 mod launch;
-pub use launch::InstalledWorkflowPlanning;
+#[cfg(test)]
+pub(crate) use launch::OwnedTransferCommit;
+pub use launch::{InstalledWorkflowPlanning, InstalledWorkflowContextTransfer, InstalledWorkflowContext, WorkflowContextObservation, WorkflowDeliveryObservation};
+pub(crate) use launch::WorkflowTransferObservation;
 pub(crate) use launch::WorkflowLaunchObservation;
 pub(crate) use launch::WorkflowTerminalRecovery;
 pub(crate) use launch::InvocationPlanning;

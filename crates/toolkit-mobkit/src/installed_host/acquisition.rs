@@ -173,6 +173,9 @@ pub(crate) struct InstalledAcquisition {
     continuation: Arc<dyn SetupContinuationDelivery>,
     work_step: WorkAdmissionStepOptions,
     tools: InstalledAcquisitionTools,
+    // Same stop boundary as the existing joined worker. No worker means no
+    // context-transfer attempt can enter through this acquisition.
+    transfer_recovery: std::sync::Mutex<Option<std::sync::Weak<recovery::RecoveryControl>>>,
 }
 
 impl InstalledAcquisition {
@@ -230,6 +233,7 @@ impl InstalledAcquisition {
             continuation: owners.continuation,
             work_step: owners.work_step,
             tools,
+            transfer_recovery: std::sync::Mutex::new(None),
         })
     }
 

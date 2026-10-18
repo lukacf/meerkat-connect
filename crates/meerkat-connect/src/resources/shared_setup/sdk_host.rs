@@ -593,6 +593,7 @@ impl InstalledOriginalTaskOwner for SdkLaunchOwner {
             continuation,
             work_context: Some(launch.work.clone()),
             planning: None,
+            context_transfer: None,
         })
     }
 }

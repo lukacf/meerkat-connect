@@ -2,6 +2,11 @@
 //! The launch receipt never acknowledges any waiter's context-delivery intent.
 use super::*;
 
+mod context_transfer;
+#[cfg(test)]
+pub(crate) use context_transfer::OwnedTransferCommit;
+pub use context_transfer::{InstalledWorkflowContextTransfer, InstalledWorkflowContext, WorkflowContextObservation, WorkflowDeliveryObservation};
+pub(crate) use context_transfer::WorkflowTransferObservation;
 mod close;
 pub(crate) use close::{WorkflowCloseObservation, WorkflowTerminalRecovery};
 use crate::private_originals::governed_submit::{OriginalBinder, evidence};
@@ -52,6 +57,7 @@ struct LaunchInterest {
 pub(crate) struct InvocationPlanning {
     correlation: Id,
     selection: Option<Arc<InstalledWorkflowPlanning>>,
+    context_transfer: Option<Arc<InstalledWorkflowContextTransfer>>,
 }
 
 /// Canonical launch data staged before native admission. No durable store read
@@ -189,6 +195,21 @@ impl PrivateOriginals {
         selection: Option<&Arc<InstalledWorkflowPlanning>>,
         work: Option<&SetupWorkContext>,
     ) -> Result<(), PrivateOriginalError> {
+        self.retain_workflow_binding(original, correlation, selection, None, work)
+    }
+
+    pub(crate) fn retain_workflow_binding(
+        self: &Arc<Self>,
+        original: &super::super::acquisition::AcquisitionOriginal,
+        correlation: &Id,
+        selection: Option<&Arc<InstalledWorkflowPlanning>>,
+        context_transfer: Option<&Arc<InstalledWorkflowContextTransfer>>,
+        work: Option<&SetupWorkContext>,
+    ) -> Result<(), PrivateOriginalError> {
+        if let Some(transfer) = context_transfer {
+            transfer.check_selection(self, original, correlation,
+                selection.ok_or(PrivateOriginalError::Denied)?)?;
+        }
         if let Some(selection) = selection {
             selection.check_for_binding(self, &selection.submission.original)?;
             let work = work.ok_or(PrivateOriginalError::Denied)?;
@@ -218,7 +239,8 @@ impl PrivateOriginals {
             .iter()
             .find(|item| &item.correlation == correlation)
         {
-            return if same_optional(prior.selection.as_ref(), selection) {
+            return if same_optional(prior.selection.as_ref(), selection)
+                && context_transfer::same_transfer(prior.context_transfer.as_ref(), context_transfer)? {
                 Ok(())
             } else {
                 Err(PrivateOriginalError::Conflict)
@@ -230,6 +252,7 @@ impl PrivateOriginals {
         selections.push(InvocationPlanning {
             correlation: correlation.clone(),
             selection: selection.cloned(),
+            context_transfer: context_transfer.cloned(),
         });
         Ok(())
     }

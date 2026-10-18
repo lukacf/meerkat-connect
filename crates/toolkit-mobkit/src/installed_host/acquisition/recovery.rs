@@ -12,7 +12,7 @@ const SWEEP_PAUSE: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
-struct RecoveryControl {
+pub(crate) struct RecoveryControl {
     stopped: Mutex<bool>,
     wake: Notify,
 }
@@ -21,6 +21,13 @@ impl RecoveryControl {
     /// here may finish after close starts; shutdown joins it without aborting.
     fn enter(&self) -> bool {
         self.stopped.lock().is_ok_and(|stopped| !*stopped)
+    }
+    /// Registration and stop use this same mutex. The callback may retain an
+    /// entered handle synchronously, but must not await or enter native policy.
+    pub(crate) fn enter_transfer<T>(&self, register: impl FnOnce() -> T) -> Option<T> {
+        let stopped = self.stopped.lock().ok()?;
+        if *stopped { return None; }
+        Some(register())
     }
     fn stop(&self) {
         if let Ok(mut stopped) = self.stopped.lock() {
@@ -70,8 +77,18 @@ impl AcquisitionRecovery {
         runtime: Handle,
         owner: Arc<InstalledAcquisition>,
     ) -> Result<(), HostLifetimeError> {
+        let mut selected = owner.transfer_recovery.lock().map_err(|_| HostLifetimeError::Unavailable)?;
+        if let Some(prior) = selected.as_ref() {
+            let prior = prior.upgrade().ok_or(HostLifetimeError::Unavailable)?;
+            if !Arc::ptr_eq(&prior, &self.control) { return Err(HostLifetimeError::InvalidSelection); }
+        }
         let control = self.control.clone();
-        self.start_task(runtime, async move { owner.run_recovery(control).await })
+        let worker_owner = owner.clone();
+        self.start_task(runtime, async move { worker_owner.run_recovery(control).await })?;
+        // The actual handle was retained by start_task before this port becomes
+        // usable. A stopped/no-start result retains a stopped control only.
+        *selected = Some(Arc::downgrade(&self.control));
+        Ok(())
     }
     fn start_task(
         &self,
@@ -93,6 +110,8 @@ impl AcquisitionRecovery {
         ))));
         Ok(())
     }
+    #[cfg(test)]
+    pub(crate) fn transfer_control(&self) -> Arc<RecoveryControl> { self.control.clone() }
     pub(crate) fn stop(&self) {
         self.control.stop();
     }
@@ -144,6 +163,19 @@ impl SetupDeadlineOwner for InstalledAcquisition {
 }
 
 impl InstalledAcquisition {
+    pub(super) async fn poll_workflow_context_delivery(&self,
+        transfer: &Arc<crate::private_originals::InstalledWorkflowContextTransfer>)
+        -> Result<crate::private_originals::WorkflowDeliveryObservation, PrivateOriginalError>
+    {
+        // advance_delivery registers the complete step before async reads. A
+        // timed-out poll drops only its join observer, and the next poll joins
+        // that same run. Typed refusals remain distinct from in-flight work.
+        match tokio::time::timeout(PAGE_PAUSE, transfer.advance_delivery()).await {
+            Ok(result) => result,
+            Err(_) => Ok(crate::private_originals::WorkflowDeliveryObservation::Pending),
+        }
+    }
+
     fn recovery_disclose<T: Send>(&self, value: T) -> Result<T, SetupError> {
         let mut disclosed = None;
         self.host
@@ -170,7 +202,14 @@ impl InstalledAcquisition {
         self.recovery_disclose(result)?
     }
     async fn run_recovery(self: Arc<Self>, control: Arc<RecoveryControl>) {
-        self.clone().run_recovery_steps(control).await;
+        // A panic or cancellation also stops new transfer registration. The
+        // normal path below joins entered handles; Drop makes no join claim.
+        struct StopOnDrop(Arc<RecoveryControl>);
+        impl Drop for StopOnDrop { fn drop(&mut self) { self.0.stop(); } }
+        let _stop = StopOnDrop(control.clone());
+        self.clone().run_recovery_steps(control.clone()).await;
+        control.stop();
+        let _ = self.host.originals.join_workflow_context_transfers(false).await;
         // The same joined worker drains already entered attachment replies.
         // This does not start never-polled work or certify router cleanup.
         self.host.originals.join_service_attachments().await;
@@ -189,6 +228,31 @@ impl InstalledAcquisition {
             if !control.enter() {
                 return;
             }
+            // Join completed attempts without waiting behind a still-running
+            // transfer. Their canonical WorkGraph admission is observed later
+            // only under the recipient's current permission.
+            if self.host.originals.join_workflow_context_transfers(true).await.is_err() {
+                sweep_delayed = true;
+            }
+            if !control.enter() { return; }
+            // Retained canonical selections are the existing ownership census,
+            // not a new queue. Each step rechecks recipient permission and the
+            // exact effect; generic Pending/timeout cannot enable a new input.
+            match self.recovery_disclose(self.host.originals.workflow_context_transfers()) {
+                Ok(Ok(transfers)) => for transfer in transfers {
+                    if !control.enter() { return; }
+                    match self.poll_workflow_context_delivery(&transfer).await {
+                        Ok(crate::private_originals::WorkflowDeliveryObservation::Admitted { .. }) => (),
+                        // A current recipient refusal or immutable conflict is
+                        // not a transient native outcome or retry permission.
+                        Err(PrivateOriginalError::Denied | PrivateOriginalError::Conflict) => (),
+                        Ok(_) | Err(PrivateOriginalError::Unavailable) => sweep_delayed = true,
+                    }
+                },
+                Err(SetupError::Denied | SetupError::WrongScope) => return,
+                _ => sweep_delayed = true,
+            }
+            if !control.enter() { return; }
             // Approved fresh instructions share this existing joined worker.
             // Each input uses the same native submission/source owner; no
             // retained completion is reinterpreted as expanded authority.
