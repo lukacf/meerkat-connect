@@ -1,0 +1,500 @@
+"""Offline publication controls with explicit fake gh responses and reader.
+
+These exercise byte/owner/transport refusals. They do not verify signatures,
+qualify the published Meta package, publish assets, or run an installed product.
+"""
+from pathlib import Path
+import copy
+import hashlib
+import importlib.util
+import io
+import json
+import subprocess
+import tarfile
+
+import pytest
+
+SPEC = importlib.util.spec_from_file_location("connect_candidate_publication", Path(__file__).with_name("connect-candidate.py"))
+p = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(p)
+
+
+def dump(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
+
+
+def pin(path):
+    return {"path": str(path), "size": path.stat().st_size, "sha256": p.digest(path)}
+
+
+def verified_statement(path, request):
+    repo = "https://github.com/lukacf/meerkat-connect"
+    identity = repo + "/.github/workflows/connect-candidate.yml@" + request["source_ref"]
+    invocation = f"{repo}/actions/runs/{request['run_id']}/attempts/{request['run_attempt']}"
+    cert = {"issuer": "https://token.actions.githubusercontent.com", "subjectAlternativeName": identity,
+        "buildSignerURI": identity, "buildSignerDigest": request["source_sha"], "sourceRepositoryURI": repo,
+        "sourceRepositoryDigest": request["source_sha"], "sourceRepositoryRef": request["source_ref"],
+        "buildConfigURI": identity, "buildConfigDigest": request["source_sha"], "runnerEnvironment": "github-hosted",
+        "buildTrigger": "workflow_dispatch", "runInvocationURI": invocation}
+    statement = {"_type": "https://in-toto.io/Statement/v1", "predicateType": p.SLSA,
+        "subject": [{"name": path.name, "digest": {"sha256": p.digest(path)}}],
+        "predicate": {"buildDefinition": {"buildType": "https://actions.github.io/buildtypes/workflow/v1",
+            "externalParameters": {"workflow": {"repository": repo, "path": p.PUBLICATION_WORKFLOW, "ref": request["source_ref"]}},
+            "internalParameters": {"github": {"event_name": "workflow_dispatch", "runner_environment": "github-hosted"}},
+            "resolvedDependencies": [{"uri": f"git+{repo}@{request['source_ref']}", "digest": {"gitCommit": request["source_sha"]}}]},
+            "runDetails": {"builder": {"id": identity}, "metadata": {"invocationId": invocation}}}}
+    return [{"verificationResult": {"signature": {"certificate": cert}, "verifiedTimestamps": [{"fixture": True}], "statement": statement}}]
+
+
+@pytest.fixture
+def fixture(tmp_path, monkeypatch):
+    class Case:
+        pass
+    c = Case()
+    c.root, c.candidate, c.meta = tmp_path, tmp_path / "candidate", tmp_path / "meta"
+    c.candidate.mkdir()
+    c.export = tmp_path / "connect-export"
+    c.artifacts = c.export / "artifacts"
+    c.artifacts.mkdir(parents=True)
+    c.request = {"source_sha": "a" * 40, "source_tree": "b" * 40, "source_ref": "refs/heads/main",
+        "run_id": 123, "run_attempt": 2, "inputs_sha256": "0" * 64, "connect_version": "1.2.3",
+        "release_id": 456, "tag": "candidate-1.2.3"}
+    c.native = {name: {"repository": "lukacf/" + repo, "version": "0.9.4", "tag": "v0.9.4", "source_sha": sha * 40}
+                for name, repo, sha in (("core", "meerkat", "c"), ("meta", "meerkat-meta", "d"))}
+    # Controlled package with the same public function signatures. This is not
+    # the actual published Meta owner and is never release qualification.
+    c.reader_calls = []
+    package = c.meta / "installer/launchkit"
+    package.mkdir(parents=True)
+    (package / "templates").mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "sdk_wheel_integrity.py").write_text("# controlled reader fixture\n")
+    (package / "templates/install_candidate.py").write_text("# controlled reader fixture\n")
+    (package / "runtime_selection.py").write_text('''from .runtime_candidates import selected_runtime_artifacts
+
+def parse_candidate_selection(value):
+    assert value['format'] == 'forge-meta-toolkit-runtime-selection-v1'
+    return value
+''')
+    (package / "packaged_runtime.py").write_text('''from pathlib import Path
+
+def relocate_selection(selection, paths, root):
+    return {'selection': selection, 'paths': paths, 'root': root}
+''')
+    (package / "runtime_candidates.py").write_text('''from pathlib import Path
+from types import SimpleNamespace
+import hashlib,json
+
+def selected_runtime_artifacts(target):
+    root = target['root']
+    for required in ('build-record.json','resource-build-record.json','gateway-verification.json'):
+        assert (root / 'artifacts' / required).is_file(), required
+    items = [x for x in sorted((root/'artifacts').rglob('*')) if x.is_file()
+             and x.name not in ('RUNTIME-SELECTION.json','product.tar.gz.sha256')]
+    return SimpleNamespace(origin='installed-gateway-assembly', evidence=tuple(
+        SimpleNamespace(path=x,size=x.stat().st_size,sha256=hashlib.sha256(x.read_bytes()).hexdigest()) for x in items))
+''')
+    inputs = {"native_release": c.native, "connect_version": c.request["connect_version"],
+              "forge_reader_source_pins": {name: p.digest(c.meta / name) for name in p.FORGE_READERS}}
+    dump(c.export / "inputs-selection.json", inputs)
+    c.request["inputs_sha256"] = p.digest(c.export / "inputs-selection.json")
+    for name in ["build-record.json", "resource-build-record.json", "gateway-verification.json", "source-manifest.json", "model-catalog.json"]:
+        dump(c.artifacts / name, {"controlled_offline_fixture": name})
+    for name in ["meta.whl", "toolkit.whl", "dependency.whl", "requirements.txt", "product.tar.gz", "product.tar.gz.sha256"]:
+        (c.artifacts / name).write_bytes(("controlled bytes " + name).encode())
+    dump(c.artifacts / "assembly.json", {"scope": p.SCOPE, "release_version": "1.2.3", "archive": "product.tar.gz"})
+    def selected(name):
+        return {**pin(c.artifacts / name), "path": "/home/runner/work/_temp/connect-candidate/artifacts/" + name}
+    c.selection = {"format": "forge-meta-toolkit-runtime-selection-v1", "artifact_root": "/home/runner/work/_temp/connect-candidate/artifacts",
+        "target": p.TARGET, "assembly": selected("assembly.json"), "source_manifest": selected("source-manifest.json"),
+        "meta_wheel": selected("meta.whl"), "toolkit_wheel": selected("toolkit.whl"), "dependency_requirements": selected("requirements.txt"),
+        "model_catalog": selected("model-catalog.json"), "dependency_wheels": [selected("dependency.whl")],
+        "meta": {"controlled_fixture": True}, "toolkit": {"controlled_fixture": True}}
+    dump(c.artifacts / "RUNTIME-SELECTION.json", c.selection)
+    def pack():
+        contents = [{"path": x.relative_to(c.export).as_posix(), "size": x.stat().st_size, "sha256": p.digest(x)}
+                    for x in sorted(c.export.rglob('*')) if x.is_file() and x.name != 'CONTENTS.json']
+        dump(c.export / "CONTENTS.json", {"schema_version": 1, "files": contents})
+        archive = c.candidate / p.SUBJECTS[0]
+        archive.unlink(missing_ok=True)
+        p.archive_tree(c.export, archive)
+        manifest = {"schema_version": 1, "kind": "connect-installed-candidate", "repository": p.PUBLICATION_REPO,
+            "source_sha": c.request["source_sha"], "source_tree": c.request["source_tree"], "workflow_sha": c.request["source_sha"],
+            "run_id": str(c.request["run_id"]), "run_attempt": str(c.request["run_attempt"]), "inputs_sha256": c.request["inputs_sha256"],
+            "target": p.TARGET, "scope": p.SCOPE, "connect_version": "1.2.3", "native_release": c.native,
+            "archive": {"name": archive.name, "size": archive.stat().st_size, "sha256": p.digest(archive)},
+            "runtime_selection_sha256": p.digest(c.artifacts / "RUNTIME-SELECTION.json"), "publication": "not_performed"}
+        dump(c.candidate / p.SUBJECTS[1], manifest)
+        (c.candidate / p.PUBLICATION_FILES[2]).write_bytes(b'UNTRUSTED CONTROLLED BUNDLE BYTES\n')
+        dump(c.root / "request.json", c.request)
+    c.pack = pack
+    c.pack()
+    c.commands, c.mutate_verified = [], None
+    real_output = subprocess.check_output
+    def output(argv, **kwargs):
+        args = [str(x) for x in argv]
+        if args[0] == 'git':
+            command = args[3:]
+            if command[:1] == ['rev-parse']:
+                return 'd' * 40 + '\n'
+            if command[:1] == ['status']:
+                return ''
+            raise AssertionError(args)
+        if args[:3] == ['gh', 'attestation', 'verify']:
+            c.commands.append((args, kwargs.get('env')))
+            result = verified_statement(Path(args[3]), c.request)
+            if c.mutate_verified:
+                c.mutate_verified(result)
+            return json.dumps(result).encode()
+        if args[0] == p.sys.executable:
+            c.reader_calls.append(args)
+            return real_output(argv, **kwargs)
+        raise AssertionError('offline control attempted external command: ' + repr(args))
+    monkeypatch.setattr(p.subprocess, 'check_output', output)
+    c.accept = lambda: p.accept_publication(c.root / 'request.json', c.candidate, c.meta, c.root / 'accepted')
+    return c
+
+
+def test_acceptance_keeps_original_bytes_and_uses_scrubbed_verifier_and_reader(fixture, monkeypatch):
+    c = fixture
+    monkeypatch.setenv('GH_TOKEN', 'not-a-real-write-token')
+    monkeypatch.setenv('PROVIDER_SECRET', 'not-a-real-provider-secret')
+    before = {name: (c.candidate / name).read_bytes() for name in p.PUBLICATION_FILES}
+    accepted = c.accept()
+    assert accepted['publication'] == 'not_performed'
+    assert accepted['selection'] == c.selection
+    assert len(c.commands) == 2 and len(c.reader_calls) == 1
+    for argv, env in c.commands:
+        assert '--bundle' in argv and '--deny-self-hosted-runners' in argv
+        assert '--source-digest' in argv and '--cert-identity' in argv
+        assert 'GH_TOKEN' not in env and 'PROVIDER_SECRET' not in env
+    assert {x['path'] for x in accepted['evidence']} >= {'artifacts/build-record.json', 'artifacts/resource-build-record.json',
+        'artifacts/gateway-verification.json', 'artifacts/product.tar.gz', 'artifacts/product.tar.gz.sha256'}
+    for name in p.PUBLICATION_FILES:
+        assert (c.root / 'accepted/assets' / name).read_bytes() == before[name] == (c.candidate / name).read_bytes()
+    assert not (c.root / 'accepted/publication.json').exists()
+
+
+@pytest.mark.parametrize('field,value', [('source_sha','e'*40), ('source_tree','f'*40), ('run_id',124),
+    ('run_attempt',3), ('inputs_sha256','e'*64), ('connect_version','9.9.9')])
+def test_changed_explicit_request_refuses_before_reader(fixture, field, value):
+    c = fixture
+    request = copy.deepcopy(c.request); request[field] = value; dump(c.root/'request.json',request)
+    with pytest.raises(ValueError): c.accept()
+    assert not c.reader_calls and not (c.root/'accepted/acceptance.json').exists()
+
+
+@pytest.mark.parametrize('field', ['issuer','subjectAlternativeName','buildSignerURI','buildSignerDigest','sourceRepositoryURI',
+    'sourceRepositoryDigest','sourceRepositoryRef','buildConfigURI','buildConfigDigest','runnerEnvironment','buildTrigger','runInvocationURI'])
+def test_verified_certificate_must_match_exact_owner(fixture, field):
+    c = fixture
+    c.mutate_verified = lambda rows: rows[0]['verificationResult']['signature']['certificate'].__setitem__(field, 'foreign')
+    with pytest.raises(ValueError, match='certificate'): c.accept()
+    assert not c.reader_calls
+
+
+def test_raw_bundle_is_never_trusted_when_verifier_fails(fixture, monkeypatch):
+    c = fixture
+    def fail(*args, **kwargs): raise subprocess.CalledProcessError(1, ['gh','attestation','verify'])
+    monkeypatch.setattr(p, 'command_json', fail)
+    with pytest.raises(subprocess.CalledProcessError): c.accept()
+    assert not c.reader_calls and not (c.root/'accepted/acceptance.json').exists()
+
+
+@pytest.mark.parametrize('part', ['subject','predicateType','verifiedTimestamps'])
+def test_verified_statement_refusals(fixture, part):
+    c=fixture
+    def mutate(rows):
+        result=rows[0]['verificationResult']
+        if part=='verifiedTimestamps': result[part]=[]
+        elif part=='subject': result['statement'][part][0]['digest']['sha256']='0'*64
+        else: result['statement'][part]='unsupported'
+    c.mutate_verified=mutate
+    with pytest.raises(ValueError): c.accept()
+    assert not c.reader_calls
+
+
+def test_missing_indirect_record_is_refused_by_reader(fixture):
+    c=fixture
+    (c.artifacts/'gateway-verification.json').unlink();c.pack()
+    with pytest.raises(subprocess.CalledProcessError):c.accept()
+    assert len(c.reader_calls)==1 and not (c.root/'accepted/acceptance.json').exists()
+
+
+@pytest.mark.parametrize('scope', ['source_built_development_gateway','unqualified_product_prefix_for_verification'])
+def test_development_and_staging_are_not_publishable_preview(fixture,scope):
+    c=fixture
+    manifest=p.read_json(c.candidate/p.SUBJECTS[1]);manifest['scope']=scope;dump(c.candidate/p.SUBJECTS[1],manifest)
+    with pytest.raises(ValueError,match='scope'):c.accept()
+    assert not c.reader_calls
+
+
+@pytest.mark.parametrize('bad', ['escape','duplicate','link','oversized'])
+def test_archive_refusals_are_data_only(tmp_path,bad,monkeypatch):
+    archive=tmp_path/'bad.tar.gz'
+    with tarfile.open(archive,'w:gz') as tar:
+        if bad=='link':
+            item=tarfile.TarInfo('connect-export/link');item.type=tarfile.SYMTYPE;item.linkname='../../outside';tar.addfile(item)
+        else:
+            name='../escape' if bad=='escape' else 'connect-export/payload'
+            for _ in range(2 if bad=='duplicate' else 1):
+                item=tarfile.TarInfo(name);item.size=4;tar.addfile(item,io.BytesIO(b'data'))
+    if bad=='oversized':monkeypatch.setattr(p,'MAX_FILE',3)
+    with pytest.raises(ValueError):p.unpack_publication_candidate(archive,tmp_path/'unpacked')
+    assert not (tmp_path/'escape').exists() and not (tmp_path/'outside').exists()
+
+
+class ReleaseTransport:
+    """Controlled API/public-GET responses, never a GitHub publication."""
+    def __init__(self,c):
+        self.c=c;self.files={};self.records={};self.uploads=[];self.draft=False;self.private=False;self.fail_upload=None;self.foreign_url=False
+    def record(self,name,raw):
+        self.files[name]=raw
+        self.records[name]={'id':len(self.records)+100,'name':name,'size':len(raw),'state':'uploaded',
+            'browser_download_url':f'https://github.com/{p.PUBLICATION_REPO}/releases/download/{self.c.request["tag"]}/{name}'}
+    def api(self,endpoint,*,upload=None):
+        if upload is not None:
+            name=p.urllib.parse.parse_qs(p.urllib.parse.urlsplit(endpoint).query)["name"][0];self.uploads.append(name)
+            if name==self.fail_upload:raise OSError('controlled upload failure')
+            assert name not in self.records
+            self.record(name,upload.read());return copy.deepcopy(self.records[name])
+        if endpoint=='repos/'+p.PUBLICATION_REPO:return {'full_name':p.PUBLICATION_REPO,'private':self.private,'visibility':'private' if self.private else 'public'}
+        if '/assets?' in endpoint:return copy.deepcopy(list(self.records.values()))
+        if '/git/ref/tags/' in endpoint:return {'object':{'type':'commit','sha':self.c.request['source_sha'],'url':'controlled'}}
+        return {'id':self.c.request['release_id'],'tag_name':self.c.request['tag'],'draft':self.draft}
+    def download(self,path,row):
+        name=Path(row['url']).name
+        assert row['url']==self.records[name]['browser_download_url']
+        path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(self.files[name])
+        assert path.stat().st_size==row['size'] and p.digest(path)==row['sha256'], 'controlled public bytes differ'
+
+
+def prepare_publish(c,monkeypatch):
+    c.accept();accepted=c.root/'accepted';transport=ReleaseTransport(c)
+    monkeypatch.setattr(p,'publication_api',transport.api);monkeypatch.setattr(p,'download',transport.download)
+    # The write command must not enter either data-extraction or reader path.
+    def forbidden(*args,**kwargs):raise AssertionError('write phase entered product/reader')
+    monkeypatch.setattr(p,'unpack_publication_candidate',forbidden);monkeypatch.setattr(p,'read_publication_product',forbidden)
+    def publish():return p.publish_accepted(accepted,p.digest(accepted/'acceptance.json'),c.root/'publication')
+    return transport,publish
+
+
+def test_publication_uploads_only_accepted_bytes_then_emits_original_inventory(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    result=publish()
+    assert t.uploads==list(p.PUBLICATION_FILES)
+    assert result['status']=='verified_public_inventory' and result['selection']==c.selection
+    assert result['files']['artifacts/product.tar.gz']['member']=='connect-export/artifacts/product.tar.gz'
+    assert all(v['url'].endswith('/'+p.SUBJECTS[0]) for v in result['files'].values())
+    for name in p.PUBLICATION_FILES:assert t.files[name]==(c.candidate/name).read_bytes()
+    assert len(c.reader_calls)==1
+
+
+def test_equal_existing_assets_require_public_readback_without_reupload(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    for name in p.PUBLICATION_FILES:t.record(name,(c.candidate/name).read_bytes())
+    assert publish()['status']=='verified_public_inventory' and not t.uploads
+
+
+def test_conflicting_existing_asset_is_not_overwritten(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    name=p.SUBJECTS[0];raw=(c.candidate/name).read_bytes();t.record(name,b'!'*len(raw))
+    with pytest.raises(AssertionError,match='bytes differ'):publish()
+    assert not t.uploads and t.files[name]==b'!'*len(raw)
+    assert p.read_json(c.root/'publication/publication.json')['status']=='refused_or_partial'
+
+
+def test_failed_second_upload_preserves_partial_evidence_without_final_inventory(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch);t.fail_upload=p.SUBJECTS[1]
+    with pytest.raises(OSError):publish()
+    report=p.read_json(c.root/'publication/publication.json')
+    assert report['verified_assets']==[p.SUBJECTS[0]] and report['write_attempted']==list(p.SUBJECTS)
+    assert report['status']=='refused_or_partial' and 'files' not in report
+
+
+def test_draft_release_is_not_treated_as_publication(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch);t.draft=True
+    with pytest.raises(ValueError,match='has not published'):publish()
+    assert not t.uploads
+
+
+def test_selected_acceptance_hash_and_allowlist_are_rechecked(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    directory=c.root/'accepted';selected=p.digest(directory/'acceptance.json')
+    value=p.read_json(directory/'acceptance.json');value['scope']='different';dump(directory/'acceptance.json',value)
+    with pytest.raises(ValueError,match='acceptance changed'):
+        p.publish_accepted(directory,selected,c.root/'publication')
+    assert not t.uploads
+
+
+def test_changed_allowlist_never_reaches_upload(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    (c.root/'accepted/assets'/p.SUBJECTS[0]).write_bytes(b'changed')
+    with pytest.raises(ValueError):publish()
+    assert not t.uploads
+
+
+def test_foreign_public_url_refuses(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    for name in p.PUBLICATION_FILES:t.record(name,(c.candidate/name).read_bytes())
+    t.records[p.SUBJECTS[0]]['browser_download_url']='https://example.invalid/foreign'
+    with pytest.raises(ValueError,match='public asset identity'):publish()
+    assert not t.uploads
+
+
+def test_changed_new_asset_after_readback_prevents_final_inventory(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    original_download=t.download
+    def read(path,row):
+        original_download(path,row)
+        if path.name==p.PUBLICATION_FILES[-1]:t.records[p.SUBJECTS[0]]['id']+=1000
+    monkeypatch.setattr(p,'download',read)
+    with pytest.raises(ValueError,match='publication changed'):publish()
+    report=p.read_json(c.root/'publication/publication.json')
+    assert report['status']=='refused_or_partial' and 'files' not in report
+
+
+def test_foreign_tag_commit_cannot_receive_assets(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    old=t.api
+    def api(endpoint,**kwargs):
+        result=old(endpoint,**kwargs)
+        if '/git/ref/tags/' in endpoint:result['object']['sha']='e'*40
+        return result
+    monkeypatch.setattr(p,'publication_api',api)
+    with pytest.raises(ValueError,match='tag does not select'):publish()
+    assert not t.uploads
+
+
+def test_second_attested_subject_is_independently_required(fixture):
+    c=fixture
+    def mutate(rows):
+        result=rows[0]['verificationResult']
+        if result['statement']['subject'][0]['name']==p.SUBJECTS[1]:
+            result['signature']['certificate']['runInvocationURI']='foreign-attempt'
+    c.mutate_verified=mutate
+    with pytest.raises(ValueError,match='certificate'):c.accept()
+    assert len(c.commands)==2 and not c.reader_calls
+
+
+def test_archive_link_parent_cannot_be_reinterpreted_as_directory(tmp_path):
+    archive=tmp_path/'bad.tar.gz'
+    with tarfile.open(archive,'w:gz') as tar:
+        item=tarfile.TarInfo('connect-export/artifacts');item.type=tarfile.SYMTYPE;item.linkname='elsewhere';tar.addfile(item)
+        item=tarfile.TarInfo('connect-export/artifacts/payload');item.size=4;tar.addfile(item,io.BytesIO(b'data'))
+    with pytest.raises(ValueError,match='traverses an archive leaf'):
+        p.unpack_publication_candidate(archive,tmp_path/'unpacked')
+
+
+def test_existing_fetch_binding_retains_five_fields_and_archive_contract(fixture):
+    c=fixture;manifest=p.read_json(c.candidate/p.SUBJECTS[1]);payload=c.candidate/p.SUBJECTS[0]
+    keys=('source_sha','workflow_sha','run_id','run_attempt','inputs_sha256')
+    expected={k:manifest[k] for k in keys}
+    p.checked_candidate_binding(manifest,payload,expected)
+    for key in keys:
+        changed=copy.deepcopy(manifest);changed[key]='different'
+        with pytest.raises(ValueError,match='candidate binding differs'):
+            p.checked_candidate_binding(changed,payload,expected)
+    changed=copy.deepcopy(manifest);changed['archive']['sha256']='0'*64
+    with pytest.raises(ValueError,match='candidate closure differs'):
+        p.checked_candidate_binding(changed,payload,expected)
+
+
+def test_public_read_counters_do_not_change_asset_identity(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    original_download=t.download
+    def read(path,row):
+        original_download(path,row)
+        t.records[path.name]['download_count']=t.records[path.name].get('download_count',0)+1
+    monkeypatch.setattr(p,'download',read)
+    assert publish()['status']=='verified_public_inventory'
+    assert all(row['download_count']==1 for row in t.records.values())
+
+
+def test_acceptance_replacement_after_read_cannot_change_parsed_selection(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    original_copy=p.copy_publication_input
+    observed=[]
+    def copy_input(path,output,maximum):
+        row=original_copy(path,output,maximum)
+        if path.name=='acceptance.json':
+            path.write_bytes(b'{"scope":"substituted after selected read"}')
+            observed.append(path)
+        return row
+    monkeypatch.setattr(p,'copy_publication_input',copy_input)
+    result=publish()
+    assert len(observed)==1 and result['status']=='verified_public_inventory'
+    assert result['selection']==c.selection
+    assert p.read_json(observed[0])=={'scope':'substituted after selected read'}
+
+
+def test_original_assets_replaced_after_retention_never_enter_upload(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    before={name:(c.candidate/name).read_bytes() for name in p.PUBLICATION_FILES}
+    observed=[]
+    def replace(rows):
+        if len(c.commands)==3:
+            for name in p.PUBLICATION_FILES:
+                path=c.root/'accepted/assets'/name
+                path.unlink();path.write_bytes(b'unaccepted original handoff replacement')
+                observed.append(path)
+    c.mutate_verified=replace
+    assert publish()['status']=='verified_public_inventory'
+    assert len(observed)==3 and t.files==before
+    assert all(path.read_bytes()==b'unaccepted original handoff replacement' for path in observed)
+    assert all('GH_TOKEN' not in env for _,env in c.commands)
+
+
+def test_replaced_private_path_cannot_substitute_entered_upload_stream(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    original_api=t.api
+    mutated=[]
+    def api(endpoint,*,upload=None):
+        if upload is not None and not mutated:
+            path=c.root/'publication/assets'/p.SUBJECTS[0]
+            path.unlink();path.write_bytes(b'unaccepted replacement before gh stdin read')
+            mutated.append(path)
+        return original_api(endpoint,upload=upload)
+    monkeypatch.setattr(p,'publication_api',api)
+    with pytest.raises(ValueError):publish()
+    assert len(mutated)==1 and t.uploads==list(p.PUBLICATION_FILES)
+    for name in p.PUBLICATION_FILES:assert t.files[name]==(c.candidate/name).read_bytes()
+    report=p.read_json(c.root/'publication/publication.json')
+    assert report['status']=='refused_or_partial' and 'files' not in report
+
+
+def test_upload_command_reads_retained_stdin_not_a_path(tmp_path,monkeypatch):
+    commands=[]
+    def command(argv,*,stdin=None):
+        commands.append((argv,stdin.read()))
+        return {'controlled':'upload receipt'}
+    monkeypatch.setattr(p,'command_json',command)
+    with p.tempfile.TemporaryFile('w+b',dir=tmp_path) as retained:
+        retained.write(b'exact accepted bytes');retained.seek(0)
+        result=p.publication_api('https://uploads.github.com/controlled',upload=retained)
+        assert not retained.closed
+    assert result=={'controlled':'upload receipt'}
+    assert commands[0][0][-2:]==['--input','-']
+    assert commands[0][1]==b'exact accepted bytes'
+
+
+def test_private_repository_refuses_before_any_upload(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch);t.private=True
+    with pytest.raises(ValueError,match='repository is not public'):publish()
+    assert not t.uploads and not t.draft
+    assert p.read_json(c.root/'publication/publication.json')['status']=='refused_or_partial'
+
+
+def test_repository_becoming_private_stops_further_uploads(fixture,monkeypatch):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    original_download=t.download
+    def read(path,row):
+        original_download(path,row)
+        t.private=True
+    monkeypatch.setattr(p,'download',read)
+    with pytest.raises(ValueError,match='repository is not public'):publish()
+    assert t.uploads==[p.SUBJECTS[0]]
+    report=p.read_json(c.root/'publication/publication.json')
+    assert report['status']=='refused_or_partial' and report['verified_assets']==[p.SUBJECTS[0]]
+    assert 'files' not in report

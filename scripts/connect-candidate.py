@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Candidate-only CI composition of the existing Connect producer contracts.
+"""Compose Connect candidates and publish their exact accepted asset bytes.
 
-No release/tag/registry operation, record sanitization or success substitution.
-The unbound committed selection deliberately fails before any product execution.
+Candidate construction still refuses unbound inputs before product execution.
+Acceptance has no write credentials. Publication only adds the selected bytes
+of an accepted installed preview to an existing public release; it never creates
+a release/tag, rebuilds a product, or rewrites producer records.
 """
 from pathlib import Path, PurePosixPath
 import argparse
 import email.parser
 import gzip
 import hashlib
+import io
 import json
 import os
 import platform
@@ -19,6 +22,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import tomllib
 import urllib.parse
@@ -656,26 +660,444 @@ def fetch_built():
             with zipped.open(entry) as source, (dist / entry.filename).open("xb") as destination:
                 shutil.copyfileobj(source, destination)
     manifest = read_json(dist / "connect-candidate.json")
-    require(manifest["source_sha"] == os.environ["CONNECT_SOURCE_SHA"]
-            and manifest["workflow_sha"] == os.environ["GITHUB_WORKFLOW_SHA"]
-            and manifest["run_id"] == os.environ["GITHUB_RUN_ID"]
-            and manifest["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"]
-            and manifest["inputs_sha256"] == os.environ["CONNECT_INPUTS_SHA256"], "candidate binding differs")
-    payload = dist / "connect-linux-candidate.tar.gz"
-    require(manifest["archive"] == {"name": payload.name, "size": payload.stat().st_size, "sha256": digest(payload)},
-            "candidate closure differs")
+    checked_candidate_binding(manifest, dist / "connect-linux-candidate.tar.gz", {
+        "source_sha": os.environ["CONNECT_SOURCE_SHA"], "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
+        "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+        "inputs_sha256": os.environ["CONNECT_INPUTS_SHA256"]})
+
+
+# Publication consumes this producer's installed preview, never a rebuilt or
+# relabeled staging product. This local acceptance record is not a new runtime
+# selection: the original v1 document and Meta-owned reader remain authoritative.
+PUBLICATION_REPO = "lukacf/meerkat-connect"
+PUBLICATION_WORKFLOW = ".github/workflows/connect-candidate.yml"
+SUBJECTS = ("connect-linux-candidate.tar.gz", "connect-candidate.json")
+PUBLICATION_FILES = (*SUBJECTS, "connect-provenance.jsonl")
+SLSA = "https://slsa.dev/provenance/v1"
+MAX_METADATA = 32 * 1024**2
+
+
+def checked_file(path, maximum=MAX_FILE):
+    require(path.is_file() and not path.is_symlink() and 0 < path.stat().st_size <= maximum,
+            "missing, linked or oversized publication input")
+    return {"name": path.name, "size": path.stat().st_size, "sha256": digest(path)}
+
+
+def checked_publication_request(value):
+    require(set(value) == {"source_sha", "source_tree", "source_ref", "run_id", "run_attempt",
+                          "inputs_sha256", "connect_version", "release_id", "tag"},
+            "exact publication request fields required")
+    require(SHA.fullmatch(value["source_sha"]) and SHA.fullmatch(value["source_tree"])
+            and HEX.fullmatch(value["inputs_sha256"]) and VERSION.fullmatch(value["connect_version"]),
+            "unbound publication source, version or inputs")
+    require(re.fullmatch(r"refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*", value["source_ref"])
+            and ".." not in value["source_ref"] and "//" not in value["source_ref"], "invalid source ref")
+    require(all(type(value[key]) is int and value[key] > 0 for key in ("run_id", "run_attempt", "release_id"))
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value["tag"]),
+            "explicit existing release and positive run identity required")
+    return value
+
+
+def read_only_environment(work):
+    # No inherited GitHub authentication/config or product credentials enter
+    # the verifier/reader. Bundle verification needs no artifact-download token.
+    home = work / "reader-home"
+    home.mkdir()
+    return {"PATH": os.environ.get("PATH", ""), "HOME": str(home),
+            "GH_CONFIG_DIR": str(home), "LC_ALL": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
+
+
+def command_json(argv, *, env=None, stdin=None):
+    return json.loads(subprocess.check_output([str(x) for x in argv], env=env, stdin=stdin, timeout=300),
+                      object_pairs_hook=unique)
+
+
+def verify_publication_subject(path, bundle, request, *, env=None):
+    repo = "https://github.com/" + PUBLICATION_REPO
+    sha, ref = request["source_sha"], request["source_ref"]
+    identity = f"{repo}/{PUBLICATION_WORKFLOW}@{ref}"
+    invocation = f"{repo}/actions/runs/{request['run_id']}/attempts/{request['run_attempt']}"
+    # This is policy over gh's cryptographically verified result. Never decode
+    # the unsigned bundle as evidence or implement signature verification here.
+    verified = command_json(["gh", "attestation", "verify", path, "--bundle", bundle, "--hostname", "github.com",
+        "--repo", PUBLICATION_REPO, "--source-digest", sha, "--source-ref", ref,
+        "--signer-digest", sha, "--cert-identity", identity,
+        "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
+        "--deny-self-hosted-runners", "--predicate-type", SLSA, "--format", "json"], env=env)
+    require(isinstance(verified, list) and verified, "no verified provenance")
+    expected = {"issuer": "https://token.actions.githubusercontent.com",
+        "subjectAlternativeName": identity, "buildSignerURI": identity, "buildSignerDigest": sha,
+        "sourceRepositoryURI": repo, "sourceRepositoryDigest": sha, "sourceRepositoryRef": ref,
+        "buildConfigURI": identity, "buildConfigDigest": sha, "runnerEnvironment": "github-hosted",
+        "buildTrigger": "workflow_dispatch", "runInvocationURI": invocation}
+    for entry in verified:
+        result = entry["verificationResult"]
+        certificate = result["signature"]["certificate"]
+        require(all(certificate.get(k) == v for k, v in expected.items())
+                and result.get("verifiedTimestamps"), "verified certificate identity differs")
+        statement = result["statement"]
+        require(statement["_type"] == "https://in-toto.io/Statement/v1"
+                and statement["predicateType"] == SLSA, "wrong verified statement type")
+        subjects = [s for s in statement["subject"] if s.get("name") == path.name]
+        require(len(subjects) == 1 and subjects[0]["digest"] == {"sha256": digest(path)},
+                "verified subject differs")
+        definition = statement["predicate"]["buildDefinition"]
+        require(definition["buildType"] == "https://actions.github.io/buildtypes/workflow/v1"
+                and definition["externalParameters"]["workflow"] ==
+                    {"repository": repo, "path": PUBLICATION_WORKFLOW, "ref": ref}
+                and definition["internalParameters"]["github"]["event_name"] == "workflow_dispatch"
+                and definition["internalParameters"]["github"]["runner_environment"] == "github-hosted"
+                and definition["resolvedDependencies"] ==
+                    [{"uri": f"git+{repo}@{ref}", "digest": {"gitCommit": sha}}],
+                "verified workflow/source differs")
+        details = statement["predicate"]["runDetails"]
+        require(details["builder"]["id"] == identity and details["metadata"]["invocationId"] == invocation,
+                "verified invocation differs")
+    return verified
+
+
+def checked_candidate_binding(manifest, payload, expected):
+    require(all(manifest[key] == expected[key] for key in
+                ("source_sha", "workflow_sha", "run_id", "run_attempt", "inputs_sha256")),
+            "candidate binding differs")
+    require(manifest["archive"] == {"name": payload.name, "size": payload.stat().st_size,
+                                    "sha256": digest(payload)}, "candidate closure differs")
+
+
+def checked_publication_candidate(directory, request):
+    rows = [checked_file(directory / name, MAX_FILE if name == SUBJECTS[0] else MAX_METADATA)
+            for name in PUBLICATION_FILES]
+    manifest = read_json(directory / SUBJECTS[1])
+    checked_candidate_binding(manifest, directory / SUBJECTS[0], {
+        "source_sha": request["source_sha"], "workflow_sha": request["source_sha"],
+        "run_id": str(request["run_id"]), "run_attempt": str(request["run_attempt"]),
+        "inputs_sha256": request["inputs_sha256"]})
+    require(manifest["schema_version"] == 1 and manifest["kind"] == "connect-installed-candidate"
+            and manifest["repository"] == PUBLICATION_REPO and manifest["source_tree"] == request["source_tree"]
+            and manifest["target"] == TARGET and manifest["scope"] == SCOPE
+            and manifest["connect_version"] == request["connect_version"]
+            and manifest["publication"] == "not_performed", "candidate scope or source differs")
+    for name, repository in (("core", "meerkat"), ("meta", "meerkat-meta")):
+        value = manifest["native_release"][name]
+        require(value == {"repository": "lukacf/" + repository, "version": "0.9.4",
+                          "tag": "v0.9.4", "source_sha": value["source_sha"]}
+                and SHA.fullmatch(value["source_sha"]), "exact published native selection required")
+    return manifest, rows
+
+
+def unpack_publication_candidate(archive_path, destination):
+    """Data-only bounded extraction; retained links are checked but not created."""
+    import posixpath
+    destination.mkdir()
+    inventory, names, leaves, parents, expanded = [], set(), set(), set(), 0
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive:
+            name = relative(member.name)
+            parts = PurePosixPath(name).parts
+            require(parts[0] == "connect-export" and all(p not in (".", "..") for p in parts)
+                    and len(name) <= 4096 and len(parts) <= 64 and name not in names and len(names) < 32768, "invalid candidate archive inventory")
+            require(not any(str(parent) in leaves for parent in PurePosixPath(name).parents),
+                    "candidate member traverses an archive leaf")
+            names.add(name)
+            parents.update(str(parent) for parent in PurePosixPath(name).parents)
+            if member.isdir():
+                continue
+            require(len(parts) > 1 and (member.isfile() or member.issym()), "unsupported archive member")
+            require(name not in parents, "candidate leaf shadows descendants")
+            leaves.add(name)
+            rel = PurePosixPath(*parts[1:]).as_posix()
+            if member.issym():
+                link = member.linkname
+                resolved = posixpath.normpath(str(PurePosixPath(name).parent / link))
+                require(link and not link.startswith("/") and "\\" not in link
+                        and resolved.startswith("connect-export/"), "escaping candidate link")
+                raw = link.encode()
+                inventory.append({"path": rel, "kind": "symlink", "size": len(raw),
+                                  "sha256": hashlib.sha256(raw).hexdigest()})
+                continue
+            require(0 <= member.size <= MAX_FILE, "candidate member exceeds bound")
+            expanded += member.size
+            require(expanded <= 16 * 1024**3, "candidate expanded closure exceeds bound")
+            path = destination / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with archive.extractfile(member) as source, path.open("xb") as output:
+                shutil.copyfileobj(source, output)
+            require(path.stat().st_size == member.size, "truncated candidate member")
+            if path.suffix == ".json":
+                require(member.size <= MAX_METADATA, "candidate metadata exceeds bound")
+                provenance(read_json(path))
+            elif path.suffix in {".log", ".txt", ".sha256"} or path.name == "gateway.stderr":
+                require(member.size <= MAX_METADATA, "candidate text exceeds bound")
+                provenance(path.read_text())
+            if rel != "CONTENTS.json":
+                inventory.append({"path": rel, "size": member.size, "sha256": digest(path)})
+    contents = read_json(destination / "CONTENTS.json")
+    require(contents == {"schema_version": 1, "files": sorted(inventory, key=lambda row: row["path"])},
+            "original candidate inventory differs")
+    return {row["path"]: row for row in inventory}
+
+
+def read_publication_product(root, meta, manifest, request, work, env):
+    inputs = read_json(root / "inputs-selection.json")
+    require(digest(root / "inputs-selection.json") == request["inputs_sha256"]
+            and inputs["native_release"] == manifest["native_release"]
+            and inputs["connect_version"] == request["connect_version"], "original input selection differs")
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(meta), *args], env=env, timeout=30, text=True).strip()
+    selected = manifest["native_release"]["meta"]["source_sha"]
+    require(git("rev-parse", "HEAD") == selected == git("rev-parse", "v0.9.4^{commit}")
+            and git("status", "--porcelain", "--untracked-files=all", "--ignored", "--", "installer") == "",
+            "reader is not the exact clean selected Meta checkout")
+    require(not any(meta.joinpath("installer").rglob("*.pyc")), "reader checkout contains cached Python code")
+    pins = inputs["forge_reader_source_pins"]
+    require(set(pins) == FORGE_READERS, "reader source inventory differs")
+    for name, hashed in pins.items():
+        require(HEX.fullmatch(hashed) and checked_file(meta / name)["sha256"] == hashed,
+                "actual Meta reader source differs")
+    document = root / "artifacts/RUNTIME-SELECTION.json"
+    require(digest(document) == manifest["runtime_selection_sha256"], "original selection differs")
+    selection = read_json(document)
+    # This is the existing Forge fetch-layout map. The owner alone performs
+    # physical relocation on its in-memory target; no serialized bytes change.
+    artifact_root = PurePosixPath(selection["artifact_root"])
+    def local(item):
+        return "artifacts/" + relative(PurePosixPath(item["path"]).relative_to(artifact_root).as_posix())
+    paths = {name: local(selection[name]) for name in
+             ("assembly", "source_manifest", "meta_wheel", "toolkit_wheel", "dependency_requirements", "model_catalog")}
+    paths.update(artifact_root="artifacts", dependency_wheels=[local(x) for x in selection["dependency_wheels"]])
+    layout = work / "layout.json"
+    write_new(layout, paths)
+    output = command_json([sys.executable, "-I", "-B", "-c",
+        "import json,sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
+        "from launchkit.runtime_selection import parse_candidate_selection,selected_runtime_artifacts; "
+        "from launchkit.packaged_runtime import relocate_selection; "
+        "source=json.loads(Path(sys.argv[2]).read_bytes()); parse_candidate_selection(source); "
+        "root=Path(sys.argv[4]); target=relocate_selection(source,json.loads(Path(sys.argv[3]).read_bytes()),root); "
+        "observed=selected_runtime_artifacts(target); "
+        "assert observed.origin=='installed-gateway-assembly'; "
+        "print(json.dumps({'origin':observed.origin,'evidence':[{'path':str(f.path.relative_to(root)),"
+        "'size':f.size,'sha256':f.sha256} for f in observed.evidence]}))",
+        meta / "installer", document, layout, root], env=env)
+    require(output["origin"] == "installed-gateway-assembly" and output["evidence"], "Meta did not accept installed preview")
+    assembly = read_json(root / paths["assembly"])
+    require(assembly["scope"] == SCOPE and assembly["release_version"] == request["connect_version"],
+            "assembly is not the selected installed preview")
+    evidence = list(output["evidence"])
+    for extra in ("artifacts/RUNTIME-SELECTION.json", "artifacts/" + assembly["archive"] + ".sha256"):
+        row = checked_file(root / extra)
+        evidence.append({"path": extra, "size": row["size"], "sha256": row["sha256"]})
+    return selection, paths, evidence
+
+
+def accept_publication(request_path, candidate, meta, output):
+    checked_file(request_path, MAX_METADATA)
+    request = checked_publication_request(read_json(request_path))
+    require(not output.exists(), "fresh acceptance directory required")
+    output.mkdir()
+    env = read_only_environment(output)
+    # Retain each input once before verifier/reader awaits. Recheck these exact
+    # copies before committing acceptance; no write credential enters children.
+    assets = output / "assets"
+    assets.mkdir()
+    for name in PUBLICATION_FILES:
+        checked_file(candidate / name, MAX_FILE if name == SUBJECTS[0] else MAX_METADATA)
+        copy_exact(candidate / name, assets / name)
+    manifest, rows = checked_publication_candidate(assets, request)
+    for name in SUBJECTS:
+        verified = verify_publication_subject(assets / name, assets / PUBLICATION_FILES[2], request, env=env)
+        write_new(output / (name + ".verification.json"), verified)
+    root = output / "unpacked"
+    inventory = unpack_publication_candidate(assets / SUBJECTS[0], root)
+    selection, paths, evidence = read_publication_product(root, meta, manifest, request, output, env)
+    require(0 < len(evidence) <= 512 and len({r["path"] for r in evidence}) == len(evidence),
+            "bounded distinct owner evidence required")
+    for row in evidence:
+        relative(row["path"])
+        require(row == inventory.get(row["path"]), "owner evidence differs from original closure")
+    require(checked_publication_candidate(assets, request)[1] == rows, "accepted assets changed")
+    accepted = {"schema_version": 1, "kind": "connect-publication-acceptance", "request": request,
+        "scope": SCOPE, "assets": rows, "selection": selection, "paths": paths, "evidence": evidence,
+        "publication": "not_performed"}
+    write_new(output / "acceptance.json", accepted)
+    return accepted
+
+
+def publication_api(endpoint, *, upload=None):
+    argv = ["gh", "api", endpoint, "--hostname", "github.com"]
+    if upload is not None:
+        argv += ["--method", "POST", "--header", "Content-Type: application/octet-stream", "--input", "-"]
+    return command_json(argv, stdin=upload)
+
+
+def release_state(request):
+    endpoint = "repos/" + PUBLICATION_REPO
+    repository = publication_api(endpoint)
+    require(repository.get("full_name") == PUBLICATION_REPO and repository.get("private") is False
+            and repository.get("visibility") == "public", "selected repository is not public")
+    release = publication_api(endpoint + "/releases/" + str(request["release_id"]))
+    require(release["id"] == request["release_id"] and release["tag_name"] == request["tag"]
+            and type(release["draft"]) is bool, "selected existing release differs")
+    ref = publication_api(endpoint + "/git/ref/tags/" + request["tag"])["object"]
+    for _ in range(4):
+        if ref["type"] == "commit":
+            break
+        require(ref["type"] == "tag" and SHA.fullmatch(ref["sha"]), "invalid release tag target")
+        ref = publication_api(endpoint + "/git/tags/" + ref["sha"])["object"]
+    require(ref == {"type": "commit", "sha": request["source_sha"], "url": ref.get("url")},
+            "release tag does not select accepted source")
+    assets = []
+    for page in range(1, 7):
+        batch = publication_api(endpoint + f"/releases/{request['release_id']}/assets?per_page=100&page={page}")
+        require(isinstance(batch, list) and len(batch) <= 100, "invalid release asset page")
+        assets.extend(batch)
+        require(len(assets) <= 512, "release asset inventory exceeds bound")
+        if len(batch) < 100:
+            break
+    require(len({x["name"] for x in assets}) == len(assets), "ambiguous release asset names")
+    # Download counters and other presentation fields change during our own
+    # public reads. Keep only the actual asset identity/state in the fence.
+    selected = {}
+    for row in assets:
+        require(type(row["id"]) is int and row["id"] > 0 and type(row["size"]) is int,
+                "invalid release asset identity")
+        selected[row["name"]] = {key: row[key] for key in
+            ("id", "name", "size", "state", "browser_download_url")}
+        selected[row["name"]]["digest"] = row.get("digest")
+    return release, selected
+
+
+def readback_asset(asset, expected, request, output):
+    url = f"https://github.com/{PUBLICATION_REPO}/releases/download/{request['tag']}/{expected['name']}"
+    require(asset["name"] == expected["name"] and asset["size"] == expected["size"]
+            and asset["state"] == "uploaded" and asset["browser_download_url"] == url,
+            "public asset identity differs")
+    # Public GET never receives the write token. download checks both size and hash.
+    download(output, {"url": url, "size": expected["size"], "sha256": expected["sha256"]})
+    return url
+
+
+def copy_publication_input(path, output, maximum):
+    # Open the selected input once. Replacement of its pathname cannot change
+    # this read; modification during the copy must still match the accepted hash.
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as source:
+        info = os.fstat(source.fileno())
+        require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= maximum,
+                "bounded regular publication input required")
+        size, hashed = 0, hashlib.sha256()
+        while chunk := source.read(1024 * 1024):
+            size += len(chunk)
+            require(size <= maximum, "publication input grew beyond bound")
+            output.write(chunk)
+            hashed.update(chunk)
+        require(size == info.st_size, "publication input size changed")
+    return {"name": path.name, "size": size, "sha256": hashed.hexdigest()}
+
+
+def publish_accepted(directory, expected_sha256, output):
+    # This command deliberately has no extraction or Forge-reader call. The
+    # independently selected acceptance hash is the handoff into write custody.
+    acceptance_path = directory / "acceptance.json"
+    with io.BytesIO() as retained:
+        row = copy_publication_input(acceptance_path, retained, MAX_METADATA)
+        require(HEX.fullmatch(expected_sha256) and row["sha256"] == expected_sha256,
+                "selected acceptance changed")
+        retained.seek(0)
+        accepted = json.loads(retained.read(), object_pairs_hook=unique)
+    require(set(accepted) == {"schema_version", "kind", "request", "scope", "assets", "selection", "paths", "evidence", "publication"}
+            and accepted["schema_version"] == 1 and accepted["kind"] == "connect-publication-acceptance"
+            and accepted["scope"] == SCOPE and accepted["publication"] == "not_performed", "invalid acceptance")
+    request = checked_publication_request(accepted["request"])
+    require(isinstance(accepted["assets"], list) and len(accepted["assets"]) == len(PUBLICATION_FILES)
+            and [row["name"] for row in accepted["assets"]] == list(PUBLICATION_FILES),
+            "accepted asset allowlist differs")
+    require(not output.exists(), "fresh publication observation directory required")
+    output.mkdir(mode=0o700)
+    assets = output / "assets"
+    assets.mkdir(mode=0o700)
+    report = {"status": "refused_or_partial", "write_attempted": [], "verified_assets": [], "scope": SCOPE}
+    verified_rows = {}
+    try:
+        # Take write-phase custody before any verifier/API call. Original
+        # handoff paths are never reopened after these checked private copies.
+        for expected in accepted["assets"]:
+            name = expected["name"]
+            with (assets / name).open("xb") as retained:
+                row = copy_publication_input(directory / "assets" / name, retained,
+                    MAX_FILE if name == SUBJECTS[0] else MAX_METADATA)
+            require(row == expected, "accepted allowlist bytes differ")
+            (assets / name).chmod(0o400)
+        require(checked_publication_candidate(assets, request)[1] == accepted["assets"],
+                "accepted allowlist bytes differ")
+        verifier_env = read_only_environment(output)
+        for name in SUBJECTS:
+            verify_publication_subject(assets / name, assets / PUBLICATION_FILES[2], request, env=verifier_env)
+        release, original = release_state(request)
+        # Drafts remain draft under their release owner's control. This command
+        # neither creates nor publishes a release/tag, nor invents public URLs.
+        require(not release["draft"], "release owner has not published this selected release")
+        for expected in accepted["assets"]:
+            name = expected["name"]
+            current_release, current = release_state(request)
+            require(not current_release["draft"] and all(current.get(n) == row for n, row in original.items()),
+                    "existing release assets changed")
+            if name in current:
+                # Equal replay is safe only after reading the existing public bytes.
+                pass
+            else:
+                # The anonymous file stays open through gh's stdin read. No
+                # pathname is reopened by the write-capable child process.
+                with tempfile.TemporaryFile("w+b", dir=output) as upload:
+                    row = copy_publication_input(assets / name, upload,
+                        MAX_FILE if name == SUBJECTS[0] else MAX_METADATA)
+                    require(row == expected, "allowlist changed before upload")
+                    upload.seek(0)
+                    report["write_attempted"].append(name)
+                    publication_api(f"https://uploads.github.com/repos/{PUBLICATION_REPO}/releases/{request['release_id']}/assets?name={name}",
+                                    upload=upload)
+                current_release, current = release_state(request)
+                require(not current_release["draft"], "release became private during upload")
+            require(name in current, "uploaded asset was not observed")
+            readback_asset(current[name], expected, request, output / name)
+            report["verified_assets"].append(name)
+            verified_rows[name] = current[name]
+        final_release, final = release_state(request)
+        require(not final_release["draft"] and all(final.get(n) == row for n, row in original.items())
+                and all(final.get(n) == row for n, row in verified_rows.items())
+                and checked_publication_candidate(assets, request)[1] == accepted["assets"],
+                "publication changed during readback")
+        archive = next(row for row in accepted["assets"] if row["name"] == SUBJECTS[0])
+        url = f"https://github.com/{PUBLICATION_REPO}/releases/download/{request['tag']}/{archive['name']}"
+        files = {row["path"]: {"url": url, "archive_size": archive["size"], "archive_sha256": archive["sha256"],
+            "member": "connect-export/" + row["path"], "size": row["size"], "sha256": row["sha256"]}
+            for row in accepted["evidence"]}
+        report.update(status="verified_public_inventory", acceptance_sha256=expected_sha256,
+                      release_id=request["release_id"], tag=request["tag"], files=files,
+                      selection=accepted["selection"], paths=accepted["paths"])
+        return report
+    finally:
+        write_new(output / "publication.json", report)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("preflight", "build", "fetch-built"))
-    command = parser.parse_args().command
+    parser.add_argument("command", choices=("preflight", "build", "fetch-built", "accept-publication", "publish-accepted"))
+    for name in ("request", "candidate", "meta-source", "accepted", "output"):
+        parser.add_argument("--" + name, type=Path)
+    parser.add_argument("--acceptance-sha256")
+    args = parser.parse_args()
+    command = args.command
     if command == "preflight":
         preflight()
     elif command == "build":
         build()
-    else:
+    elif command == "fetch-built":
         fetch_built()
+    elif command == "accept-publication":
+        require(all((args.request, args.candidate, args.meta_source, args.output)), "acceptance paths required")
+        accept_publication(args.request, args.candidate, args.meta_source, args.output)
+    else:
+        require(all((args.accepted, args.acceptance_sha256, args.output)), "selected acceptance and output required")
+        publish_accepted(args.accepted, args.acceptance_sha256, args.output)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# Connect Linux candidate draft
+# Connect Linux candidate and publication
 
 This manual-only workflow is source preparation for the Core/Meta 0.9.4 installed
 selection. It does not publish, tag, install on a user host, dispatch another
@@ -103,12 +103,123 @@ whose existing owner must provide clean source/build provenance. This workflow
 does not invent missing library/tool build receipts. Public availability of an old archive is
 not a substitute for that provenance or current source equality.
 
+## Accept an exact candidate without write credentials
+
+`accept-publication` accepts an already emitted candidate. It does not run the
+build or fetch commands. Use a separate environment without GitHub write
+credentials; its verifier and Meta-reader child processes receive a scrubbed
+home/configuration and no inherited credential environment.
+
+```sh
+python3 scripts/connect-candidate.py accept-publication \
+  --request /path/to/selected-publication-request.json \
+  --candidate /path/to/candidate-files \
+  --meta-source /path/to/selected-meta-checkout \
+  --output /path/to/new-acceptance-directory
+```
+
+These paths describe a future selected operation, not runnable release inputs
+from this draft. The request must contain exactly these nine fields:
+
+| Field | Required value |
+| --- | --- |
+| `source_sha` | Exact 40-character lowercase Git commit SHA of the candidate's public Connect source. |
+| `source_tree` | Exact 40-character lowercase source tree SHA retained by that candidate. |
+| `source_ref` | Selected branch ref in `refs/heads/...` form. |
+| `run_id`, `run_attempt` | Positive integer identities of the same workflow invocation. |
+| `inputs_sha256` | Exact 64-character lowercase SHA-256 of the original committed input selection. |
+| `connect_version` | Exact selected native package version in `major.minor.patch` form; not inferred from Core or Meta. |
+| `release_id`, `tag` | Positive integer ID and exact tag of the existing release selected for later publication. |
+
+The candidate directory must supply these three original files:
+
+- `connect-linux-candidate.tar.gz`, the complete candidate closure below 2 GiB.
+- `connect-candidate.json`, its original attested manifest, at most 32 MiB.
+- `connect-provenance.jsonl`, the attestation bundle for both subjects, at most
+  32 MiB. Unsigned bundle JSON is not verification evidence.
+
+The repository is fixed to `lukacf/meerkat-connect` and the workflow to
+`.github/workflows/connect-candidate.yml`. GitHub's `gh attestation verify`
+verifies each subject; the checked result must match the exact source,
+workflow, ref, run/attempt, issuer and GitHub-hosted runner. The manifest and
+original input selection bind the input digest, native releases and Connect
+version. The Meta checkout must be the exact selected published `v0.9.4`
+commit, with a clean original `installer/launchkit` package and matching reader
+source pins. Neither an SDK wheel nor a separate reader wheel substitutes for
+that checkout.
+
+Acceptance performs bounded data-only extraction, preserves original bytes,
+and checks the complete retained inventory. The selected Meta package supplies
+`parse_candidate_selection`, `packaged_runtime.relocate_selection` and
+`selected_runtime_artifacts`; only that owner relocates physical paths in its
+in-memory view. The original v1 selection and producer records are not
+rewritten. The reader must accept `installed-gateway-assembly` with the exact
+installed preview scope, including the original product checksum sidecar.
+Development and staging substitutions refuse.
+
+The output directory must not exist. Success writes `acceptance.json` with the
+exact request, scope, three asset hashes/sizes, original selection, physical
+layout map and owner-validated evidence inventory; `publication` remains
+`not_performed`. It also retains `assets/`, `unpacked/`, the layout and both
+verified subject results. A refused acceptance may leave partial local files;
+it produces no completed acceptance record. Select the exact SHA-256 of the
+successful `acceptance.json` independently before handing it to the writer.
+This record is a local operation handoff, not a new runtime-selection format.
+
+## Publish only the accepted bytes
+
+`publish-accepted` is the separate write-capable command. It requires an already
+public repository and an existing non-draft release whose tag resolves to the
+accepted source. It creates no release or tag, changes no release state and
+overwrites no conflicting asset. Release creation and authorization remain with
+the release owner.
+
+```sh
+python3 scripts/connect-candidate.py publish-accepted \
+  --accepted /path/to/acceptance-directory \
+  --acceptance-sha256 "$SELECTED_ACCEPTANCE_SHA256" \
+  --output /path/to/new-publication-observation
+```
+
+`--accepted` selects the prior `acceptance.json` and `assets/` directory.
+`--acceptance-sha256` is its independently selected exact lowercase SHA-256;
+`--output` must not exist. The writer parses the same bytes it hashes, retains
+and rechecks the three allowlisted assets, and repeats attestation verification
+before any upload. Only those original three assets can be added. It imports
+no product or Forge code and performs no archive extraction. Each upload keeps
+the verified bytes in an open anonymous file through `gh --input -`, so replacing
+an input path cannot substitute unaccepted bytes at the public write.
+
+The writer checks actual public repository visibility and exact release/tag
+identity before upload and on subsequent release observations. Existing equal
+assets require unauthenticated public readback without reupload. Newly uploaded
+assets require the same size/digest readback. A final state check must preserve
+all original and newly verified asset identities. These are observations at
+the time of publication; they do not promise that another owner will never
+change the release afterward.
+
+Once the writer enters its retained-asset phase, `publication.json` records
+`refused_or_partial`, attempted uploads and verified assets if any step fails.
+Earlier argument or handoff refusal may occur before that report exists. No
+partial result contains a final file inventory, and uploaded assets are not
+deleted as rollback. Only complete readback and final checks produce
+`status: verified_public_inventory`, the selected acceptance digest, release ID,
+tag, original selection and layout, and public wrapper-member URLs with exact
+archive/member sizes and hashes. This is the final public URL inventory; an
+Actions artifact alone is not that handoff.
+
 ## Scope and remaining work
 
-This draft was checked by source reading, Python AST parsing, JSON parsing,
-YAML parsing and exact patch roundtrip only. No Cargo, packager, verifier, Forge
-module, native binary, GitHub job or remote host was executed for this draft.
-The selected source and input joins still need a real owner-authorized CI run.
+The candidate workflow was checked by source reading, Python AST parsing,
+JSON parsing, YAML parsing and exact patch roundtrip. The publication commands
+also passed 50 offline controls using controlled verifier results, a controlled
+reader and transport responses. Those controls include input substitution,
+conflicting assets, partial writes and repository visibility changes. They do
+not establish actual signature verification, published Meta-reader acceptance,
+public upload or Forge inclusion. No Cargo, packager, native verifier, native
+binary, GitHub job or remote host was executed for this draft. Actual attested
+candidate inputs and the exact published Meta package must still pass acceptance;
+the selected source and input joins need a real owner-authorized CI run.
 The Linux installed-product scope is narrower than shared setup workflow,
 acquisition, account login, model/task completion, installation or another OS.
 
@@ -120,5 +231,6 @@ not a public release asset and does not satisfy Forge's public-fetch allowlist.
 The complete wrapper is required to stay below 2 GiB, matching Forge's public
 input/archive bound; an oversized closure refuses before upload/attestation.
 The final product archive and its original `.sha256` sidecar are both retained.
-The later publisher must publish the accepted original bytes, including the
+The separate publisher preserves the accepted original bytes, including the
 complete indirect producer records, without sanitizing, rebuilding or resigning.
+Its presence does not authorize a CI run or publication of the unbound draft.
