@@ -17,12 +17,19 @@ The correction retries once only when native policy-change refusal confirms
 nonadmission, preserving the same input and deadline. Cancellation, expiry and
 uncertain acceptance retain their distinct outcomes.
 
-The two-requester SDK case still fails. Both initial finds succeed, but helper A's
-selected check returns `operation_authorization_unavailable`; a separate generic
-helper admission refusal remains unattributed. Cancellation and sibling survival
-remain unreached. Its passing cleanup assertion does not qualify the unfinished
-shared flow. One pre-spawn lead, native context delivery, gateway/reset consumption
-and remote restart remain open.
+The latest two-requester SDK diagnostic still fails. A's first Find reports
+`operation_authorization_unavailable`; its cause is unassigned. B reaches the
+held installer, then the two-requester barrier expires. Cancellation and sibling
+survival remain unreached. Both native attempts close with their direct children
+reaped, the Python owner exits and the worker count reaches zero. This cleanup
+evidence does not qualify the unfinished shared flow.
+
+A separate, unadopted planning-lead candidate now compiles and passes five focused
+local authority-custody controls. Its first native launch control fails the
+expected fresh-admission assertion; the returned classification needs targeted
+diagnosis. The other five launch controls have not run. These results do not
+establish an admitted shared lead or actual context delivery. One pre-spawn lead,
+per-waiter delivery, gateway/reset consumption and remote restart remain open.
 [Source provenance](../../SOURCE-PROVENANCE.md#shared-preparation-and-source-owner-currentness-work-in-progress)
 records the precise scope. Published 0.9.0 assets remain unchanged.
 

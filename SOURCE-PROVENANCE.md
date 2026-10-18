@@ -95,6 +95,34 @@ in-test cleanup assertion and command/transport joins pass, without exported
 individual native process receipt bodies. These results qualify the helper
 repair, not shared SDK completion. Published 0.9.0 assets are unchanged.
 
+### Latest SDK diagnostic and first planning-lead candidate
+
+The later diagnostic outcome `ff0c8532`, independently reviewed in `5c03b653`,
+records a different SDK failure: A's first Find returns
+`operation_authorization_unavailable`. It does not identify the cause. B reaches
+the held installer, then the two-requester barrier expires. Cancellation and
+sibling survival remain unreached. Both actual native attempts close with their
+direct children reaped at exit 0; the Python owner is gone and the retained worker
+count is zero. Temporary diagnostics were restored. These observations do not
+replace the distinct earlier failed runs above or establish shared SDK success.
+
+A separate planning-lead source candidate remains isolated from this public
+checkpoint. Its first compile failed (`9e3626e5`, review `183c1879`) before any
+control ran. A two-path correction fixed a missing import and used SetupStore's
+existing public load-and-validation contract. The retry (`20e23085`, review
+`f43e1160`) compiles and passes five focused custody controls using real local
+grant authority with synthetic admitted-source acknowledgements.
+
+The retry's first actual native launch control fails its fresh-admission
+assertion. The returned variant was not recorded, so no cause is assigned; the
+remaining five launch controls did not run. The fixture's cleanup assertion and
+outer command joins pass, without exported inner shutdown receipt bodies. These
+results do not establish actual G admission, protected context delivery or
+physical MCP cleanup. Private documentation checkpoint
+`b0f631451172e9905f70e1588fa4d49d226378ed` records this failed outcome. No candidate
+launch source or temporary diagnostics are included here. Published 0.9.0 assets
+remain unchanged.
+
 ### Explicit Node build plans
 
 Private Toolkit checkpoint `07172f52e03b4a3c0ec9f383651bbfde4ebc2364` contributes 19 source/test
