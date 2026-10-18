@@ -60,10 +60,11 @@ independently reviewed consumer adapts SDK and stdio hosts to consume that compl
 existing host close boundary and start the same retained recovery owner. Actual
 held owners remain retained through cancellation and close. Seven SDK cases,
 refusal after host/runtime/admission close, and the actual stdio recovery
-regression were selected. The actual r7 dependency graph passes validation, but
-compilation fails in the new audit fixture because InputId has no Ord implementation.
-None of the nine cases ran. A duplicate-detection collection correction and the
-same native cases are next; automatic context delivery remains unqualified.
+regression were selected. The first r7 attempt passed dependency validation, then
+failed compilation because the new audit fixture required Ord for InputId. No
+tests ran in that attempt. The reviewed one-line HashSet correction now compiles
+in 320.033 seconds, and the first of the same nine native cases is running.
+Automatic context delivery remains unqualified until the actual test outcome.
 
 A separate admission-recovery gap is confirmed: retaining an uncertain Original
 does not schedule recovery, and abandoned candidates have no enforced recovery
@@ -117,31 +118,33 @@ builds successfully on the same complete r6 graph. Its exact executable is
 `f8aeb885`; the build, restored source and joined build owners are verified.
 The two-path correction is checkpointed locally in the private and public
 development trees; no push or release follows from that checkpoint.
-The fresh-stage idle rerun now reaches one Find, 12 exact pending Search results,
-a successful thirteenth Search, Load and schema inspection, with both native
-interactions completing. Its verifier still fails: it counts a session-history
-projection of Find as a second live execution. The recorded native calls have
-16 distinct IDs; the duplicate display has an explicit session_history source.
-A narrow provenance-filter correction has independent review; its affected rerun
-also filters the outer checker's count by native source. That rerun passes native
-completion, then fails a second checker assumption: it expects one successor offer.
-The actual unused Initial is cancelled before spawn and correctly reused as a new
-Initial with zero offers. The reviewed correction requires exact old/new attempt
-identities, native cancellation and settlement joins, and final local drain. Its
-14 recorded controls pass; the complete affected rerun is still required.
-The separate installed-product positive fails in its controlled provider after ten
-exact pending catalog replies;
-Load, Inspect and service use remain unentered, as does the corruption case.
-The reviewed driver correction accepts only exact pending replies until the
-existing acquisition and request bounds. Its native rerun remains required.
-Full reset acceptance, reset after an initialized helper and the complete
-installed-product check remain unqualified; earlier failures are retained.
+The corrected idle-reset case now passes on that same installed gateway. Actual
+Find, 12 pending Searches, the successful thirteenth Search, Load and schema
+inspection produce 16 distinct native tool pairs and both native completions.
+The old unused Initial is Cancelled/NotSpawned; the replacement is Initial
+Installed/Closed with zero successor offers. Exact attempt identities, four native
+joins, the cold historical source row and final local drain all pass. SDK readers,
+provider, listener and observed children settle, and the gateway exits normally.
+This qualifies the idle-helper case; reset after an initialized helper remains a
+separate pending case. The earlier provenance and one-offer checker failures are
+retained in the qualification report.
 
-Both failed installed runs retain actual native shutdown acknowledgments and
-normal gateway exit. The latest provider and three command groups join without
-forced cleanup. Success-only SDK reader, listener and descendant assertions
-remain unentered. A missing pre-reset child observation does not prove old-helper
-transport join. Complete installed reset recovery remains unqualified.
+The installed-product positive and resource-corruption negative also pass. The
+positive follows 34 exact pending catalog replies, installs the selected
+integration, loads it for the original agent and performs a public Hacker News
+read. The exact original input has a durable finalized/completed receipt with one
+attempt and three native tools. The corruption case changes an isolated bundled
+resource and refuses startup before any setup command; the original resource
+stays unchanged. This uses a scripted model/provider with real native execution
+and a real public read. It does not qualify free-form discovery or account auth.
+Both cases settle their provider/readers and observed children; the positive
+closes its listener. The negative's exit 1 is the expected startup refusal, with
+no negotiated native shutdown. All outer command/cache/transport owners join.
+Native healthy closure may send its recorded final group cleanup signal; no
+SIGTERM/SIGKILL escalation is observed.
+
+The two verified checker files are now checkpointed locally as private
+`4ecfd6e2` and public `742f281d`. The released 0.9.0 checkout remains unchanged.
 
 Connect has accepted the Core lead's proposed `DomainBound::OwnedBy` adoption for
 0.9.4. Catalog, setup and report/account/public parent grants will bind the actual
