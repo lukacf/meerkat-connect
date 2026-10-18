@@ -55,13 +55,23 @@ native Ready, which enabled context transfer needs to acquire its recovery owner
 This does not identify the unique producer of the generic refusal. The supported
 in-process completion API is now offered in development-only
 [Meta r7](https://github.com/lukacf/meerkat-meta/commit/d66f444ef4c4bc50af6a18ac727791aaf21a4541),
-with the same Core `75a23265` and unchanged Python/TypeScript SDK trees. Connect is
-adapting SDK and stdio hosts to consume that one-use native completion under the
+with the same Core `75a23265` and unchanged Python/TypeScript SDK trees. Connect's
+independently reviewed consumer adapts SDK and stdio hosts to consume that completion under the
 existing host close boundary and start the same retained recovery owner. Actual
 held owners remain retained through cancellation and close. Seven SDK cases,
 refusal after host/runtime/admission close, and the actual stdio recovery
 regression are selected next. This consumer is not yet executed; automatic
 context delivery remains unqualified.
+
+A separate admission-recovery gap is confirmed: retaining an uncertain Original
+does not schedule recovery, and abandoned candidates have no enforced settlement
+budget. The Core lead accepted the source-owner contract: from first custody,
+Connect must drive the same input to proven admission or permanently withdraw
+source custody within its budget. Withdrawal preserves the uncertain native input
+and binding, prevents resurrection or fresh duplicate submission, and makes no
+claim of native cancellation. The entered native operation remains owned until
+actual settlement or close. Connect implementation is next; r7 startup alone does
+not close this gap.
 
 The latest full SDK diagnostic passes both Find calls, both helper catalogs,
 selected checks, exact independent approvals, cancellation of one caller and the
@@ -102,13 +112,19 @@ The existing live-helper control also reaches actual healthy closure on its
 small test bundle. A fresh production gateway containing the correction now
 builds successfully on the same complete r6 graph. Its exact executable is
 `f8aeb885`; the build, restored source and joined build owners are verified.
+The two-path correction is checkpointed locally in the private and public
+development trees; no push or release follows from that checkpoint.
 The fresh-stage idle rerun now reaches one Find, 12 exact pending Search results,
 a successful thirteenth Search, Load and schema inspection, with both native
 interactions completing. Its verifier still fails: it counts a session-history
 projection of Find as a second live execution. The recorded native calls have
 16 distinct IDs; the duplicate display has an explicit session_history source.
-A narrow provenance-filter correction and affected rerun are next. The existing
-installed-product positive and corruption negative are selected independently.
+A narrow provenance-filter correction has independent review; its affected rerun
+also filters the outer checker's count by native source. The separate installed-product
+positive fails in its controlled provider after ten exact pending catalog replies;
+Load, Inspect and service use remain unentered, as does the corruption case.
+The reviewed driver correction accepts only exact pending replies until the
+existing acquisition and request bounds. Its native rerun remains required.
 Full reset acceptance, reset after an initialized helper and the complete
 installed-product check remain unqualified; earlier failures are retained.
 
