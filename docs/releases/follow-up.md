@@ -72,6 +72,14 @@ were verified before the timeout. The later cleanup-time Install refusal and
 script panic are secondary; the main cleanup assertion and command-owner joins
 pass. Automatic context delivery remains unqualified; source diagnosis continues.
 
+A subsequent one-case diagnostic run compiles and fails at a different boundary.
+Both helpers start and load their catalog, but B's selected operation check returns
+operation_authorization_unavailable before the main timeout. A's check succeeds
+and installation begins. The earlier helper-readiness refusal does not recur,
+so its cause remains open. The source files are restored afterward and all
+command owners join. Exact operation-stage diagnosis is next; neither failure
+qualifies automatic context delivery or permits r7 adoption.
+
 A separate admission-recovery gap is confirmed: retaining an uncertain Original
 does not schedule recovery, and abandoned candidates have no enforced recovery
 bound. The Core lead's latest direction bounds pending by the owner's
