@@ -311,3 +311,136 @@ impl PrivateOriginals {
         self.depart_cancelled_workflows(&[current]).await
     }
 }
+
+/// Cleanup of one terminal acquisition. This never acknowledges its Original
+/// continuation, waiter context delivery, installation or native run cleanup.
+pub(crate) enum WorkflowTerminalRecovery {
+    NotSelected,
+    Departed,
+    CleanupPending,
+}
+
+impl PrivateOriginals {
+    /// Called only by the existing joined host recovery owner. Page metadata is
+    /// not a terminality witness. Select through the existing retained workflow
+    /// choice before reopening the canonical result and immutable request.
+    pub(crate) async fn reconcile_terminal_workflow_acquisition(
+        &self,
+        candidate: &meerkat_toolkit::setup::ContinuationRecoveryCandidate,
+    ) -> Result<WorkflowTerminalRecovery, PrivateOriginalError> {
+        self.reconcile_terminal_workflow_candidate(candidate, self.store.as_ref()).await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn terminal_workflow_with_read_probe(
+        &self,
+        candidate: &meerkat_toolkit::setup::ContinuationRecoveryCandidate,
+        store: &dyn toolkit_store::ToolkitStore,
+    ) -> Result<WorkflowTerminalRecovery, PrivateOriginalError> {
+        self.reconcile_terminal_workflow_candidate(candidate, store).await
+    }
+
+    async fn reconcile_terminal_workflow_candidate(
+        &self,
+        candidate: &meerkat_toolkit::setup::ContinuationRecoveryCandidate,
+        read_store: &dyn toolkit_store::ToolkitStore,
+    ) -> Result<WorkflowTerminalRecovery, PrivateOriginalError> {
+        self.service_input_host_current()?;
+        let selected = {
+            let retained = self.retained.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            match retained.iter().find(|held| held.original.association() == candidate.association()) {
+                None => false,
+                Some(held) => {
+                    let choices = held.workflow_selections.lock()
+                        .map_err(|_| PrivateOriginalError::Unavailable)?;
+                    choices.iter().any(|choice| choice.correlation == *candidate.correlation()
+                        && choice.selection.is_some())
+                },
+            }
+        };
+        // Absence is only a live-owner selection result, not proof that a
+        // durable obligation is closed. Ordinary historical rows need no
+        // canonical terminal/task reads and do not cause unavailable backoff.
+        if !selected { return Ok(WorkflowTerminalRecovery::NotSelected); }
+        let operation = candidate.operation();
+        let store = SetupStore::new(read_store, SetupScope::new(
+            Id::new(self.scope.realm.clone()).map_err(|_| PrivateOriginalError::Conflict)?,
+            Id::new(self.scope.owner.clone()).map_err(|_| PrivateOriginalError::Conflict)?,
+        )).map_err(|_| PrivateOriginalError::Unavailable)?;
+        let result = store.committed_continuation(operation).await
+            .map_err(|_| PrivateOriginalError::Unavailable)?;
+        self.service_input_host_current()?;
+        let Some(result) = result else { return Ok(WorkflowTerminalRecovery::NotSelected); };
+        let Some(task) = result.continuation().native_original.as_ref() else {
+            return Ok(WorkflowTerminalRecovery::NotSelected);
+        };
+        // Reuse the source owner's exact native-task read port. No expired
+        // setup token is reused, and no request content leaves this owner.
+        let acquisition = store.service_task_snapshot(operation, task).await
+            .map_err(|_| PrivateOriginalError::Unavailable)?;
+        self.service_input_host_current()?;
+        if acquisition.state().terminal_revision == 0
+            || acquisition.state().terminal_revision != result.terminal_revision()
+            || acquisition.request().original_work() != result.original_work()
+            || acquisition.request().evidence().association() != candidate.association()
+            || acquisition.request().host().correlation != *candidate.correlation()
+        { return Err(PrivateOriginalError::Conflict); }
+        let (original, planning) = {
+            let retained = self.retained.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            let held = retained.iter().find(|held| held.original.association()
+                == acquisition.request().evidence().association())
+                .ok_or(PrivateOriginalError::Unavailable)?;
+            let choices = held.workflow_selections.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            let planning = choices.iter().find(|choice|
+                choice.correlation == acquisition.request().host().correlation)
+                .and_then(|choice| choice.selection.clone());
+            (held.clone(), planning)
+        };
+        let Some(planning) = planning else { return Ok(WorkflowTerminalRecovery::NotSelected); };
+        let owner = planning.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
+        if !std::ptr::eq(self, owner.as_ref()) { return Err(PrivateOriginalError::Denied); }
+        let reference = store.workflow_ref(planning.terms()).map_err(|_| PrivateOriginalError::Conflict)?;
+        let workflow = match store.load_setup_workflow(&reference).await {
+            Ok(workflow) => workflow,
+            Err(meerkat_toolkit::setup::SetupError::Store(StoreError::NotFound)) =>
+                return Ok(WorkflowTerminalRecovery::NotSelected),
+            Err(_) => return Err(PrivateOriginalError::Unavailable),
+        };
+        self.service_input_host_current()?;
+        let source_key = self.key(&original.reference)?;
+        let expected = store.workflow_waiter(planning.terms(), &acquisition, source_key.clone())
+            .map_err(|_| PrivateOriginalError::Conflict)?;
+        // A can own several independent acquisitions. Terminality of one must
+        // not retire every waiter for the same Original, including late B/C.
+        let Some(membership) = workflow.waiters_for_source(&source_key).into_iter()
+            .find(|waiter| waiter.acquisition() == acquisition.key())
+        else { return Ok(WorkflowTerminalRecovery::NotSelected); };
+        if membership != expected { return Err(PrivateOriginalError::Conflict); }
+        let attached = {
+            let retained = self.retained.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            retained.iter().find(|held| held.reference == planning.submission.original)
+                .and_then(|held| held.setup_workflow.get().cloned())
+        };
+        // Serialize against retain_waiter's phase read and relationship insert.
+        // Retire only exact A membership calls under the common publication.
+        // Entered custody/receipts stay owned; an interrupted departure cannot
+        // reopen these calls. A's source and its legitimate result stay live.
+        self.owner.retire_workflow_membership(original.original.association(), || {
+            let Some(attached) = attached else { return Ok(Vec::new()); };
+            if attached.reference != reference { return Err(OriginalWriterError::Conflict); }
+            let waiters = attached.waiters.lock().map_err(|_| OriginalWriterError::Unavailable)?;
+            Ok(waiters.iter().filter(|waiter| waiter.membership == membership)
+                .map(|waiter| waiter.authority.clone()).collect())
+        }).await.map_err(custody_error)?;
+        self.service_input_host_current()?;
+        let departed = planning.depart_waiter(&membership).await?;
+        if departed.sealed() && departed.active_waiters() == 0 {
+            self.service_input_host_current()?;
+            if !matches!(planning.observe_close(&reference).await,
+                Ok(WorkflowCloseObservation::SourceFencedAndNotAdmitted
+                    | WorkflowCloseObservation::SourceFencedAndFinalized { .. }))
+            { return Ok(WorkflowTerminalRecovery::CleanupPending); }
+        }
+        Ok(WorkflowTerminalRecovery::Departed)
+    }
+}

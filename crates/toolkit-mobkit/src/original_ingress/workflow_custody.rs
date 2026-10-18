@@ -52,6 +52,35 @@ pub(crate) struct WorkflowCallCustody {
 }
 
 impl ToolkitOriginalOwner {
+    /// The existing terminal/departure owner selects exact relationships while
+    /// holding the same source writer as retain_waiter. This is cleanup only:
+    /// the admitted A remains live for its continuation and unrelated work.
+    /// The selector cannot create a relationship or carry a cached allowance.
+    pub(crate) async fn retire_workflow_membership<F>(
+        &self,
+        waiter: &InputAuthorityAssociation,
+        select: F,
+    ) -> Result<(), OriginalWriterError>
+    where
+        F: FnOnce() -> Result<Vec<Arc<WorkflowWaiterCustody>>, OriginalWriterError>,
+    {
+        self.reconcile_followup_source(waiter, || async {
+            let selected = select()?;
+            if selected.iter().any(|item| !std::ptr::eq(self, item.owner.as_ref())
+                || item.waiter.association() != waiter)
+            { return Err(OriginalWriterError::WrongOwner); }
+            // Replay still closes every exact entry, including a prior partial
+            // close. Only a newly retired relationship changes policy: empty
+            // or already-retired sweeps must not invalidate unrelated work.
+            let _publication = if selected.iter().any(|item| !item.retired.load(Ordering::Acquire)) {
+                Some(self.publication.begin_owner_change()
+                    .map_err(|_| OriginalWriterError::Unavailable)?)
+            } else { None };
+            for item in selected { item.retire_under_writer()?; }
+            Ok(())
+        }).await?
+    }
+
     /// Called only by the native workflow launch fence. No reservation exists
     /// before this synchronous entry boundary. The same source writer orders
     /// cancellation against both the actual A check and its entered custody.
@@ -195,6 +224,12 @@ impl WorkflowWaiterCustody {
             .publication
             .begin_owner_change()
             .map_err(|_| OriginalWriterError::Unavailable)?;
+        self.retire_under_writer()
+    }
+
+    // Only this owner module calls this while its mutation and publication
+    // writers are held. Never reacquire either writer from the cleanup path.
+    fn retire_under_writer(&self) -> Result<(), OriginalWriterError> {
         self.retired.store(true, Ordering::Release);
         let calls = self
             .calls

@@ -18,8 +18,9 @@ use meerkat_runtime::meerkat_machine::AuthenticatedOriginal;
 use meerkat_toolkit::host_lifetime::{NativeHostLifetime, control::HostLifetimeError};
 
 impl PrivateOriginals {
-    /// The existing gateway installs its own lifetime once, alongside the
-    /// actual machine link. This weak back reference cannot keep a host alive.
+    /// Select the exact host once, or confirm that same live owner during
+    /// bootstrap after a restrictive workflow reservation. This weak reverse
+    /// reference cannot keep a host alive or transfer to a replacement host.
     pub(crate) fn bind_host_lifetime(
         &self,
         lifetime: &Arc<NativeHostLifetime>,
@@ -32,8 +33,12 @@ impl PrivateOriginals {
         {
             return Err(PrivateOriginalError::Denied);
         }
-        self.host_lifetime.set(Arc::downgrade(lifetime))
-            .map_err(|_| PrivateOriginalError::Denied)
+        // Concurrent confirmations inspect the actual winner. An expired
+        // selection remains closed; equal serialized policy is not identity.
+        let selected = self.host_lifetime.get_or_init(|| Arc::downgrade(lifetime))
+            .upgrade().ok_or(PrivateOriginalError::Denied)?;
+        if Arc::ptr_eq(&selected, lifetime) { Ok(()) }
+        else { Err(PrivateOriginalError::Denied) }
     }
 
     pub(super) async fn binding_for_input(

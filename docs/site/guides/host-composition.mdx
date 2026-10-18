@@ -96,6 +96,51 @@ Installing a package does not grant every operation it exports. Operation
 filtering does not make an unsafe selected operation or unsafe startup behavior
 safe: inspect those behaviors before installation and access approval.
 
+## Select a fresh planning member (unreleased)
+
+A host can reserve a compiled member for a workflow's planning lead during a
+fresh full-roster bootstrap. Supply a fresh `DurableAgentSpec` with
+`InternalOnly` addressability and no existing context, initial message, binding
+or placement. Distinct workflows can select distinct compiled members; the
+member name is not a global singleton.
+
+Retain the canonical workflow terms and the exact authenticated planning source
+before construction. The planning grant must be independently issued to the
+lead. One waiter's cancellation does not by itself revoke the shared planning
+source or its grant; final departure still drives source closure and cleanup.
+A workflow reference or member selection supplies no grant.
+
+| Host step | Development API |
+| --- | --- |
+| On the composed gateway, reserve the selected fresh member before `prepare_bootstrap` | Await `ToolkitGatewayHost::reserve_workflow_member`; retain its returned `InstalledWorkflowMember` |
+| Confirm the exact host and bind the actual machine, with the same registration owner | The normal `GatewayHostComposition::prepare_bootstrap` call |
+| Complete the captured member inside the actual held full-roster callback, before release | Await `InstalledWorkflowMember::complete_held_member` with that member's `HeldIdentityMember` |
+| After the parent is admitted, retain its independently authorized planning selection for the exact original invocation | `PrivateOriginals::prepare_workflow_planning`, returned as `InstalledOriginalTaskBinding::planning` by `InstalledOriginalTaskOwner::original_binding` |
+
+The gateway validates the selection before reserving it, then selects its exact
+host lifetime in the existing source owner and composes the restriction with its
+existing registration hook. Invalid reservations leave the lifetime unselected.
+Normal bootstrap confirms the same live host and binds the actual machine; a
+different host cannot take over a reservation. A later bootstrap failure retains
+the restriction and does not mean the member was activated. While any reserved
+destination lacks its actual registration capture, native input admission for
+this host remains unavailable. This temporary hold is part of fresh full-roster
+construction; reservation on an active host is unsupported. The gateway
+reservation is the public composition path; it retains the registration
+participant internally.
+
+Keep the existing factory, registration and `MemberMcpCustody` owners. The
+registration and input owners enforce the workflow restriction against the
+captured native session and controller, including for retained inputs.
+`InstalledWorkflowMember::session` is an observation, not a capability to
+stop or replace a member. An explicit `planning: None` preserves ordinary
+singleton setup; an unavailable selected workflow does not fall back to it.
+
+This path does not append a new member to an active roster. Online creation after
+request coalescing, authorized waiter-context delivery and active lead retirement
+remain under development. Selecting a member alone does not establish the complete
+shared setup journey.
+
 ## Cancel one original's operations
 
 These APIs describe unreleased development source. For an authenticated original
@@ -119,6 +164,18 @@ cancellation is not required to drive it. Neither state means every entered
 operation, process or model run has stopped. Sibling requests and shared access
 retain their own owners. A timeout leaves the outcome unknown; the SDK does not
 repeat the command automatically.
+
+For a selected shared workflow, the same recovery worker also departs the exact
+acquisition when setup expires or commits its result. It retires that membership's
+future delegated calls while preserving sibling memberships and the Original's
+other work. A pending result continuation remains deliverable; an acknowledged
+continuation is not replayed to perform cleanup.
+
+After the last waiter leaves, cleanup fences the lead's future effects and
+observes its exact admission or terminal receipt. Active, unknown or receipt-less
+work remains pending. This observation does not establish member retirement or
+physical MCP cleanup. Keep the existing recovery owner running after the caller
+returns.
 
 Use matching development SDK and host generations. Older SDK decoders reject the
 pending-cleanup state, and bootstrap v1 does not negotiate it. Focused

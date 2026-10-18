@@ -21,7 +21,7 @@ pub(crate) mod setup_results;
 mod setup_admission;
 pub(crate) mod setup_helpers;
 pub(crate) mod setup_workflow;
-pub use setup_workflow::InstalledWorkflowPlanning;
+pub use setup_workflow::{InstalledWorkflowPlanning, InstalledWorkflowMember};
 pub(crate) use setup_workflow::WorkflowLaunchObservation;
 pub(crate) mod service_grants;
 mod governed_submit;

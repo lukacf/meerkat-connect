@@ -46,6 +46,7 @@ mod retained_resume;
 mod historical_admission;
 pub(crate) mod shared_entry;
 pub(crate) mod workflow_custody;
+pub(crate) mod workflow_member;
 
 pub(crate) fn controller_only_basis(basis: &WorkAuthorityBasis) -> bool {
     matches!(basis, WorkAuthorityBasis::TargetedGrantLineages { base: None, targets } if targets.is_empty())
@@ -308,6 +309,8 @@ pub struct ToolkitOriginalOwner {
     originals: Mutex<Vec<OriginalRecord>>,
     // Ephemeral native-send to Controller-decision custody, never permission.
     shared_entries: Mutex<Vec<Arc<shared_entry::SharedEntry>>>,
+    // Restrictive selections captured by the real registration owner.
+    workflow_members: Mutex<Vec<workflow_member::SelectedWorkflowMember>>,
 }
 
 impl toolkit_store::RecordChangePublication for ToolkitOriginalOwner {
@@ -382,6 +385,7 @@ impl ToolkitOriginalOwner {
             mutation: tokio::sync::Mutex::new(()),
             originals: Mutex::new(Vec::new()),
             shared_entries: Mutex::new(Vec::new()),
+            workflow_members: Mutex::new(Vec::new()),
         }
     }
 
@@ -448,7 +452,7 @@ impl ToolkitOriginalOwner {
         operation_owner: Arc<dyn OperationPolicyOwner>,
         retained_resume: Option<Arc<NativeRetainedResumeCheck>>,
     ) -> NativeGrantWorkConfiguration {
-        ScopedGrantComposition {
+        let mut configuration = ScopedGrantComposition {
             grants: self.grants.clone(),
             ingress_domain: self.ingress_domain.clone(),
             originals: self.clone(),
@@ -456,7 +460,15 @@ impl ToolkitOriginalOwner {
             operation_owner,
             retained_resume,
         }
-        .into_configuration()
+        .into_configuration();
+        let ordinary = configuration.ingress.clone();
+        let owner = Arc::downgrade(self);
+        configuration.ingress = Arc::new(move |runtime, input, ingress, association| {
+            let owner = owner.upgrade().ok_or_else(workflow_member::unavailable)?;
+            owner.check_workflow_member(runtime, association, ingress.controller_client())?;
+            ordinary(runtime, input, ingress, association)
+        });
+        configuration
     }
 
     /// Create an original-specific child under the host-selected operation base.

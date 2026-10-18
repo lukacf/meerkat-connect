@@ -20,9 +20,12 @@ use meerkat_toolkit::{
 use toolkit_package::ContentDigest;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod member;
+pub use member::InstalledWorkflowMember;
 mod launch;
 pub use launch::InstalledWorkflowPlanning;
 pub(crate) use launch::WorkflowLaunchObservation;
+pub(crate) use launch::WorkflowTerminalRecovery;
 pub(crate) use launch::InvocationPlanning;
 pub(in crate::private_originals) use launch::PreparedWorkflowLaunch;
 

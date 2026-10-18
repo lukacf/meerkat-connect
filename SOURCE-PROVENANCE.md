@@ -62,8 +62,9 @@ unacknowledged launch needs reconciliation and a late waiter gets a fresh pendin
 delivery rather than inheriting an earlier result.
 
 All five focused SQLite controls pass in outcome `6c8e61ce`, independently
-reviewed in `f65e7fbe`. Native planning-lead
-launch, actual context delivery and per-waiter operation authority remain unwired.
+reviewed in `f65e7fbe`. At that checkpoint native planning-lead launch was
+unwired; later admission results are recorded below. Protected context delivery
+and per-waiter operation authority remain open.
 The same run's temporary diagnostic identifies helper A's SDK admission refusal
 as `PolicyChanged`, with matching prepared/native sessions. Helper B progresses,
 but the two-helper barrier still times out. The SDK remains failed; cleanup's
@@ -149,8 +150,9 @@ All seven in-test native cleanup checks pass and command/transport owners join.
 Individual inner shutdown receipt bodies were not exported, so this is not
 independent physical-process cleanup proof. The fixture uses the existing P/A/G
 session: it proves native planning-input admission, not a new planning agent or
-conversation isolation. Dedicated member/session creation, authorized A/B context
-delivery, per-waiter effects and the complete shared SDK journey remain open.
+conversation isolation. The later dedicated fixture below qualifies fresh
+composition separately; protected A/B context delivery, per-waiter effects and the
+complete shared SDK journey remain open.
 The cancellation/store/recovery successor below was not included in that
 checkpoint. Temporary diagnostics and native dependency changes are
 excluded. Published 0.9.0 assets remain unchanged.
@@ -187,9 +189,10 @@ and five TypeScript controls plus TypeScript compilation. It qualifies decoding,
 identity checks and late responses without replay. The new cancellation state
 preserves the distinction between durable cancellation and cleanup still pending.
 Matching SDK generations are required; older closed decoders reject it and
-bootstrap v1 has no version negotiation. Dedicated planning-session creation,
-terminal-result/expiry departure, authorized waiter-context delivery and the
-complete shared SDK journey remain open. Published 0.9.0 assets are unchanged.
+bootstrap v1 has no version negotiation. That checkpoint did not qualify fresh
+dedicated composition or terminal-result/expiry departure; their later focused
+results are recorded below. Protected waiter-context delivery and the complete
+shared SDK journey remain open. Published 0.9.0 assets are unchanged.
 
 ### Bounded SDK feedback controls
 
@@ -215,6 +218,64 @@ owners join and all 741 selected source rows remain exact. The earlier compiler
 failure `57003027` and prior native/SDK failures remain failed. This qualifies
 four controlled feedback tests, not shared setup completion or product automatic
 retry. Published 0.9.0 assets are unchanged.
+
+### Fresh dedicated reservation and terminal recovery
+
+This source update adds 24 Rust paths plus the host-composition guide, preserving
+the distinct private/public guide projections. Source application `db040f67`
+uses public reservation manifest `b59714e5`, the sorted policy-row correction
+`146b3956` and Bind source-class correction `5a429e4a`, with the reviewed terminal
+and recovery changes. Temporary SDK/helper diagnostics, scratch Cargo changes,
+protected owner files and the external locator are excluded.
+
+The initial finite-ten record remains seven PASS and three FAIL across retained
+outcomes `dafa1595`, `005dec93`, `22bb5cfe` and `459f3a0f`. The seven passes cover
+terminal paging, membership retirement, expiry and later acquisition for the same
+A, acknowledged-result recovery, selected canonical reads and uncertain close.
+The first partial FINAL listed nine through its failed group, while its immutable
+plan contained ten and two entered; independent review `5cc2f5c4` preserves that
+count correction. No earlier passing control was repeated.
+
+After focused corrections, outcome `61f87bde` and independent review `2d886dda`
+record two PASS: public dedicated reservation and Bind. The dedicated control
+joins a same-lifetime omitted-participant negative fixture, then runs a separate
+positive fixture with fresh, distinct A/P/G sessions. It exercises public
+reservation/bootstrap and exact native input restrictions. The Bind control
+reaches pending-owner withdrawal, Failed replay, distinct new-source and
+cancellation assertions. In-test shutdown predicates and all command owners pass;
+raw inner receipt bodies were not exported. Both controls reuse the exact compiled
+artifacts, without another Cargo invocation.
+
+The external terms producer is separate: locator manifest `dda2152a` has source
+review `2d4045ea` but is unexecuted and unadopted. The current fixture obtains the
+planning-source key internally. Fresh public reservation is therefore qualified
+for supplied terms, without claiming an external end-to-end construction flow.
+The proposed locator is historical and scope-validated, not current permission.
+
+Latest SDK outcome `ecd54ae4`, independently reviewed in `4912b0d5`, remains FAIL.
+Helper B receives same-session PolicyChanged with prior matched reprepare count
+0, then PolicyUnavailable with count 1. A's check and B's first Find each record
+only authorization_unavailable for the exact operation, with no Prepared/Entry;
+B's distinct fresh Find succeeds. The 57 before/57 after audit rows are identical
+snapshots, not 114 distinct operations. The prior `005dec93` failure retains its
+39/71 snapshots and earlier scope; it did not identify this helper tuple.
+
+One scripted-provider thread panic and the shared-worker barrier failure remain.
+Cleanup returns without panic and its strict empty predicate passes. The decoded
+Python receipt records zero workers and zero physical entries. Native construction
+3 is Installed and construction 4 Cancelled/RouterClosed, both with emitted
+Closed/Reaped receipt projections. Original receipt files were not separately
+collected; their hashes and decoded projections are retained in the log. Command,
+transport and cache owners join, and all three temporary diagnostic paths are
+restored or removed. PolicyUnavailable's producer remains unassigned.
+
+The latest affected selection is two PASS/one SDK FAIL with none unentered. Across
+the original ten identities, nine have scoped passing observations and SDK remains
+failed; this is not one new ten-control cohort. Full shared completion, online
+member creation, active generation retirement, protected waiter-context delivery,
+gateway/reset and a new release remain unqualified. Published 0.9.0 assets are
+unchanged. See the [development inventory](docs/releases/follow-up.md#unreleased-development-progress)
+and [host composition guide](docs/site/guides/host-composition.mdx).
 
 ### Explicit Node build plans
 

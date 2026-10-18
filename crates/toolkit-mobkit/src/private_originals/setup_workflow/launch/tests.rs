@@ -116,6 +116,10 @@ struct Case {
 }
 
 async fn prepare(f: &FirstFixture) -> Case {
+    prepare_with_waiter_options(f, None).await
+}
+
+async fn prepare_with_waiter_options(f: &FirstFixture, lifecycle: Option<(u64, bool)>) -> Case {
     let a = f.submit().await;
     f.finish(&a).await.unwrap();
     let dispatch = f.probe.as_ref().unwrap().captured();
@@ -255,8 +259,8 @@ async fn prepare(f: &FirstFixture) -> Case {
         Arc::ptr_eq(&planning, &replay),
         "same actual P retains one planning owner"
     );
-    let (membership, snapshot) = join_waiter(
-        f, &planning, &original, &dispatch, &backend, &work, "waiter-a",
+    let (membership, snapshot) = join_waiter_options(
+        f, &planning, &original, &dispatch, &backend, &work, "waiter-a", lifecycle,
     )
     .await;
     Case {
@@ -279,8 +283,23 @@ async fn join_waiter(
     work: &SetupWorkContext,
     label: &str,
 ) -> (SetupWorkflowWaiter, SetupWorkflowSnapshot) {
+    join_waiter_options(f, planning, original, dispatch, backend, work, label, None).await
+}
+
+// Only lifecycle controls select a shorter deadline or a bounded readiness
+// proposal. None preserves every existing first-launch/control input exactly.
+async fn join_waiter_options(
+    f: &FirstFixture,
+    planning: &Arc<InstalledWorkflowPlanning>,
+    original: &crate::private_originals::acquisition::AcquisitionOriginal,
+    dispatch: &ToolDispatchContext,
+    backend: &SetupWorkBackend,
+    work: &SetupWorkContext,
+    label: &str,
+    lifecycle: Option<(u64, bool)>,
+) -> (SetupWorkflowWaiter, SetupWorkflowSnapshot) {
     let terms = &planning.terms;
-    let deadline = terms.deadline_ms;
+    let deadline = lifecycle.map_or(terms.deadline_ms, |value| value.0);
     let now = u64::try_from(f.store.now_ms().await.unwrap()).unwrap();
     let route = f.source.route(&planning.submission.original.route).unwrap();
     let tenant = id(&f.scope.realm);
@@ -295,7 +314,9 @@ async fn join_waiter(
             policy_revision: terms.authority_revision.clone(),
             issued_at_ms: now,
             expires_at_ms: deadline,
-            ceiling: Ceiling {
+            ceiling: if lifecycle.is_some_and(|value| value.1) {
+                lifecycle_tests::readiness_ceiling(&receiver, &audience, deadline)
+            } else { Ceiling {
                 actions: [ActionPermission {
                     action: Action::FindAndInstall,
                     resource: receiver.clone(),
@@ -304,7 +325,7 @@ async fn join_waiter(
                 services: BTreeSet::new(),
                 frontends: BTreeSet::new(),
                 output_audiences: audience.clone(),
-            },
+            } },
         },
     )
     .unwrap();
@@ -1276,3 +1297,12 @@ async fn planning_binding_refuses_distinct_issued_root_without_source_or_native_
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
+
+#[path = "member_tests.rs"]
+mod member_tests;
+
+#[path = "lifecycle_tests.rs"]
+mod lifecycle_tests;
+
+#[path = "bind_tests.rs"]
+mod bind_tests;

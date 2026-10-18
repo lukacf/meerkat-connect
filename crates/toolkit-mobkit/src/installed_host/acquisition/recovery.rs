@@ -241,12 +241,36 @@ impl InstalledAcquisition {
                         match result {
                             // Expire atomically commits the canonical terminal
                             // state and its existing continuation outbox effect.
-                            Ok(_) => page.operations.push(operation),
+                            Ok(snapshot) => {
+                                match snapshot.continuation_recovery_candidate() {
+                                    Ok(candidate) => page.terminal_operations.push(candidate),
+                                    Err(_) => sweep_delayed = true,
+                                }
+                                page.operations.push(operation);
+                            },
                             Err(SetupError::Denied | SetupError::WrongScope) => return,
                             // A concurrent selection/terminal transition keeps
                             // its CAS winner; the next sweep reads it afresh.
                             Err(_) => sweep_delayed = true,
                         }
+                    }
+                    // Terminal setup is independent from continuation delivery.
+                    // Include settled continuations so a lost departure response
+                    // cannot strand membership. The source owner first selects
+                    // its retained workflow choice using immutable request IDs,
+                    // then reopens selected canonical terminal work for cleanup.
+                    for candidate in page.terminal_operations {
+                        if !control.enter() { return; }
+                        match self.recovery_disclose(()) {
+                            Ok(()) => (),
+                            Err(SetupError::Denied | SetupError::WrongScope) => return,
+                            Err(_) => { sweep_delayed = true; break; }
+                        }
+                        let outcome = self.host.originals
+                            .reconcile_terminal_workflow_acquisition(&candidate).await;
+                        sweep_delayed |= !matches!(outcome,
+                            Ok(crate::private_originals::setup_workflow::WorkflowTerminalRecovery::NotSelected
+                                | crate::private_originals::setup_workflow::WorkflowTerminalRecovery::Departed));
                     }
                     for operation in page.operations {
                         if !control.enter() {

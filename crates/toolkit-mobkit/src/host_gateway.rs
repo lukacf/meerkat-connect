@@ -73,6 +73,44 @@ pub struct ToolkitGatewayHost {
 }
 
 impl ToolkitGatewayHost {
+    /// Reserve a compiled fresh planning member before `prepare_bootstrap`.
+    /// A validated reservation selects this exact host lifetime in the source
+    /// owner and composes its retained registration hook. Invalid reservations
+    /// select neither. Actual machine binding remains in normal bootstrap.
+    /// The caller retains the returned member for the real held completion.
+    /// A later host-currentness or bootstrap failure retains the restriction;
+    /// it does not transfer the source to a different host or imply activation.
+    pub async fn reserve_workflow_member(
+        &mut self,
+        terms: &meerkat_toolkit::setup::SetupWorkflowTerms,
+        original: &PrivateOriginalRef,
+        spec: &meerkat_mobkit::identity_first::DurableAgentSpec,
+    ) -> Result<Arc<crate::private_originals::InstalledWorkflowMember>, HostLifetimeError> {
+        self.owner.validate_current_selection()?;
+        if self.private_closed.is_closed() || self.machine.get().is_some() {
+            return Err(HostLifetimeError::Denied);
+        }
+        let originals = self.private_originals.as_ref().ok_or(HostLifetimeError::Unavailable)?;
+        let registration = self.member_registration.clone().ok_or(HostLifetimeError::Unavailable)?;
+        let registry = self.installed_tool_policy.clone().ok_or(HostLifetimeError::Unavailable)?;
+        let member = originals.reserve_workflow_member_for_host(
+            &self.owner, terms, original, spec,
+        ).await.map_err(|error| match error {
+            PrivateOriginalError::Unavailable => HostLifetimeError::Unavailable,
+            _ => HostLifetimeError::Denied,
+        })?;
+        // The source reservation completes synchronously after its writer is
+        // acquired. Retain its participant before any later refusal, with no
+        // intervening await that could abandon an unregistered selection.
+        self.member_registration = Some(Arc::new(
+            crate::installed_host::prepared_registration::PreparedMemberRegistration::from_installed(
+                registration, registry, member.registration_participant(),
+            ),
+        ));
+        self.owner.validate_current_selection()?;
+        if self.private_closed.is_closed() { return Err(HostLifetimeError::Denied); }
+        Ok(member)
+    }
     /// Join a trusted configured resource to the existing installed native
     /// owners before bootstrap takes them. The caller composes any existing
     /// attachment provider; the actual registration hook remains authoritative.

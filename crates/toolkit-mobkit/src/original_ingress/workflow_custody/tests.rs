@@ -479,3 +479,53 @@ fn delegation_requires_its_own_connector_record_and_actual_g_audience() {
     narrow_delegation_allowance(&excludes_g, u64::MAX, &mut denied, 10).unwrap();
     assert!(matches_actual(&denied).is_err());
 }
+
+
+#[tokio::test]
+async fn terminal_membership_retirement_preserves_a_original_and_b_staged_call() {
+    let f = Fixture::new();
+    let a = f.relationship(&f.a, f.a_child.clone()).unwrap();
+    let b = f.relationship(&f.b, f.b_child.clone()).unwrap();
+    let ca = Call::new("terminal-a", "{}");
+    let entered_a = Call::new("entered-a", "{}");
+    let cb = Call::new("live-b", "{}");
+    let aa = a.stage_call(ca.facts.call()).unwrap();
+    let entered = a.stage_call(entered_a.facts.call()).unwrap();
+    let bb = b.stage_call(cb.facts.call()).unwrap();
+    let ba = ca.binding();
+    let be = entered_a.binding();
+    let binding_b = cb.binding();
+    let (_, stamp) = f.owner.publication.observe(|| {
+        a.prepared_call(f.g.association(), &ba).unwrap().unwrap();
+        a.prepared_call(f.g.association(), &be).unwrap().unwrap();
+        b.prepared_call(f.g.association(), &binding_b).unwrap().unwrap();
+    }).unwrap();
+    entered.enter_source_gate().unwrap();
+    // This is the actual local staged-call owner, not native effect-entry proof.
+    // Retirement uses the same writer as relationship insertion. An unrelated
+    // owner/Original in the selected vector refuses before any retirement.
+    assert!(f.owner.retire_workflow_membership(f.a.association(), || Ok(vec![b.clone()]))
+        .await.is_err());
+    assert!(aa.current().is_ok() && bb.current().is_ok());
+    {
+        let _writer = f.owner.mutation.try_lock().unwrap();
+        assert!(f.owner.retire_workflow_membership(f.a.association(), || Ok(vec![a.clone()]))
+            .await.is_err());
+    }
+    f.owner.retire_workflow_membership(f.a.association(), || Ok(vec![a.clone()])).await.unwrap();
+    assert!(stamp.check_current().is_err());
+    assert!(aa.current().is_err());
+    assert!(aa.enter_source_gate().is_err());
+    assert!(a.stage_call(Call::new("late-a", "{}").facts.call()).is_err());
+    assert!(bb.current().is_ok());
+    bb.enter_source_gate().unwrap();
+    f.owner.workflow_source_current(&f.a).unwrap();
+    f.owner.workflow_source_current(&f.b).unwrap();
+    assert!(!entered.entry.settled(), "retirement does not invent entered completion");
+    let (_, replay_stamp) = f.owner.publication.observe(|| ()).unwrap();
+    f.owner.retire_workflow_membership(f.a.association(), || Ok(vec![a.clone()])).await.unwrap();
+    replay_stamp.check_current().unwrap();
+    entered.settle().unwrap();
+    aa.settle().unwrap();
+    bb.settle().unwrap();
+}

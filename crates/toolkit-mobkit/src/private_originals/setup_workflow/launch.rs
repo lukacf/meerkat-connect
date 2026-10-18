@@ -3,7 +3,7 @@
 use super::*;
 
 mod close;
-pub(crate) use close::WorkflowCloseObservation;
+pub(crate) use close::{WorkflowCloseObservation, WorkflowTerminalRecovery};
 use crate::private_originals::governed_submit::{OriginalBinder, evidence};
 use meerkat_authorization_contracts::{constraints::DelegationDepth, grant::GrantLineageRef};
 use meerkat_mobkit::identity_first::{
@@ -18,7 +18,8 @@ use toolkit_store::{
 };
 
 /// The one launch owner's observation, never waiter-context delivery. Only an
-/// exact native settled refusal can produce the definitive NotAdmitted case.
+/// exact pre-admission binder refusal or native settled refusal can produce
+/// the definitive NotAdmitted case.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum WorkflowLaunchObservation {
@@ -840,9 +841,15 @@ impl PreparedWorkflowLaunch {
             self.selection.submission.content.clone(),
             None,
         ));
-        let result = runtime
-            .send_governed_with_turn_ticket(&identity, Some(alias), input, binder)
-            .await;
+        let dedicated = source.owner.dedicated_workflow_session(
+            &self.reference, &self.selection.terms.lead,
+            &self.selection.submission.original.original,
+        ).map_err(custody_error)?;
+        let result = if dedicated.is_some() {
+            runtime.dispatch_governed_with_turn_ticket(&identity, Some(alias), input, binder).await
+        } else {
+            runtime.send_governed_with_turn_ticket(&identity, Some(alias), input, binder).await
+        };
         Ok(match result {
             Ok(outcome) => WorkflowLaunchObservation::Native {
                 observation: PrivateOriginalSubmission::Admitted {
@@ -862,10 +869,13 @@ impl PreparedWorkflowLaunch {
                     },
                 },
             },
-            // Exact selected Meta emits Mob only after NotAdmitted custody,
-            // and EntryRefused only after its fence prevented submission.
+            // Exact selected Meta returns Bind before creating native admission
+            // custody or calling the bridge. Mob follows NotAdmitted custody,
+            // and EntryRefused follows a fence that prevented submission.
             Err(IdentityRuntimeError::GovernedInput(
-                GovernedInputError::Mob(_) | GovernedInputError::EntryRefused(_),
+                GovernedInputError::Bind(_)
+                | GovernedInputError::Mob(_)
+                | GovernedInputError::EntryRefused(_),
             )) => WorkflowLaunchObservation::NotAdmitted,
             Err(IdentityRuntimeError::GovernedInput(GovernedInputError::AdmissionUnresolved {
                 ..
@@ -890,6 +900,17 @@ impl GovernedInputBinder for WorkflowBinder {
         context: &GovernedBindContext,
         input: Input,
     ) -> Result<BoundGovernedInput, String> {
+        let source = self.planning.selection.source.upgrade()
+            .ok_or_else(|| "The workflow source owner is unavailable".to_owned())?;
+        if let Some(session) = source.owner.dedicated_workflow_session(
+            &self.planning.reference, &self.planning.selection.terms.lead,
+            &self.planning.selection.submission.original.original,
+        ).map_err(|_| "The dedicated workflow member is unavailable".to_owned())? {
+            if session != context.session_id || context.spec.addressability !=
+                meerkat_mobkit::identity_first::AgentAddressability::InternalOnly {
+                return Err("The dedicated workflow member changed".into());
+            }
+        }
         let mut bound = self
             .delegate
             .bind_retained_with_workflow(context, input, Some(&self.planning))

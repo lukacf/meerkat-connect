@@ -22,12 +22,31 @@ one fresh Find after pre-entry refusal creates exactly one acquisition; persiste
 refusal stops after two proposals with no acquisition. This is a test-agent
 correction, not product retry policy.
 
-The full two-requester SDK case still fails at B's helper integration check and
-the shared-worker barrier, before independent cancellation and sibling completion.
-The generic `other_error` result does not identify its cause. The fixture's cleanup
-predicate passes, but two provider cleanup-thread panics remain recorded and raw
-inner receipts are absent. Outer command/transport owners join. Earlier failures
-and their separately verified cleanup retain their original scope.
+The latest affected three controls are complete: fresh public dedicated-member
+reservation and Bind pass; the full two-requester SDK case fails. Seven earlier
+terminal/recovery controls retain their own passes. The original finite-ten
+seven-pass/three-failure result remains historical, with no earlier pass rerun.
+
+The dedicated test joins an omitted-participant refusal fixture before a separate
+positive fixture with fresh, distinct A/P/G sessions. The Bind test reaches
+withdrawal, Failed replay, new-source and cancellation checks. In-test cleanup
+predicates and command owners pass; raw inner receipt bodies were not exported.
+The public reservation path is qualified for supplied terms. The external terms
+locator `dda2152a` is source-reviewed but unexecuted and unadopted; online creation
+and protected waiter-context delivery remain open.
+
+The latest SDK result identifies helper B's same-session PolicyChanged with prior
+reprepare count 0, then PolicyUnavailable with count 1. A's check and B's first
+Find separately report authorization unavailable without operation Prepared/Entry;
+B's fresh Find succeeds. The shared-worker barrier fails and one scripted-provider
+thread panic remains. The 57 before/57 after audit rows are identical snapshots,
+not 114 operations. Cleanup returns normally and its strict empty predicate
+passes. Decoded owner receipts record zero Python workers/physical entries and
+native attempt 3 Installed plus attempt 4 Cancelled/RouterClosed, both Closed/Reaped.
+All command owners join. The refusal's producer remains unassigned. Earlier
+`other_error` and 39/71 diagnostic failures retain their separate evidence.
+[Source provenance](../../SOURCE-PROVENANCE.md#fresh-dedicated-reservation-and-terminal-recovery)
+records exact outcome and review IDs.
 
 The planning-input source is now checkpointed. Seven focused native controls
 pass after correcting a binding path that applied the configured helper's root
@@ -36,10 +55,10 @@ of another valid root, lost-reply reconciliation, cancellation and exact
 first-producer selection. Five earlier local authority-custody controls also
 pass. The original compile and launch failures remain recorded.
 
-These controls admit a real planning input in an existing session. Dedicated
-planning-member/session creation, authorized per-waiter context delivery and
-operation authority remain open, along with shared SDK completion, gateway/reset
-consumption and remote restart.
+Those seven controls admit a real planning input in an existing session; the
+later fresh dedicated-member proof above has its own scope. Protected per-waiter
+context delivery, operation authority, shared SDK completion, gateway/reset and
+remote restart remain open.
 
 Workflow cancellation now retains cleanup after the cancelling caller returns.
 All 12 selected native/store controls pass, covering cancellation racing a queued
@@ -47,8 +66,9 @@ join, independent membership, exact close reconciliation, lost local handles and
 recovery through the existing worker. Five Python and five TypeScript adapter
 controls also pass. The SDKs expose durable cancellation with cleanup pending;
 consumers need matching SDK generations because older decoders reject that state.
-Three earlier build failures remain recorded. Active planning-input shutdown,
-terminal-result/expiry departure and the complete shared journey remain open.
+Three earlier build failures remain recorded. Terminal-result/expiry departure
+has the separate focused passes above; active planning-input shutdown and the
+complete shared journey remain open.
 [Source provenance](../../SOURCE-PROVENANCE.md#shared-preparation-and-source-owner-currentness-work-in-progress)
 records the precise scope. Published 0.9.0 assets remain unchanged.
 

@@ -13,7 +13,7 @@ pub const SETUP_PUBLIC_SERVICE_REQUEST: &str = "toolkit_request_public_service";
 
 mod continuation_executor;
 mod continuation_recovery;
-pub use continuation_recovery::ContinuationRecoveryPage;
+pub use continuation_recovery::{ContinuationRecoveryCandidate, ContinuationRecoveryPage};
 mod service_continuation;
 pub use service_continuation::{
     ApprovedServiceAttachmentClass, ApprovedServiceAttachmentExit,
