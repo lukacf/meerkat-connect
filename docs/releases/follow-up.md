@@ -45,21 +45,27 @@ retirement remain open.
 
 The newer selection passes both focused gateway cleanup controls and builds the
 actual resource-bound gateway. Staging with refreshed resources and matching SDK
-sources passes. Installed reset remains failed. After correcting the missing
-launcher case and private-file permissions, preparation and policy validation
-pass, but `meta/reset` times out before any model request. A later helper-spawn
-log reports selected activation unavailable; their relationship is under diagnosis.
-The overall shutdown result also remains failed despite joined process owners.
-These results do not qualify installed reset or a release.
+sources passes. The latest installed reset returns a new ready helper session and
+generation in 11.207 seconds, exceeding the verifier's old 10-second limit. A
+reset-specific bounded observation retains the same request and overall deadline.
+The reply includes a cleanup warning that source review finds unconditional on
+reset success, so it does not establish failed retirement. The replacement helper's
+setup MCP attachment then returns `Unavailable`, and catalog search returns zero
+tools. Search/schema completion and semantic shutdown remain failed despite joined
+process owners. The old connection state is under diagnosis; neither cancellation
+nor its safe retirement is established. Earlier launcher, private-file and timeout
+failures remain recorded. This does not qualify the complete reset journey.
 
 The Core owner conditionally confirmed an R1 Find-fenced durable transfer commit
 as a disclosure boundary, with recipient-only scope and exact payload/reconciliation
 checks. The selected host policy already authorizes Find at native R1; its compiled
-R2 consequence label is separate and unchanged. Transfer and delivery are isolated
-review candidates, without a compilation or full-SDK acceptance result. Automatic
-coordinator/recovery delivery is still being wired through those same retained
-owners; explicit calls in controls do not prove that product path. Later waiter
-effects still require that waiter's authority.
+R2 consequence label is separate and unchanged. Transfer/delivery compilation
+failed on test integration errors before any of three selected controls ran.
+Minimal corrections retain the existing dependency graph and actual admission-state
+comparison. Automatic coordinator/recovery delivery is a separate unqualified
+candidate; review corrected cancellation of slow pre-delivery reads and preserved
+typed refusals. Explicit calls in controls do not prove that product path. Later
+waiter effects still require that waiter's authority.
 [Source provenance](../../SOURCE-PROVENANCE.md#public-locator-and-admitted-source-rebind)
 records the distinct outcomes, limits and retained historical failures.
 

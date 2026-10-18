@@ -334,15 +334,38 @@ selected activation unavailable; their relationship is under diagnosis. Its 143
 saved references validate and recorded process owners join. Overall shutdown
 remains refused with exit 1; joined processes and native cleanup flags do not
 convert it into success. Review `cef06797` retains that distinction for the prior
-attempt. No installed reset or new release is qualified.
+attempt. No complete installed reset journey or new release is qualified.
+
+Fourth installed attempt `ee9d0d13` reuses that exact stage, binary, resources and
+SDKs, with only reset observation changed from a 10-second limit to a 75-second
+I/O cap within the existing case deadline. The one request returns in 11.207
+seconds with a new helper session, generation 1 and ready identity readback.
+Seven numeric observations show continuing CPU and read activity; they do not
+attribute all elapsed time to resource verification. The reset reply includes
+`stale_member_cleanup_skipped_after_identity_reset`. In the selected Meta source
+that warning is unconditional on successful reset, whose implementation calls
+the successor-reset bridge. It does not establish failed predecessor retirement.
+Actual Find is admitted,
+but replacement setup MCP attachment returns `Unavailable` and Search reports
+`total_matches: 0`. Four model requests occur before the schema-tool assertion
+fails. The old guard's disposition is not exported, so neither cancellation nor
+poison is assigned as the cause. Semantic shutdown still fails; process owners
+join. All 142 saved references independently validate.
 
 The Core owner conditionally confirmed completed disclosure at an R1 Find-fenced
 durable transfer commit, with recipient-only scope, immutable payload validation
 and settled-attempt reconciliation. Later G/P consumption need not import A/B as
 contributors. The selected host policy already authorizes Find at native R1; its
 compiled R2 consequence label is separate and unchanged. Transfer and delivery
-remain isolated, uncompiled review candidates; later waiter effects still recheck
-authority.
+remain isolated review candidates. Their first compile (`8421e8d7`) fails on an
+unlinked test import and a test admission-state type mismatch; zero of three
+selected controls enter. All 50 saved references independently validate and
+owners join. Minimal test corrections use declared `futures::FutureExt` and
+compare full `WorkItemAdmissionState` instead of the admission receipt type.
+The separate automatic-delivery candidate retains slow pre-dispatch observation
+before polling can cancel it, distinguishes typed refusals from pending work and
+skips never-entered transfers in recovery. These are source-review outcomes,
+not runtime qualification. Later waiter effects still recheck authority.
 These development results do not change published 0.9.0 assets or supply a new
 released selection.
 
