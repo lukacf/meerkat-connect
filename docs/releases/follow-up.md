@@ -5,6 +5,18 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
+Shared preparation is now checkpointed as work in progress on
+[Core 95343786](https://github.com/lukacf/meerkat/commit/953437864bbb21b135661a0e61a09b5aa1f6ba01)
+and [Meta f04125c4](https://github.com/lukacf/meerkat-meta/commit/f04125c45e732b3ef05aab2ac2a0f642fc1b08a1).
+It adds exact preparation membership and retained native/source ownership.
+Sixteen earlier owner controls, one SQLite reopen/cancel/complete control and five
+focused disposition controls pass. The two-requester SDK case still fails during
+helper admission, before cancellation and sibling-survival checks. Its passing
+cleanup assertion does not qualify the unfinished shared flow. One pre-spawn
+lead, gateway/reset consumption and remote restart remain open.
+[Source provenance](../../SOURCE-PROVENANCE.md#shared-preparation-and-source-owner-currentness-work-in-progress)
+records the precise scope. Published 0.9.0 assets remain unchanged.
+
 Explicit Node builds now use agent-authored commands and a host-selected toolchain
 through the existing installation review, job and readback. Thirty-seven distinct
 focused controls pass. A real Linux x64/glibc 2.39 case compiled a native addon with

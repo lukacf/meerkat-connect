@@ -138,7 +138,8 @@ fn configured_original_targets_recover_partial_roots_and_keep_helper_roots_indep
     helper.report_capability = Some(fixture.configure(helper.clone(), &fixture.request).unwrap());
     let mut request = NativeHostLifetime::with_candidate_installation(&fixture.selection, |policy| {
         let native = policy.native_host.as_ref().unwrap();
-        Ok(AgentSetupCapabilityRequest { member: native.members[0].member.clone(), route: native.routes[0].id.clone(),
+        Ok(AgentSetupCapabilityRequest {
+            helper: None, member: native.members[0].member.clone(), route: native.routes[0].id.clone(),
             issuance_id: EvidenceId::new("original-target-find-parent").unwrap(), helper_targets: vec![] })
     }).unwrap();
     // A real first root exists before the paired request is resumed. Reusing

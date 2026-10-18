@@ -161,6 +161,35 @@ impl PrivateOriginals {
         source.source.policy_source().map(Some).map_err(helper_error)
     }
 
+    /// Pure currentness check for the retained private owner. No callback or
+    /// disclosure runs here; actual invocation and native binding remain the
+    /// enrolled leaf's separate entry checks.
+    pub(crate) fn validate_private_setup_owner(
+        &self,
+        realm: &str,
+        source_owner: &str,
+    ) -> Result<(), PrivateOriginalError> {
+        if self.scope.realm != realm || self.scope.owner != source_owner {
+            return Err(PrivateOriginalError::Denied);
+        }
+        let lifetime = self
+            .host_lifetime
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        // Enrollment recovers the same retained owner; it does not disclose
+        // policy or authorize an invocation. Ordinary setup issuance leaves
+        // that owner current. Keep the separate native and source-entry checks.
+        lifetime
+            .validate_current_selection()
+            .map_err(|error| match error {
+                meerkat_toolkit::host_lifetime::control::HostLifetimeError::Unavailable => {
+                    PrivateOriginalError::Unavailable
+                }
+                _ => PrivateOriginalError::Denied,
+            })
+    }
+
     /// Selected application's private settlement custody only. The caller is
     /// the installed acquisition owner using this same source/store scope;
     /// it has already validated the immutable canonical effect/input. This

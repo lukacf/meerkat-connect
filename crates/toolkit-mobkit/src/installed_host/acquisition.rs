@@ -21,7 +21,7 @@ mod continuation;
 pub use continuation::InstalledNativeContinuation;
 #[cfg(test)]
 pub(crate) use continuation::owner_tests::{ContextProbe, ProbeProvider};
-pub use admission::{InstalledOriginalInvocation, InstalledOriginalTaskOwner, InstalledSetupDefaults, InstalledSetupLimits, InstalledSetupPreparer};
+pub use admission::{InstalledOriginalInvocation, InstalledOriginalTaskBinding, InstalledOriginalTaskOwner, InstalledSetupDefaults, InstalledSetupLimits, InstalledSetupPreparer};
 pub(crate) use coordinator::SetupWorkerObservation;
 
 use crate::{
@@ -85,6 +85,8 @@ mod report;
 pub use report::ConfiguredHelperReportCapability;
 mod catalog;
 pub use catalog::ConfiguredHelperCatalogCapability;
+mod helpers;
+use helpers::InstalledHelpers;
 
 impl InstalledSetupSelection {
     pub(crate) fn selected_member(
@@ -160,8 +162,7 @@ pub struct InstalledAcquisitionOwners {
 }
 
 pub(crate) struct InstalledAcquisition {
-    helper: InstalledSetupSelection,
-    helper_member: CompiledNativeMember,
+    helpers: InstalledHelpers,
     grant_caller: PrincipalRef,
     store: Arc<SqliteStore>,
     scope: SetupScope,
@@ -181,9 +182,10 @@ impl InstalledAcquisition {
         originals: Arc<PrivateOriginals>,
         native: &CompiledNativeHost,
         owners: InstalledAcquisitionOwners,
+        additional_helpers: Vec<InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         let tools = InstalledAcquisitionTools::new(owners.admission_timeout)?;
-        Self::with_tools(store, source_scope, originals, native, owners, tools)
+        Self::with_tools(store, source_scope, originals, native, owners, tools, additional_helpers)
     }
 
     pub(super) fn with_tools(
@@ -193,6 +195,7 @@ impl InstalledAcquisition {
         native: &CompiledNativeHost,
         owners: InstalledAcquisitionOwners,
         tools: InstalledAcquisitionTools,
+        additional_helpers: Vec<InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         tools.require_unbound(owners.admission_timeout)?;
         store.capabilities().require_durable_contract()
@@ -202,7 +205,7 @@ impl InstalledAcquisition {
         if owners.tenant.as_str() != source_scope.realm {
             return Err(HostLifetimeError::InvalidSelection);
         }
-        let helper_member = owners.helper.selected_member(native)?;
+        let helpers = InstalledHelpers::new(owners.helper, additional_helpers, native)?;
         if owners.work_backend.pin().realm() != &owners.tenant {
             return Err(HostLifetimeError::InvalidSelection);
         }
@@ -216,8 +219,7 @@ impl InstalledAcquisition {
             deployment,
         });
         Ok(Self {
-            helper: owners.helper,
-            helper_member,
+            helpers,
             grant_caller: native.grant_administrator.clone(),
             store,
             scope,
@@ -234,7 +236,21 @@ impl InstalledAcquisition {
     /// Historical installed helper selection for the existing native binder.
     /// It confers no input custody, controller child or operation permission.
     pub(crate) fn helper(&self) -> (&InstalledSetupSelection, &CompiledNativeMember) {
-        (&self.helper, &self.helper_member)
+        self.helpers.get(None).expect("validated default helper")
+    }
+
+    pub(crate) fn helper_selections(&self) -> Vec<InstalledSetupSelection> {
+        self.helpers.all().map(|(helper, _)| helper.clone()).collect()
+    }
+
+    fn selected_helper(&self, request: &meerkat_toolkit::request::ValidatedSetupRequest)
+        -> Result<crate::original_ingress::helper_originals::HelperAdmissionSelection, SetupError>
+    {
+        let (helper, member) = self.helpers.get(request.host().setup_helper.as_ref())
+            .map_err(|_| SetupError::Denied)?;
+        Ok(crate::original_ingress::helper_originals::HelperAdmissionSelection {
+            helper: helper.clone(), member: member.clone(), grant_caller: self.grant_caller.clone(),
+        })
     }
 
     pub(super) fn bind_tool_driver(self: &Arc<Self>) -> Result<(), HostLifetimeError> {

@@ -10,6 +10,7 @@ use toolkit_package::{ContentDigest, Revision};
 use toolkit_store::RecordCondition;
 
 pub(crate) struct SetupResultSource {
+    pub selected_helper: meerkat_core::MobMemberBinding,
     pub operation: crate::original_ingress::helper_originals::HelperOperation,
     pub helper: InputAuthorityAssociation,
     pub source: RecordCondition,
@@ -22,6 +23,14 @@ impl PrivateOriginals {
         &self,
         context: &ToolDispatchContext,
         expected: &InstalledSetupSelection,
+    ) -> Result<SetupResultSource, PrivateOriginalError> {
+        self.setup_result_source_from(context, std::slice::from_ref(expected)).await
+    }
+
+    pub(crate) async fn setup_result_source_from(
+        &self,
+        context: &ToolDispatchContext,
+        expected: &[InstalledSetupSelection],
     ) -> Result<SetupResultSource, PrivateOriginalError> {
         let authorization = context
             .work_authorization()
@@ -90,7 +99,7 @@ impl PrivateOriginals {
         let facts = self
             .helper_policy_source(association)?
             .ok_or(PrivateOriginalError::Unavailable)?;
-        if facts.selection.helper != *expected
+        if expected.iter().filter(|helper| **helper == facts.selection.helper).count() != 1
             || association.candidate().target.context.as_str() != session.to_string()
             || association.candidate().target.logical_runtime.as_str() != retained.runtime_id()
         {
@@ -207,6 +216,7 @@ impl PrivateOriginals {
                 _ => PrivateOriginalError::Denied,
             })?;
         Ok(SetupResultSource {
+            selected_helper: facts.selection.helper.member.clone(),
             operation: facts.operation,
             helper: association.clone(),
             source: RecordCondition {

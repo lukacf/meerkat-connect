@@ -75,6 +75,7 @@ pub struct OperatorSetup {
     originals: Arc<dyn ToolkitStore>,
     source: Arc<ToolkitOriginalOwner>,
     helper_selection: Option<crate::installed_host::acquisition::InstalledSetupSelection>,
+    additional_helpers: Vec<crate::installed_host::acquisition::InstalledSetupSelection>,
 }
 
 /// Held by the actual operator setup invocation across its existing presenter.
@@ -334,6 +335,7 @@ impl OperatorSetup {
             originals: Arc::new(originals),
             source,
             helper_selection: None,
+            additional_helpers: vec![],
         })
     }
 
@@ -366,6 +368,7 @@ impl OperatorSetup {
             originals,
             source,
             helper_selection: None,
+            additional_helpers: vec![],
         })
     }
 
@@ -397,6 +400,7 @@ impl OperatorSetup {
             originals,
             source,
             helper_selection: None,
+            additional_helpers: vec![],
         })
     }
 
@@ -406,6 +410,24 @@ impl OperatorSetup {
         self.lifetime.validate_current_selection()?;
         if let Some(helper) = &helper { helper.selected_member(&self.native)?; }
         self.helper_selection = helper;
+        Ok(self)
+    }
+
+    pub(crate) fn with_helper_selections(mut self,
+        helpers: Vec<crate::installed_host::acquisition::InstalledSetupSelection>) -> Result<Self, HostLifetimeError>
+    {
+        self.lifetime.validate_current_selection()?;
+        if helpers.len() > 8 { return Err(HostLifetimeError::InvalidSelection); }
+        let mut selected = Vec::new();
+        for helper in helpers {
+            helper.selected_member(&self.native)?;
+            if selected.iter().any(|old: &crate::installed_host::acquisition::InstalledSetupSelection| old.member == helper.member) {
+                return Err(HostLifetimeError::InvalidSelection);
+            }
+            selected.push(helper);
+        }
+        self.helper_selection = if selected.is_empty() { None } else { Some(selected.remove(0)) };
+        self.additional_helpers = selected;
         Ok(self)
     }
 

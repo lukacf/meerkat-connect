@@ -37,6 +37,25 @@ impl InstalledOriginalInvocation<'_> {
 pub trait InstalledOriginalTaskOwner: SetupContinuationDelivery {
     async fn original_task(&self, invocation: InstalledOriginalInvocation<'_>)
         -> Result<TaskContinuation, ToolAdmissionError>;
+
+    /// One producer returns continuation and optional fan-out context together.
+    /// Existing owners remain ungrouped. An override must recover the actual
+    /// child launched for this exact invocation, not search by labels or run ID.
+    async fn original_binding(&self, invocation: InstalledOriginalInvocation<'_>)
+        -> Result<InstalledOriginalTaskBinding, ToolAdmissionError>
+    {
+        Ok(InstalledOriginalTaskBinding {
+            continuation: self.original_task(invocation).await?, work_context: None,
+        })
+    }
+}
+
+/// Produced by the same invocation owner in one lookup. WorkGraph validation
+/// below checks persisted group facts; the producer owns their association with
+/// this native input. The optional group supplies no native permission.
+pub struct InstalledOriginalTaskBinding {
+    pub continuation: TaskContinuation,
+    pub work_context: Option<meerkat_toolkit::setup::SetupWorkContext>,
 }
 
 /// Trusted optional application configuration, not model input. These are
@@ -78,9 +97,9 @@ impl InstalledSetupLimits {
 }
 struct InstalledSetupAdmission {
     originals: Arc<PrivateOriginals>, store: Arc<SqliteStore>, scope: SetupScope,
-    helper: InstalledSetupSelection, ceiling: Ceiling,
+    helpers: InstalledHelpers, ceiling: Ceiling,
     continuation: Arc<dyn InstalledOriginalTaskOwner>, limits: InstalledSetupLimits,
-    backend: meerkat_toolkit::setup::SetupWorkBackendPin,
+    backend: SetupWorkBackend,
 }
 struct InlineContext;
 impl ContextReferenceOwner for InlineContext {
@@ -140,33 +159,43 @@ impl SetupWorkPreparer for InstalledSetupPreparer {
 }
 impl InstalledAcquisition {
     pub(in crate::installed_host) fn from_defaults(store: Arc<SqliteStore>, source_scope: StoreScope,
-        originals: Arc<PrivateOriginals>, native: &CompiledNativeHost, defaults: InstalledSetupDefaults)
+        originals: Arc<PrivateOriginals>, native: &CompiledNativeHost, defaults: InstalledSetupDefaults,
+        additional_helpers: Vec<InstalledSetupSelection>)
         -> Result<Self, HostLifetimeError>
     {
         let tools = InstalledAcquisitionTools::new(Duration::from_millis(defaults.limits.admission_timeout_ms))?;
-        Self::from_defaults_with_tools(store, source_scope, originals, native, defaults, tools)
+        Self::from_defaults_with_tools_and_helpers(store, source_scope, originals, native, defaults, tools, additional_helpers)
     }
 
     pub(in crate::installed_host) fn from_defaults_with_tools(store: Arc<SqliteStore>, source_scope: StoreScope,
         originals: Arc<PrivateOriginals>, native: &CompiledNativeHost, defaults: InstalledSetupDefaults,
         tools: InstalledAcquisitionTools) -> Result<Self, HostLifetimeError>
     {
+        Self::from_defaults_with_tools_and_helpers(store, source_scope, originals, native, defaults, tools, vec![])
+    }
+
+    pub(in crate::installed_host) fn from_defaults_with_tools_and_helpers(
+        store: Arc<SqliteStore>, source_scope: StoreScope, originals: Arc<PrivateOriginals>,
+        native: &CompiledNativeHost, defaults: InstalledSetupDefaults, tools: InstalledAcquisitionTools,
+        additional_helpers: Vec<InstalledSetupSelection>,
+    ) -> Result<Self, HostLifetimeError> {
         defaults.limits.validate()?;
         validate_proposal_ceiling(native, &defaults.proposal_ceiling)?;
         let tenant = Id::new(source_scope.realm.clone()).map_err(|_| HostLifetimeError::InvalidSelection)?;
         let deployment = Id::new(source_scope.owner.clone()).map_err(|_| HostLifetimeError::InvalidSelection)?;
         let preparer = Arc::new(InstalledSetupPreparer::from_backend(&defaults.work_backend).map_err(|_| HostLifetimeError::InvalidSelection)?);
+        let helpers = InstalledHelpers::new(defaults.helper.clone(), additional_helpers.clone(), native)?;
         let admission = Arc::new(InstalledSetupAdmission {
             originals: originals.clone(), store: store.clone(), scope: SetupScope::new(tenant.clone(), deployment),
-            helper: defaults.helper.clone(), ceiling: defaults.proposal_ceiling,
-            continuation: defaults.continuation.clone(), limits: defaults.limits.clone(), backend: defaults.work_backend.pin().clone(),
+            helpers, ceiling: defaults.proposal_ceiling,
+            continuation: defaults.continuation.clone(), limits: defaults.limits.clone(), backend: defaults.work_backend.clone(),
         });
         Self::with_tools(store, source_scope, originals, native, InstalledAcquisitionOwners {
             tenant, helper: defaults.helper, admission,
             references: defaults.references.unwrap_or_else(|| Arc::new(InlineContext)), preparer,
             work_backend: defaults.work_backend, continuation: defaults.continuation,
             admission_timeout: Duration::from_millis(defaults.limits.admission_timeout_ms), work_step: defaults.work_step,
-        }, tools)
+        }, tools, additional_helpers)
     }
 }
 #[async_trait]
@@ -182,8 +211,14 @@ impl SetupToolHost for InstalledSetupAdmission {
             return Err(ToolAdmissionError::Denied);
         }
         let policy_revision = revision(&facts.policy)?;
+        let (helper, selected_member) = self.helpers.get(facts.helper.as_ref())
+            .map_err(|_| ToolAdmissionError::Denied)?;
+        let native = facts.policy.native_host.as_ref().ok_or(ToolAdmissionError::Denied)?;
+        if helper.selected_member(native).map_err(|_| ToolAdmissionError::Denied)? != *selected_member {
+            return Err(ToolAdmissionError::Denied);
+        }
         let environment_revision = revision(&(
-            "toolkit-installed-setup-v1", &facts.policy, &self.helper, &self.ceiling, &self.limits, &self.backend,
+            "toolkit-installed-setup-v1", &facts.policy, helper, &self.ceiling, &self.limits, self.backend.pin(),
         ))?;
         // Mechanical retry correlation, scoped by the actual retained native
         // original/input. It grants nothing and is not a continuation identity.
@@ -196,10 +231,18 @@ impl SetupToolHost for InstalledSetupAdmission {
             target: claims.target.clone(), policy_revision: policy_revision.clone(), now_ms: facts.now_ms,
         };
         let authorization = context.work_authorization().ok_or(ToolAdmissionError::Denied)?;
-        let continuation = self.continuation.original_task(InstalledOriginalInvocation {
+        let binding = self.continuation.original_binding(InstalledOriginalInvocation {
             reference: &original.reference, association: original.original.association(), context, correlation: &correlation,
         }).await?;
+        let InstalledOriginalTaskBinding { continuation, work_context } = binding;
         if continuation.native_original.is_none() { return Err(ToolAdmissionError::Denied); }
+        if let Some(work) = &work_context {
+            let native = continuation.native_original.as_ref().ok_or(ToolAdmissionError::Denied)?;
+            if Some(&native.retained_work) != context.retained_work()
+                || Some(&native.origin_session_id) != context.origin_session_id()
+            { return Err(ToolAdmissionError::Denied); }
+            work.check_current(&self.backend).await.map_err(admission_setup_error)?;
+        }
         let store = SetupStore::new_conditional(self.store.as_ref(), self.scope.clone()).map_err(|_| ToolAdmissionError::Unavailable)?;
         let outcome = store.invocation_terms(original.original.association(), &correlation, &current.borrowed(authorization)).await;
         // Keep every private result behind the same installed owner, including
@@ -211,6 +254,8 @@ impl SetupToolHost for InstalledSetupAdmission {
         let (host, evidence) = match existing {
             Some(terms) => {
                 if terms.host.continuation != continuation || terms.host.environment_revision != environment_revision
+                    || terms.host.setup_helper != facts.helper
+                    || terms.host.work_context != work_context
                     || terms.host.target != facts.target || terms.evidence.constraints().ceiling != self.ceiling
                 { return Err(ToolAdmissionError::Denied); }
                 (terms.host, terms.evidence)
@@ -221,7 +266,8 @@ impl SetupToolHost for InstalledSetupAdmission {
                     tenant: current.tenant.clone(), deployment: current.deployment.clone(), policy_revision,
                     issued_at_ms: current.now_ms, expires_at_ms, ceiling: self.ceiling.clone(),
                 }).map_err(|_| ToolAdmissionError::Unavailable)?;
-                let host = HostSetupRequest { target: facts.target, correlation, parent_operation: None, continuation,
+                let host = HostSetupRequest { target: facts.target, correlation, parent_operation: None,
+                    setup_helper: facts.helper, work_context, continuation,
                     environment_revision, limits: SetupLimits { deadline_ms: expires_at_ms,
                         max_workers: self.limits.max_workers, max_effect_attempts: self.limits.max_effect_attempts } };
                 (host, evidence)

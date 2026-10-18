@@ -343,8 +343,18 @@ impl InstalledToolkitHost {
     /// Console composition supplies its concrete owners; public init/tool JSON
     /// cannot select them. Native helper/operation cutover still gates dispatch.
     pub fn with_acquisition(
+        self,
+        owners: acquisition::InstalledAcquisitionOwners,
+    ) -> Result<Self, HostLifetimeError> {
+        self.with_acquisition_helpers(owners, vec![])
+    }
+
+    /// Additional native helper inventory for the same acquisition owner. The
+    /// current route capability selects a member; this supplies no route map.
+    pub fn with_acquisition_helpers(
         mut self,
         owners: acquisition::InstalledAcquisitionOwners,
+        additional_helpers: Vec<acquisition::InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         if !self.acquisition.is_unconfigured() {
             return Err(HostLifetimeError::InvalidSelection);
@@ -355,6 +365,7 @@ impl InstalledToolkitHost {
             self.originals.clone(),
             &self.native,
             owners,
+            additional_helpers,
         )?);
         acquisition.bind_tool_driver()?;
         self.acquisition = acquisition::AcquisitionBootstrap::selected(acquisition);
@@ -365,12 +376,22 @@ impl InstalledToolkitHost {
     /// from this exact source/store/policy. Only the existing continuation owner,
     /// selected native helper, proposal bounds and WorkGraph backend are supplied.
     pub fn with_default_acquisition(
+        self,
+        defaults: acquisition::InstalledSetupDefaults,
+    ) -> Result<Self, HostLifetimeError> {
+        self.with_default_acquisition_helpers(defaults, vec![])
+    }
+
+    /// Derive the ordinary owner with additional exact native helpers. Omission
+    /// through with_default_acquisition retains the existing singleton path.
+    pub fn with_default_acquisition_helpers(
         mut self,
         defaults: acquisition::InstalledSetupDefaults,
+        additional_helpers: Vec<acquisition::InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         if !self.acquisition.is_unconfigured() { return Err(HostLifetimeError::InvalidSelection); }
         let acquisition = Arc::new(acquisition::InstalledAcquisition::from_defaults(
-            self.store.clone(), self.source_scope.clone(), self.originals.clone(), &self.native, defaults,
+            self.store.clone(), self.source_scope.clone(), self.originals.clone(), &self.native, defaults, additional_helpers,
         )?);
         acquisition.bind_tool_driver()?;
         self.acquisition = acquisition::AcquisitionBootstrap::selected(acquisition);
@@ -398,26 +419,47 @@ impl InstalledToolkitHost {
         self,
         defaults: acquisition::InstalledSetupBootstrap,
     ) -> Result<Self, HostLifetimeError> {
+        self.with_bootstrap_acquisition_helpers(defaults, vec![])
+    }
+
+    /// Live SDK opt-in to more than one selected helper before native bootstrap.
+    /// Each route still captures its one helper before immutable admission.
+    pub fn with_bootstrap_acquisition_helpers(
+        self,
+        defaults: acquisition::InstalledSetupBootstrap,
+        additional_helpers: Vec<acquisition::InstalledSetupSelection>,
+    ) -> Result<Self, HostLifetimeError> {
         let tools = acquisition::InstalledAcquisitionTools::new(
             std::time::Duration::from_millis(defaults.limits.admission_timeout_ms),
         )?;
-        self.with_enrolled_bootstrap_acquisition(defaults, tools)
+        self.with_enrolled_bootstrap_acquisition_helpers(defaults, tools, additional_helpers)
     }
 
     /// Adopt the dispatcher objects already used by this application's native
     /// preparation. Stores still come only from this authenticated final host.
     /// The same leaves are bound during the existing bootstrap service selection.
     pub fn with_enrolled_bootstrap_acquisition(
+        self,
+        defaults: acquisition::InstalledSetupBootstrap,
+        tools: acquisition::InstalledAcquisitionTools,
+    ) -> Result<Self, HostLifetimeError> {
+        self.with_enrolled_bootstrap_acquisition_helpers(defaults, tools, vec![])
+    }
+
+    /// Use the same already prepared leaves and private helper inventory. No
+    /// additional runtime, native adapter or authority is created here.
+    pub fn with_enrolled_bootstrap_acquisition_helpers(
         mut self,
         defaults: acquisition::InstalledSetupBootstrap,
         tools: acquisition::InstalledAcquisitionTools,
+        additional_helpers: Vec<acquisition::InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         if !self.acquisition.is_unconfigured() {
             return Err(HostLifetimeError::InvalidSelection);
         }
         self.acquisition = acquisition::AcquisitionBootstrap::deferred_with_tools(
             self.store.clone(), self.source_scope.clone(), self.originals.clone(),
-            self.native.clone(), defaults, tools,
+            self.native.clone(), defaults, tools, additional_helpers,
         )?;
         Ok(self)
     }

@@ -59,7 +59,7 @@ impl InstalledAcquisition {
         let source = self
             .host
             .originals
-            .setup_result_source(context, &self.helper)
+            .setup_result_source_from(context, &self.helper_selections())
             .await;
         let initial_current = context.check_tool_authorization(call, None)?;
         let context = initial_current.as_ref().unwrap_or(context);
@@ -94,7 +94,7 @@ impl InstalledAcquisition {
         let after = self
             .host
             .originals
-            .setup_result_source(context, &self.helper)
+            .setup_result_source_from(context, &self.helper_selections())
             .await;
         let recorded_current = context.check_tool_authorization(call, None)?;
         let context = recorded_current.as_ref().unwrap_or(context);
@@ -141,7 +141,7 @@ impl InstalledAcquisition {
         let after = self
             .host
             .originals
-            .setup_result_source(context, &self.helper)
+            .setup_result_source_from(context, &self.helper_selections())
             .await;
         // Recheck this exact borrowed call through the native owner after the
         // last wait. Its policy checks current host/component and full native

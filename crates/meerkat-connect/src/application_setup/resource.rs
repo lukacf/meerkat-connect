@@ -18,6 +18,11 @@ enum ResourceProjection {
         resources: PreparedApplicationResources,
     },
     Completed(PreparedApplicationSetup),
+    #[cfg(all(unix, feature = "console"))]
+    Shared {
+        helper: PreparedSetupHelper,
+        context: Arc<crate::resources::SharedSetupCallContext>,
+    },
 }
 
 pub(crate) struct SetupResourceSelection {
@@ -28,6 +33,8 @@ pub(crate) struct SetupResourceSelection {
     // Only pending construction correlation. Native authorities own the strong
     // participant; selected and abandoned constructions are not retained here.
     pub(super) registration_slots: Mutex<BTreeMap<String, Weak<SetupResourceRegistration>>>,
+    #[cfg(all(unix, feature = "console"))]
+    local_round: OnceLock<Arc<crate::resources::LocalRoundAttempts>>,
 }
 
 pub(crate) struct SetupResourceRegistration {
@@ -35,7 +42,7 @@ pub(crate) struct SetupResourceRegistration {
     selected: OnceLock<()>,
 }
 impl SetupResourceRegistration {
-    fn current(&self) -> Result<(), String> {
+    pub(crate) fn current(&self) -> Result<(), String> {
         self.selected.get().ok_or("resource registration has no selected helper destination")?;
         registration_current(&self.agent)
     }
@@ -55,6 +62,8 @@ impl SetupResourceSelection {
                 tools: input.helper_tools, resources,
             },
             registration_slots: Mutex::new(BTreeMap::new()),
+            #[cfg(all(unix, feature = "console"))]
+            local_round: OnceLock::new(),
         }
     }
 
@@ -69,14 +78,73 @@ impl SetupResourceSelection {
             helper: setup.helper.member.clone(), members: owner.native_host.members.clone(),
             server: setup.server.clone(), projection: ResourceProjection::Completed(setup.clone()),
             registration_slots: Mutex::new(BTreeMap::new()),
+            #[cfg(all(unix, feature = "console"))]
+            local_round: OnceLock::new(),
+        })
+    }
+
+    /// Select from the actual pending installation owner and the non-decodable
+    /// live peer. No completed artifact or member roster is synthesized here.
+    #[cfg(all(unix, feature = "console"))]
+    pub(crate) fn from_shared(
+        owner: &toolkit_mobkit::installed_host::PreparedInstallationOwner,
+        helper: PreparedSetupHelper,
+        context: Arc<crate::resources::SharedSetupCallContext>,
+    ) -> Result<Self, String> {
+        let native = &owner.selected().native_host;
+        if !native.members.iter().any(|row| &row.member == helper.member())
+            || meerkat_core::mob_realm_id(&helper.member().mob_id).as_ref().ok() != Some(&native.realm)
+            || !context.validates_resource(&helper)
+        {
+            return Err("shared setup resource differs from the selected native owner".into());
+        }
+        Ok(Self {
+            helper: helper.member().clone(), members: native.members.clone(),
+            server: helper.server().clone(), projection: ResourceProjection::Shared { helper, context },
+            registration_slots: Mutex::new(BTreeMap::new()),
+            local_round: OnceLock::new(),
         })
     }
 
     pub(crate) fn server(&self) -> &McpServerConfig { &self.server }
 
+    #[cfg(all(unix, feature = "console"))]
+    pub(crate) fn retain_local_round(
+        self: &Arc<Self>, owner: crate::resources::LocalRoundOwner,
+    ) -> Result<Arc<crate::resources::LocalRoundAttempts>, (crate::resources::LocalRoundOwner, String)> {
+        // This method is called through exclusive access to the fresh compiler
+        // before it is shared with native registration or any binding provider.
+        let checked = (|| {
+            if Arc::strong_count(self) != 1 || Arc::weak_count(self) != 0 || self.local_round.get().is_some() {
+                return Err("local round must be retained before native resource sharing".into());
+            }
+            let ResourceProjection::Preparing { resources, .. } = &self.projection else {
+                return Err("local round requires its ordinary fresh preparation".into());
+            };
+            owner.matches_preparation(resources)?;
+            self.helper_projection()?;
+            Ok(())
+        })();
+        if let Err(error) = checked { return Err((owner, error)); }
+        let attempts = Arc::new(crate::resources::LocalRoundAttempts::new(owner, Arc::downgrade(self)));
+        if let Err(unpublished) = self.local_round.set(attempts.clone()) {
+            // No callback or await has exposed this newly created slot.
+            let owner = unpublished.take_closed_owner().expect("unpublished local owner is retained");
+            return Err((owner, "local round is already retained".into()));
+        }
+        Ok(attempts)
+    }
+
     pub(crate) fn helper_projection(&self) -> Result<PreparedSetupHelper, String> {
         match &self.projection {
             ResourceProjection::Completed(setup) => setup.helper_projection(),
+            #[cfg(all(unix, feature = "console"))]
+            ResourceProjection::Shared { helper, context } => {
+                if !context.validates_resource(helper) {
+                    return Err("shared setup resource is no longer current".into());
+                }
+                Ok(helper.clone())
+            }
             ResourceProjection::Preparing { helper, source, profile, tools, resources } => {
                 let bytes = read_regular_artifact(&resources.handoff.path)?;
                 if hash(&bytes) != resources.handoff.sha256 {
@@ -126,7 +194,15 @@ impl SetupResourceSelection {
         // An absent pending participant grants nothing to a new authority.
         if let Some(participant) = participant {
             registration_current(&participant.agent)?;
-            if helper { participant.selected.set(()).map_err(|_| "registration already selected")?; }
+            if helper {
+                participant.selected.set(()).map_err(|_| "registration already selected")?;
+                #[cfg(all(unix, feature = "console"))]
+                if let ResourceProjection::Shared { context, .. } = &self.projection {
+                    context.bind_attempt_registration(self.helper.clone(), session.as_str().to_owned(), participant)?;
+                } else if let Some(local) = self.local_round.get() {
+                    local.bind_registration(session.as_str().to_owned(), participant)?;
+                }
+            }
         }
         Ok(())
     }
@@ -153,12 +229,15 @@ impl SetupResourceSelection {
 }
 
 pub(crate) struct SetupResourceProvider {
-    selection: Arc<SetupResourceSelection>,
+    selections: Vec<Arc<SetupResourceSelection>>,
     installed: Option<Arc<dyn ConfiguredMcpAttachmentProvider>>,
 }
 impl SetupResourceProvider {
     pub(crate) fn new(selection: Arc<SetupResourceSelection>, installed: Option<Arc<dyn ConfiguredMcpAttachmentProvider>>) -> Self {
-        Self { selection, installed }
+        Self::multiple(vec![selection], installed)
+    }
+    pub(crate) fn multiple(selections: Vec<Arc<SetupResourceSelection>>, installed: Option<Arc<dyn ConfiguredMcpAttachmentProvider>>) -> Self {
+        Self { selections, installed }
     }
 }
 impl ConfiguredMcpAttachmentProvider for SetupResourceProvider {
@@ -166,11 +245,35 @@ impl ConfiguredMcpAttachmentProvider for SetupResourceProvider {
         -> Option<Arc<dyn ConfiguredMcpAttachmentAuthority>>
     {
         let installed = self.installed.as_ref().and_then(|owner| owner.configured(session, agent.clone()));
-        let registration = self.selection.retain_registration(session, &agent).ok();
-        Some(Arc::new(SetupResourceAuthority { selection: self.selection.clone(), agent, registration, installed }))
+        let selections = self.selections.iter().map(|selection| SetupResourceAuthority {
+            selection: selection.clone(), agent: agent.clone(),
+            registration: selection.retain_registration(session, &agent).ok(),
+        }).collect();
+        Some(Arc::new(SetupResourceAuthorities { selections, installed }))
     }
     fn agent_selection(&self, agent: SessionAgentBinding) -> Option<Arc<dyn ConfiguredMcpAttachmentAuthority>> {
         self.installed.as_ref().and_then(|owner| owner.agent_selection(agent))
+    }
+}
+
+struct SetupResourceAuthorities {
+    selections: Vec<SetupResourceAuthority>,
+    installed: Option<Arc<dyn ConfiguredMcpAttachmentAuthority>>,
+}
+impl ConfiguredMcpAttachmentAuthority for SetupResourceAuthorities {
+    fn authorize_configured(&self, server: &McpServerConfig) -> Result<(), McpAttachmentRefusal> {
+        // Shared peers normally have the same server name. The full immutable
+        // descriptor selects exactly one retained participant, never a fallback
+        // to another peer or to a weaker inherited owner for that known name.
+        let mut exact = self.selections.iter().filter(|row| row.selection.server() == server);
+        if let Some(selected) = exact.next() {
+            if exact.next().is_some() { return Err(McpAttachmentRefusal::Mismatch); }
+            return selected.authorize_selected(server);
+        }
+        if self.selections.iter().any(|row| row.selection.server().name == server.name) {
+            return Err(McpAttachmentRefusal::Mismatch);
+        }
+        self.installed.as_ref().ok_or(McpAttachmentRefusal::Unavailable)?.authorize_configured(server)
     }
 }
 
@@ -178,14 +281,9 @@ struct SetupResourceAuthority {
     selection: Arc<SetupResourceSelection>,
     agent: SessionAgentBinding,
     registration: Option<Arc<SetupResourceRegistration>>,
-    installed: Option<Arc<dyn ConfiguredMcpAttachmentAuthority>>,
 }
-impl ConfiguredMcpAttachmentAuthority for SetupResourceAuthority {
-    fn authorize_configured(&self, server: &McpServerConfig) -> Result<(), McpAttachmentRefusal> {
-        if server.name != self.selection.server().name {
-            return self.installed.as_ref().ok_or(McpAttachmentRefusal::Unavailable)?.authorize_configured(server);
-        }
-        if server != self.selection.server() { return Err(McpAttachmentRefusal::Mismatch); }
+impl SetupResourceAuthority {
+    fn authorize_selected(&self, server: &McpServerConfig) -> Result<(), McpAttachmentRefusal> {
         let registration = self.registration.as_ref().ok_or(McpAttachmentRefusal::NotCurrent)?;
         registration.current().map_err(|_| McpAttachmentRefusal::NotCurrent)?;
         registration_current(&self.agent).map_err(|_| McpAttachmentRefusal::NotCurrent)?;

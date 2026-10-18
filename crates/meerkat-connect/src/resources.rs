@@ -79,6 +79,14 @@ mod readback_process;
 mod local_round;
 #[cfg(unix)]
 pub use local_round::{LocalRoundGuard, LocalRoundOwner, OwnedLocalRoundGuard};
+#[cfg(all(unix, feature = "console"))]
+pub use local_round::LocalRoundAttempts;
+#[cfg(unix)]
+mod shared_setup;
+#[cfg(all(unix, feature = "console"))]
+pub use shared_setup::SharedSetupAttemptReport;
+#[cfg(unix)]
+pub use shared_setup::{PreparedSharedConnection, PreparedSharedSetup, SharedSetupOwner, SharedSetupPeer, SharedSetupCallContext};
 
 #[cfg(not(unix))]
 impl InstalledResources {
@@ -129,6 +137,9 @@ where
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[cfg(feature = "console")]
+    mod shared_preparation_startup;
+
     use super::*;
     use serde_json::{Value, json};
     use std::os::unix::fs::{PermissionsExt, symlink};

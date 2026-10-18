@@ -175,6 +175,7 @@ async fn terminal_result_with_work<S>(adapter: &InstalledNativeContinuation, fix
     let request = validate_request(FindAndInstallRequest {
         request: "Find a service for this original task".into(), user_context: vec![], caller_observations: vec![],
     }, HostSetupRequest {
+        setup_helper: None, work_context: None,
         target: receiver, correlation: id("original-call"), parent_operation: None,
         continuation: TaskContinuation {
             owner: adapter.namespace.clone(), task: id(&retained.run_id().to_string()), revision: revision(&canonical_input_id.to_string()),

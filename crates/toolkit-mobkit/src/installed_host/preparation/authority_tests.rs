@@ -28,7 +28,8 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PreparedLocalPolicy, acquisition::I
             PreparedControllerRequest { target: PreparedControllerTarget::Helper,
                 issuance_id: EvidenceId::new("helper-controller-parent").unwrap(), controller_route: key },
         ],
-        agent_setup: vec![AgentSetupCapabilityRequest { member: member.clone(), route, helper_targets: vec![],
+        agent_setup: vec![AgentSetupCapabilityRequest {
+            helper: None, member: member.clone(), route, helper_targets: vec![],
             issuance_id: EvidenceId::new("original-setup-parent").unwrap() }],
         helper_report: Some(HelperReportCapabilityRequest { member, account_issuance_id: None, public_issuance_id: None,
             issuance_id: EvidenceId::new("helper-report-parent").unwrap() }),

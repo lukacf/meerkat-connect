@@ -168,6 +168,7 @@ async fn revoking_bound_configured_parent_refuses_without_substitution() {
         let replacement = owner
             .configure_agent_setup(
                 &crate::installed_host::operator_setup::AgentSetupCapabilityRequest {
+                    helper: None,
                     member: native.members[0].member.clone(),
                     route: native.routes[0].id.clone(),
                     issuance_id: EvidenceId::new("different-configured-parent").unwrap(),
@@ -344,6 +345,7 @@ async fn unselected_admin_parent_never_widens_bound_original() {
             fixture.lifetime().clone(), fixture.store.clone(), fixture.source.owner.clone()).unwrap();
         let native = fixture.lifetime().selected_policy().native_host.as_ref().unwrap();
         let request = crate::installed_host::operator_setup::AgentSetupCapabilityRequest {
+            helper: None,
             member: native.members[0].member.clone(), route: native.routes[0].id.clone(),
             issuance_id: EvidenceId::new("not-compiled-acquisition-parent").unwrap(),
             helper_targets: vec![],

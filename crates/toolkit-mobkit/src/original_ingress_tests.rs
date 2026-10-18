@@ -2333,6 +2333,135 @@ async fn native_original_disposition_rejects_unknown_wrong_owner_and_invalid_row
 }
 
 
+/// The observer runs on a different OS thread from the holder and release
+/// coordinator, so a synchronous wait cannot prevent release. This is a
+/// source-owner callback control, not an executed native operation.
+#[test]
+fn native_original_disposition_waits_for_held_collection_before_reading_open_row() {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::Duration;
+
+    const BOUND: Duration = Duration::from_secs(2);
+    let dir = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let owner = initialized(&dir.path().join("grants"));
+    let retained = enroll(
+        &owner,
+        claims("disposition-contention", &base(&owner)),
+        "disposition-contention-child",
+    );
+    let claims = retained.association().candidate();
+    let namespace = claims.ingress_namespace.clone();
+    let original = claims.original_work.clone();
+    let (locked_tx, locked_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let holder_owner = owner.clone();
+    let observer_owner = owner.clone();
+
+    let (locked, entered, waited, observation, released, holder, observer) =
+        std::thread::scope(|scope| {
+            let holder = scope.spawn(move || {
+                let Ok(held) = holder_owner.originals.lock() else {
+                    return (false, false);
+                };
+                let announced = locked_tx.send(()).is_ok();
+                let released = release_rx.recv_timeout(BOUND).is_ok();
+                drop(held);
+                (announced, released)
+            });
+            let locked = locked_rx.recv_timeout(BOUND);
+            let observer = scope.spawn(move || {
+                let entered = entered_tx.send(()).is_ok();
+                let observation = observer_owner.original_disposition(&namespace, &original);
+                let delivered = observed_tx.send(observation).is_ok();
+                (entered, delivered)
+            });
+            let entered = entered_rx.recv_timeout(BOUND);
+            let early = observed_rx.recv_timeout(Duration::from_millis(50));
+            let waited = matches!(&early, Err(RecvTimeoutError::Timeout));
+
+            // Always release before asserting any result. Even an early
+            // refusal or failed handshake must leave both real threads joined.
+            let released = release_tx.send(());
+            let observation = match early {
+                Err(RecvTimeoutError::Timeout) => observed_rx.recv_timeout(BOUND),
+                result => result,
+            };
+            let holder = holder.join();
+            let observer = observer.join();
+            (
+                locked,
+                entered,
+                waited,
+                observation,
+                released,
+                holder,
+                observer,
+            )
+        });
+
+    assert!(locked.is_ok(), "the holder must own the actual collection");
+    assert!(entered.is_ok(), "the actual callback observer must enter");
+    assert!(
+        released.is_ok(),
+        "the holder must receive the explicit release"
+    );
+    assert!(
+        matches!(holder, Ok((true, true))),
+        "the holder must join after release"
+    );
+    assert!(
+        matches!(observer, Ok((true, true))),
+        "the observer must return and join"
+    );
+    assert!(
+        waited,
+        "the callback returned while its collection was held"
+    );
+    assert!(matches!(observation, Ok(Ok(OriginalDisposition::Active))));
+}
+
+#[test]
+fn native_original_disposition_refuses_poisoned_collection() {
+    let dir = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let owner = initialized(&dir.path().join("grants"));
+    let retained = enroll(
+        &owner,
+        claims("disposition-poison", &base(&owner)),
+        "disposition-poison-child",
+    );
+    let claims = retained.association().candidate();
+    let poison_owner = owner.clone();
+    let joined = std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let _held = poison_owner.originals.lock().unwrap();
+                panic!("synthetic original collection owner panic");
+            })
+            .join()
+    });
+    let observation = owner.original_disposition(&claims.ingress_namespace, &claims.original_work);
+
+    // The panicking owner is joined before observing or asserting. The real
+    // poisoned mutex remains poisoned; no recovery or replacement is performed.
+    assert!(
+        joined.is_err(),
+        "the synthetic owner must unwind while holding the collection"
+    );
+    assert!(owner.originals.is_poisoned());
+    assert!(matches!(
+        observation,
+        Err(ControllerReadinessFailure::PolicyUnavailable)
+    ));
+}
+
 /// Exercise the same validated canonical source records consumed by the real
 /// submit caller. This is not a claim that two live same-association handles
 /// can be submitted: hold_binding separately refuses that duplicate.

@@ -372,7 +372,7 @@ impl LlmClient for ScriptedProvider {
                 Err(LlmError::from_operation_authorization(error)),
             ])),
         };
-        if let Err(error) = current.observe_entry() {
+        if let Err(error) = current.observe_entry(meerkat_core::OperationEntryBoundary::ModelRequest) {
             return Box::pin(futures::stream::iter([
                 Err(LlmError::from_operation_observation(error)),
             ]));

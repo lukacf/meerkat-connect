@@ -22,6 +22,35 @@ dependency layout without changing its implementation source.
 
 ## Unreleased follow-up source
 
+### Shared preparation and source-owner currentness (work in progress)
+
+Private Toolkit checkpoint `ddc3dc863a270d5190db5237788c7a43ec724b16` contributes
+86 reviewed source/test paths. The native development graph is now
+[Core 95343786](https://github.com/lukacf/meerkat/commit/953437864bbb21b135661a0e61a09b5aa1f6ba01)
+and [Meta f04125c4](https://github.com/lukacf/meerkat-meta/commit/f04125c45e732b3ef05aab2ac2a0f642fc1b08a1),
+with the exact native-candidate lock and matching SDK/codegen source. The root
+portable-library lock has a separate scope and remains unchanged.
+
+The candidate adds exact shared preparation membership, retained native attempt
+custody and source-owner currentness corrections. A canonical disposition read
+waits for its collection mutex; poisoned, invalid and cancellation-pending state
+still refuses access. Temporary runtime diagnostics are excluded.
+
+Sixteen earlier phase/currentness/close/poison controls and a separate SQLite
+owner-reopen/cancel/complete control pass. The latest five disposition controls
+pass after the held-lock regression failed on the prior production code.
+The clean shared SDK case remains failed: both Original finds succeed, then an
+unattributed helper submission reports `ControllerReadinessUnavailable`. Only
+A-helper progresses before the two-helper barrier times out. Independent
+cancellation and sibling survival are unreached. The in-test cleanup check and
+outer owners settle; that clean run exports no individual native receipt bodies.
+Outcome `5d0ef152` and independent review `c9cd2812` preserve this failed status.
+
+This is a draft source checkpoint. Shared SDK completion, a single pre-spawn
+planning lead with durable per-waiter context delivery, installed gateway/reset
+consumption and remote restart remain open. Earlier successful installed journeys
+retain their original source selections. Published 0.9.0 assets are unchanged.
+
 ### Explicit Node build plans
 
 Private Toolkit checkpoint `07172f52e03b4a3c0ec9f383651bbfde4ebc2364` contributes 19 source/test

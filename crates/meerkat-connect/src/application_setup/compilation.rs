@@ -269,6 +269,16 @@ struct FinalAuthoritySelection {
 }
 
 impl ApplicationSetupCompilation {
+    /// Retain the owner returned by this same ordinary resource preparation,
+    /// before sharing this compiler with native registration. The returned
+    /// factory can be installed using Core's existing McpAttemptGuards API.
+    /// This does not configure a gateway or authorize a successor by itself.
+    #[cfg(all(unix, feature = "console"))]
+    pub fn retain_local_round_owner(
+        &mut self, owner: crate::resources::LocalRoundOwner,
+    ) -> Result<Arc<crate::resources::LocalRoundAttempts>, (crate::resources::LocalRoundOwner, String)> {
+        self.resource.retain_local_round(owner)
+    }
     pub fn definition(&self) -> &MobDefinition {
         &self.definition
     }
@@ -812,4 +822,4 @@ pub(super) fn validate_final_artifacts(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

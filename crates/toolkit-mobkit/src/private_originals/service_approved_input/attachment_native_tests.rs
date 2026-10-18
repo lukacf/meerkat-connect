@@ -556,7 +556,7 @@ async fn assert_native_inputs(
 fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::SessionId, script: &PublicReadScript) -> u32 {
     use meerkat_authorization_contracts::audit::{AuditObservation, AuditTarget, AuditModelUse,
         StoredAuthorizationAuditObservation};
-    use meerkat_core::{OperationRefusalKind, authorization::OperationObservedOutcome,
+    use meerkat_core::{OperationEntryBoundary, OperationRefusalKind, authorization::OperationObservedOutcome,
         exact_operation::OperationExecutionScope, ops::ToolDispatchTerminalErrorKind};
 
     // Root, policy wrapper and MCP leaf can observe the same operation. Check
@@ -581,7 +581,10 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
                     assert!(actual.as_ref() == target, "one operation must retain its exact target");
                     prepared = true;
                 }
-                AuditObservation::Entry => {
+                AuditObservation::Entry { boundary } => {
+                    assert!(matches!(boundary, Some(OperationEntryBoundary::ToolDispatch
+                        | OperationEntryBoundary::ToolExecutionPolicy | OperationEntryBoundary::ToolEffect)),
+                        "tool entries must identify their actual dispatch, policy or effect boundary");
                     assert!(prepared && !saw_refusal && !returned,
                         "adapter entry must precede refusal or returned outcome");
                     entered = true;
@@ -695,7 +698,9 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
             && record.observation.run_id.as_ref() == Some(operation_run)));
         assert!(matches!(&controller[0].1.observation.observation, AuditObservation::Prepared { target, .. }
             if matches!(target.as_ref(), AuditTarget::Model(model) if model.usage == AuditModelUse::ControllerInference)));
-        assert!(matches!(&controller[1].1.observation.observation, AuditObservation::Entry));
+        assert!(matches!(&controller[1].1.observation.observation, AuditObservation::Entry {
+            boundary: Some(OperationEntryBoundary::ModelRequest)
+        }));
         assert!(matches!(&controller[2].1.observation.observation, AuditObservation::Outcome {
             outcome: OperationObservedOutcome::HttpResponse { status: 200 }
         }));
@@ -743,7 +748,9 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
         assert!(matches!(&controller[0].1.observation.observation, AuditObservation::Prepared { target, .. }
             if matches!(target.as_ref(), AuditTarget::Model(model)
                 if model.usage == AuditModelUse::ControllerInference && model.hosted_capabilities.is_empty())));
-        assert!(matches!(&controller[1].1.observation.observation, AuditObservation::Entry));
+        assert!(matches!(&controller[1].1.observation.observation, AuditObservation::Entry {
+            boundary: Some(OperationEntryBoundary::ModelRequest)
+        }));
         assert!(matches!(&controller[2].1.observation.observation, AuditObservation::Outcome {
             outcome: OperationObservedOutcome::HttpResponse { status: 200 }
         }));
@@ -766,7 +773,9 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
             assert!(matches!(&answer[0].1.observation.observation, AuditObservation::Prepared { target, .. }
                 if matches!(target.as_ref(), AuditTarget::Model(model)
                     if model.usage == AuditModelUse::ControllerInference && model.hosted_capabilities.is_empty())));
-            assert!(matches!(&answer[1].1.observation.observation, AuditObservation::Entry));
+            assert!(matches!(&answer[1].1.observation.observation, AuditObservation::Entry {
+            boundary: Some(OperationEntryBoundary::ModelRequest)
+        }));
             assert!(matches!(&answer[2].1.observation.observation, AuditObservation::Outcome {
                 outcome: OperationObservedOutcome::HttpResponse { status: 200 }
             }));
@@ -1216,7 +1225,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                             ("refused", Some(target.as_ref()), Some(*reason), None, None),
                         AuditObservation::AuthorizationUnavailable { target } =>
                             ("authorization_unavailable", Some(target.as_ref()), None, None, None),
-                        AuditObservation::Entry => ("entry", None, None, None, None),
+                        AuditObservation::Entry { .. } => ("entry", None, None, None, None),
                         AuditObservation::Outcome { .. } => ("outcome", None, None, None, None),
                         AuditObservation::ReviewAttemptStarted { .. } => ("review_attempt_started", None, None, None, None),
                         AuditObservation::MandatoryHookWithheld { .. } => ("mandatory_hook_withheld", None, None, None, None),

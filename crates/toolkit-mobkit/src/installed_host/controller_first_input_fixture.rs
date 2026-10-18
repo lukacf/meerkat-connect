@@ -434,7 +434,7 @@ async fn open_selected_source_with_profile(facts: &ControllerModelFacts, select_
     if configured_setup {
         use operator_setup::{AgentSetupCapabilityRequest, OperatorSetup};
         let native = local.native_host.as_ref().unwrap();
-        let mut request = AgentSetupCapabilityRequest { member: native.members[0].member.clone(), helper_targets: if configured_report { vec![
+        let mut request = AgentSetupCapabilityRequest { helper: None, member: native.members[0].member.clone(), helper_targets: if configured_report { vec![
                 operator_setup::SetupTargetRequest { target: Some(acquisition::ConfiguredHelperReportCapability::public_target()),
                     issuance_id: EvidenceId::new("configured-a-public-parent").unwrap() },
                 operator_setup::SetupTargetRequest { target: Some(acquisition::ConfiguredHelperReportCapability::account_target()),

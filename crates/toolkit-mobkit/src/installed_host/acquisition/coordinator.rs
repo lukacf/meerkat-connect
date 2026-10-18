@@ -110,6 +110,7 @@ impl InstalledAcquisition {
         }
         let owner = SameHostSetupWorkOwner {
             acquisition: self,
+            selection: self.selected_helper(snapshot.request())?,
             operation,
             call,
             context,
@@ -272,6 +273,7 @@ impl InstalledAcquisition {
 
 struct SameHostSetupWorkOwner<'a> {
     acquisition: &'a InstalledAcquisition,
+    selection: HelperAdmissionSelection,
     operation: &'a Id,
     call: ToolCallView<'a>,
     context: &'a ToolDispatchContext,
@@ -281,11 +283,7 @@ struct SameHostSetupWorkOwner<'a> {
 
 impl SameHostSetupWorkOwner<'_> {
     fn selection(&self) -> HelperAdmissionSelection {
-        HelperAdmissionSelection {
-            helper: self.acquisition.helper.clone(),
-            member: self.acquisition.helper_member.clone(),
-            grant_caller: self.acquisition.grant_caller.clone(),
-        }
+        self.selection.clone()
     }
     fn operation(
         &self,
@@ -662,11 +660,7 @@ impl InstalledAcquisition {
             effect: store.native_work_effect_key(snapshot).await?,
             origin: original.setup_origin(),
             contributors: original.contributors,
-            selection: HelperAdmissionSelection {
-                helper: self.helper.clone(),
-                member: self.helper_member.clone(),
-                grant_caller: self.grant_caller.clone(),
-            },
+            selection: self.selected_helper(snapshot.request())?,
             backend: &self.work_backend,
         };
         store

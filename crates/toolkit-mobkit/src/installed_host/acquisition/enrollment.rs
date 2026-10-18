@@ -11,8 +11,8 @@ impl AcquisitionToolBinding {
         let owner = self.owner.get().and_then(Weak::upgrade)?;
         // This is only the existing private owner lifetime precondition. Actual
         // invocation/source/native authorization is still checked by the leaf.
-        owner.host.originals.with_private_setup_recovery(
-            owner.host.tenant.as_str(), owner.host.deployment.as_str(), Box::new(|| {}),
+        owner.host.originals.validate_private_setup_owner(
+            owner.host.tenant.as_str(), owner.host.deployment.as_str(),
         ).ok()?;
         Some(owner)
     }
@@ -84,8 +84,8 @@ mod tests;
 
 impl InstalledAcquisition {
     pub(crate) fn require_native_runtime(&self) -> Result<(), PrivateOriginalError> {
-        self.host.originals.with_private_setup_recovery(
-            self.host.tenant.as_str(), self.host.deployment.as_str(), Box::new(|| {}),
+        self.host.originals.validate_private_setup_owner(
+            self.host.tenant.as_str(), self.host.deployment.as_str(),
         )?;
         let _runtime = self.host.originals.bound_identity_runtime()?;
         Ok(())

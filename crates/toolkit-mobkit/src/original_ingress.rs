@@ -44,6 +44,7 @@ pub(crate) use service_set_shape::ServiceSetBindingTargets;
 pub(crate) mod helper_originals;
 mod retained_resume;
 mod historical_admission;
+pub(crate) mod shared_entry;
 
 pub(crate) fn controller_only_basis(basis: &WorkAuthorityBasis) -> bool {
     matches!(basis, WorkAuthorityBasis::TargetedGrantLineages { base: None, targets } if targets.is_empty())
@@ -304,6 +305,8 @@ pub struct ToolkitOriginalOwner {
     grants: Arc<LocalGrantAuthority>,
     mutation: tokio::sync::Mutex<()>,
     originals: Mutex<Vec<OriginalRecord>>,
+    // Ephemeral native-send to Controller-decision custody, never permission.
+    shared_entries: Mutex<Vec<Arc<shared_entry::SharedEntry>>>,
 }
 
 impl toolkit_store::RecordChangePublication for ToolkitOriginalOwner {
@@ -377,6 +380,7 @@ impl ToolkitOriginalOwner {
             grants: Arc::new(grants),
             mutation: tokio::sync::Mutex::new(()),
             originals: Mutex::new(Vec::new()),
+            shared_entries: Mutex::new(Vec::new()),
         }
     }
 
@@ -1182,7 +1186,8 @@ impl ToolkitOriginalOwner {
                 None => (None, None),
             }
         };
-        let source_record = validate_source(binding, prior_source).await?;
+        let source_record = validate_source(binding.clone(), prior_source).await?;
+        let entries;
         {
             let _publication = self
                 .publication
@@ -1210,6 +1215,7 @@ impl ToolkitOriginalOwner {
                     operation: OriginalOperationDisposition::CancellationPending,
                 });
             }
+            entries = self.close_shared_entries(&binding.into_iter().collect::<Vec<_>>())?;
         }
         let cancellation_record = persist(source_record).await?;
         let _publication = self
@@ -1227,7 +1233,10 @@ impl ToolkitOriginalOwner {
         *record.operation_mut() = OriginalOperationDisposition::Cancelled {
             record: cancellation_record,
         };
-        Ok(())
+        drop(originals);
+        drop(_publication);
+        drop(_mutation);
+        Self::drain_shared_entries(entries).await
     }
 
     /// Serialize the existing canonical selection of one still-unbound source
@@ -1317,7 +1326,7 @@ impl ToolkitOriginalOwner {
         &self,
         validate_sources: V,
         mut persist: F,
-    ) -> Result<(), OriginalWriterError>
+    ) -> Result<Vec<Arc<toolkit_store::StoredRecord>>, OriginalWriterError>
     where
         V: FnOnce() -> VFut,
         VFut: std::future::Future<Output = Result<Vec<OriginalCancellationSource>, OriginalWriterError>>,
@@ -1328,10 +1337,11 @@ impl ToolkitOriginalOwner {
             .map_err(|_| OriginalWriterError::Unavailable)?;
         let sources = validate_sources().await?;
         if sources.is_empty() { return Err(OriginalWriterError::WrongOwner); }
+        let settled;
         {
             let originals = self.originals.try_lock()
                 .map_err(|_| OriginalWriterError::Unavailable)?;
-            let mut settled = true;
+            let mut all_settled = true;
             // Validate the entire group before any publication. The mutation
             // lock keeps group membership and immutable bindings coupled to
             // the later repair. A durable flag alone is insufficient.
@@ -1356,14 +1366,22 @@ impl ToolkitOriginalOwner {
                     }
                     None => None,
                 };
-                settled &= matches!(operation,
+                all_settled &= matches!(operation,
                     Some(OriginalOperationDisposition::Cancelled { record })
                         if record.as_ref() == source.record.as_ref());
             }
             // Same exact cancellation evidence and same settled owner facts:
             // there is no change to invalidate unrelated authorization reads.
-            if settled { return Ok(()); }
+            settled = all_settled;
         }
+        let associations = sources.iter().filter_map(|source| source.association.clone()).collect::<Vec<_>>();
+        if settled {
+            let entries = self.close_shared_entries(&associations)?;
+            drop(_mutation);
+            Self::drain_shared_entries(entries).await?;
+            return Ok(sources.into_iter().map(|source| source.record).collect());
+        }
+        let entries;
         {
             let _publication = self.publication.begin_owner_change()
                 .map_err(|_| OriginalWriterError::Unavailable)?;
@@ -1384,22 +1402,29 @@ impl ToolkitOriginalOwner {
                     });
                 }
             }
+            // Close the same final-entry gates at validated Pending, before
+            // any durable cancellation await. A lost write never reopens them.
+            entries = self.close_shared_entries(&associations)?;
         }
         // The canonical parent is first. This ordering makes a partially
         // persisted cancellation visible to every linked source on cold bind.
         let mut committed = Vec::with_capacity(sources.len());
         for source in &sources { committed.push(persist(source.record.clone()).await?); }
-        let _publication = self.publication.begin_owner_change()
-            .map_err(|_| OriginalWriterError::Unavailable)?;
-        let mut originals = self.originals.try_lock()
-            .map_err(|_| OriginalWriterError::Unavailable)?;
-        for (source, record) in sources.iter().zip(committed) {
-            let current = originals.iter_mut()
-                .find(|entry| entry.names(&source.realm, &source.original))
-                .ok_or(OriginalWriterError::Unavailable)?;
-            *current.operation_mut() = OriginalOperationDisposition::Cancelled { record };
+        {
+            let _publication = self.publication.begin_owner_change()
+                .map_err(|_| OriginalWriterError::Unavailable)?;
+            let mut originals = self.originals.try_lock()
+                .map_err(|_| OriginalWriterError::Unavailable)?;
+            for (source, record) in sources.iter().zip(&committed) {
+                let current = originals.iter_mut()
+                    .find(|entry| entry.names(&source.realm, &source.original))
+                    .ok_or(OriginalWriterError::Unavailable)?;
+                *current.operation_mut() = OriginalOperationDisposition::Cancelled { record: record.clone() };
+            }
         }
-        Ok(())
+        drop(_mutation);
+        Self::drain_shared_entries(entries).await?;
+        Ok(committed)
     }
 
     /// Bind the final input/controller and hold its candidate until the native
@@ -1645,7 +1670,7 @@ impl AuthenticatedOriginalSource for ToolkitOriginalOwner {
         }
         let originals = self
             .originals
-            .try_lock()
+            .lock()
             .map_err(|_| ControllerReadinessFailure::PolicyUnavailable)?;
         let record = originals
             .iter()

@@ -48,7 +48,7 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
             // grant, and these coordinates cannot admit or authorize B.
             PrivateServiceGrantRef { route: parent.route.clone(), decision: Id::new("unissued-b").unwrap(),
                 decision_sha256: "0".repeat(64) });
-        let record = SourceRecord { bound_service_input: None, setup_request: None, configured_setup: None, service_setup_children: vec![], source: parent_record.source.clone(), event,
+        let record = SourceRecord { shared_preparations: Vec::new(), bound_service_input: None, setup_request: None, configured_setup: None, service_setup_children: vec![], source: parent_record.source.clone(), event,
             final_association: None, operation_cancelled: false, service_attachment_failure: None, service_attachment_observation: None,
             service_attachment_member: None, approved_task: Some(link),
             // This exercises the actual canonical admitted-field branch. It

@@ -543,6 +543,8 @@ struct State {
     armed: Option<HeldInstall>,
     retired: bool,
     realm: Option<RealmLocator>,
+    #[cfg(unix)]
+    shared_members: BTreeMap<String, Arc<toolkit_mobkit::private_originals::InstalledSharedPreparation>>,
 }
 
 pub(crate) struct CheckedInstalls {
@@ -555,6 +557,8 @@ pub(crate) struct CheckedInstalls {
     // Only the standalone composition owns a checked native route. The route
     // never escapes this wrapper into the session's dispatch surface.
     checked_route: Option<Arc<meerkat::CheckedMcpRoute>>,
+    #[cfg(unix)]
+    shared_peer: Option<Arc<crate::resources::SharedSetupCallContext>>,
 }
 impl CheckedInstalls {
     pub(crate) fn new(inner: Arc<meerkat::McpRouterAdapter>) -> Arc<Self> {
@@ -563,6 +567,8 @@ impl CheckedInstalls {
             state: Mutex::new(State::default()),
             software_review: None,
             checked_route: None,
+            #[cfg(unix)]
+            shared_peer: None,
         })
     }
 
@@ -583,6 +589,8 @@ impl CheckedInstalls {
             state: Mutex::new(State::default()),
             software_review: None,
             checked_route: Some(route),
+            #[cfg(unix)]
+            shared_peer: None,
         }))
     }
 
@@ -595,7 +603,47 @@ impl CheckedInstalls {
             state: Mutex::new(State::default()),
             software_review: Some(approvals),
             checked_route: None,
+            #[cfg(unix)]
+            shared_peer: None,
         })
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn with_shared_software_review(
+        inner: Arc<meerkat::McpRouterAdapter>, approvals: Arc<crate::approval::LocalApprovals>,
+        peer: Arc<crate::resources::SharedSetupCallContext>,
+    ) -> Arc<Self> {
+        let mut checked = Self::with_software_review(inner, approvals);
+        Arc::get_mut(&mut checked).expect("new checked owner").shared_peer = Some(peer);
+        checked
+    }
+
+    #[cfg(unix)]
+    async fn release_shared_check(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>, outcome: ToolDispatchOutcome,
+    ) -> Result<ToolDispatchOutcome, ToolError> {
+        if outcome.result.is_error { return Ok(outcome); }
+        let pending = result_document(call, &outcome)?;
+        if pending.get("error").is_some() { return Ok(outcome); }
+        if pending.as_object().is_none_or(|value| value.len() != 2)
+            || pending["scope"] != "host_shared_selection_pending"
+        { return Err(unconfirmed()); }
+        let ticket = hex(&pending, "ticket", 32).ok_or_else(unconfirmed)?;
+        let peer = self.shared_peer.as_ref().ok_or_else(unavailable)?;
+        let inspected = peer.peer.inspect(ticket).await.map_err(|_| unavailable())?;
+        let selected = meerkat_toolkit::setup::SharedPreparationSelection::from_controller(inspected.selection.clone())
+            .map_err(|_| unconfirmed())?;
+        if selected.arguments() != &document(call.args.get())? { return Err(refused(call.name)); }
+        let approvals = self.software_review.as_ref().ok_or_else(unavailable)?;
+        let member = approvals.join_shared_preparation(call, context, plan, &selected, peer.peer.clone()).await?;
+        context.check_tool_authorization(call, plan)?;
+        member.check_current().await.map_err(|_| refused(call.name))?;
+        let value = peer.peer.release(&inspected, member.preparation_identity()).await.map_err(|_| unconfirmed())?;
+        context.check_tool_authorization(call, plan)?;
+        let validation = hex(&value, "validation_id", 32).ok_or_else(unconfirmed)?.to_owned();
+        self.state.lock().map_err(|_| unavailable())?.shared_members.insert(validation, Arc::new(member));
+        Ok(ToolResult::new(call.id.into(), value.to_string(), false).into())
     }
 
     #[cfg(test)]
@@ -608,6 +656,8 @@ impl CheckedInstalls {
             state: Mutex::new(State::default()),
             software_review: Some(approvals),
             checked_route: None,
+            #[cfg(unix)]
+            shared_peer: None,
         })
     }
 
@@ -618,6 +668,8 @@ impl CheckedInstalls {
             state: Mutex::new(State::default()),
             software_review: None,
             checked_route: None,
+            #[cfg(unix)]
+            shared_peer: None,
         })
     }
 
@@ -1236,7 +1288,7 @@ impl CheckedInstalls {
         }
         let Some(approvals) = self.software_review.as_ref()
             .filter(|_| INSTALL_TOOLS.contains(&call.name)) else {
-            return self.delegate(call, context, self.inner_call(call, context, plan)).await;
+            return self.delegate(call, context, plan, self.inner_call(call, context, plan)).await;
         };
         if matches!(approvals.await_service_dispatch(self, call, context, plan).await?,
             crate::approval::SoftwareReviewOutcome::RequiresHuman)
@@ -1270,7 +1322,7 @@ impl CheckedInstalls {
                 meerkat_core::LiveBridgeEffectOutcome::Failed, Err(error));
         }
         let mut physical = None;
-        let result = self.delegate(call, current, async {
+        let result = self.delegate(call, current, plan, async {
             let result = self.inner_call(call, current, plan).await;
             // The package owner's return is distinct from later local capture
             // failures. A malformed software receipt does not undo entry.
@@ -1295,16 +1347,79 @@ impl CheckedInstalls {
         context: &ToolDispatchContext,
         plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
     ) -> Result<ToolDispatchOutcome, ToolError> {
-        match plan {
+        #[cfg(unix)]
+        let shared_peer = if let Some(peer) = self.shared_peer.as_ref() {
+            // Use the native operation owner's unique typed target from the
+            // original plan. Ambiguity refuses instead of selecting by name,
+            // witness order or a fabricated adapter key. The native adapter
+            // still revalidates the complete target and binding at dispatch.
+            let plan = plan.ok_or_else(|| refused(call.name))?;
+            let target = meerkat_authorization::grant_policy::single_tool_operation_target(plan)
+                .map_err(|_| refused(call.name))?;
+            peer.selects_operation(target, call.name).then_some(peer)
+        } else { None };
+        #[cfg(unix)]
+        let _shared_dispatch = if let Some(peer) = shared_peer {
+            let member = if call.name == "setup_selected_install" {
+                let arguments = document(call.args.get())?;
+                let validation = hex(&arguments, "validation_id", 32).ok_or_else(|| refused(call.name))?;
+                Some(self.state.lock().map_err(|_| unavailable())?.shared_members
+                    .get(validation).cloned().ok_or_else(|| refused(call.name))?)
+            } else { None };
+            let source = self.software_review.as_ref().ok_or_else(unavailable)?
+                .reserve_shared_entry(call, context, plan, member.as_deref()).await?;
+            let preparation = member.as_ref().map(|member| member.preparation_identity().to_owned());
+            Some(peer.arm(call, context, source, preparation)?)
+        } else { None };
+        let outcome = match plan {
             Some(plan) => self.inner.dispatch_resolved_with_context(call, context, plan).await,
             None => self.inner.dispatch_with_context(call, context).await,
+        };
+        #[cfg(unix)]
+        drop(_shared_dispatch);
+        #[cfg(unix)]
+        if call.name == "setup_selected_install" && self.shared_peer.is_some() && outcome.is_ok() {
+            let arguments = document(call.args.get())?;
+            let validation = hex(&arguments, "validation_id", 32).ok_or_else(|| refused(call.name))?;
+            let member = self.state.lock().map_err(|_| unavailable())?.shared_members
+                .get(validation).cloned().ok_or_else(|| refused(call.name))?;
+            self.software_review.as_ref().ok_or_else(unavailable)?
+                .complete_shared_preparation(call, context, plan, &member).await?;
         }
+        #[cfg(unix)]
+        if call.name == "setup_stop" && self.shared_peer.is_some() {
+            let outcome = outcome?;
+            if outcome.result.is_error { return Ok(outcome); }
+            let value = result_document(call, &outcome)?;
+            if value["scope"] != "host_shared_stop_pending" { return Ok(outcome); }
+            let arguments = document(call.args.get())?;
+            if value.as_object().is_none_or(|value| value.len() != 2)
+                || arguments != json!({"job_id":value["job_id"]})
+            { return Err(unconfirmed()); }
+            context.check_tool_authorization(call, plan)?;
+            let session = context.origin_session_id().ok_or_else(|| refused(call.name))?;
+            let member = {
+                let state = self.state.lock().map_err(|_| unavailable())?;
+                let selected = state.proposals.iter().filter(|(_, proposal)|
+                    &proposal.session == session && proposal.epoch == self.inner.execution_binding_epoch(call.name)
+                    && proposal.readback.as_ref().is_some_and(|readback| readback.job.lock()
+                        .is_ok_and(|job| job.as_ref().is_some_and(|job| value["job_id"].as_str() == Some(job.as_str())))))
+                    .filter_map(|(key, _)| state.shared_members.get(key).cloned()).collect::<Vec<_>>();
+                if selected.len() != 1 { return Err(refused(call.name)); }
+                selected.into_iter().next().unwrap()
+            };
+            let observed = self.software_review.as_ref().ok_or_else(unavailable)?
+                .leave_shared_preparation(call, context, plan, &member).await?;
+            return Ok(ToolResult::new(call.id.into(), observed.to_string(), false).into());
+        }
+        outcome
     }
 
     async fn delegate(
         &self,
         call: ToolCallView<'_>,
         context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
         operation: impl Future<Output = Result<ToolDispatchOutcome, ToolError>>,
     ) -> Result<ToolDispatchOutcome, ToolError> {
         if call.name == "setup_export_recipe" {
@@ -1335,6 +1450,12 @@ impl CheckedInstalls {
             None
         };
         let outcome = operation.await?;
+        #[cfg(unix)]
+        let outcome = if call.name == SELECTED_CHECK && self.shared_peer.is_some() {
+            self.release_shared_check(call, context, plan, outcome).await?
+        } else { outcome };
+        #[cfg(not(unix))]
+        let _ = plan;
         if let Some(kind) = check {
             self.capture(call, session, epoch, kind, &outcome)?;
         } else if let Some(readback) = readback {

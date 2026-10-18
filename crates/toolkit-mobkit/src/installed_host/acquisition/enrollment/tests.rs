@@ -251,7 +251,7 @@ async fn production_leaves_reach_actual_bound_owner_but_not_missing_native_conti
         // Independently exercise the real helper-source owner: an original
         // input cannot substitute for helper custody merely because both
         // production leaves retain the same installed acquisition owner.
-        let helper_source = fixture.source.setup_result_source(&context, &owner.helper).await;
+        let helper_source = fixture.source.setup_result_source(&context, owner.helper().0).await;
         assert!(matches!(&helper_source, Err(crate::private_originals::PrivateOriginalError::Denied)),
             "original input must not supply helper source custody; result_is_ok={}, error_discriminant={:?}",
             helper_source.is_ok(), helper_source.as_ref().err().map(std::mem::discriminant));
@@ -277,4 +277,162 @@ async fn production_leaves_reach_actual_bound_owner_but_not_missing_native_conti
     let cleanup = fixture.shutdown().await;
     assert!(cleanup.is_ok(), "{cleanup:?}");
     if let Err(panic) = result { std::panic::resume_unwind(panic); }
+}
+
+
+#[tokio::test]
+async fn retained_owner_lookup_survives_setup_writer_without_authorizing_entry() {
+    use std::sync::mpsc::sync_channel;
+
+    let (directory, lifetime, installed) = installed().await;
+    let tools = InstalledAcquisitionTools::new(Duration::from_secs(10)).unwrap();
+    let owner = acquisition(&installed, directory.path(), tools.clone());
+    owner.bind_tool_driver().unwrap();
+    let (entered, entering) = sync_channel(1);
+    let (release, released) = sync_channel(1);
+    let writer_owner = lifetime.clone();
+    let writer = std::thread::spawn(move || {
+        writer_owner.with_current_setup(|| {
+            entered.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok(())
+        })
+    });
+    let writer_entered = entering.recv_timeout(Duration::from_secs(2));
+    let observer_tools = tools.clone();
+    let observer_lifetime = lifetime.clone();
+    let (returned, response) = sync_channel(1);
+    let observer = std::thread::spawn(move || {
+        let retained = observer_tools
+            .0
+            .acquisition
+            .admission_owner()
+            .ok()
+            .and_then(|admission| admission.acquisition);
+        let native = observer_lifetime.validate_native_entry(None);
+        let policy = observer_lifetime.current_setup_policy();
+        let execution_refused = observer_tools.0.binding.execution_owner().is_none();
+        returned
+            .send((retained, native, policy, execution_refused))
+            .unwrap();
+    });
+    let observed = response.recv_timeout(Duration::from_secs(2));
+    let released = release.send(());
+    let writer_joined = writer.join();
+    let observer_joined = observer.join();
+    let native_after = lifetime.validate_native_entry(None);
+    // Release and join both real threads and the actual lifetime close before
+    // assertions. The old R10 lookup comparator was specific to entry-read
+    // exclusion; it is historical once pure phase observations share callbacks.
+    let close = lifetime
+        .begin_close_activation(HostCloseReason::Shutdown)
+        .unwrap();
+    let closed_lookup = tools.0.acquisition.admission_owner().is_err();
+    let settled = lifetime.join_close(&close.handle).await.unwrap();
+    assert!(writer_entered.is_ok());
+    assert!(released.is_ok());
+    assert_eq!(writer_joined.unwrap(), Ok(()));
+    observer_joined.unwrap();
+    let (retained, native, policy, execution_refused) = observed.unwrap();
+    assert!(
+        retained
+            .as_ref()
+            .is_some_and(|actual| Arc::ptr_eq(actual, &owner)),
+        "a concurrent setup writer must not hide the same retained owner"
+    );
+    assert_eq!(native, Ok(()));
+    assert_eq!(policy, Ok(lifetime.selected_policy().clone()));
+    assert!(
+        execution_refused,
+        "retention cannot supply the missing native identity owner"
+    );
+    assert_eq!(native_after, Ok(()));
+    assert!(closed_lookup);
+    assert_eq!(
+        settled.state,
+        meerkat_toolkit::host_lifetime::control::HostCloseState::Settled
+    );
+    assert!(
+        tools
+            .0
+            .binding
+            .owner
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some(),
+        "close refusal must not be confused with dropped-owner refusal"
+    );
+}
+
+#[tokio::test]
+async fn retained_owner_lookup_refuses_replaced_selection() {
+    let (directory, lifetime, installed) = installed().await;
+    let tools = InstalledAcquisitionTools::new(Duration::from_secs(10)).unwrap();
+    let owner = acquisition(&installed, directory.path(), tools.clone());
+    owner.bind_tool_driver().unwrap();
+    let policy = directory
+        .path()
+        .join("shared/policy/bundle.1/toolkit-local-policy.json");
+    let original = std::fs::read(&policy).unwrap();
+    assert!(tools.0.acquisition.admission_owner().is_ok());
+    std::fs::write(&policy, b"replaced selected policy").unwrap();
+    let refused = tools.0.acquisition.admission_owner().is_err();
+    // Restore only this test's exact beforeimage so its real close can settle.
+    std::fs::write(&policy, original).unwrap();
+    let close = lifetime
+        .begin_close_activation(HostCloseReason::Shutdown)
+        .unwrap();
+    let settled = lifetime.join_close(&close.handle).await.unwrap();
+    assert!(refused);
+    assert_eq!(
+        settled.state,
+        meerkat_toolkit::host_lifetime::control::HostCloseState::Settled
+    );
+    assert!(
+        tools
+            .0
+            .binding
+            .owner
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn retained_owner_lookup_refuses_poisoned_setup_writer() {
+    let (directory, lifetime, installed) = installed().await;
+    let tools = InstalledAcquisitionTools::new(Duration::from_secs(10)).unwrap();
+    let owner = acquisition(&installed, directory.path(), tools.clone());
+    owner.bind_tool_driver().unwrap();
+    assert!(tools.0.acquisition.admission_owner().is_ok());
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        lifetime.with_current_setup(|| -> Result<(), HostLifetimeError> {
+            panic!("bounded setup writer poison control")
+        })
+    }));
+    assert!(panic.is_err());
+    assert_eq!(
+        lifetime.validate_current_selection(),
+        Err(HostLifetimeError::Unavailable)
+    );
+    assert_eq!(
+        lifetime.validate_native_entry(None),
+        Err(HostLifetimeError::Unavailable)
+    );
+    assert!(tools.0.acquisition.admission_owner().is_err());
+    assert!(
+        tools
+            .0
+            .binding
+            .owner
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some()
+    );
+    // Poison remains unresolved; this control must not invent a close receipt.
+    assert!(matches!(
+        lifetime.begin_close_activation(HostCloseReason::Shutdown),
+        Err(HostLifetimeError::Unavailable)
+    ));
 }

@@ -620,14 +620,14 @@ fn bounded_operation_owns_both_actual_close_state_mutexes_through_release() {
     let mut released = None;
     f.owner
         .with_component_open(&component, None, None, || {
-            assert!(f.owner.activation.entry.try_lock().is_err());
+            assert!(f.owner.activation.entry.try_write().is_err());
             assert!(f.owner.activation.machine.try_write().is_ok());
             assert!(
                 f.owner
                     .component(&component)
                     .unwrap()
                     .entry
-                    .try_lock()
+                    .try_write()
                     .is_err()
             );
             assert!(f.owner.component(&component).unwrap().machine.try_write().is_ok());
@@ -658,7 +658,7 @@ fn synchronous_setup_fence_uses_current_activation_and_selection() {
         f.owner
             .with_current_setup(|| {
                 // Entry excludes close/callbacks while the actual phase remains readable.
-                assert!(f.owner.activation.entry.try_lock().is_err());
+                assert!(f.owner.activation.entry.try_write().is_err());
                 assert!(f.owner.activation.machine.try_write().is_ok());
                 Ok(17)
             })
@@ -716,11 +716,12 @@ fn synchronous_setup_rejects_concurrent_and_recursive_entry() {
     let selected = f.owner.validate_current_selection();
     resume.send(()).unwrap();
     let result = worker.join().unwrap();
-    assert_eq!(recursive, (Err(HostLifetimeError::Unavailable), false,
-        Err(HostLifetimeError::Unavailable)));
+    // Callback recursion remains refused; this closed phase observation is
+    // permitted because it invokes no callback and changes no authority.
+    assert_eq!(recursive, (Err(HostLifetimeError::Unavailable), false, Ok(())));
     assert_eq!(concurrent, Err(HostLifetimeError::Unavailable));
     assert!(!concurrent_called);
-    assert_eq!(native_entry, Err(HostLifetimeError::Unavailable));
+    assert_eq!(native_entry, Ok(()));
     assert_eq!(selected, Ok(()));
     assert_eq!(result, Ok(17));
     assert_eq!(f.owner.validate_native_entry(None), Ok(()));
@@ -758,7 +759,7 @@ fn current_selection_and_native_entry_share_phase_readers() {
     let joined = worker.join();
     // Release the held guard and join before every assertion, including when
     // a regression blocks or refuses instead of sharing the actual read.
-    assert!(entry_held.is_ok(), "native entry did not acquire its close exclusion");
+    assert!(entry_held.is_ok(), "native entry did not acquire its phase read");
     assert!(completed_while_reading, "current selection waited for a phase reader");
     joined.unwrap();
     assert!(matches!(result, Some((Ok(()), Ok((Ok(()), true))))));
@@ -769,15 +770,114 @@ fn current_selection_and_native_entry_share_phase_readers() {
     let (returned, refusal) = sync_channel(1);
     let owner = f.owner.clone();
     let worker = std::thread::spawn(move || {
-        returned.send(owner.validate_current_selection()).unwrap();
+        returned.send((owner.validate_current_selection(), owner.current_setup_policy(),
+            owner.validate_native_entry(None))).unwrap();
     });
     let refused = refusal.recv_timeout(Duration::from_secs(2));
     drop(writer);
     let joined = worker.join();
     joined.unwrap();
-    assert_eq!(refused, Ok(Err(HostLifetimeError::Unavailable)));
+    assert_eq!(refused, Ok((Err(HostLifetimeError::Unavailable),
+        Err(HostLifetimeError::Unavailable), Err(HostLifetimeError::Unavailable))));
     assert_eq!(f.owner.validate_current_selection(), Ok(()));
     assert_eq!(f.owner.validate_native_entry(None), Ok(()));
+}
+
+#[tokio::test]
+async fn closed_policy_and_native_observations_share_phase_then_join_close() {
+    use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+
+    let mut f = Fixture::new();
+    Arc::get_mut(&mut f.owner)
+        .unwrap()
+        .bind_native_authorization_publication(LocalAuthorizationPublication::new())
+        .unwrap();
+    let component = Id::new("slack-extension").unwrap();
+    f.open();
+    let expected = f.owner.selected_policy().clone();
+    // Hold the actual internal read custody, not a phase snapshot. Production
+    // readers only validate/copy and never invoke a callback or await.
+    let activation_read = f
+        .owner
+        .activation
+        .observe_open(f.owner.incarnation, None)
+        .unwrap();
+    let component_owner = f.owner.component(&component).unwrap();
+    let component_read = component_owner
+        .observe_open(f.owner.incarnation, None)
+        .unwrap();
+    let (returned, response) = sync_channel(1);
+    let owner = f.owner.clone();
+    let observed_component = component.clone();
+    let observer = std::thread::spawn(move || {
+        let policy = owner.current_setup_policy();
+        let native = owner.validate_native_entry(Some(&observed_component));
+        let mut mutated = false;
+        let mutation = owner.with_current_setup(|| {
+            mutated = true;
+            Ok(())
+        });
+        returned.send((policy, native, mutation, mutated)).unwrap();
+    });
+    let simultaneous = response.recv_timeout(Duration::from_secs(2));
+
+    let (started, starting) = sync_channel(1);
+    let (closed, closing) = sync_channel(1);
+    let owner = f.owner.clone();
+    let closer = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        let result = owner.begin_close_activation(HostCloseReason::Shutdown);
+        closed.send(result).unwrap();
+    });
+    let close_started = starting.recv_timeout(Duration::from_secs(2));
+    let early_close = closing.recv_timeout(Duration::from_millis(100));
+    let waited_for_reader = matches!(&early_close, Err(RecvTimeoutError::Timeout));
+    // No assertion can strand either real worker behind a held read guard.
+    // Standard lock fairness is not part of this control's claim.
+    drop(component_read);
+    drop(activation_read);
+    let observer_joined = observer.join();
+    let close_result = match early_close {
+        Ok(result) => Some(result),
+        Err(_) => closing.recv_timeout(Duration::from_secs(2)).ok(),
+    };
+    let closer_joined = closer.join();
+    let close = close_result.unwrap().unwrap();
+    let closing_policy = f.owner.current_setup_policy();
+    let closing_native = f.owner.validate_native_entry(Some(&component));
+    // Settle the actual close before assertions that the normalized exclusive
+    // comparison is expected to fail. Keep both Closing and Settled checks.
+    let settlement = f.owner.join_close(&close.handle).await;
+    let settled_policy = f.owner.current_setup_policy();
+    observer_joined.unwrap();
+    closer_joined.unwrap();
+    assert!(close_started.is_ok());
+    assert!(waited_for_reader);
+    assert_eq!(closing_policy, Err(HostLifetimeError::Denied));
+    assert_eq!(closing_native, Err(HostLifetimeError::Denied));
+    assert_eq!(settlement.unwrap().state, HostCloseState::Settled);
+    assert_eq!(settled_policy, Err(HostLifetimeError::Denied));
+    let (policy, native, mutation, mutated) = simultaneous.unwrap();
+    assert_eq!(policy, Ok(expected));
+    assert_eq!(native, Ok(()));
+    // A pure phase reader does not own callback entry. The callback above is
+    // synchronous and cannot change phase while these machine reads are held.
+    assert_eq!(mutation, Ok(()));
+    assert!(mutated);
+}
+
+#[test]
+fn closed_policy_observation_shares_healthy_callback_and_refuses_replaced_selection() {
+    let f = Fixture::new();
+    let expected = f.owner.current_setup_policy().unwrap();
+    let during_mutation = f
+        .owner
+        .with_current_setup(|| Ok(f.owner.current_setup_policy()))
+        .unwrap();
+    assert_eq!(during_mutation, Ok(expected.clone()));
+    assert_eq!(f.owner.current_setup_policy(), Ok(expected));
+    std::fs::write(&f.selection.local_policy.path, b"replaced selected policy").unwrap();
+    assert!(f.owner.current_setup_policy().is_err());
 }
 
 #[tokio::test]
@@ -835,6 +935,7 @@ async fn setup_callback_panic_keeps_owner_unavailable() {
         ComponentLifetimePhase::Open);
     assert_eq!(f.owner.validate_current_selection(), Err(HostLifetimeError::Unavailable));
     assert_eq!(f.owner.validate_native_entry(None), Err(HostLifetimeError::Unavailable));
+    assert_eq!(f.owner.current_setup_policy(), Err(HostLifetimeError::Unavailable));
     let mut called = false;
     assert_eq!(f.owner.with_current_setup(|| { called = true; Ok(()) }),
         Err(HostLifetimeError::Unavailable));
@@ -869,16 +970,16 @@ async fn closing_owner_poison_never_fabricates_settlement() {
             let poisoned = owner.clone();
             assert!(std::thread::spawn(move || {
                 if poison_entry {
-                    let _guard = poisoned.entry.lock().unwrap();
+                    let _guard = poisoned.entry.write().unwrap();
                     panic!("closed owner entry poison");
                 } else {
                     let _guard = poisoned.machine.write().unwrap();
                     panic!("closed owner phase poison");
                 }
             }).join().is_err());
-            assert!(matches!(owner.observe(&handle), Err(HostLifetimeError::Unavailable)));
+            assert!(matches!(owner.observe(&handle, f.owner.native_publication.as_ref()), Err(HostLifetimeError::Unavailable)));
             assert!(matches!(f.owner.observe_close(&handle), Err(HostLifetimeError::Unavailable)));
-            assert!(matches!(owner.join(&handle).await, Err(HostLifetimeError::Unavailable)));
+            assert!(matches!(owner.join(&handle, f.owner.native_publication.as_ref()).await, Err(HostLifetimeError::Unavailable)));
             assert!(matches!(f.owner.join_close(&closing.handle).await,
                 Err(HostLifetimeError::Unavailable)));
         }
@@ -1023,6 +1124,7 @@ async fn admitted_native_setup_issuance_finishes_before_close_and_close_first_re
             GrantOwnerStore, GrantStoreError, LocalGrantAuthority, LocalGrantConfiguration,
         },
     };
+    use std::sync::Mutex;
     use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 
     // Pause the actual native durable append, after issue_root owns both its
@@ -1106,7 +1208,7 @@ async fn admitted_native_setup_issuance_finishes_before_close_and_close_first_re
     // Read the actual selected owner while the real native durable append is
     // paused. Keep assertions until the original workers have been released.
     let selected_while_issuing = f.owner.validate_current_selection();
-    let entry_held = f.owner.activation.entry.try_lock().is_err();
+    let entry_held = f.owner.activation.entry.try_write().is_err();
     let phase_readable = f.owner.activation.machine.try_write().is_ok();
     let (closed, close_result) = sync_channel(1);
     let close_owner = f.owner.clone();
@@ -1217,7 +1319,7 @@ fn native_administration_entry_holds_close_fence_and_refuses_closed_or_contended
     assert!(f.owner.native_publication.is_none());
     let reservation = Arc::new(());
     let retained = f.owner.with_native_administration_entry(|| {
-        assert!(f.owner.activation.entry.try_lock().is_err());
+        assert!(f.owner.activation.entry.try_write().is_err());
         assert!(f.owner.activation.machine.try_write().is_ok());
         let mut recursive = false;
         assert_eq!(f.owner.with_native_administration_entry(|| recursive = true),
@@ -1226,7 +1328,7 @@ fn native_administration_entry_holds_close_fence_and_refuses_closed_or_contended
         reservation.clone()
     }).unwrap();
     assert!(Arc::ptr_eq(&reservation, &retained));
-    let guard = f.owner.activation.entry.lock().unwrap();
+    let guard = f.owner.activation.entry.write().unwrap();
     let mut called = false;
     let contended = f.owner.with_native_administration_entry(|| called = true);
     drop(guard);
@@ -1243,3 +1345,164 @@ fn native_administration_entry_holds_close_fence_and_refuses_closed_or_contended
     drop(retained);
     assert_eq!(Arc::strong_count(&reservation), 1);
 }
+
+#[tokio::test]
+async fn healthy_setup_callback_shares_phase_observation_without_sharing_callback_entry() {
+    use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+
+    let mut f = Fixture::new();
+    let publication = LocalAuthorizationPublication::new();
+    Arc::get_mut(&mut f.owner)
+        .unwrap()
+        .bind_native_authorization_publication(publication.clone())
+        .unwrap();
+    let component = Id::new("slack-extension").unwrap();
+    f.open();
+    let expected_policy = f.owner.selected_policy().clone();
+    let (entered, entering) = sync_channel(1);
+    let (release, released) = sync_channel(1);
+    let callback_owner = f.owner.clone();
+    let callback = std::thread::spawn(move || {
+        callback_owner.with_current_setup(|| {
+            let mut called = false;
+            let recursive = callback_owner.with_current_setup(|| {
+                called = true;
+                Ok(())
+            });
+            entered.send((recursive, called)).unwrap();
+            // Hold the real callback entry before any native issuance. This
+            // control covers the healthy branch only, not unwind currentness.
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok(())
+        })
+    });
+    let callback_entered = entering.recv_timeout(Duration::from_secs(2));
+    let (returned, response) = sync_channel(1);
+    let observer_owner = f.owner.clone();
+    let observed_component = component.clone();
+    let observer = std::thread::spawn(move || {
+        let native = publication
+            .observe(|| observer_owner.validate_native_entry(Some(&observed_component)))
+            .map(|(result, stamp)| (result, stamp.check_current().is_ok()));
+        let policy = observer_owner.current_setup_policy();
+        let mut called = false;
+        let callback = observer_owner.with_current_setup(|| {
+            called = true;
+            Ok(())
+        });
+        returned.send((native, policy, callback, called)).unwrap();
+    });
+    let observed = response.recv_timeout(Duration::from_secs(2));
+    let (starting, started) = sync_channel(1);
+    let (closed, closing) = sync_channel(1);
+    let close_owner = f.owner.clone();
+    let closer = std::thread::spawn(move || {
+        starting.send(()).unwrap();
+        closed
+            .send(close_owner.begin_close_activation(HostCloseReason::Shutdown))
+            .unwrap();
+    });
+    let close_started = started.recv_timeout(Duration::from_secs(2));
+    let before_release = closing.recv_timeout(Duration::from_millis(100));
+    let close_waited = matches!(&before_release, Err(RecvTimeoutError::Timeout));
+    // Neither a refused old reader nor a failed response may strand the real
+    // callback or close. Release and join all owners before success assertions.
+    let release_result = release.send(());
+    let callback_result = callback.join();
+    let observer_result = observer.join();
+    let close_result = match before_release {
+        Ok(result) => Some(result),
+        Err(_) => closing.recv_timeout(Duration::from_secs(2)).ok(),
+    };
+    let closer_result = closer.join();
+    let close = close_result.unwrap().unwrap();
+    let settlement = f.owner.join_close(&close.handle).await;
+    let after_close = f.owner.validate_native_entry(Some(&component));
+
+    assert_eq!(callback_entered.unwrap(), (Err(HostLifetimeError::Unavailable), false));
+    assert!(close_started.is_ok());
+    assert!(close_waited, "close must remain excluded by the actual callback owner");
+    assert!(release_result.is_ok());
+    assert_eq!(callback_result.unwrap(), Ok(()));
+    observer_result.unwrap();
+    closer_result.unwrap();
+    assert_eq!(settlement.unwrap().state, HostCloseState::Settled);
+    assert_eq!(after_close, Err(HostLifetimeError::Denied));
+    let (native, policy, callback, called) = observed.unwrap();
+    assert!(matches!(&native, Ok((Ok(()), true))), "healthy callback hid current native phase facts: {native:?}");
+    assert_eq!(policy, Ok(expected_policy));
+    assert_eq!(callback, Err(HostLifetimeError::Unavailable));
+    assert!(!called);
+}
+
+#[tokio::test]
+async fn phase_observation_refuses_actual_phase_writer_and_invalid_phase_identity() {
+    use std::sync::mpsc::sync_channel;
+
+    let mut f = Fixture::new();
+    let publication = LocalAuthorizationPublication::new();
+    Arc::get_mut(&mut f.owner)
+        .unwrap()
+        .bind_native_authorization_publication(publication.clone())
+        .unwrap();
+    let component = Id::new("slack-extension").unwrap();
+    f.open();
+    let revision = f.owner.activation.machine.read().unwrap().state().revision;
+    assert!(f.owner.activation.observe_open(f.owner.incarnation, Some(revision)).is_ok());
+    assert_eq!(f.owner.activation.observe_open(Uuid::new_v4(), Some(revision)).err(), Some(HostLifetimeError::Denied));
+    assert_eq!(f.owner.activation.observe_open(f.owner.incarnation, Some(revision + 1)).err(), Some(HostLifetimeError::Denied));
+
+    // Hold the existing native writer. The real close takes entry and machine
+    // write custody before it waits for this publication; no test-only phase
+    // state or alternate close owner is manufactured.
+    let native_writer = publication.begin_owner_change().unwrap();
+    let (closed, closing) = sync_channel(1);
+    let close_owner = f.owner.clone();
+    let closer = std::thread::spawn(move || {
+        closed
+            .send(close_owner.begin_close_activation(HostCloseReason::Shutdown))
+            .unwrap();
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let phase_held = loop {
+        if f.owner.activation.machine.try_read().is_err() {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::yield_now();
+    };
+    let (returned, response) = sync_channel(1);
+    let observer_owner = f.owner.clone();
+    let observer = std::thread::spawn(move || {
+        returned
+            .send((
+                observer_owner.validate_native_entry(None),
+                observer_owner.current_setup_policy(),
+                observer_owner.validate_current_selection(),
+            ))
+            .unwrap();
+    });
+    let observed = response.recv_timeout(Duration::from_secs(2));
+    // Drop the actual reservation before joins and assertions, including a
+    // regression that waits for phase custody under native publication.
+    drop(native_writer);
+    let observer_result = observer.join();
+    let close_result = closing.recv_timeout(Duration::from_secs(2));
+    let closer_result = closer.join();
+    let close = close_result.unwrap().unwrap();
+    let settlement = f.owner.join_close(&close.handle).await;
+    let after_close = f.owner.validate_native_entry(Some(&component));
+    let policy_after_close = f.owner.current_setup_policy();
+
+    observer_result.unwrap();
+    closer_result.unwrap();
+    assert!(phase_held, "real close did not acquire the phase writer");
+    assert_eq!(observed.unwrap(), (Err(HostLifetimeError::Unavailable), Err(HostLifetimeError::Unavailable), Err(HostLifetimeError::Unavailable)));
+    assert_eq!(settlement.unwrap().state, HostCloseState::Settled);
+    assert_eq!(after_close, Err(HostLifetimeError::Denied));
+    assert_eq!(policy_after_close, Err(HostLifetimeError::Denied));
+}
+
+mod publication_poison;

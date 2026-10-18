@@ -155,9 +155,9 @@ impl ToolkitGatewayHost {
         }
         if self.private_closed.is_closed() { return Err(HostLifetimeError::Denied); }
         self.owner.validate_current_selection()?;
-        let helper = self.acquisition.lock().map_err(|_| HostLifetimeError::Unavailable)?
-            .configured().map(|acquisition| acquisition.helper().0.clone());
-        current.application_operator_setup(self.owner.clone())?.with_helper_selection(helper)
+        let helpers = self.acquisition.lock().map_err(|_| HostLifetimeError::Unavailable)?
+            .configured().map(|acquisition| acquisition.helper_selections()).unwrap_or_default();
+        current.application_operator_setup(self.owner.clone())?.with_helper_selections(helpers)
     }
 
     /// Prepare the existing local presenter from this member's actual native
@@ -209,10 +209,10 @@ impl ToolkitGatewayHost {
             return Err(HostLifetimeError::Denied);
         }
         self.owner.validate_current_selection()?;
-        let helper = self.acquisition.lock().map_err(|_| HostLifetimeError::Unavailable)?
-            .configured().map(|acquisition| acquisition.helper().0.clone());
+        let helpers = self.acquisition.lock().map_err(|_| HostLifetimeError::Unavailable)?
+            .configured().map(|acquisition| acquisition.helper_selections()).unwrap_or_default();
         self.private_originals.as_ref().ok_or(HostLifetimeError::Unavailable)?
-            .local_operator_setup(self.owner.clone())?.with_helper_selection(helper)
+            .local_operator_setup(self.owner.clone())?.with_helper_selections(helpers)
     }
 
     /// Apply an authenticated application's exact access decision through the

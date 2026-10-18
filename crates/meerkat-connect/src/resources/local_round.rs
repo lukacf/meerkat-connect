@@ -22,6 +22,10 @@ pub struct LocalRoundOwner {
     resources: InstalledResources,
     artifacts: PathBuf,
     request: serde_json::Value,
+    // The ordinary preparer's actual output, captured before any native use.
+    // Shared peer and completed-descriptor paths cannot construct this owner.
+    #[cfg(feature = "console")]
+    handoff_sha256: String,
     poisoned: bool,
     process: Option<RoundProcess>,
     #[cfg(test)]
@@ -109,6 +113,8 @@ impl InstalledResources {
                 "descriptor_sha256": digest(&descriptor),
                 "preparation_sha256": digest(&preparation),
             }),
+            #[cfg(feature = "console")]
+            handoff_sha256: digest(&exact_file(&prepared.artifact_directory.join("prepare.stdout"))?),
             poisoned: false,
             process: None,
             #[cfg(test)]
@@ -119,6 +125,20 @@ impl InstalledResources {
 }
 
 impl LocalRoundOwner {
+    #[cfg(feature = "console")]
+    pub(crate) fn matches_preparation(
+        &self, resources: &crate::application_setup::PreparedApplicationResources,
+    ) -> Result<(), String> {
+        if self.poisoned || self.has_pending_round()
+            || self.artifacts != resources.artifact_directory
+            || resources.handoff.path != self.artifacts.join("prepare.stdout")
+            || resources.handoff.sha256 != self.handoff_sha256
+            || digest(&exact_file(&resources.handoff.path).map_err(|e| e.to_string())?) != self.handoff_sha256
+        {
+            return Err("local round owner differs from the ordinary preparation".into());
+        }
+        self.check_resources().map_err(|e| e.to_string())
+    }
     /// Call only after the previous NativeSetup has actually closed and joined.
     /// Lock availability is an additional overlap check, not settlement proof.
     /// Retain this future and signal cancellation instead of dropping it.
@@ -391,3 +411,8 @@ async fn read_ready(reader: &mut (impl tokio::io::AsyncRead + Unpin)) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "console")]
+mod attempt;
+#[cfg(feature = "console")]
+pub use attempt::LocalRoundAttempts;

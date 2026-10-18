@@ -195,12 +195,23 @@ mod tests {
             represented_subject: None, controller_parent: vec![],
             operation_basis: WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![] },
         };
+        let source = prepared.source.clone();
+        let store = prepared.store.clone();
+        prepared.configure_held_authorities_with_helper_resources(
+            &mut helper, &PreparationAuthorities::default(), None, None).unwrap();
+        assert!(Arc::ptr_eq(&source, &prepared.source));
+        assert!(Arc::ptr_eq(&store, &prepared.store));
+        assert!(Arc::ptr_eq(&originals, &prepared.originals()));
+        assert!(matches!(originals.routes(), Err(crate::private_originals::PrivateOriginalError::Unavailable)));
+        assert!(matches!(prepared.selected(), Err(HostLifetimeError::Unavailable)));
         let finalized = prepared.finalize_authorities(&mut helper, &PreparationAuthorities::default()).unwrap();
         assert_eq!(finalized, selected);
         assert!(Arc::ptr_eq(&originals, &prepared.originals()));
         let routes = originals.routes().unwrap().to_vec();
         assert_eq!(routes.len(), selected.native_host.routes.len());
         assert!(prepared.finalize_authorities(&mut helper, &PreparationAuthorities::default()).is_err());
+        assert!(prepared.configure_held_authorities_with_helper_resources(
+            &mut helper, &PreparationAuthorities::default(), None, None).is_err());
         assert!(originals.finalize_routes(routes).is_err(), "an installed route set cannot be replaced");
         assert_eq!(prepared.selected().unwrap(), &selected);
         drop(configuration);
@@ -308,12 +319,27 @@ impl PreparedInstalledHost {
         requests: &PreparationAuthorities, server: Option<&meerkat_core::McpServerConfig>,
         session: Option<(&meerkat_core::MobMemberBinding, &meerkat_core::SessionId)>,
     ) -> Result<PreparedLocalPolicy, HostLifetimeError> {
+        self.configure_held_authorities_with_helper_resources(helper, requests, server, session)?;
+        self.finalize_selection()?;
+        self.selected().cloned()
+    }
+
+    /// Configure one explicitly selected helper on the existing pending owner
+    /// after native materialization supplies its actual member/session pair.
+    /// Multiple helpers may be configured before the existing finalization call
+    /// publishes the complete route selection once. This does not finalize or
+    /// permit invocation/adoption, and a finalized owner rejects further calls.
+    /// Partial issuance retains this same owner and native issuance IDs for
+    /// exact recovery; a failure is not rollback of earlier configured helpers.
+    pub fn configure_held_authorities_with_helper_resources(
+        &mut self, helper: &mut acquisition::InstalledSetupSelection,
+        requests: &PreparationAuthorities, server: Option<&meerkat_core::McpServerConfig>,
+        session: Option<(&meerkat_core::MobMemberBinding, &meerkat_core::SessionId)>,
+    ) -> Result<(), HostLifetimeError> {
         let PreparedAuthorityState::Pending(owner) = &mut self.authorities else {
             return Err(HostLifetimeError::InvalidSelection);
         };
-        owner.configure_authorities_with_helper_resources(helper, requests, server, session)?;
-        self.finalize_selection()?;
-        self.selected().cloned()
+        owner.configure_authorities_with_helper_resources(helper, requests, server, session)
     }
 
     fn selected(&self) -> Result<&PreparedLocalPolicy, HostLifetimeError> {

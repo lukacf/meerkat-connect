@@ -125,6 +125,14 @@ pub struct HostSetupRequest {
     pub target: Id,
     pub correlation: Id,
     pub parent_operation: Option<Id>,
+    /// Exact helper selected by the current route owner before admission.
+    /// This is host configuration, never a model-provided destination.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup_helper: Option<meerkat_core::MobMemberBinding>,
+    /// Group supplied with the same owner-produced native invocation binding.
+    /// An absent context keeps this acquisition independent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_context: Option<crate::setup::SetupWorkContext>,
     pub continuation: TaskContinuation,
     pub environment_revision: Revision,
     pub limits: SetupLimits,
@@ -357,6 +365,10 @@ struct StoredHostRequest {
     target: Id,
     correlation: Id,
     parent_operation: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    setup_helper: Option<meerkat_core::MobMemberBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    work_context: Option<crate::setup::SetupWorkContext>,
     continuation: StoredContinuation,
     environment_revision: Revision,
     limits: StoredLimits,
@@ -394,6 +406,8 @@ impl StoredSetupRequest {
             target: self.host.target.clone(),
             correlation: self.host.correlation.clone(),
             parent_operation: self.host.parent_operation.clone(),
+            setup_helper: self.host.setup_helper.clone(),
+            work_context: self.host.work_context.clone(),
             continuation: TaskContinuation {
                 owner: self.host.continuation.owner.clone(),
                 task: self.host.continuation.task.clone(),
@@ -410,6 +424,9 @@ impl StoredSetupRequest {
             },
         };
         let claims = self.evidence.constraints();
+        if host.work_context.as_ref().is_some_and(|work| work.check_structure().is_err()) {
+            return Err(RequestError::ChangedAuthority);
+        }
         let evidence_digest = self.evidence.digest()?;
         validate_audience(&host.continuation, claims)?;
         validate_input_size(&self.request)?;
@@ -533,6 +550,9 @@ fn validate_host_access(
     context: &SetupUseContext<'_>,
 ) -> Result<(), RequestError> {
     validate_audience(&host.continuation, authority.constraints())?;
+    if host.work_context.as_ref().is_some_and(|work| work.check_structure().is_err()) {
+        return Err(RequestError::ChangedAuthority);
+    }
     authority.check_proposal(Action::FindAndInstall, &host.target, context)?;
     if host.limits.max_workers == 0
         || host.limits.max_effect_attempts == 0

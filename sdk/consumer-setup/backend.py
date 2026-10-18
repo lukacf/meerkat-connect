@@ -2947,6 +2947,15 @@ class Controller:
                 if not isinstance(before, str) or before not in self.jobs:
                     raise SetupError("unknown_job", 404)
                 identifiers = identifiers[identifiers.index(before) + 1:]
+            return self._job_summary_page(identifiers[:51])
+
+    def _job_summary_page(self, identifiers):
+        """Project one bounded page selected by the owning host connection."""
+        if not isinstance(identifiers, list) or len(identifiers) > 51:
+            raise SetupError("invalid_job_page", 500)
+        with self.lock:
+            if any(identifier not in self.jobs for identifier in identifiers):
+                raise SetupError("unknown_job", 404)
             page = identifiers[:50]
             return {"jobs": [{**{key: self.jobs[identifier][key] for key in ("id", "kind", "family", "status")},
                               "profile": self.install_intents.get(identifier, {}).get("profile"),
@@ -3820,7 +3829,7 @@ class Controller:
                                 "artifact": copy.deepcopy({k: index["components"][route["family"]][k] for k in ("path", "sha256")})})
         return options
 
-    def catalog_route(self, value):
+    def catalog_route(self, value, *, observed_preparations=None):
         keys(value, ("publisher", "name", "version", "strategy_id", "routes_sha256"))
         if any(not isinstance(v, str) or not 1 <= len(v) <= 256 for v in value.values()):
             raise SetupError("invalid_request")
@@ -3842,6 +3851,8 @@ class Controller:
                           "artifact": {k: index["components"][route["family"]][k] for k in ("path", "sha256")}}
                 if state["status"] == "unprepared":
                     return {**result, "status": "preparation_required"}
+                if observed_preparations is not None and state.get("preparation_job_id") not in observed_preparations:
+                    raise SetupError("shared_preparation_unavailable", 409)
                 if state["status"] != "prepared":
                     raise SetupError("catalog_route_preparation_unconfirmed", 409)
                 return {**result, "status": "prepared", "help": self.help_locked(route["family"], route["profile"])}
@@ -4410,9 +4421,9 @@ class Controller:
             tools = self.selected_tools()
             if request["profile"] not in self.selected["validators"]:
                 raise SetupError("selected_profile_unavailable", 409)
-            if not self.operation_lock.acquire(blocking=False):
-                raise SetupError("operation_in_progress", 409)
-        try:
+            # Exact retained checks are observations of this same Controller.
+            # They may replay while its worker owns the effect lock, but only
+            # after the current host and every selected byte are revalidated.
             staging = canonical_directory(Path(self.selected["staging_root"]))
             acquired = None
             if "acquired_source" in request:
@@ -4451,6 +4462,9 @@ class Controller:
                     if acquired is not None and self.selected_acquired_source(request) != acquired:
                         raise SetupError("selected_acquired_source_unavailable", 409)
                     return self.selected_summary(identifier, value)
+            if not self.operation_lock.acquire(blocking=False):
+                raise SetupError("operation_in_progress", 409)
+        try:
             if self.selected_attempts >= 128 or len(self.validations) >= 128:
                 raise SetupError("new_workspace_required", 409)
             self.selected_attempts += 1

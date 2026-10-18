@@ -39,7 +39,7 @@ pub use service_input_receipt::{PrivateServiceInputObservation, PrivateServiceIn
 pub(crate) mod source_status;
 pub(crate) mod service_recovery;
 pub use service_approved_input::{
-    InstalledServiceTask, PreparedServiceInstruction, ServiceMcpPersistenceProposal,
+    InstalledServiceTask, InstalledSharedEntry, InstalledSharedPreparation, SharedPreparationLeave, SharedPreparationResource, PreparedServiceInstruction, ServiceMcpPersistenceProposal,
     PublicServiceBatchEntry, PreparedPublicServiceBatch, PreparedPublicInstruction,
 };
 pub use crate::installed_host::tool_policy::{ServiceToolPolicySelection, ServiceToolInvocation,
@@ -227,6 +227,11 @@ impl SourceFacts {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceRecord {
+    /// Cleanup custody for exact shared preparations admitted by this source.
+    /// The SetupStore P record owns membership and delivery. These locators
+    /// are retained before join and never authorize an effect or disclosure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    shared_preparations: Vec<meerkat_toolkit::setup::SharedPreparationMember>,
     /// Explicit reviewed setup-only choice for this still-unbound original.
     /// Native resolution and the retained operator decision remain authoritative.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,6 +289,7 @@ struct HeldPrivateOriginal {
     console_login: OnceLock<crate::private_host::ConsoleLoginHandle>,
     unresolved: Mutex<Vec<Arc<governed_submit::PendingOriginalAdmission>>>,
     service_attachments: Mutex<Vec<Arc<service_approved_input::attachment::HeldServiceAttachment>>>,
+    shared_preparations: Mutex<Vec<service_approved_input::shared_preparation::HeldSharedPreparation>>,
 }
 
 /// Exact software selection retained with an application access decision.
@@ -659,6 +665,7 @@ impl PrivateOriginals {
         };
         let key = self.key(&reference)?;
         let data = encode(SourceRecord {
+            shared_preparations: Vec::new(),
             setup_request: None,
             configured_setup: None,
             service_setup_children: vec![],
@@ -1045,6 +1052,7 @@ impl PrivateOriginals {
             console_login: OnceLock::new(),
             unresolved: Mutex::new(Vec::new()),
             service_attachments: Mutex::new(Vec::new()),
+            shared_preparations: Mutex::new(Vec::new()),
         }));
         Ok(())
     }

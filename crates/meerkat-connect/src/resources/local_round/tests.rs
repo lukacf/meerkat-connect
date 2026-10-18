@@ -146,6 +146,7 @@ impl Case {
             resources,
             artifacts,
             request: json!({"synthetic_round_protocol":true}),
+            handoff_sha256: digest(b"synthetic-handoff"),
             poisoned: false,
             process: None,
             test_location: Some((executable, pin)),
@@ -513,3 +514,6 @@ async fn readiness_is_exact_and_refuses_oversized_unterminated_output_without_wa
     );
     drop(writer);
 }
+
+#[cfg(feature = "console")]
+mod native_attempts;

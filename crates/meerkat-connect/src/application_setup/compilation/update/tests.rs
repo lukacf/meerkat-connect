@@ -47,6 +47,7 @@ impl Fixture {
         };
         let parent = input.helper.controller_parent[0].clone();
         input.members[0].setup_capability = Some(CompiledAgentSetupCapability {
+            helper: None,
             route: Id::new("original-route").unwrap(), parent, helper_targets: vec![],
         });
         let resources = crate::application_setup::tests::prepared(root);

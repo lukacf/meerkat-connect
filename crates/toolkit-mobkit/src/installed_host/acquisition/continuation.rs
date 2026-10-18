@@ -429,6 +429,9 @@ impl SetupContinuationOwner for InstalledNativeContinuation {
                 return Err(ContinuationError::InvalidReceipt);
             }
             self.service()?;
+            if let Some(evidence) = &evidence {
+                self.originals.record_shared_continuation_admission(obligation, evidence).await?;
+            }
             return Ok(evidence);
         }
         let (status, observed_at_ms) = self.status(obligation).await?;
@@ -436,6 +439,7 @@ impl SetupContinuationOwner for InstalledNativeContinuation {
             ContinuationStatus::Applied { receipt, session, input } => {
                 let evidence = self.applied(obligation, receipt, session, input, observed_at_ms)?;
                 if &evidence.receipt != expected { return Err(ContinuationError::InvalidReceipt); }
+                self.originals.record_shared_continuation_admission(obligation, &evidence).await?;
                 Ok(Some(evidence))
             },
             _ => Ok(None),

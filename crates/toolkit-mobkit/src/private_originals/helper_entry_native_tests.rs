@@ -473,6 +473,7 @@ async fn fresh_helper_reset_catalog_calls_require_explicit_successor_parent() {
             let owner = fixture.source.local_operator_setup(fixture.lifetime().clone()).unwrap()
                 .with_helper_selection(Some(probe.selected_helper.get().unwrap().clone())).unwrap();
             let selected = owner.configure_agent_setup(&AgentSetupCapabilityRequest {
+                helper: None,
                 member: native.members[0].member.clone(), route: native.routes[0].id.clone(),
                 issuance_id: EvidenceId::new("reset-original-setup").unwrap(),
                 helper_targets: vec![SetupTargetRequest {

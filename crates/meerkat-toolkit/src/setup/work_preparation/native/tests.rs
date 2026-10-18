@@ -105,6 +105,7 @@ impl Fixture {
                 caller_observations: vec![],
             },
             HostSetupRequest {
+                setup_helper: None, work_context: None,
                 target: id("original-agent"),
                 correlation: id("invocation-one"),
                 parent_operation: Some(id("request-one")),
