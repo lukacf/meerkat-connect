@@ -284,7 +284,12 @@ impl Guard {
         let reusable = healthy || initial_cancel.is_some();
         let (mut owner, result) = match self.round {
             Round::Initial(mut owner) => {
-                let result = if reusable {
+                let result = if initial_cancel.is_some() {
+                    // Exact native cancellation returns the retained custody;
+                    // it does not authorize another resource use. The next
+                    // begin validates the installed resources before taking it.
+                    Ok(())
+                } else if healthy {
                     owner.check_resources()
                 } else {
                     Err(unavailable())
