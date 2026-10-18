@@ -36,49 +36,28 @@ context transfer and automatic observation, plus a default-off field in the
 existing SDK test host. It excludes the unfinished planning fixture chain,
 dev-dependency/lock changes and temporary diagnostics.
 
-The development-only r6 pair, Core `75a23265` / Meta `263ecad4`, now passes
-compilation, 12 selected Toolkit controls and an independent SDK planning-admission
-case. Its complete 556-package and feature graph is verified. The latter case
-reaches exact durable IDs, shared workflow and independent membership/replay
-assertions. The earlier r5 planning failure remains recorded. Two structured
-ReprepareRequired events still appear in the passing r6 run, without an
-agent-identity mapping in the log. Admission success does not establish successful
-setup-agent model execution or automatic context delivery.
+The shared-workflow qualification report
+retains the owner, SQLite, planning-admission, recovery and exact earlier failures.
+Planning admission passes on Core `75a23265` / Meta `263ecad4` (r6). The full
+shared setup and automatic context-delivery journey remains unqualified.
 
-The subsequent automatic-delivery SDK selection reused that exact compiled
-artifact. One case failed on caller B's actual Find refusal, `tool_unavailable`;
-four cases remained unentered. The fixture then panicked on that refusal,
-producing the displayed result-channel loss. That display is not independent
-evidence of a runtime channel defect. Strict cleanup and owner joins passed.
-Source review identifies a prerequisite gap: the SDK fixture never publishes
-native Ready, which enabled context transfer needs to acquire its recovery owner.
-This does not identify the unique producer of the generic refusal. The supported
-in-process completion API is now offered in development-only
-[Meta r7](https://github.com/lukacf/meerkat-meta/commit/d66f444ef4c4bc50af6a18ac727791aaf21a4541),
-with the same Core `75a23265` and unchanged Python/TypeScript SDK trees. Connect's
-independently reviewed consumer adapts SDK and stdio hosts to consume that completion under the
-existing host close boundary and start the same retained recovery owner. Actual
-held owners remain retained through cancellation and close. Seven SDK cases,
-refusal after host/runtime/admission close, and the actual stdio recovery
-regression were selected. The first r7 attempt passed dependency validation, then
-failed compilation because the new audit fixture required Ord for InputId. No
-tests ran in that attempt. The reviewed one-line HashSet correction compiles in
-320.033 seconds, but the first SDK case fails while waiting for both helpers to
-join one held preparation. The other eight cases do not run. Both Find calls
-return non-error, and A's helper reaches installation; no B-helper tool event
-appears. An unlabelled ControllerReadinessUnavailable error lacks the session and
-reason needed to attribute its cause. Four actors and actual bootstrap completion
-were verified before the timeout. The later cleanup-time Install refusal and
-script panic are secondary; the main cleanup assertion and command-owner joins
-pass. Automatic context delivery remains unqualified; source diagnosis continues.
+The selected development consumer uses the same Core with
+[Meta r7](https://github.com/lukacf/meerkat-meta/commit/d66f444ef4c4bc50af6a18ac727791aaf21a4541).
+It consumes actual SDK/stdio bootstrap completion under the existing host close
+boundary and starts the retained recovery owner. Its audit-fixture compile error
+is fixed. Two actual runs then failed at different runtime boundaries:
 
-A subsequent one-case diagnostic run compiles and fails at a different boundary.
-Both helpers start and load their catalog, but B's selected operation check returns
-operation_authorization_unavailable before the main timeout. A's check succeeds
-and installation begins. The earlier helper-readiness refusal does not recur,
-so its cause remains open. The source files are restored afterward and all
-command owners join. Exact operation-stage diagnosis is next; neither failure
-qualifies automatic context delivery or permits r7 adoption.
+- In one, A's helper reaches installation, but B has no helper tool event. An
+  unlabelled ControllerReadinessUnavailable lacks the session and reason needed
+  to attribute the failure.
+- In the next, both helpers load their catalog, but B's selected check returns
+  operation_authorization_unavailable. A's check succeeds. The earlier readiness
+  refusal does not recur and remains unexplained.
+
+Both runs preserve their failures and pass strict command cleanup. Neither permits
+r7 adoption. The next one-case diagnostic adds exact operation-stage observations
+without changing authorization, timing or retries. Only if it passes will the same
+compiled artifacts run the remaining eight selected cases.
 
 A separate admission-recovery gap remains: retaining an uncertain Original does
 not schedule recovery. The [reviewed #14 contract](/private/tmp/connect-lead-healthy-watch-pusq5c_i/20261018T225357.132122-claude-gcp-lead-f82ce4.json.txt)
@@ -86,8 +65,7 @@ not schedule recovery. The [reviewed #14 contract](/private/tmp/connect-lead-hea
 source owner's bounded settlement may answer AdmissionPending; unenrolled
 candidates, including `retain_unresolved`, remain NotRetained. The owner must
 specify its enrollment event, recovery trigger, cadence and step budget, stop and
-join settlement,
-and answer no candidate as Pending after close. Every promotion or permanent
+join settlement and answer no candidate as Pending after close. Every promotion or permanent
 withdrawal must announce source-custody change. Promotion requires verified native
 admission of the exact input. Withdrawal is terminal across restart, preserves
 the uncertain input and binding, prevents resurrection or a fresh duplicate, and
@@ -97,89 +75,52 @@ Entered native operations remain separately owned until actual settlement or
 close. The exact Core 0.9.4 API revision and Connect's durable-ordering
 implementation remain pending; r7 startup alone does not close this gap.
 
-An earlier full SDK diagnostic passes both Find calls, both helper catalogs,
-selected checks, exact independent approvals, cancellation of one caller and the
-surviving caller's install, job and report calls. Preparation completed successfully
-and the original-task script continued once, but the delivery acknowledgment
-remains absent. Connect's delivery adapter returned its Timeout variant after
-authorization; no reconciliation return was recorded. This variant can describe
-an immediate observation that is not Applied with the matching receipt. It does
-not by itself establish an elapsed native timeout. The combined acceptance condition still
-fails, with strict cleanup-empty passing. Delivery admission and acknowledgment
-recovery remain under investigation. The earlier install refusal remains unexplained. Neither complete
-shared journey is qualified; online creation and active retirement remain open.
+An earlier full SDK diagnostic gets through both helpers' catalog/check calls,
+independent approvals, cancellation of A while B installs. Preparation completes
+and the original-task script continues once, but B's delivery acknowledgment is
+absent. The adapter's Timeout variant does not by itself prove an elapsed timeout.
+The combined journey remains failed; its exact admission/reconciliation observations
+and cleanup are retained in the report. It does not qualify current r7 behavior.
 
-The resource-bound gateway builds and stages on Core `75a23265` / Meta
-`263ecad4`, with the original resource archive and matching SDK sources. The
-pending-aware reset verifier now follows the existing catalog contract within
-its original deadline. The actual rerun returns a new helper session and
-generation in 11.499 seconds, then observes five exact `pending_source` responses
-and a sixth completed-empty catalog. Load, schema inspection and original-task
-completion remain unentered.
+The installed idle-helper reset and the installed-product positive/resource-corruption
+negative are qualified on the r6 development graph. The product case installs an
+integration, loads it for the original agent and reads public Hacker News. The
+corruption case refuses startup before a setup command. These use a scripted model
+with real native execution; they do not establish free-form discovery or account
+authentication. The exact evidence and earlier failures remain in the qualification
+report. Their two verifier files are checkpointed locally as private `4ecfd6e2`
+and public `742f281d`.
 
-Native construction 3 reports `PriorGuardUnsettled` before any replacement
-Connect `begin_enter` diagnostic. The old Initial cancellation returns its owner
-later. Its whole finish callback takes 12.332 seconds against the selected
-5-second cancellation/settlement bounds; source inspection finds synchronous
-full resource verification in that callback. This is a Connect-owned correction
-in progress, not an isolated hashing benchmark or an upstream defect finding.
+Reset after an initialized helper now progresses further. The healthy Initial
+correction passes [six actual native controls](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-healthy-initial-six-uxxhr5gd/FINAL.json)
+with [independent review](/private/tmp/connect-healthy-six-outcome-7unm14pq/REVIEW.json).
+It returns custody without repeating the full resource scan during healthy Initial
+closure; exact native settlement and validation before every next use remain.
+The controls require refusal of changed resources before another spawn and a real
+Offered successor after restoring the bytes.
 
-The reviewed two-path correction removes the redundant scan only when exact
-native Initial cancellation proves no spawn or normal successful child closure.
-Every next attachment still verifies current registration and all installed
-resources before use. Healthy settlement and successor protocol behavior remain
-unchanged. Both new changed-resource controls and the prior six cancellation
-controls now pass on the unchanged r6 graph, with independent outcome review.
-The new controls require exact cancellation, refuse changed resources before
-another spawn, then restore the original bytes and require successful reuse.
-The existing live-helper control also reaches actual healthy closure on its
-small test bundle. A fresh production gateway containing the correction now
-builds successfully on the same complete r6 graph. Its exact executable is
-`f8aeb885`; the build, restored source and joined build owners are verified.
-The two-path correction is checkpointed locally in the private and public
-development trees; no push or release follows from that checkpoint.
-The corrected idle-reset case now passes on that same installed gateway. Actual
-Find, 12 pending Searches, the successful thirteenth Search, Load and schema
-inspection produce 16 distinct native tool pairs and both native completions.
-The old unused Initial is Cancelled/NotSpawned; the replacement is Initial
-Installed/Closed with zero successor offers. Exact attempt identities, four native
-joins, the cold historical source row and final local drain all pass. SDK readers,
-provider, listener and observed children settle, and the gateway exits normally.
-This qualifies the idle-helper case. Reset after an initialized helper now has
-an actual failing result. Its first schema-inspection request completes with 16
-native tool pairs and both completions. Reset returns a new helper session in
-0.365 seconds. The replacement helper runs, but its MCP transport is refused as
-PriorGuardUnsettled before Connect begins a replacement. Five pending catalog
-replies end in an exact completed-empty result, so the second request cannot
-complete. The old process closes normally in 125 ms; Connect's whole finish
-callback takes 12.302 seconds and eventually restores custody. The gateway and
-command owners join cleanly. Success-only final source and SDK cleanup checks
-remain unentered. The narrow healthy Initial correction now passes
-[six actual native controls](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-healthy-initial-six-uxxhr5gd/FINAL.json)
-(`b0d9d479`), with [independent review](/private/tmp/connect-healthy-six-outcome-7unm14pq/REVIEW.json)
-(`1d589982`). It returns healthy Initial custody without repeating the full
-resource scan; exact native settlement predicates and validation before every
-next use remain. The controls prove changed-resource refusal before another
-spawn and one Offered successor after restoring the exact bytes. A fresh gateway
-and full initialized-reset rerun remain required before adoption. Earlier verifier
-failures remain in the qualification report.
+A fresh production gateway (`5b38d2df`) builds and stages with the complete resource
+bundle. The [installed reset rerun](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-healthy-initialized-reset-n3ijlsh_/FINAL.json)
+(`d364b3f7`) runs both old Initial and replacement Offered transports, reaches the
+schema tool in both phases, and records four native Begin/Settle completions and a
+clean local drain. Initial finish returns within the same logged millisecond;
+this is a callback observation, not an isolated benchmark.
 
-The installed-product positive and resource-corruption negative also pass. The
-positive follows 34 exact pending catalog replies, installs the selected
-integration, loads it for the original agent and performs a public Hacker News
-read. The exact original input has a durable finalized/completed receipt with one
-attempt and three native tools. The corruption case changes an isolated bundled
-resource and refuses startup before any setup command; the original resource
-stays unchanged. This uses a scripted model/provider with real native execution
-and a real public read. It does not qualify free-form discovery or account auth.
-Both cases settle their provider/readers and observed children; the positive
-closes its listener. The negative's exit 1 is the expected startup refusal, with
-no negotiated native shutdown. All outer command/cache/transport owners join.
-Native healthy closure may send its recorded final group cleanup signal; no
-SIGTERM/SIGKILL escalation is observed.
+The overall reset case still fails: reset and `/console/identities` report the new
+helper, while the final `/console/experience` identity and sidebar report the old
+helper. The original agent's identity is unchanged. The strict identity assertion
+is retained. [Independent outcome review](/private/tmp/connect-healthy-initialized-outcome-tqm912mx/REVIEW.json)
+(`9ccdd210`) separates the observed transport success from the skipped final
+historical-source and reader/listener checks. The gateway exits normally, its
+provider joins and all outer command owners settle. Source tracing identifies a Meta-owned projection split:
+`/console/experience` uses the old roster while `/console/identities` uses the
+current identity runtime. The exact finding is sent to the Core/Meta lead; no
+Connect response rewrite or relaxed assertion is selected.
 
-The two verified checker files are now checkpointed locally as private
-`4ecfd6e2` and public `742f281d`. The released 0.9.0 checkout remains unchanged.
+The two healthy runtime files are checkpointed locally as private `78721061` and
+public `d54c71c9`, after independent review of the six controls and actual native
+joins. The initialized-reset verifier remains unadopted until the identity fix
+and complete installed pass. Published 0.9.0 assets remain unchanged.
 
 Connect has accepted the Core lead's proposed `DomainBound::OwnedBy` adoption for
 0.9.4. Catalog, setup and report/account/public parent grants will bind the actual
