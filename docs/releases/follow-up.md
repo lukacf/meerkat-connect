@@ -62,9 +62,15 @@ held owners remain retained through cancellation and close. Seven SDK cases,
 refusal after host/runtime/admission close, and the actual stdio recovery
 regression were selected. The first r7 attempt passed dependency validation, then
 failed compilation because the new audit fixture required Ord for InputId. No
-tests ran in that attempt. The reviewed one-line HashSet correction now compiles
-in 320.033 seconds, and the first of the same nine native cases is running.
-Automatic context delivery remains unqualified until the actual test outcome.
+tests ran in that attempt. The reviewed one-line HashSet correction compiles in
+320.033 seconds, but the first SDK case fails while waiting for both helpers to
+join one held preparation. The other eight cases do not run. Both Find calls
+return non-error, and A's helper reaches installation; no B-helper tool event
+appears. An unlabelled ControllerReadinessUnavailable error lacks the session and
+reason needed to attribute its cause. Four actors and actual bootstrap completion
+were verified before the timeout. The later cleanup-time Install refusal and
+script panic are secondary; the main cleanup assertion and command-owner joins
+pass. Automatic context delivery remains unqualified; source diagnosis continues.
 
 A separate admission-recovery gap is confirmed: retaining an uncertain Original
 does not schedule recovery, and abandoned candidates have no enforced recovery
@@ -125,9 +131,20 @@ The old unused Initial is Cancelled/NotSpawned; the replacement is Initial
 Installed/Closed with zero successor offers. Exact attempt identities, four native
 joins, the cold historical source row and final local drain all pass. SDK readers,
 provider, listener and observed children settle, and the gateway exits normally.
-This qualifies the idle-helper case; reset after an initialized helper remains a
-separate pending case. The earlier provenance and one-offer checker failures are
-retained in the qualification report.
+This qualifies the idle-helper case. Reset after an initialized helper now has
+an actual failing result. Its first schema-inspection request completes with 16
+native tool pairs and both completions. Reset returns a new helper session in
+0.365 seconds. The replacement helper runs, but its MCP transport is refused as
+PriorGuardUnsettled before Connect begins a replacement. Five pending catalog
+replies end in an exact completed-empty result, so the second request cannot
+complete. The old process closes normally in 125 ms; Connect's whole finish
+callback takes 12.302 seconds and eventually restores custody. The gateway and
+command owners join cleanly. Success-only final source and SDK cleanup checks
+remain unentered. A narrow correction is under review: return healthy Initial
+custody without repeating the full resource scan, while retaining exact native
+settlement predicates and resource validation before every next use. Changed
+resource refusal, restored-resource reuse and a fresh installed reset must pass
+before adoption. Earlier verifier failures remain in the qualification report.
 
 The installed-product positive and resource-corruption negative also pass. The
 positive follows 34 exact pending catalog replies, installs the selected
