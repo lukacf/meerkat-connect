@@ -40,10 +40,11 @@ The separate full SDK case still fails at A's catalog-load authorization and
 helper barrier before typed approval. The newer planning case on Meta `a8ff89da`
 and the same Core previously refused Find after B's successful host and canonical
 admission. Its fixture now uses the actual compiled setup policy revision and a
-request deadline within the existing workflow deadline. The affected case fails
-at a generic native turn-result assertion, followed by a provider assertion during
-cleanup; its exact native outcome remains under diagnosis. Both SDK cleanup-empty
-assertions pass, but neither case qualifies shared completion. Earlier outcomes
+request deadline within the existing workflow deadline. The latest run passes
+Find, G identity and turn checks, then fails a cumulative count taken from Core's
+live ledger. The fixture correction will use durable input identities instead.
+The earlier turn failure and cleanup provider panic remain unexplained. Both SDK
+cleanup-empty assertions pass, but neither case qualifies shared completion. Earlier outcomes
 retain their own scope. Online creation and active retirement remain open.
 
 The newer selection passes both focused gateway cleanup controls and builds the
@@ -69,11 +70,19 @@ slow pre-delivery work across dropped polls while another operation proceeds.
 Five automatic SDK delivery controls remain unentered behind the failing planning
 case. This is implementation progress, not native end-to-end delivery proof.
 
-Five native reset controls pass. A sixth reaches successful replacement attachment
-but fails an incorrect factory-call count: Core refuses the blocked replacement
-before invoking Connect's factory. Its reviewed test correction requires the actual
-native refusal/NotSpawned receipt and awaits rerun. These native controls do not
-upgrade the failed installed reset above.
+All six selected native cancellation controls now have passing observations. The
+affected rerun checks Core's pre-factory refusal, stale-session refusal and
+successful successor attachment. Initial preparation is reusable only after its
+exact native cancellation proves no spawn or a normally closed child. Every new
+attempt still validates current registration and full resources. The correction
+and its tests are checkpointed locally; installed reset remains unqualified.
+
+The latest planning run passes Find, actual G identity and all turn checks, then
+fails a cumulative-input assertion that incorrectly reads Core's live ledger.
+Completed inputs may already be archived there. The test correction will read
+exact durable identities while preserving counts and replay checks. The earlier
+turn failure did not recur and remains unexplained; automatic SDK delivery is
+still unqualified.
 
 Cold process recovery is separate from retained in-process task ownership. It
 requires durable native input identity and actual restored planning authority.

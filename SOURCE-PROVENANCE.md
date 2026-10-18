@@ -404,13 +404,37 @@ cause. The SDK cleanup-empty assertion passes before the primary panic resumes;
 a provider panic during cleanup remains recorded. The first reset test awaited
 cleanup but skipped its final assertion after the primary panic. Its separate
 reviewed correction checks Core's pre-factory PriorGuardUnsettled/NotSpawned
-receipt and runs cleanup assertion on every exit; its rerun is pending.
+receipt and runs cleanup assertion on every exit; its later passing rerun is
+recorded below.
 
 This is a local implementation checkpoint. Native end-to-end automatic delivery,
 full shared setup, installed reset and cold-process recovery remain unqualified.
 Cold recovery needs exact retained planning inputs and actual current authority,
 not only stored workflow membership or a content hash. No published 0.9.0 asset
 or released dependency selection changes.
+
+### Initial preparation cancellation
+
+Source candidates `23036f3a` and `09403bcd` contribute the local-round attempt
+implementation and two test paths. The parent test module excludes the unrelated
+gateway cleanup module from the execution workspace. Initial cancellation may
+restore unused preparation only for the exact native NotSpawned disposition;
+a normally closed initial child may use the existing successor offer. Each later
+begin still validates registration, session, descriptor and full resources.
+Abandoned, abnormal, failed and offered-round cancellation remain nonreusable.
+
+The five earlier affected controls pass in `507c8d83`. The corrected sixth passes
+in `5111246e`, including actual pre-factory refusal, stale-session refusal,
+successful successor attachment and strict cleanup. Independent review
+`3e615867` validates all 72 references and joined owners. No installed reset
+success is claimed.
+
+The same pair's planning case passes Find, G identity and all turn checks, then
+fails a live-ledger count of zero versus one. Source review confirms that Core
+archives terminal rows from that ledger. A separate unqualified fixture correction
+will count exact durable input identities and preserve replay checks. The earlier
+turn failure and cleanup provider panic did not recur; they remain unresolved.
+Temporary diagnostics, dependency changes and published 0.9.0 assets are excluded.
 
 ### Explicit Node build plans
 

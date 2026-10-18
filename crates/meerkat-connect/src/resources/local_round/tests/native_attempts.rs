@@ -19,7 +19,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-const NATIVE: &str = r#"import json, os, pathlib, sys
+const NATIVE: &str = r#"import json, os, pathlib, select, sys
 root = pathlib.Path(sys.argv[1]); pid = os.getpid()
 mode = (root/'native-mode').read_text()
 (root/(str(pid)+'.native-started')).write_text(json.dumps({'pid':pid}))
@@ -29,6 +29,13 @@ try:
         if 'id' not in row: continue
         if method == 'initialize':
             if mode == 'initialize_failure': sys.exit(2)
+            if mode == 'initialize_hold':
+                (root/(str(pid)+'.native-initializing')).write_text('held')
+                while True:
+                    readable, _, _ = select.select([sys.stdin], [], [], 0.01)
+                    if readable:
+                        assert sys.stdin.buffer.read(1) == b''
+                        sys.exit(0)
             result={'protocolVersion':row['params']['protocolVersion'],'capabilities':{'tools':{}},'serverInfo':{'name':'local-round-fixture','version':'0'}}
         elif method == 'tools/list':
             result={'tools':[{'name':'setup_selected_check','description':'inert transport','inputSchema':{'type':'object'}}]}
@@ -44,6 +51,7 @@ if mode == 'abnormal_exit': sys.exit(2)
 struct Probe {
     inner: Arc<LocalRoundAttempts>,
     requests: Mutex<Vec<McpAttemptGuardRequest>>,
+    hold_first: tokio::sync::watch::Sender<bool>,
     hold_second: tokio::sync::watch::Sender<bool>,
     held: AtomicBool,
 }
@@ -54,13 +62,18 @@ impl McpAttemptGuardFactory for Probe {
         request: McpAttemptGuardRequest,
         cancel: McpAttemptCancellation,
     ) -> Result<Option<Box<dyn McpAttemptGuard>>, McpAttachmentRefusal> {
-        let second = {
+        let ordinal = {
             let mut requests = self.requests.lock().unwrap();
             requests.push(request.clone());
-            requests.len() == 2
+            requests.len()
         };
         let guard = self.inner.begin(request, cancel).await?;
-        if second && guard.is_some() && *self.hold_second.borrow() {
+        if ordinal == 1 && guard.is_some() && *self.hold_first.borrow() {
+            self.held.store(true, Ordering::SeqCst);
+            let mut hold = self.hold_first.subscribe();
+            let _ = hold.wait_for(|value| !*value).await;
+        }
+        if ordinal == 2 && guard.is_some() && *self.hold_second.borrow() {
             // Core retains this real late return, including the offer Child.
             // The test releases it in all-exit cleanup, without aborting begin.
             self.held.store(true, Ordering::SeqCst);
@@ -109,6 +122,7 @@ impl NativeCase {
         let probe = Arc::new(Probe {
             inner: attempts.clone(),
             requests: Mutex::new(Vec::new()),
+            hold_first: tokio::sync::watch::channel(false).0,
             hold_second: tokio::sync::watch::channel(late).0,
             held: AtomicBool::new(false),
         });
@@ -241,6 +255,7 @@ impl NativeCase {
     }
     async fn cleanup(&mut self) -> Vec<String> {
         let mut errors = Vec::new();
+        self.probe.hold_first.send_replace(false);
         self.probe.hold_second.send_replace(false);
         fs::write(self.protocol.output.join("release"), "all-exit release").unwrap();
         for router in &mut self.routers {
@@ -304,14 +319,18 @@ async fn run(
 ) {
     let mut case = NativeCase::new(protocol, native, late).await;
     let result = AssertUnwindSafe(body(&mut case)).catch_unwind().await;
-    let cleanup = case.cleanup().await;
-    if !cleanup.is_empty() {
-        eprintln!("local round native cleanup failures: {cleanup:?}");
-    }
+    let cleanup = AssertUnwindSafe(async {
+        let failures = case.cleanup().await;
+        assert!(failures.is_empty(), "cleanup failures: {failures:?}");
+    }).catch_unwind().await;
+    // Check cleanup on every exit; its panic hook reports any secondary failure
+    // before the original test failure is resumed.
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);
     }
-    assert!(cleanup.is_empty(), "cleanup failures: {cleanup:?}");
+    if let Err(panic) = cleanup {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[tokio::test]
@@ -489,3 +508,5 @@ async fn native_late_ready_guard_is_cancelled_and_returned_without_rearming() {
     })
     .await;
 }
+
+mod initial_cancel;

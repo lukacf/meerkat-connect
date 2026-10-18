@@ -166,7 +166,8 @@ impl McpAttemptGuardFactory for LocalRoundAttempts {
         };
         let round = if initial {
             // The fresh preparation needs no successor offer. It still stays
-            // poisoned until this exact installed transport closes cleanly.
+            // poisoned until this exact attempt proves a graceful installed close
+            // or a safe initial cancellation. Neither is new native admission.
             owner.poisoned = true;
             Round::Initial(owner)
         } else {
@@ -179,7 +180,7 @@ impl McpAttemptGuardFactory for LocalRoundAttempts {
             {
                 Ok(guard) => Round::Offered(guard),
                 Err((owner, _)) => {
-                    restore(&self.state, &request.key, owner);
+                    restore(&self.state, &request.key, owner, None);
                     return Err(McpAttachmentRefusal::Unavailable);
                 }
             }
@@ -202,7 +203,16 @@ struct Guard {
     round: Round,
 }
 
-fn restore(state: &Mutex<State>, key: &McpAttemptKey, mut owner: LocalRoundOwner) -> bool {
+#[derive(Clone, Copy)]
+enum InitialCancellation {
+    NotSpawned,
+    Closed,
+}
+
+fn restore(
+    state: &Mutex<State>, key: &McpAttemptKey, mut owner: LocalRoundOwner,
+    initial_cancel: Option<InitialCancellation>,
+) -> bool {
     // No external callback executes under this lock. On a poisoned lock keep
     // custody, but never authorize reuse. The sole claimant took this slot;
     // neither registration nor close can put another owner into it.
@@ -210,6 +220,14 @@ fn restore(state: &Mutex<State>, key: &McpAttemptKey, mut owner: LocalRoundOwner
     let current = !state.is_poisoned() && slot.active.as_ref() == Some(key);
     if !current {
         owner.poisoned = true;
+    }
+    if current && !owner.poisoned
+        && matches!(initial_cancel, Some(InitialCancellation::NotSpawned))
+    {
+        // Core never spawned this initial descriptor. Return its unused
+        // preparation. A future begin still selects and validates its own
+        // exact request and current registration.
+        slot.started = false;
     }
     slot.owner = Some(owner);
     slot.active = None;
@@ -223,13 +241,32 @@ fn graceful(disposition: &McpAttemptDisposition, key: &McpAttemptKey, settle: bo
     {
         return false;
     }
-    let McpAttemptProcessEnd::Closed(receipt) = &disposition.process else {
+    normal_close(&disposition.process)
+}
+
+fn normal_close(process: &McpAttemptProcessEnd) -> bool {
+    let McpAttemptProcessEnd::Closed(receipt) = process else {
         return false;
     };
     McpServerCloseOutcome::Stdio(receipt.clone()).is_settled()
         && matches!(&receipt.leader, McpStdioLeaderOutcome::Reaped(status) if status.success())
         && receipt.sigterm.is_none()
         && receipt.sigkill.is_none()
+}
+
+fn initial_cancellation(
+    disposition: &McpAttemptDisposition, key: &McpAttemptKey,
+) -> Option<InitialCancellation> {
+    if &disposition.key != key
+        || !matches!(disposition.open, McpAttemptOpenOutcome::Cancelled { .. })
+    {
+        return None;
+    }
+    match &disposition.process {
+        McpAttemptProcessEnd::NotSpawned => Some(InitialCancellation::NotSpawned),
+        process if normal_close(process) => Some(InitialCancellation::Closed),
+        _ => None,
+    }
 }
 
 impl Guard {
@@ -239,9 +276,15 @@ impl Guard {
         settle: bool,
     ) -> Result<(), McpGuardFinishError> {
         let healthy = graceful(&disposition, &self.key, settle);
+        let initial_cancel = if !settle && matches!(&self.round, Round::Initial(_)) {
+            initial_cancellation(&disposition, &self.key)
+        } else {
+            None
+        };
+        let reusable = healthy || initial_cancel.is_some();
         let (mut owner, result) = match self.round {
             Round::Initial(mut owner) => {
-                let result = if healthy {
+                let result = if reusable {
                     owner.check_resources()
                 } else {
                     Err(unavailable())
@@ -259,12 +302,15 @@ impl Guard {
                 }
             }
         };
-        if !healthy {
+        if !reusable {
             owner.poisoned = true;
         }
+        // A normally closed initial child can use the existing successor
+        // offer. Offered-round cancellation still requires its own protocol
+        // settlement and remains poisoned. No session authority is reused.
         // Return custody before telling Core that the consuming finish ended.
-        let restored = restore(&self.state, &self.key, owner);
-        if healthy && restored && result.is_ok() {
+        let restored = restore(&self.state, &self.key, owner, initial_cancel);
+        if reusable && restored && result.is_ok() {
             Ok(())
         } else {
             Err(McpGuardFinishError::new(
