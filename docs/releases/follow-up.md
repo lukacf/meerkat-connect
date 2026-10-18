@@ -70,19 +70,22 @@ fails, with strict cleanup-empty passing. Delivery admission and acknowledgment
 recovery remain under investigation. The earlier install refusal remains unexplained. Neither complete
 shared journey is qualified; online creation and active retirement remain open.
 
-The newer selection passes both focused gateway cleanup controls and builds the
-actual resource-bound gateway. Staging with refreshed resources and matching SDK
-sources passes. The latest installed reset returns a new ready helper session and
-generation in 11.207 seconds, exceeding the verifier's old 10-second limit. A
-reset-specific bounded observation retains the same request and overall deadline.
-The reply includes a cleanup warning that source review finds unconditional on
-reset success. The actual log confirms old-session archive and native
-unregistration completed before replacement materialization. The replacement helper's
-setup MCP attachment then returns `Unavailable`, and catalog search returns zero
-tools. Search/schema completion and semantic shutdown remain failed despite joined
-process owners. The old connection state is under diagnosis; neither cancellation
-nor its safe retirement is established. Earlier launcher, private-file and timeout
-failures remain recorded. This does not qualify the complete reset journey.
+The latest resource-bound gateway builds and stages on the r6 pair above with
+the original resource archive and matching SDK sources. Installed reset returns
+a new ready helper session and generation in 11.408 seconds. The replacement
+helper's first catalog search returns typed `pending_source` for `toolkit-setup`.
+The scripted provider rejects that response before Load or schema inspection.
+This is neither a completed empty catalog nor the earlier R4 run's `Unavailable`
+result. The verifier must follow the existing pending-state contract within its
+original deadline and still require actual inspection and completion.
+
+Native shutdown reports host/runtime cleanup and exits normally; the provider
+and command process groups settle without forced cleanup. Success-only SDK reader,
+listener and descendant assertions remain unentered. The missing pre-reset child
+observation does not prove an old helper transport joined. The
+earlier R4 attachment and semantic-shutdown failures remain separate, and the
+unconditional reset warning is not retirement evidence. Complete installed reset
+recovery remains unqualified.
 
 The Core owner conditionally confirmed an R1 Find-fenced durable transfer commit
 as a disclosure boundary, with recipient-only scope and exact payload/reconciliation
@@ -165,6 +168,13 @@ same compiled source; cleanup assertions and command/transport ownership pass.
 The earlier failed diagnostic remains recorded. No new native API was required;
 full shared SDK delivery and process-restart completion remain open. The separate
 narrow r6 execution above does not extend these r5 interest-restoration results.
+
+The configured Reading frontend now has a source-reviewed sender migration and
+SQLite connection cleanup. Nine Reading Python tests pass; the separate egress
+and sender run passes 299 tests, including real retained-connection closure,
+rollback and receipt-preservation assertions. These are controlled Python tests,
+not native or live-provider delivery. The actual native CLI consumer and source
+adoption remain pending.
 
 The installer target is published Core/Meta 0.9.4, with Linux x86_64 qualification
 first and macOS arm64 separately. The manual-only
