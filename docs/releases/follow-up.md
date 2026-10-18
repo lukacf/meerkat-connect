@@ -95,7 +95,10 @@ public query for the internally qualified input key and proposes an additive
 0.9.4 API. That query is now available in the development-only
 [Core r6 revision](https://github.com/lukacf/meerkat/commit/75a23265f6125f3ce61560ba8388c076a1caccf1),
 paired with [Meta r6](https://github.com/lukacf/meerkat-meta/commit/263ecad41260a0b89c5dd0b8caa251164369be22).
-Connect's consumer is being prepared. The query verifies historical admission
+Connect's consumer for an already restored committed transfer has passed source
+review. A separate cold-recovery path is being implemented through an explicit
+host-selected private reader and the existing worker's canonical paging, including
+workflows created after startup. The query verifies historical admission
 without reviving an actor, granting custody or authorizing resubmission. No
 Connect r6 runtime result or Ready completion seam is claimed. Restoring current
 planning authority additionally needs exact host-selected inputs and current
@@ -113,19 +116,24 @@ The setup agent stays restricted and caller effects are not delegated. Foreign,
 missing, changed, cancelled and unselected evidence is refused; parent and fresh
 planning controls also pass. The 13 source/test paths include two fixture repairs:
 separate parent/caller probe capture and actual bootstrap controller-pin wiring.
-Earlier failed runs remain recorded. This is source-custody recovery, not restored
-workflow interest, automatic delivery or a complete process-restart journey.
+Earlier failed runs remain recorded. This result qualifies source custody; the
+following result extends it to restored workflow interest. Automatic delivery and
+a complete process-restart journey remain separate.
 
-The first restored-interest control now isolates a different problem: Connect
-compares outer client Arc identity across repeated native pins, while Meta's
-default taint wrapper allocates a new outer client for each pin. Association and
-controller selections match. Core does not promise stable outer allocation. The
-owner confirms validation and adoption of the exact native-returned pin through
-the existing protected callback, including request-free route facts and exact
-current ownership. Connect's correction keeps the runnable controller on the
-canonical source and only route metadata on the workflow. Source work is underway;
-the diagnostic remains failed and the other 15 interest/page controls unentered.
-No new native API or successful interest recovery is claimed.
+Restored interest and the affected recovery controls now pass all 18 distinct
+native tests on r5, with independent review. The 16 selected source/test paths are
+checkpointed locally at `ace0501abc90babaa60cb1af504f3e0d248dd5ea`.
+The original failure compared outer
+client Arc identity across repeated pins, while Meta's default wrapper allocates
+a new outer client for each pin. Connect now validates exact association, input,
+selection, route facts and current ownership inside the protected callback and
+retains its exact returned controller. Runnable custody stays on the canonical
+source; the workflow retains only route metadata. The tests cover canonical
+paging, replay, cancellation, changed membership, retired-agent refusal and
+worker stop/join behavior. Seven focused tests and the remaining eleven use the
+same compiled source; cleanup assertions and command/transport ownership pass.
+The earlier failed diagnostic remains recorded. No new native API was required;
+full shared SDK delivery, r6 execution and process-restart completion remain open.
 
 The installer target is published Core/Meta 0.9.4, with Linux x86_64 qualification
 first and macOS arm64 separately. The manual-only
