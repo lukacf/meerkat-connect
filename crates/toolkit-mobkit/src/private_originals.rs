@@ -132,6 +132,10 @@ pub struct PrivateOriginalRef {
 #[serde(rename_all = "snake_case")]
 pub enum PrivateOriginalCancellation {
     OperationsCancelled,
+    /// Source cancellation and workflow departure succeeded. An unresolved
+    /// workflow close obligation remains for host-owned recovery. This is not
+    /// a runtime, process, controller or descendant settlement observation.
+    OperationsCancelledCleanupPending,
     OperationGrantRevoked,
 }
 
@@ -1023,8 +1027,11 @@ impl PrivateOriginals {
         &self,
         reference: &PrivateOriginalRef,
     ) -> Result<PrivateOriginalCancellation, PrivateOriginalError> {
-        self.record_operation_cancelled(reference).await?;
-        Ok(PrivateOriginalCancellation::OperationsCancelled)
+        let cancelled = self.record_cancelled_source_set(reference, None, None, None).await?;
+        // Source cancellation and existing physical preparation leave have
+        // completed. The outer channel retains this follow-on work through
+        // caller loss; no initial native binder waits for workflow close.
+        self.depart_cancelled_workflows(&cancelled).await
     }
 
     /// Attach only the actual source owner's returned handle, after its durable

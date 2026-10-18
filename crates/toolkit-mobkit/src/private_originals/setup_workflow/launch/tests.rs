@@ -952,6 +952,276 @@ async fn pending_a_cancellation_preserves_unavailable_without_b_and_admits_from_
 }
 
 
+fn admitted_input(f: &FirstFixture, admitted: &PrivateOriginalSubmission)
+    -> meerkat_core::lifecycle::InputId
+{
+    let PrivateOriginalSubmission::Admitted { session_id, input_id, .. } = admitted else {
+        panic!("actual native input admission required")
+    };
+    assert_eq!(session_id, &f.session.to_string());
+    meerkat_core::lifecycle::InputId::from_uuid(input_id.parse().unwrap())
+}
+
+async fn close_exercise(case: u8) {
+    use meerkat_runtime::terminal_status::{InputTerminalReceiptRead, InteractionSelector};
+    let f = FirstFixture::for_continuation().await;
+    let result = AssertUnwindSafe(tokio::time::timeout(GUARD, async {
+        let c = prepare(&f).await;
+        if case >= 5 {
+            // The real installed producer retains its optional planning choice
+            // before durable membership. The outer cancellation caller recovers
+            // it from this exact existing A owner, not from ambient workflow IDs.
+            f.source.retain_workflow_selection(&c.a, &id("waiter-a-call"),
+                Some(&c.planning), Some(&c.work)).unwrap();
+        }
+        let delivery_before = f.store.get_effect(&c.membership.delivery_effect().unwrap())
+            .await.unwrap().unwrap();
+        if case == 6 {
+            // Canonical join is committed, but its local interest is absent.
+            // This is missing-local-interest recovery, not an injected lost reply.
+            c.planning.interests.lock().unwrap().clear();
+            let cancelled = f.source.cancel_original_operation(&f.original_reference()).await.unwrap();
+            assert!(matches!(cancelled, PrivateOriginalCancellation::OperationsCancelledCleanupPending));
+            assert_eq!(serde_json::to_value(cancelled).unwrap(), "operations_cancelled_cleanup_pending");
+            let departed = f.source.workflow_store().unwrap().load_setup_workflow(c.snapshot.reference()).await.unwrap();
+            assert!(departed.sealed() && departed.active_waiters() == 0 && departed.departed(&c.membership).unwrap());
+            let close = f.store.get_effect(&c.snapshot.reference().close_effect()).await.unwrap().unwrap();
+            assert_eq!(close.status, EffectStatus::Uncertain);
+            assert_eq!(f.inputs().await.unwrap(), 2, "the cancellation caller never dispatches unknown G");
+            assert!(c.planning.retain_launch_interest(&c.snapshot, &c.membership, &c.a).await.is_err(),
+                "an old join snapshot cannot republish interest after cancellation");
+            assert!(c.planning.interests.lock().unwrap().is_empty());
+            f.source.cancel_original_operation(&f.original_reference()).await.unwrap();
+            let replay = f.store.get_effect(&close.key).await.unwrap().unwrap();
+            assert_eq!(replay.status, EffectStatus::Uncertain);
+            assert_eq!(replay.attempt, 1);
+        } else if case == 2 {
+            // A lost launch claim, with no native outcome, stays unresolved.
+            let EffectClaimOutcome::Claimed(launch) = f.store.claim_effect(
+                &c.snapshot.reference().launch_effect(), c.snapshot.revision(),
+                "unknown-launch-close", 1).await.unwrap() else { panic!("launch claimed") };
+            c.planning.depart_waiter(&c.membership).await.unwrap();
+            assert_eq!(c.planning.observe_close(c.snapshot.reference()).await.unwrap(),
+                WorkflowCloseObservation::Pending);
+            assert_eq!(f.inputs().await.unwrap(), 2, "no blind launch or cancellation");
+            let source = f.source.store.get(&c.planning.terms.planning_source).await.unwrap().unwrap();
+            assert!(f.source.decode_stored(&source).unwrap().operation_cancelled);
+            assert_eq!(f.store.get_effect(&launch.key).await.unwrap().unwrap(), launch,
+                "close does not reset uncertain launch ownership");
+            let first = f.store.get_effect(&c.snapshot.reference().close_effect()).await.unwrap().unwrap();
+            assert_eq!(first.status, EffectStatus::Uncertain);
+            assert_eq!(c.planning.observe_close(c.snapshot.reference()).await.unwrap(),
+                WorkflowCloseObservation::Pending);
+            let replay = f.store.get_effect(&first.key).await.unwrap().unwrap();
+            assert_eq!(replay.status, EffectStatus::Uncertain);
+            assert_eq!(replay.attempt, 1, "observation never makes another close dispatch");
+            let newer = event(&f, "newer-after-unknown-close", vec![]).await;
+            let accepted = f.source.submit_authenticated_original(newer).await.unwrap();
+            f.finish(&Ok::<_, String>(accepted)).await.unwrap();
+            assert_eq!(f.inputs().await.unwrap(), 3);
+        } else if case == 3 {
+            // Actual native final-entry refusal, not an absent-input inference.
+            let EffectClaimOutcome::Claimed(launch) = f.store.claim_effect(
+                &c.snapshot.reference().launch_effect(), c.snapshot.revision(),
+                "known-nonadmission-close", 60_000).await.unwrap() else { panic!("launch claimed") };
+            let prepared = Arc::new(PreparedWorkflowLaunch {
+                selection: c.planning.clone(), reference: c.snapshot.reference().clone(),
+            });
+            let route = f.source.route(&c.planning.submission.original.route).unwrap();
+            let binder = Arc::new(DepartAfterBind {
+                inner: prepared.binder(&f.source, &route).await.unwrap(),
+                planning: c.planning.clone(), membership: c.membership.clone(),
+                pending_seen: AtomicBool::new(false),
+            });
+            let refused = prepared.submit_with_binder(&f.source, binder).await.unwrap();
+            assert!(matches!(refused, WorkflowLaunchObservation::NotAdmitted));
+            c.planning.record_launch_observation(&f.source, launch.lease.as_ref().unwrap(), &refused)
+                .await.unwrap();
+            assert_eq!(c.planning.observe_close(c.snapshot.reference()).await.unwrap(),
+                WorkflowCloseObservation::SourceFencedAndNotAdmitted);
+            assert_eq!(c.planning.observe_close(c.snapshot.reference()).await.unwrap(),
+                WorkflowCloseObservation::SourceFencedAndNotAdmitted);
+            assert_eq!(f.inputs().await.unwrap(), 2);
+        } else {
+            let hold = (case == 1).then(|| f.hold_next_response());
+            let admitted = native(c.planning.launch(&c.snapshot).await.unwrap());
+            let input = admitted_input(&f, &admitted);
+            if let Some(hold) = &hold {
+                hold.entered().await;
+                c.planning.depart_waiter(&c.membership).await.unwrap();
+                assert_eq!(c.planning.observe_close(c.snapshot.reference()).await.unwrap(),
+                    WorkflowCloseObservation::Pending);
+                let actual = f.machine.input_terminal_receipt(&f.session,
+                    InteractionSelector::InputId(input.clone())).await.unwrap().unwrap();
+                assert!(matches!(actual.report, InputTerminalReceiptRead::Pending { .. }),
+                    "an entered G response remains active; close did not cancel its run");
+                assert_eq!(f.store.get_effect(&c.snapshot.reference().close_effect())
+                    .await.unwrap().unwrap().status, EffectStatus::Uncertain);
+                hold.release();
+                // Source fencing may deny subsequent native work. The runtime
+                // owns that outcome; this test requires only its real terminal.
+                let terminal = f.machine.wait_input_terminal_receipt(&f.session, &input)
+                    .await.unwrap().unwrap();
+                assert!(matches!(terminal,
+                    meerkat_runtime::terminal_status::InputTerminalReceiptWait::Resolved(_)));
+            } else {
+                f.finish(&Ok::<_, String>(admitted)).await.unwrap();
+                let expected = WorkflowCloseObservation::SourceFencedAndFinalized {
+                    session_id: f.session.to_string(), input_id: input.to_string(),
+                };
+                if case == 4 {
+                    let departed = c.planning.depart_waiter(&c.membership).await.unwrap();
+                    let EffectClaimOutcome::Claimed(close) = f.store.claim_effect(
+                        &c.snapshot.reference().close_effect(), departed.revision(),
+                        "lost-close-ack", 1).await.unwrap() else { panic!("close claimed") };
+                    // Actual source/native observation succeeds but its
+                    // acknowledgment is lost. Only the existing lease expires.
+                    assert_eq!(c.planning.close_observation(&f.source, c.snapshot.reference())
+                        .await.unwrap(), expected);
+                    let expires = close.lease.as_ref().unwrap().expires_at_ms;
+                    while f.store.now_ms().await.unwrap() < expires {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    assert_eq!(f.store.get_effect(&close.key).await.unwrap().unwrap().status,
+                        EffectStatus::InFlight);
+                    assert_eq!(c.planning.observe_close(c.snapshot.reference()).await.unwrap(), expected);
+                    let done = f.store.get_effect(&close.key).await.unwrap().unwrap();
+                    assert_eq!(done.status, EffectStatus::Succeeded);
+                    assert_eq!(done.attempt, 1);
+                    assert!(done.lease.is_none());
+                    assert_eq!(f.inputs().await.unwrap(), 3);
+                } else {
+                    // A different real input is held in the same session after
+                    // G completed. Closing G must not interrupt this new run.
+                    let newer_hold = f.hold_next_response();
+                    let newer = event(&f, "newer-active-after-g", vec![]).await;
+                    let newer_ref = newer.original.clone();
+                    let accepted = f.source.submit_authenticated_original(newer).await.unwrap();
+                    let newer_input = admitted_input(&f, &accepted);
+                    assert_ne!(newer_input, input);
+                    newer_hold.entered().await;
+                    if case == 5 {
+                        let cancelled = f.source.cancel_original_operation(&f.original_reference()).await.unwrap();
+                        assert!(matches!(cancelled, PrivateOriginalCancellation::OperationsCancelled));
+                        let close = f.store.get_effect(&c.snapshot.reference().close_effect()).await.unwrap().unwrap();
+                        assert_eq!(close.status, EffectStatus::Succeeded,
+                            "actual outer cancellation invokes close for final departure");
+                    } else { c.planning.depart_waiter(&c.membership).await.unwrap(); }
+                    assert_eq!(c.planning.observe_close(c.snapshot.reference()).await.unwrap(), expected);
+                    assert_eq!(c.planning.observe_close(c.snapshot.reference()).await.unwrap(), expected);
+                    let actual = f.machine.input_terminal_receipt(&f.session,
+                        InteractionSelector::InputId(newer_input.clone())).await.unwrap().unwrap();
+                    assert!(matches!(actual.report, InputTerminalReceiptRead::Pending { .. }));
+                    f.source.owner.workflow_controller(&c.planning.parent).unwrap();
+                    if case == 5 {
+                        assert!(f.source.owner.workflow_controller(&c.a.original).is_err(),
+                            "outer cancellation fences A while P and the newer input stay independent");
+                    } else { f.source.owner.workflow_controller(&c.a.original).unwrap(); }
+                    let current = f.source.binding_evidence(&newer_ref).await.unwrap().unwrap();
+                    assert!(current.candidate().original_work != c.planning.parent.association().candidate().original_work);
+                    newer_hold.release();
+                    f.finish(&Ok::<_, String>(accepted)).await.unwrap();
+                    let done = f.machine.input_terminal_receipt(&f.session,
+                        InteractionSelector::InputId(newer_input)).await.unwrap().unwrap();
+                    assert!(matches!(done.report, InputTerminalReceiptRead::Finalized(_)));
+                    assert_eq!(f.inputs().await.unwrap(), 4);
+                }
+            }
+        }
+        assert_eq!(f.store.get_effect(&c.membership.delivery_effect().unwrap()).await.unwrap().unwrap(),
+            delivery_before, "close cannot acknowledge undisclosed waiter context");
+    })).catch_unwind().await;
+    let cleanup = f.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    match result {
+        Ok(result) => result.expect("bounded workflow close control"),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_g_close_preserves_newer_native_input_and_replay() { close_exercise(0).await; }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_g_close_fences_source_without_cancelling_shared_run() { close_exercise(1).await; }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_launch_close_stays_uncertain_without_blind_cancellation() { close_exercise(2).await; }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn known_native_nonadmission_settles_only_its_close_obligation() { close_exercise(3).await; }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_close_ack_reconciles_exact_terminal_without_second_dispatch() { close_exercise(4).await; }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn outer_cancellation_closes_terminal_workflow_and_preserves_newer_input() {
+    close_exercise(5).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn outer_cancellation_recovers_membership_without_local_interest_and_refuses_late_publication() {
+    close_exercise(6).await;
+}
+
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn joined_recovery_worker_finishes_pending_close_after_cancel_caller_returns() {
+    use crate::installed_host::acquisition::recovery::AcquisitionRecovery;
+    let f = FirstFixture::for_continuation().await;
+    let recovery = AcquisitionRecovery::default();
+    let result = AssertUnwindSafe(tokio::time::timeout(GUARD, async {
+        let c = prepare(&f).await;
+        f.source.retain_workflow_selection(&c.a, &id("waiter-a-call"),
+            Some(&c.planning), Some(&c.work)).unwrap();
+        let delivery = f.store.get_effect(&c.membership.delivery_effect().unwrap()).await.unwrap().unwrap();
+        let hold = f.hold_next_response();
+        let admitted = native(c.planning.launch(&c.snapshot).await.unwrap());
+        let input = admitted_input(&f, &admitted);
+        hold.entered().await;
+        // The actual cancellation caller finishes and drops its handles before
+        // the existing joined recovery worker starts. It performs no replay.
+        let source = f.source.clone();
+        let original = f.original_reference().clone();
+        let cancelled = tokio::spawn(async move {
+            source.cancel_original_operation(&original).await
+        }).await.unwrap().unwrap();
+        assert!(matches!(cancelled, PrivateOriginalCancellation::OperationsCancelledCleanupPending));
+        assert_eq!(serde_json::to_value(cancelled).unwrap(), "operations_cancelled_cleanup_pending");
+        let pending = f.store.get_effect(&c.snapshot.reference().close_effect()).await.unwrap().unwrap();
+        assert_eq!(pending.status, EffectStatus::Uncertain);
+        assert_eq!(pending.attempt, 1);
+        assert!(f.source.owner.workflow_controller(&c.a.original).is_err());
+        f.source.owner.workflow_controller(&c.planning.parent).unwrap();
+        let owner = crate::installed_host::controller_first_input_fixture::bind_workflow_recovery(
+            &f.store, &f.scope, &f.source, f.lifetime(), &f.source_path);
+        recovery.start(recovery.prepare_start().unwrap(), owner).unwrap();
+        hold.release();
+        let done = loop {
+            let row = f.store.get_effect(&pending.key).await.unwrap().unwrap();
+            if row.status == EffectStatus::Succeeded { break row; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(done.attempt, 1, "recovery observes the same close, never dispatches G");
+        assert!(done.lease.is_none());
+        let Some(EffectOutcome::Succeeded { receipt }) = done.outcome else { panic!("exact close receipt") };
+        assert_eq!(serde_json::from_value::<WorkflowCloseObservation>(receipt.body).unwrap(),
+            WorkflowCloseObservation::SourceFencedAndFinalized {
+                session_id: f.session.to_string(), input_id: input.to_string(),
+            });
+        assert_eq!(f.inputs().await.unwrap(), 3, "A, P and one G only");
+        assert_eq!(f.store.get_effect(&c.membership.delivery_effect().unwrap()).await.unwrap().unwrap(), delivery,
+            "cleanup cannot acknowledge undisclosed context");
+    })).catch_unwind().await;
+    // The same worker retains entered work across stop or a cancelled join.
+    // Always join before fixture/native teardown, including failed assertions.
+    recovery.stop();
+    let joined = recovery.join().await;
+    let cleanup = f.shutdown().await;
+    assert!(joined.is_ok(), "{joined:?}");
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    match result {
+        Ok(result) => result.expect("bounded existing-worker close reconciliation"),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn planning_binding_refuses_distinct_issued_root_without_source_or_native_change() {
     let f = FirstFixture::for_continuation().await;

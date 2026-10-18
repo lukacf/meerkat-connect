@@ -182,6 +182,7 @@ impl InstalledAcquisition {
         // loop establishes neither permission nor a successful effect.
         let mut after: Option<String> = None;
         let mut service_after: Option<String> = None;
+        let mut workflow_after: Option<String> = None;
         let mut backoff = SWEEP_PAUSE;
         let mut sweep_delayed = false;
         loop {
@@ -198,6 +199,32 @@ impl InstalledAcquisition {
                 },
                 Err(PrivateOriginalError::Denied) => return,
                 Err(_) => { service_after = None; sweep_delayed = true; }
+            }
+            if !control.enter() { return; }
+            // Cancellation may return while an exact G receipt is still
+            // pending, or its caller may disappear after the durable commit.
+            // Reuse this joined owner and a disposable canonical-source cursor.
+            // No source lock is held across these reads or native observations.
+            let workflows = self.host.originals.workflow_close_recovery_page(
+                workflow_after.as_deref(), PAGE_SIZE).await;
+            match self.recovery_disclose(workflows) {
+                Ok(Ok(page)) => {
+                    workflow_after = page.next_after_id;
+                    for source in page.sources {
+                        if !control.enter() { return; }
+                        match self.recovery_disclose(()) {
+                            Ok(()) => (),
+                            Err(SetupError::Denied | SetupError::WrongScope) => return,
+                            Err(_) => { sweep_delayed = true; break; }
+                        }
+                        let outcome = self.host.originals
+                            .reconcile_cancelled_workflow_source(&source).await;
+                        sweep_delayed |= !matches!(outcome,
+                            Ok(crate::private_originals::PrivateOriginalCancellation::OperationsCancelled));
+                    }
+                }
+                Err(SetupError::Denied | SetupError::WrongScope) => return,
+                _ => { workflow_after = None; sweep_delayed = true; }
             }
             if !control.enter() { return; }
             let page = self.recovery_page(after.as_deref()).await;
@@ -264,7 +291,7 @@ impl InstalledAcquisition {
             }
             // Cursor state is disposable. Every completed sweep starts from
             // the same canonical scope; new lower-sorting IDs cannot be lost.
-            let pause = if after.is_some() || service_after.is_some() {
+            let pause = if after.is_some() || service_after.is_some() || workflow_after.is_some() {
                 PAGE_PAUSE
             } else if sweep_delayed {
                 let pause = backoff;
@@ -274,7 +301,7 @@ impl InstalledAcquisition {
                 backoff = SWEEP_PAUSE;
                 SWEEP_PAUSE
             };
-            if after.is_none() && service_after.is_none() {
+            if after.is_none() && service_after.is_none() && workflow_after.is_none() {
                 sweep_delayed = false;
             }
             if !control.pause(pause).await {

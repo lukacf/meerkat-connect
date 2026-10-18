@@ -9,7 +9,7 @@ use meerkat_core::{MobMemberBinding, RealmId, auth::PrincipalRef};
 use meerkat_workgraph::{WorkItemRef, WorkOwnerKey};
 use std::collections::BTreeMap;
 use toolkit_package::Revision;
-use toolkit_store::EffectKey;
+use toolkit_store::{ConditionalAdmission, ConditionalTransition, EffectKey, RecordCondition};
 
 const SCHEMA: &str = "meerkat_toolkit.setup_workflow";
 const MAX_WAITERS: usize = 128;
@@ -149,6 +149,16 @@ impl SetupWorkflowSnapshot {
             .filter(|waiter| !waiter.departed)
             .count()
     }
+    /// Canonical bounded membership census for the actual source owner after
+    /// cancellation. Includes departed rows for idempotent cleanup. These
+    /// identities remain historical facts, never live disclosure or authority.
+    pub fn waiters_for_source(&self, source: &StoreKey) -> Vec<SetupWorkflowWaiter> {
+        self.record.waiters.values().filter(|waiter| &waiter.identity.source == source)
+            .map(|waiter| SetupWorkflowWaiter {
+                workflow: self.reference.clone(), identity: waiter.identity.clone(),
+            }).collect()
+    }
+
     pub fn departed(&self, waiter: &SetupWorkflowWaiter) -> Result<bool, SetupError> {
         Ok(exact_waiter(self, waiter)?.departed)
     }
@@ -230,6 +240,40 @@ impl SetupStore<'_> {
         access: SetupAccess<'_>,
         backend: &SetupWorkBackend,
     ) -> Result<SetupWorkflowJoin, SetupError> {
+        self.join_workflow(terms, waiter, access, backend, None).await
+    }
+
+    /// Installed source-owned join. Both first admission and later membership
+    /// CAS check the exact source and acquisition rows plus the waiter deadline
+    /// in the same commit. Requires the explicitly supplied atomic adapter;
+    /// ordinary ToolkitStore capability flags are not sufficient.
+    ///
+    /// The source owner must supply the current authenticated A row and fence
+    /// its local cancellation gate. A committed historical replay creates no
+    /// new obligation and does not reauthorize launch or context delivery.
+    pub async fn join_setup_workflow_conditionally(
+        &self,
+        terms: &SetupWorkflowTerms,
+        waiter: &SetupWorkflowWaiter,
+        access: SetupAccess<'_>,
+        backend: &SetupWorkBackend,
+        source: RecordCondition,
+    ) -> Result<SetupWorkflowJoin, SetupError> {
+        self.conditional_store.ok_or(SetupError::NativeExecutionUnavailable)?;
+        if source.key != *waiter.source() || source.claim.is_some() || source.dispatch_claim.is_some() {
+            return Err(SetupError::WrongScope);
+        }
+        self.join_workflow(terms, waiter, access, backend, Some(source)).await
+    }
+
+    async fn join_workflow(
+        &self,
+        terms: &SetupWorkflowTerms,
+        waiter: &SetupWorkflowWaiter,
+        access: SetupAccess<'_>,
+        backend: &SetupWorkBackend,
+        source: Option<RecordCondition>,
+    ) -> Result<SetupWorkflowJoin, SetupError> {
         if self.workflow_ref(terms)? != waiter.workflow {
             return Err(SetupError::WrongScope);
         }
@@ -251,6 +295,9 @@ impl SetupStore<'_> {
             return Err(SetupError::Rejected);
         }
         waiter.identity.work.check_current(backend).await?;
+        let conditions = source.map(|source| vec![source, acquisition.condition()]);
+        let before_ms = i64::try_from(waiter.deadline_ms().min(terms.deadline_ms))
+            .map_err(|_| SetupError::InvalidSelection)?;
         for _ in 0..CAS_ATTEMPTS {
             match self.store.get(waiter.workflow.key()).await? {
                 Some(stored) => {
@@ -285,11 +332,9 @@ impl SetupStore<'_> {
                         },
                     );
                     match self
-                        .workflow_commit(
-                            &prior,
-                            record,
-                            "waiter_joined",
-                            vec![delivery_intent(waiter)?],
+                        .workflow_commit_with_conditions(
+                            &prior, record, "waiter_joined", vec![delivery_intent(waiter)?],
+                            conditions.as_deref(), before_ms,
                         )
                         .await
                     {
@@ -317,9 +362,7 @@ impl SetupStore<'_> {
                         sealed: false,
                     };
                     let data = encode(&record)?;
-                    match self
-                        .store
-                        .admit(AdmissionRequest {
+                    let admission = AdmissionRequest {
                             key: waiter.workflow.key.clone(),
                             admission_key: waiter.workflow.key.id.clone(),
                             data: data.clone(),
@@ -331,9 +374,16 @@ impl SetupStore<'_> {
                                 intent(&waiter.workflow, "launch".into(), "launch", &record.terms)?,
                                 delivery_intent(waiter)?,
                             ],
-                        })
-                        .await
-                    {
+                        };
+                    let outcome = match &conditions {
+                        Some(conditions) => self.conditional_store
+                            .ok_or(SetupError::NativeExecutionUnavailable)?
+                            .admit_conditionally(ConditionalAdmission {
+                                admission, conditions: conditions.clone(), before_ms,
+                            }).await,
+                        None => self.store.admit(admission).await,
+                    };
+                    match outcome {
                         Ok(AdmissionOutcome::Created(stored)) => {
                             return Ok(SetupWorkflowJoin {
                                 joined: true,
@@ -516,10 +566,20 @@ impl SetupStore<'_> {
         kind: &str,
         effects: Vec<EffectIntent>,
     ) -> Result<SetupWorkflowSnapshot, SetupError> {
+        self.workflow_commit_with_conditions(prior, record, kind, effects, None, 0).await
+    }
+
+    async fn workflow_commit_with_conditions(
+        &self,
+        prior: &SetupWorkflowSnapshot,
+        record: Workflow,
+        kind: &str,
+        effects: Vec<EffectIntent>,
+        conditions: Option<&[RecordCondition]>,
+        before_ms: i64,
+    ) -> Result<SetupWorkflowSnapshot, SetupError> {
         let data = encode(&record)?;
-        let stored = self
-            .store
-            .compare_and_swap(Transition {
+        let transition = Transition {
                 key: prior.reference.key.clone(),
                 expected_revision: prior.stored.revision,
                 expected_digest: Some(prior.stored.content_digest.clone()),
@@ -530,8 +590,15 @@ impl SetupStore<'_> {
                     data,
                 }],
                 effects,
-            })
-            .await?;
+            };
+        let stored = match conditions {
+            Some(conditions) => self.conditional_store
+                .ok_or(SetupError::NativeExecutionUnavailable)?
+                .compare_and_swap_conditionally(ConditionalTransition {
+                    transition, conditions: conditions.to_vec(), before_ms,
+                }).await?,
+            None => self.store.compare_and_swap(transition).await?,
+        };
         self.decode_workflow(stored, &prior.reference)
     }
 }

@@ -346,7 +346,32 @@ fn fixture_controller_decorator() -> meerkat_core::AgentLlmClientDecorator {
 }
 
 #[derive(Default)]
-struct ScriptedProvider(AtomicUsize);
+struct ScriptedProvider(AtomicUsize, Mutex<Option<Arc<PreparedResponsePause>>>);
+
+#[derive(Default)]
+struct PreparedResponsePause {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+/// Opt-in fixture transport hold after actual model authorization. The test
+/// owns release; dropping that owner always lets the already entered response
+/// settle before normal fixture shutdown. Default transport stays unchanged.
+pub(crate) struct PreparedResponseHold(Arc<PreparedResponsePause>);
+impl PreparedResponseHold {
+    pub(crate) async fn entered(&self) { self.0.entered.notified().await; }
+    pub(crate) fn release(&self) { self.0.release.notify_one(); }
+}
+impl Drop for PreparedResponseHold {
+    fn drop(&mut self) { self.release(); }
+}
+impl ScriptedProvider {
+    fn hold_next_response(&self) -> PreparedResponseHold {
+        let pause = Arc::new(PreparedResponsePause::default());
+        assert!(self.1.lock().unwrap().replace(pause.clone()).is_none());
+        PreparedResponseHold(pause)
+    }
+}
 
 #[async_trait]
 impl LlmClient for ScriptedProvider {
@@ -409,7 +434,7 @@ impl LlmClient for ScriptedProvider {
             ]));
         }
         self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(futures::stream::iter([
+        let response = futures::stream::iter([
             Ok(LlmEvent::TextDelta {
                 delta: ANSWER.into(),
                 meta: None,
@@ -419,7 +444,18 @@ impl LlmClient for ScriptedProvider {
                     stop_reason: StopReason::EndTurn,
                 },
             }),
-        ]))
+        ]);
+        let pause = self.1.lock().unwrap().take();
+        match pause {
+            None => Box::pin(response),
+            Some(pause) => Box::pin(futures::StreamExt::flatten(
+                futures::stream::once(async move {
+                    pause.entered.notify_one();
+                    pause.release.notified().await;
+                    response
+                }),
+            )),
+        }
     }
 
     fn provider(&self) -> Provider {

@@ -1219,23 +1219,23 @@ impl ToolkitOriginalOwner {
             entries = self.close_shared_entries(&binding.into_iter().collect::<Vec<_>>())?;
         }
         let cancellation_record = persist(source_record).await?;
-        let _publication = self
-            .publication
-            .begin_owner_change()
-            .map_err(|_| OriginalWriterError::Unavailable)?;
-        let mut originals = self
-            .originals
-            .try_lock()
-            .map_err(|_| OriginalWriterError::Unavailable)?;
-        let record = originals
-            .iter_mut()
-            .find(|entry| entry.names(realm, original))
-            .ok_or(OriginalWriterError::Unavailable)?;
-        *record.operation_mut() = OriginalOperationDisposition::Cancelled {
-            record: cancellation_record,
-        };
-        drop(originals);
-        drop(_publication);
+        {
+            let _publication = self
+                .publication
+                .begin_owner_change()
+                .map_err(|_| OriginalWriterError::Unavailable)?;
+            let mut originals = self
+                .originals
+                .try_lock()
+                .map_err(|_| OriginalWriterError::Unavailable)?;
+            let record = originals
+                .iter_mut()
+                .find(|entry| entry.names(realm, original))
+                .ok_or(OriginalWriterError::Unavailable)?;
+            *record.operation_mut() = OriginalOperationDisposition::Cancelled {
+                record: cancellation_record,
+            };
+        }
         drop(_mutation);
         Self::drain_shared_entries(entries).await
     }

@@ -526,3 +526,91 @@ async fn explicit_seal_and_capacity_preserve_existing_waiters_until_last_departu
         .unwrap();
     assert_eq!(effects.len(), 3);
 }
+
+
+async fn conditional_join(
+    f: &Fixture, terms: &SetupWorkflowTerms, waiter: &SetupWorkflowWaiter,
+    snapshot: &SetupSnapshot, backend: &SetupWorkBackend, source: &StoredRecord,
+) -> Result<SetupWorkflowJoin, SetupError> {
+    let evidence = snapshot.request().evidence();
+    let authorization = native_fixture::current(evidence.association());
+    let context = SetupUseContext {
+        tenant: &f.tenant, deployment: &f.deployment,
+        realm: &evidence.association().candidate().ingress_namespace.realm,
+        target: &evidence.association().candidate().target, policy_revision: &f.policy,
+        now_ms: 200, authorization: &authorization,
+    };
+    SetupStore::new_conditional(&f.store, SetupScope::new(f.tenant.clone(), f.deployment.clone())).unwrap()
+        .join_setup_workflow_conditionally(terms, waiter,
+            SetupAccess { evidence, context: &context, references: &f.references }, backend,
+            toolkit_store::RecordCondition { key: source.key.clone(), revision: source.revision,
+                content_digest: source.content_digest.clone(), claim: None, dispatch_claim: None },
+        ).await
+}
+
+#[tokio::test]
+async fn conditional_a_b_and_late_c_keep_independent_membership_and_delivery() {
+    let mut f = Fixture::new();
+    // This remains a storage/WorkGraph fixture. Its synthetic request authority
+    // uses the existing context clock; the conditional store uses real time.
+    let deadline = u64::try_from(f.store.now_ms().await.unwrap()).unwrap() + 60_000;
+    let mut constraints = f.request.constraints().clone();
+    constraints.expires_at_ms = deadline + 1_000;
+    f.authority = SetupRequestEvidence::new(f.authority.association().clone(), constraints).unwrap();
+    f.authorization = native_fixture::current(f.authority.association());
+    let mut host = f.request.host().clone();
+    host.limits.deadline_ms = deadline;
+    f.request = validate_request(f.request.request().clone(), host, &f.authority, &f.context(200), &f.references).unwrap();
+    let (backend, parent) = backend(&f).await;
+    let a = acquisition(&mut f, &backend, &parent, "conditional-a").await;
+    let b = acquisition(&mut f, &backend, &parent, "conditional-b").await;
+    let c = acquisition(&mut f, &backend, &parent, "conditional-c").await;
+    let mut terms = terms(&a);
+    terms.deadline_ms = deadline;
+    let ma = member(&f, &terms, &a);
+    let mb = member(&f, &terms, &b);
+    let mc = member(&f, &terms, &c);
+    let mut sources = Vec::new();
+    for membership in [&ma, &mb, &mc] {
+        sources.push(f.store.admit(AdmissionRequest {
+            key: membership.source().clone(), admission_key: membership.source().id.clone(),
+            data: RecordData { schema: "test.workflow_source".into(), version: 1,
+                body: serde_json::json!({"cancelled":false}) }, events: vec![], effects: vec![],
+        }).await.unwrap().record().clone());
+    }
+    let (ja, jb) = tokio::join!(
+        conditional_join(&f, &terms, &ma, &a, &backend, &sources[0]),
+        conditional_join(&f, &terms, &mb, &b, &backend, &sources[1]),
+    );
+    assert!(ja.unwrap().joined && jb.unwrap().joined);
+    let before = f.store.list_effects(ma.workflow().key(), None, 16).await.unwrap();
+    assert_eq!(before.len(), 3, "one launch, independent A/B delivery obligations");
+    let cancelled = f.store.compare_and_swap(Transition {
+        key: sources[0].key.clone(), expected_revision: sources[0].revision,
+        expected_digest: Some(sources[0].content_digest.clone()), claim: None,
+        data: RecordData { schema: "test.workflow_source".into(), version: 1,
+            body: serde_json::json!({"cancelled":true}) }, events: vec![], effects: vec![],
+    }).await.unwrap();
+    assert_ne!(cancelled.revision, sources[0].revision);
+    // Recover the exact canonical A membership, independent of any retained
+    // join response or launch-interest projection, then record its departure.
+    let snapshot = f.bridge().load_setup_workflow(ma.workflow()).await.unwrap();
+    let census = snapshot.waiters_for_source(&sources[0].key);
+    assert!(census.len() == 1 && census[0] == ma);
+    f.bridge().depart_setup_workflow(&census[0]).await.unwrap();
+    let joined_c = conditional_join(&f, &terms, &mc, &c, &backend, &sources[2]).await.unwrap();
+    assert!(joined_c.joined);
+    assert_eq!(joined_c.snapshot.active_waiters(), 2);
+    assert!(joined_c.snapshot.departed(&ma).unwrap());
+    assert!(!joined_c.snapshot.departed(&mb).unwrap());
+    assert!(!joined_c.snapshot.departed(&mc).unwrap());
+    let effects = f.store.list_effects(ma.workflow().key(), None, 16).await.unwrap();
+    assert_eq!(effects.len(), 4, "C gets its own pending context obligation, no second launch");
+    for prior in before { assert!(effects.iter().any(|current| current == &prior)); }
+    assert!(effects.iter().all(|effect| effect.status == EffectStatus::Pending && effect.attempt == 0));
+    let replay = conditional_join(&f, &terms, &ma, &a, &backend, &sources[0]).await.unwrap();
+    assert!(!replay.joined && replay.snapshot.departed(&ma).unwrap());
+    assert_eq!(f.store.list_effects(ma.workflow().key(), None, 16).await.unwrap(), effects);
+    assert!(ma.input() != mb.input());
+    assert!(ma.input() != mc.input());
+}

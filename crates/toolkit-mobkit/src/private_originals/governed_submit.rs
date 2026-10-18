@@ -690,6 +690,22 @@ enum SourcePublication {
 }
 
 impl PendingOriginalAdmission {
+    /// Read-only identity for this retained workflow input. This does not
+    /// promote source custody, rebind an input, or authorize another dispatch.
+    pub(super) fn workflow_input(
+        &self,
+        workflow: &Arc<setup_workflow::HeldSetupWorkflow>,
+    ) -> Result<(SessionId, Input), PrivateOriginalError> {
+        if self.service_grant.is_some() || self.service_batch.is_some()
+            || !self.workflow.as_ref().is_some_and(|held| Arc::ptr_eq(held, workflow))
+            || !self.held.upgrade().is_some_and(|held|
+                held.setup_workflow.get().is_some_and(|actual| Arc::ptr_eq(actual, workflow)))
+        {
+            return Err(PrivateOriginalError::Conflict);
+        }
+        Ok((self.session.clone(), self.input.clone()))
+    }
+
     /// Inspect this same source guard without replaying native acceptance or
     /// consuming pending custody. The caller has already checked disclosure.
     pub(super) fn publication_status(

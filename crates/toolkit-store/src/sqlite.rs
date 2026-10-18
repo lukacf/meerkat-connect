@@ -505,20 +505,21 @@ fn admit_in_transaction(
     Ok(AdmissionOutcome::Created(record))
 }
 
-fn validate_conditions(request: &ConditionalAdmission) -> StoreResult<()> {
-    validate_admission(&request.admission)?;
-    if request.conditions.is_empty() || request.conditions.len() > 64 || request.before_ms <= 0 {
+fn validate_conditions(
+    target: &StoreKey, conditions: &[RecordCondition], before_ms: i64,
+) -> StoreResult<()> {
+    if conditions.is_empty() || conditions.len() > 64 || before_ms <= 0 {
         return Err(StoreError::Invalid(
             "conditional admission requires 1-64 conditions and a positive deadline".into(),
         ));
     }
     let mut seen = std::collections::BTreeSet::new();
-    for condition in &request.conditions {
+    for condition in conditions {
         condition.key.validate()?;
         integer(condition.revision)?;
         if condition.revision == 0
-            || condition.key.realm != request.admission.key.realm
-            || condition.key == request.admission.key
+            || condition.key.realm != target.realm
+            || &condition.key == target
             || !seen.insert(&condition.key)
             || condition.content_digest.len() != 64
             || !condition
@@ -593,12 +594,14 @@ fn check_final_condition_time(
     tx: &Transaction<'_>,
     conditions: &[RecordCondition],
     before_ms: i64,
+    target_claim: Option<&RecordLease>,
 ) -> StoreResult<()> {
     let time = now(tx)?;
     if time >= before_ms {
         return Err(StoreError::AdmissionExpired);
     }
-    if conditions.iter().any(|condition| {
+    if target_claim.is_some_and(|lease| lease.expires_at_ms <= time)
+        || conditions.iter().any(|condition| {
         condition
             .claim
             .as_ref()
@@ -619,7 +622,8 @@ impl ConditionalAdmissionStore for SqliteStore {
         &self,
         request: ConditionalAdmission,
     ) -> StoreResult<AdmissionOutcome> {
-        validate_conditions(&request)?;
+        validate_admission(&request.admission)?;
+        validate_conditions(&request.admission.key, &request.conditions, request.before_ms)?;
         self.with(move |connection, store_id| {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             if let Some(record) = existing_admission(&tx, &request.admission)? {
@@ -633,11 +637,70 @@ impl ConditionalAdmissionStore for SqliteStore {
             // Include time spent writing the event/effect batch. Transaction
             // custody already excludes competing writes to owner records.
             check_conditions(&tx, store_id, &request.conditions, request.before_ms)?;
-            check_final_condition_time(&tx, &request.conditions, request.before_ms)?;
+            check_final_condition_time(&tx, &request.conditions, request.before_ms, None)?;
             tx.commit()?;
             Ok(outcome)
         })
         .await
+    }
+
+    async fn compare_and_swap_conditionally(
+        &self,
+        request: ConditionalTransition,
+    ) -> StoreResult<StoredRecord> {
+        let transition = &request.transition;
+        transition.key.validate()?;
+        transition.data.validate()?;
+        integer(transition.expected_revision)?;
+        validate_effects_and_events(&transition.effects, &transition.events)?;
+        if transition.expected_revision == 0 || !transition.expected_digest.as_ref().is_some_and(|digest| {
+            digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }) {
+            return Err(StoreError::Invalid("conditional transition requires exact target revision and digest".into()));
+        }
+        validate_conditions(&transition.key, &request.conditions, request.before_ms)?;
+        let publication = self.record_publication.clone();
+        self.with(move |connection, store_id| {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let transition = request.transition;
+            let prior = read_record(&tx, &transition.key)?.ok_or(StoreError::NotFound)?;
+            if prior.revision != transition.expected_revision
+                || transition.expected_digest.as_ref() != Some(&prior.content_digest)
+            {
+                return Err(StoreError::Conflict);
+            }
+            check_conditions(&tx, store_id, &request.conditions, request.before_ms)?;
+            let time = now(&tx)?;
+            if let Some(claim) = &transition.claim {
+                check_record_lease(&tx, store_id, &transition.key, claim, time)?;
+            }
+            let revision = prior.revision.checked_add(1)
+                .ok_or_else(|| StoreError::Invalid("revision exhausted".into()))?;
+            let record = StoredRecord {
+                key: transition.key, revision,
+                content_digest: transition.data.digest()?, data: transition.data,
+                updated_at_ms: time,
+            };
+            // The transaction moves inside this guard. Rollback on every
+            // error and COMMIT both finish before publishing a new even stamp.
+            let _publication = publication.as_ref()
+                .map(|owner| owner.begin_record_change()).transpose()?;
+            (move || {
+                tx.execute(
+                    "UPDATE toolkit_records SET revision=?4,digest=?5,data=?6,updated_at_ms=?7 WHERE realm=?1 AND owner=?2 AND id=?3",
+                    params![record.key.realm,record.key.owner,record.key.id,integer(revision)?,record.content_digest,encode(&record.data)?,time],
+                )?;
+                append_batch(&tx, &record, &transition.events, &transition.effects)?;
+                check_conditions(&tx, store_id, &request.conditions, request.before_ms)?;
+                // The target claim's exact identity was checked above under
+                // this same transaction. Its expiry and all owner deadlines
+                // participate in the same final backend-time decision.
+                check_final_condition_time(&tx, &request.conditions, request.before_ms,
+                    transition.claim.as_ref())?;
+                tx.commit()?;
+                Ok(record)
+            })()
+        }).await
     }
 }
 
@@ -1133,3 +1196,7 @@ mod conditional_clock_tests;
 #[cfg(test)]
 #[path = "sqlite_publication_tests.rs"]
 mod publication_tests;
+
+#[cfg(test)]
+#[path = "conditional_transition_tests.rs"]
+mod conditional_transition_tests;

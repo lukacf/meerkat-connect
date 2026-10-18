@@ -87,7 +87,7 @@ def test_authenticated_event_reply_cannot_replace_original():
     writer.close()
 
 
-@pytest.mark.parametrize("state", ["operations_cancelled", "operation_grant_revoked"])
+@pytest.mark.parametrize("state", ["operations_cancelled", "operations_cancelled_cleanup_pending", "operation_grant_revoked", "settled"])
 def test_original_cancellation_reports_durable_disposition_not_legacy_grant_revoke(state):
     client, reader, writer = pipes()
     original = original_for(source_event())
@@ -95,10 +95,10 @@ def test_original_cancellation_reports_durable_disposition_not_legacy_grant_revo
         pending = executor.submit(client.cancel_original_operation, original)
         request = receive(reader)
         respond(writer, request, {"kind": "original_operation_cancelled", "original": dataclasses.asdict(original), "state": state})
-        if state == "operations_cancelled":
+        if state in ("operations_cancelled", "operations_cancelled_cleanup_pending"):
             result = pending.result(timeout=2)
             assert result.original == original
-            assert result.state == "operations_cancelled"
+            assert result.state == state
         else:
             with pytest.raises(HostControlError, match="cancellation response was rejected"):
                 pending.result(timeout=2)

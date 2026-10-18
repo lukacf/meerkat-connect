@@ -602,24 +602,45 @@ async fn restore_selected(directory: Arc<tempfile::TempDir>, selection: HostBoot
 pub(crate) fn bind_acquisition(host: &Host, tools: acquisition::InstalledAcquisitionTools)
     -> Arc<acquisition::InstalledAcquisition>
 {
+    bind_acquisition_parts(&host.store, &host.source_scope, &host.originals,
+        &host.lifetime, &host.source_path, tools)
+}
+
+/// Same installed owner, selected only by the workflow worker control. No
+/// helper dispatch is exercised; the actual recovery worker consumes close.
+pub(crate) fn bind_workflow_recovery(store: &Arc<toolkit_store::SqliteStore>,
+    source_scope: &toolkit_store::StoreScope, originals: &Arc<crate::private_originals::PrivateOriginals>,
+    lifetime: &Arc<NativeHostLifetime>, source_path: &std::path::Path)
+    -> Arc<acquisition::InstalledAcquisition>
+{
+    let timeout = acquisition::InstalledSetupLimits::default().admission_timeout_ms;
+    let tools = acquisition::InstalledAcquisitionTools::new(std::time::Duration::from_millis(timeout)).unwrap();
+    bind_acquisition_parts(store, source_scope, originals, lifetime, source_path, tools)
+}
+
+fn bind_acquisition_parts(store: &Arc<toolkit_store::SqliteStore>, source_scope: &toolkit_store::StoreScope,
+    originals: &Arc<crate::private_originals::PrivateOriginals>, lifetime: &Arc<NativeHostLifetime>,
+    source_path: &std::path::Path, tools: acquisition::InstalledAcquisitionTools)
+    -> Arc<acquisition::InstalledAcquisition>
+{
     use acquisition::{InstalledAcquisition, InstalledNativeContinuation, InstalledSetupDefaults, InstalledSetupLimits, InstalledSetupSelection};
     use meerkat_authorization_contracts::work_association::WorkAuthorityBasis;
     use meerkat_core::{service::WorkGraphNamespaceGrant, storage_durability::{DurabilityDeclaration, DurabilityResolution}};
     use meerkat_toolkit::{authority::Ceiling, setup::{SetupWorkBackend, WorkAdmissionStepOptions}};
     use meerkat_workgraph::{SqliteWorkGraphStore, WorkGraphService};
     let id = |value: &str| toolkit_package::Id::new(value).unwrap();
-    let native = host.lifetime.selected_policy().native_host.as_ref().unwrap();
-    let continuation = InstalledNativeContinuation::new(host.store.clone(), host.source_scope.clone(),
-        host.originals.clone(), id("controller-only-denial"), [id("person")].into()).unwrap();
+    let native = lifetime.selected_policy().native_host.as_ref().unwrap();
+    let continuation = InstalledNativeContinuation::new(store.clone(), source_scope.clone(),
+        originals.clone(), id("controller-only-denial"), [id("person")].into()).unwrap();
     let workgraph = WorkGraphService::with_namespace_grant(
-        Arc::new(SqliteWorkGraphStore::open(&host.source_path.with_file_name("denial-workgraph.sqlite")).unwrap()),
+        Arc::new(SqliteWorkGraphStore::open(&source_path.with_file_name("denial-workgraph.sqlite")).unwrap()),
         WorkGraphNamespaceGrant::new(native.realm.as_str(), "setup").unwrap(),
     ).unwrap();
     let work_backend = SetupWorkBackend::new(workgraph, "fixture".into(), id("generation"), &[
         DurabilityDeclaration::durable("workgraph", DurabilityResolution::Persistent),
     ]).unwrap();
     let owner = Arc::new(InstalledAcquisition::from_defaults_with_tools(
-        host.store.clone(), host.source_scope.clone(), host.originals.clone(), native,
+        store.clone(), source_scope.clone(), originals.clone(), native,
         InstalledSetupDefaults {
             helper: InstalledSetupSelection {
                 catalog_capability: None,

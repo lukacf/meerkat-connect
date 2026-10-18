@@ -101,11 +101,11 @@ impl InstalledAcquisition {
             let membership = store.workflow_waiter(
                 planning.terms(), &snapshot, original.source_record.key.clone(),
             )?;
-            let joined = store.join_setup_workflow(
-                planning.terms(), &membership,
+            let joined = planning.join_waiter_conditionally(
+                &self.store, &membership, &original,
                 SetupAccess { evidence: &admission.evidence, context: &current, references: self.references.as_ref() },
                 &self.work_backend,
-            ).await?;
+            ).await.map_err(source_error)??;
             planning.retain_launch_interest(&joined.snapshot, &membership, &original).await.map_err(source_error)?;
             let observation = planning.launch(&joined.snapshot).await.map_err(source_error)?;
             return Ok(SetupWorkerObservation::WorkflowLead { observation });

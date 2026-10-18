@@ -137,6 +137,19 @@ impl PrivateOriginals {
         observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
         member: Option<&PrivateServiceGrantRef>,
     ) -> Result<(), PrivateOriginalError> {
+        self.record_cancelled_source_set(reference, failure, observation, member)
+            .await.map(|_| ())
+    }
+
+    /// The existing cancellation owner returns its actual completed census.
+    /// Only the outer private-channel cancellation uses it for workflow leave;
+    /// internal admission/compensation callers keep their existing behavior.
+    pub(super) async fn record_cancelled_source_set(
+        &self, reference: &PrivateOriginalRef,
+        failure: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentFailure>,
+        observation: Option<meerkat_toolkit::setup::ApprovedServiceAttachmentObservation>,
+        member: Option<&PrivateServiceGrantRef>,
+    ) -> Result<Vec<Arc<toolkit_store::StoredRecord>>, PrivateOriginalError> {
         if observation.is_some() && failure.is_none() {
             return Err(PrivateOriginalError::Conflict);
         }
@@ -209,11 +222,11 @@ impl PrivateOriginals {
         // Leave the single P record only after durable source cancellation.
         // Any lost CAS remains closed/pending; no acknowledgement claims a
         // fully removed member until this same owner can reconcile it.
-        let cancelled = cancelled.iter().map(|stored| {
-            Ok((stored, self.decode_stored(stored)?))
+        let decoded = cancelled.iter().map(|stored| {
+            Ok((stored.clone(), self.decode_stored(stored)?))
         }).collect::<Result<Vec<_>, PrivateOriginalError>>()?;
-        if cancelled.iter().all(|(_, record)| record.shared_preparations.is_empty()) {
-            return Ok(());
+        if decoded.iter().all(|(_, record)| record.shared_preparations.is_empty()) {
+            return Ok(cancelled);
         }
         let scope = SetupScope::new(
             Id::new(self.scope.realm.clone()).map_err(|_| PrivateOriginalError::Conflict)?,
@@ -221,7 +234,7 @@ impl PrivateOriginals {
         );
         let setup = SetupStore::new(self.store.as_ref(), scope)
             .map_err(|_| PrivateOriginalError::Unavailable)?;
-        for (stored, record) in cancelled {
+        for (stored, record) in decoded {
             for member in &record.shared_preparations {
                 if member.source() != &stored.key { return Err(PrivateOriginalError::Conflict); }
                 setup.begin_shared_preparation_leave(member).await
@@ -234,7 +247,7 @@ impl PrivateOriginals {
                 self.leave_shared_resource(member, last).await?;
             }
         }
-        Ok(())
+        Ok(cancelled)
     }
 }
 

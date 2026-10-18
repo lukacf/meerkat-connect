@@ -62,9 +62,13 @@ export type PrivateOriginalSubmission = {
   readonly turn_ticket: string | null;
   readonly source_settlement: PrivateSourceSettlement;
 } | { readonly state: "admission_unresolved" } | { readonly state: "native_outcome_unavailable" };
-/** Durable cancellation of this original's operations, not settlement of a run, controller or descendants. */
+/** Durable source cancellation. Cleanup pending retains the workflow close in the host recovery worker.
+ * Operations are already cancelled; callers need not repeat cancellation.
+ * Neither state certifies run, process, controller or descendant settlement.
+ * Shared-workflow hosts require the matching SDK generation that accepts cleanup pending;
+ * older closed-set decoders reject that state. Protocol v1 does not negotiate this capability. */
 export interface PrivateOriginalCancellation {
-  readonly original: PrivateOriginalRef; readonly state: "operations_cancelled";
+  readonly original: PrivateOriginalRef; readonly state: "operations_cancelled" | "operations_cancelled_cleanup_pending";
 }
 export type HostCloseReason = "shutdown" | "operator_disable" | "quarantine" | "activation_replaced" | "host_lost";
 export type HostCloseScope = { readonly kind: "activation" } | { readonly kind: "component"; readonly component: string };
@@ -1273,10 +1277,10 @@ export class PrivateHostClient {
     const selected = original(snapshot(reference));
     return this.#call({ kind: "cancel_original_operation", original: selected }, reply => {
       fields(reply, ["kind", "original", "state"]);
-      if (reply.kind !== "original_operation_cancelled" || reply.state !== "operations_cancelled") invalid();
+      if (reply.kind !== "original_operation_cancelled" || (reply.state !== "operations_cancelled" && reply.state !== "operations_cancelled_cleanup_pending")) invalid();
       const retained = original(reply.original);
       if (!sameOriginal(retained, selected)) invalid();
-      return { original: retained, state: "operations_cancelled" };
+      return { original: retained, state: reply.state };
     }, options.timeoutMs);
   }
 

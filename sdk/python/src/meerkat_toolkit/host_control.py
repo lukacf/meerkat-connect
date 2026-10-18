@@ -247,7 +247,8 @@ class PrivateOriginalRetention:
 @dataclass(frozen=True)
 class PrivateOriginalCancellation:
     original: PrivateOriginalRef
-    state: str = "operations_cancelled"
+    # Neither value certifies native run, process or controller settlement.
+    state: Literal["operations_cancelled", "operations_cancelled_cleanup_pending"] = "operations_cancelled"
 
 
 def _original_ref(value: Any) -> PrivateOriginalRef:
@@ -1701,16 +1702,22 @@ class PrivateHostClient:
     def cancel_original_operation(self, original: PrivateOriginalRef, *, timeout: float | None = None) -> PrivateOriginalCancellation:
         """Durably cancel this original's operations without revoking shared access.
 
-        This does not stop a runtime run or its controller. A timeout remains
-        unknown. The command is never automatically repeated.
+        Cleanup pending means source cancellation and workflow departure
+        succeeded; the host recovery worker continues unresolved cleanup.
+        Callers do not need to repeat cancellation to drive that recovery.
+        Neither state certifies runtime, process or controller settlement. A
+        timeout remains unknown. The command is never automatically repeated.
+        Shared-workflow hosts require the matching SDK generation accepting
+        cleanup pending; older closed-set decoders reject that state. Protocol
+        v1 does not negotiate this capability.
         """
         if not isinstance(original, PrivateOriginalRef):
             raise HostControlError("invalid original reference")
         reply = self._call({"kind": "cancel_original_operation", "original": dataclasses.asdict(original)}, "original_operation_cancelled", timeout=timeout, reply_fields={"kind", "original", "state"})
         try:
-            if _original_ref(reply["original"]) != original or reply["state"] != "operations_cancelled":
+            if _original_ref(reply["original"]) != original or reply["state"] not in ("operations_cancelled", "operations_cancelled_cleanup_pending"):
                 raise HostControlError("original cancellation response names another original or state")
-            return PrivateOriginalCancellation(original)
+            return PrivateOriginalCancellation(original, reply["state"])
         except BaseException as error:
             self._fail(error)
             raise HostTransportError("original cancellation response was rejected") from error

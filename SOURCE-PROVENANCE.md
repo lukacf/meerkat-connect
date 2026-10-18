@@ -151,9 +151,45 @@ independent physical-process cleanup proof. The fixture uses the existing P/A/G
 session: it proves native planning-input admission, not a new planning agent or
 conversation isolation. Dedicated member/session creation, authorized A/B context
 delivery, per-waiter effects and the complete shared SDK journey remain open.
-The cancellation/store/recovery successor is separate and is not included in
-this checkpoint. Temporary diagnostics and native dependency changes are
+The cancellation/store/recovery successor below was not included in that
+checkpoint. Temporary diagnostics and native dependency changes are
 excluded. Published 0.9.0 assets remain unchanged.
+
+### Workflow departure and pending cleanup
+
+Private Toolkit checkpoint `ad7691458b2ec0ee796757b39de19a07a2122988`
+contributes 18 Rust and five SDK source/test paths. Conditional
+join atomically checks source, acquisition and workflow state. Cancellation
+records source cancellation before departing membership, including when the
+caller has lost its local handle. Final departure retains one close obligation.
+The same recovery worker can revisit it after the caller returns, fencing future
+planning operations and reconciling the exact native input without cancelling an
+ambient shared run or treating uncertain admission as absence.
+
+Outcome `0a362761`, independently reviewed in `8e1b6fc8`, compiles and passes all
+12 selected controls: two SQLite transition controls, one independent membership
+and delivery control, and nine native close/cancellation controls. They include
+a queued join after cancellation, late publication refusal, lost acknowledgments,
+pending active/unknown input, worker recovery and cancellation after owner reopen.
+All 740 selected source rows remain exact. All 15 command owners and outer
+transport join; native in-test cleanup predicates pass. Inner physical shutdown
+receipt bodies were not exported. This does not qualify active-input shutdown or
+remote-store conformance.
+
+The three earlier attempts failed before tests: isolated workspace development
+dependencies (`5491d423`), a missing runtime extension import (`9909614f`) and a
+non-Send mutex guard across an await (`2ae081b7`). The successful successor scopes
+that guard before awaiting the drain. The scratch-only Cargo membership and
+development-dependency overlay is excluded from repository adoption.
+
+SDK outcome `fe639c2e`, independently reviewed in `3e0d1b53`, passes five Python
+and five TypeScript controls plus TypeScript compilation. It qualifies decoding,
+identity checks and late responses without replay. The new cancellation state
+preserves the distinction between durable cancellation and cleanup still pending.
+Matching SDK generations are required; older closed decoders reject it and
+bootstrap v1 has no version negotiation. Dedicated planning-session creation,
+terminal-result/expiry departure, authorized waiter-context delivery and the
+complete shared SDK journey remain open. Published 0.9.0 assets are unchanged.
 
 ### Explicit Node build plans
 

@@ -35,6 +35,15 @@ These controls admit a real planning input in an existing session. Dedicated
 planning-member/session creation, authorized per-waiter context delivery and
 operation authority remain open, along with shared SDK completion, gateway/reset
 consumption and remote restart.
+
+Workflow cancellation now retains cleanup after the cancelling caller returns.
+All 12 selected native/store controls pass, covering cancellation racing a queued
+join, independent membership, exact close reconciliation, lost local handles and
+recovery through the existing worker. Five Python and five TypeScript adapter
+controls also pass. The SDKs expose durable cancellation with cleanup pending;
+consumers need matching SDK generations because older decoders reject that state.
+Three earlier build failures remain recorded. Active planning-input shutdown,
+terminal-result/expiry departure and the complete shared journey remain open.
 [Source provenance](../../SOURCE-PROVENANCE.md#shared-preparation-and-source-owner-currentness-work-in-progress)
 records the precise scope. Published 0.9.0 assets remain unchanged.
 

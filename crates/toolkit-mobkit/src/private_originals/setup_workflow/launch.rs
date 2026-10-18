@@ -1,6 +1,9 @@
 //! Host-selected first G input through the existing Original binder and outbox.
 //! The launch receipt never acknowledges any waiter's context-delivery intent.
 use super::*;
+
+mod close;
+pub(crate) use close::WorkflowCloseObservation;
 use crate::private_originals::governed_submit::{OriginalBinder, evidence};
 use meerkat_authorization_contracts::{constraints::DelegationDepth, grant::GrantLineageRef};
 use meerkat_mobkit::identity_first::{
@@ -325,6 +328,45 @@ impl InstalledWorkflowPlanning {
             .map_err(|_| PrivateOriginalError::Unavailable)
     }
 
+    /// The installed coordinator supplies its actual conditional SQLite
+    /// adapter, which must be the same Arc retained by this source owner.
+    /// Storage predicates fence a queued worker after caller loss; the source
+    /// writer also orders the live currentness check against cancellation.
+    pub(crate) async fn join_waiter_conditionally(
+        &self,
+        selected_store: &Arc<toolkit_store::SqliteStore>,
+        membership: &SetupWorkflowWaiter,
+        original: &super::super::acquisition::AcquisitionOriginal,
+        access: SetupAccess<'_>,
+        backend: &meerkat_toolkit::setup::SetupWorkBackend,
+    ) -> Result<Result<meerkat_toolkit::setup::SetupWorkflowJoin, meerkat_toolkit::setup::SetupError>, PrivateOriginalError> {
+        let source = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
+        self.check_for_binding(&source, &self.submission.original)?;
+        let erased: Arc<dyn ToolkitStore> = selected_store.clone();
+        if !Arc::ptr_eq(&source.store, &erased) || membership.source() != &original.source_record.key {
+            return Err(PrivateOriginalError::Conflict);
+        }
+        let scope = SetupScope::new(
+            Id::new(source.scope.realm.clone()).map_err(|_| PrivateOriginalError::Conflict)?,
+            Id::new(source.scope.owner.clone()).map_err(|_| PrivateOriginalError::Conflict)?,
+        );
+        let store = SetupStore::new_conditional(selected_store.as_ref(), scope)
+            .map_err(|_| PrivateOriginalError::Unavailable)?;
+        source.owner.retain_followup_source(original.original.association(), || async {
+            // This is the actual retained source row, not a portable workflow
+            // ref. An intervening durable source change makes the commit fail.
+            let condition = toolkit_store::RecordCondition {
+                key: original.source_record.key.clone(),
+                revision: original.source_record.revision,
+                content_digest: original.source_record.content_digest.clone(),
+                claim: None, dispatch_claim: None,
+            };
+            Ok(store.join_setup_workflow_conditionally(
+                &self.terms, membership, access, backend, condition,
+            ).await)
+        }).await.map_err(custody_error)
+    }
+
     /// Validate the actual planning selection after the canonical source read,
     /// under the existing original writer. The shared persistence body still
     /// checks source facts, replay equality, cancellation and the source CAS.
@@ -386,15 +428,16 @@ impl InstalledWorkflowPlanning {
         {
             return Err(PrivateOriginalError::Denied);
         }
+        source.owner.retain_followup_source(original.original.association(), || async {
         source
             .owner
             .workflow_controller(&original.original)
-            .map_err(custody_error)?;
+            ?;
         {
             let mut interests = self
                 .interests
                 .lock()
-                .map_err(|_| PrivateOriginalError::Unavailable)?;
+                .map_err(|_| crate::original_ingress::OriginalWriterError::Unavailable)?;
             if let Some(prior) = interests
                 .iter()
                 .find(|interest| interest.membership.acquisition() == membership.acquisition())
@@ -405,11 +448,11 @@ impl InstalledWorkflowPlanning {
                 {
                     Ok(())
                 } else {
-                    Err(PrivateOriginalError::Conflict)
+                    Err(crate::original_ingress::OriginalWriterError::Conflict)
                 };
             }
             if interests.len() >= usize::from(self.terms.max_waiters) {
-                return Err(PrivateOriginalError::Unavailable);
+                return Err(crate::original_ingress::OriginalWriterError::Unavailable);
             }
             interests.push(LaunchInterest {
                 membership: membership.clone(),
@@ -419,6 +462,7 @@ impl InstalledWorkflowPlanning {
             });
             Ok(())
         }
+        }).await.map_err(custody_error)
     }
 
     /// The actual waiter owner closes the same final-entry reservation before
@@ -433,18 +477,18 @@ impl InstalledWorkflowPlanning {
             .source
             .upgrade()
             .ok_or(PrivateOriginalError::Unavailable)?;
+        if source.workflow_store()?.workflow_ref(&self.terms)
+            .map_err(|_| PrivateOriginalError::Conflict)? != *membership.workflow() {
+            return Err(PrivateOriginalError::Denied);
+        }
         {
-            let mut interests = self
-                .interests
-                .lock()
-                .map_err(|_| PrivateOriginalError::Unavailable)?;
-            let interest = interests
-                .iter_mut()
-                .find(|interest| interest.membership == *membership)
-                .ok_or(PrivateOriginalError::Denied)?;
-            interest.closed = true;
-            for entry in &interest.entries {
-                entry.close().map_err(custody_error)?;
+            let mut interests = self.interests.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            // A committed join can lose its reply before interest publication.
+            // Its canonical membership still needs departure; no missing local
+            // entry is invented or treated as settled native work.
+            if let Some(interest) = interests.iter_mut().find(|interest| interest.membership == *membership) {
+                interest.closed = true;
+                for entry in &interest.entries { entry.close().map_err(custody_error)?; }
             }
         }
         source

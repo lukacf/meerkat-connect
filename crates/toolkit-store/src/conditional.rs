@@ -3,7 +3,7 @@
 
 use crate::{
     AdmissionOutcome, AdmissionRequest, EffectLease, RecordLease, StoreKey, StoreResult,
-    ToolkitStore,
+    StoredRecord, ToolkitStore, Transition,
 };
 use async_trait::async_trait;
 
@@ -32,6 +32,17 @@ pub struct ConditionalAdmission {
     pub before_ms: i64,
 }
 
+/// Revision-checked mutation with participating owner records in the same
+/// transaction. Unlike admission replay, a repeated CAS conflicts after commit;
+/// its caller recovers the canonical target before deciding any next step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalTransition {
+    pub transition: Transition,
+    pub conditions: Vec<RecordCondition>,
+    /// Same exclusive backend decision deadline as ConditionalAdmission.
+    pub before_ms: i64,
+}
+
 /// Required extension for compositions that publish an immutable obligation
 /// conditional on other owners' records. There is no preflight-then-write
 /// default. A backend that lacks an equivalent atomic boundary cannot supply
@@ -51,4 +62,13 @@ pub trait ConditionalAdmissionStore: ToolkitStore {
         &self,
         request: ConditionalAdmission,
     ) -> StoreResult<AdmissionOutcome>;
+
+    /// Check the target's expected revision and digest, every distinct owner
+    /// condition, and the fresh backend deadline in the same commit as the
+    /// record/events/effects mutation. The expected digest is required here.
+    /// No read-then-CAS implementation or unsupported fallback is equivalent.
+    async fn compare_and_swap_conditionally(
+        &self,
+        request: ConditionalTransition,
+    ) -> StoreResult<StoredRecord>;
 }

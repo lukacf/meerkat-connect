@@ -289,6 +289,16 @@ test("private bootstrap, exact source retention, and operation-only cancellation
   assert.deepEqual(commands()[0].command.selection, selection);
 });
 
+test("pending workflow cleanup remains a successful cancellation without client replay", async t => {
+  const { client, commands } = fixture(t, "cancel-cleanup-pending");
+  await client.bootstrap(selection);
+  assert.deepEqual(await client.cancelOriginalOperation(original), {
+    original, state: "operations_cancelled_cleanup_pending",
+  });
+  await delay(10);
+  assert.equal(commands().filter(value => value.command.kind === "cancel_original_operation").length, 1);
+});
+
 test("pre-bootstrap requests and removed authority fields are refused before writing", async t => {
   const { client, commands } = fixture(t);
   await assert.rejects(client.retainAuthenticatedEvent(event), HostControlError);
