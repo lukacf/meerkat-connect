@@ -22,31 +22,26 @@ one fresh Find after pre-entry refusal creates exactly one acquisition; persiste
 refusal stops after two proposals with no acquisition. This is a test-agent
 correction, not product retry policy.
 
-The latest affected three controls are complete: fresh public dedicated-member
-reservation and Bind pass; the full two-requester SDK case fails. Seven earlier
-terminal/recovery controls retain their own passes. The original finite-ten
-seven-pass/three-failure result remains historical, with no earlier pass rerun.
+Fresh public dedicated reservation and Bind retain their scoped passes, alongside
+seven earlier terminal/recovery controls. The public source locator now passes
+two SQLite controls and the affected dedicated-member test. Three rebind controls
+and one actual second-G-input control also pass. An unchanged test on old
+production fails the expected publication-stamp assertion; corrected source is
+restored. Healthy admitted-source rebind preserves publication, while new
+admission and native currentness checks remain required.
 
-The dedicated test joins an omitted-participant refusal fixture before a separate
-positive fixture with fresh, distinct A/P/G sessions. The Bind test reaches
-withdrawal, Failed replay, new-source and cancellation checks. In-test cleanup
-predicates and command owners pass; raw inner receipt bodies were not exported.
-The public reservation path is qualified for supplied terms. The external terms
-locator `dda2152a` is source-reviewed but unexecuted and unadopted; online creation
-and protected waiter-context delivery remain open.
-
-The latest SDK result identifies helper B's same-session PolicyChanged with prior
-reprepare count 0, then PolicyUnavailable with count 1. A's check and B's first
-Find separately report authorization unavailable without operation Prepared/Entry;
-B's fresh Find succeeds. The shared-worker barrier fails and one scripted-provider
-thread panic remains. The 57 before/57 after audit rows are identical snapshots,
-not 114 operations. Cleanup returns normally and its strict empty predicate
-passes. Decoded owner receipts record zero Python workers/physical entries and
-native attempt 3 Installed plus attempt 4 Cancelled/RouterClosed, both Closed/Reaped.
-All command owners join. The refusal's producer remains unassigned. Earlier
-`other_error` and 39/71 diagnostic failures retain their separate evidence.
-[Source provenance](../../SOURCE-PROVENANCE.md#fresh-dedicated-reservation-and-terminal-recovery)
-records exact outcome and review IDs.
+The qualified follow-on includes seven toolkit-mobkit Rust paths and its guide,
+excluding unfinished SDK fixtures, dev-dependency/lock changes and diagnostics.
+The full SDK case still fails an obsolete approval-body assertion after both
+Finds/checks and emitted installs. Cleanup's strict empty assertion passes with
+zero live Python workers and both installed native processes Closed/Reaped;
+physical-entry count one is historical. The separate public SDK planning case
+passes root issuance but stops at Unsettled held bootstrap with an unexported
+nested result. Its cleanup assertion also passes. Neither case qualifies shared
+completion. Protected waiter-context delivery, online creation, active retirement
+and gateway/reset remain open.
+[Source provenance](../../SOURCE-PROVENANCE.md#public-locator-and-admitted-source-rebind)
+records the distinct outcomes, limits and retained historical failures.
 
 The planning-input source is now checkpointed. Seven focused native controls
 pass after correcting a binding path that applied the configured helper's root

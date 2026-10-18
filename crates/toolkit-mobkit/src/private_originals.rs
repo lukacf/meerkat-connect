@@ -35,6 +35,8 @@ pub(crate) use configured_setup::service::ServiceSetupSelection;
 mod setup_targets;
 pub use setup_request::PrivateSetupRequestSelection;
 mod first_input;
+#[cfg(test)]
+mod source_locator_tests;
 mod service_approved_input;
 mod service_input_receipt;
 pub use service_input_receipt::{PrivateServiceInputObservation, PrivateServiceInputReceipt,
@@ -774,6 +776,27 @@ impl PrivateOriginals {
         let mut event = self.decode_record(&stored, reference)?.event;
         event.route = reference.route.clone();
         Ok(event)
+    }
+
+    /// Return this owner's canonical historical record locator for an exact
+    /// retained reference, including equivalent route aliases and cancelled
+    /// rows. A missing or mismatched row in this owner's scope is refused.
+    ///
+    /// Use this locator for `SetupWorkflowTerms::planning_source`; callers must
+    /// not reproduce the private key layout. It supplies no current source
+    /// authority, grant, member reservation or native admission evidence.
+    pub async fn source_record_key(
+        &self,
+        reference: &PrivateOriginalRef,
+    ) -> Result<StoreKey, PrivateOriginalError> {
+        let stored = self
+            .store
+            .get(&self.key(reference)?)
+            .await
+            .map_err(store_error)?
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        self.decode_record(&stored, reference)?;
+        Ok(stored.key)
     }
 
     /// Historical binding for explicit authenticated restore/replay. Reading

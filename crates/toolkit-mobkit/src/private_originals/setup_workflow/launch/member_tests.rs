@@ -169,3 +169,6 @@ async fn dedicated_held_member_admits_exact_g_and_refuses_foreign_history() {
     assert!(cleanup.is_ok(), "{cleanup:?}");
     if let Err(panic) = checked { std::panic::resume_unwind(panic); }
 }
+
+#[path = "member_tests/followup_input_tests.rs"]
+mod followup_input_tests;

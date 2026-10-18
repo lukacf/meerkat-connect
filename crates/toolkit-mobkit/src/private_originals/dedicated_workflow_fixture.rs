@@ -106,7 +106,7 @@ impl DedicatedFixture {
         let terms = SetupWorkflowTerms { key: Id::new("dedicated-workflow").unwrap(), backend: backend.pin().clone(),
             parent: work_ref(&parent_work), parent_owner: parent_work.owner.as_ref().unwrap().key.clone(), cycle_label: "dedicated-cycle".into(),
             requester: route.requester.clone(), realm: route.realm.clone(), authority_revision: Revision::new("dedicated-policy").unwrap(),
-            planning_source: source.key(&lead.original).unwrap(), lead: member_selection.member.clone(),
+            planning_source: source.source_record_key(&lead.original).await.unwrap(), lead: member_selection.member.clone(),
             envelope_digest: ContentDigest::of_bytes(&canonical_json(&child).unwrap()), deadline_ms: deadline, max_waiters: 8 };
         let roster: Vec<_> = [MEMBER, "planning_parent", "planning_lead"].into_iter().map(|name| DurableAgentSpec {
             identity: AgentIdentity::parse(name).unwrap(), profile: ProfileName::from("worker"),

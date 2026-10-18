@@ -246,13 +246,11 @@ cancellation assertions. In-test shutdown predicates and all command owners pass
 raw inner receipt bodies were not exported. Both controls reuse the exact compiled
 artifacts, without another Cargo invocation.
 
-The external terms producer is separate: locator manifest `dda2152a` has source
-review `2d4045ea` but is unexecuted and unadopted. The current fixture obtains the
-planning-source key internally. Fresh public reservation is therefore qualified
-for supplied terms, without claiming an external end-to-end construction flow.
-The proposed locator is historical and scope-validated, not current permission.
+That checkpoint used an internal planning-source key. The later public-locator
+and second-input qualification below extends the supplied-terms scope without
+claiming external SDK completion or treating a historical locator as permission.
 
-Latest SDK outcome `ecd54ae4`, independently reviewed in `4912b0d5`, remains FAIL.
+Earlier SDK outcome `ecd54ae4`, independently reviewed in `4912b0d5`, remains FAIL.
 Helper B receives same-session PolicyChanged with prior matched reprepare count
 0, then PolicyUnavailable with count 1. A's check and B's first Find each record
 only authorization_unavailable for the exact operation, with no Prepared/Entry;
@@ -269,13 +267,40 @@ collected; their hashes and decoded projections are retained in the log. Command
 transport and cache owners join, and all three temporary diagnostic paths are
 restored or removed. PolicyUnavailable's producer remains unassigned.
 
-The latest affected selection is two PASS/one SDK FAIL with none unentered. Across
+That affected selection is two PASS/one SDK FAIL with none unentered. Across
 the original ten identities, nine have scoped passing observations and SDK remains
 failed; this is not one new ten-control cohort. Full shared completion, online
 member creation, active generation retirement, protected waiter-context delivery,
 gateway/reset and a new release remain unqualified. Published 0.9.0 assets are
 unchanged. See the [development inventory](docs/releases/follow-up.md#unreleased-development-progress)
 and [host composition guide](docs/site/guides/host-composition.mdx).
+
+### Public locator and admitted-source rebind
+
+This qualified follow-on includes seven toolkit-mobkit Rust paths and the
+host-composition guide. It excludes the unfinished SDK planning fixtures, their
+dev-dependency/lock changes, temporary diagnostics and gateway work.
+
+Outcome `aa0b5f94` (review `09075318`) passes two SQLite source-locator controls
+and fresh dedicated composition using the public locator. It preserves exact
+scope, aliases and cancelled history without new permission or store writes.
+Outcome `79f98890` (review `1e432a4f`) passes three admitted-source rebind controls
+and one actual second-G-input control. Healthy rebind/replay preserves the
+publication stamp, new admission still publishes, and cancellation or observed
+poison refuses. Actual second input/readback/replay retains G's association and
+P contributor; foreign and cancelled-P inputs refuse. Expiry and waiter-context
+disclosure are not covered. Old-production comparison `344bad83` (review
+`1bac4c53`) fails the expected stamp assertion, then restores corrected source.
+
+Full SDK outcome `d3105a29` still fails an obsolete approval-body assertion after
+both Finds/checks succeed and both installs are emitted. Cleanup's strict empty
+assertion passes: zero live Python workers and both installed processes
+Closed/Reaped. The physical-entry count of one is historical. Later provider
+panics remain recorded and cancellation/result assertions are unentered.
+Planning outcome `a023d72c` passes corrected root issuance but stops at Unsettled
+held bootstrap; the awaited nested result was not exported. Its existing cleanup
+assertion passes. Neither SDK case qualifies shared completion. These development
+results do not change published 0.9.0 assets or supply a new released selection.
 
 ### Explicit Node build plans
 

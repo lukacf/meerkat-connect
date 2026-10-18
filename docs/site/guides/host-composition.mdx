@@ -110,6 +110,12 @@ lead. One waiter's cancellation does not by itself revoke the shared planning
 source or its grant; final departure still drives source closure and cleanup.
 A workflow reference or member selection supplies no grant.
 
+External Rust hosts obtain `SetupWorkflowTerms.planning_source` by awaiting
+`PrivateOriginals::source_record_key` with the retained planning reference.
+This owner-derived historical locator handles equivalent route aliases without
+exposing the private key layout. It may still resolve a cancelled source; the
+reservation and planning owners separately enforce current authority.
+
 | Host step | Development API |
 | --- | --- |
 | On the composed gateway, reserve the selected fresh member before `prepare_bootstrap` | Await `ToolkitGatewayHost::reserve_workflow_member`; retain its returned `InstalledWorkflowMember` |

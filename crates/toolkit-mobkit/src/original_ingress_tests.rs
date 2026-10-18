@@ -2506,3 +2506,227 @@ async fn native_event_key_survives_route_alias_and_cold_source_restore() {
 
 #[path = "original_ingress_target_tests.rs"]
 mod target_tests;
+
+
+// These controls bind actual Inputs through the public source owner, with real
+// grants and SQLite source records. Direct source acknowledgement is deliberate:
+// no model, native admission, run or operation settlement is claimed here.
+mod admitted_rebind {
+    use super::*;
+    use crate::private_originals::{PrivateOriginalRef, PrivateOriginals};
+    use meerkat_core::{
+        AgentError, AgentLlmClient, ControllerModelSelection, LlmStreamResult, Message,
+        Provider, ProviderParamsOverride, SessionId, SessionLlmIdentity, ToolDef,
+    };
+    use meerkat_runtime::PromptInput;
+
+    fn selection() -> ControllerModelSelection {
+        ControllerModelSelection::new(
+            SessionLlmIdentity {
+                model: "rebind-fixture".into(),
+                provider: Provider::Anthropic,
+                self_hosted_server_id: None,
+                provider_params: None,
+                auth_binding: None,
+            },
+            serde_json::from_value(
+                serde_json::json!({"realm": "test-realm", "account": "rebind-fixture"}),
+            )
+            .unwrap(),
+            "rebind-fixture".into(),
+            "rebind-fixture".into(),
+        )
+    }
+
+    struct UnusedClient;
+    #[async_trait::async_trait]
+    impl AgentLlmClient for UnusedClient {
+        fn controller_model_selection(&self) -> Option<ControllerModelSelection> {
+            Some(selection())
+        }
+        async fn stream_response(
+            &self,
+            _: &[Message],
+            _: &[Arc<ToolDef>],
+            _: u32,
+            _: Option<f32>,
+            _: Option<&ProviderParamsOverride>,
+        ) -> Result<LlmStreamResult, AgentError> {
+            panic!("source rebind must not execute a model")
+        }
+        fn provider(&self) -> Provider {
+            Provider::Anthropic
+        }
+        fn model(&self) -> &str {
+            "rebind-fixture"
+        }
+    }
+
+    struct Fixture {
+        owner: Arc<ToolkitOriginalOwner>,
+        adapter: Arc<PrivateOriginals>,
+        original: Arc<RetainedToolkitOriginal>,
+        reference: PrivateOriginalRef,
+        session: SessionId,
+        _directory: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        async fn new() -> Self {
+            let directory = tempfile::Builder::new()
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir()
+                .unwrap();
+            let owner = initialized(&directory.path().join("grants"));
+            let adapter = private_originals(owner.clone(), &directory.path().join("source.sqlite3"))
+                .await;
+            let session = SessionId::new();
+            let base = base(&owner);
+            let reference = adapter.retain_event(private_event("rebind")).await.unwrap();
+            let mut candidate = claims("rebind", &base).candidate().clone();
+            candidate.target.logical_runtime = id(
+                &meerkat_runtime::LogicalRuntimeId::for_session(&session).to_string(),
+            );
+            candidate.target.context = id(&session.to_string());
+            candidate.controller_model = Some(selection());
+            candidate.controller_grant_lineage = vec![base];
+            let association = InputAuthorityAssociation::new(candidate).unwrap();
+            let original = owner
+                .enroll_new_authenticated_async(
+                    association.clone(),
+                    source(&association),
+                    &principal("user"),
+                    &principal("frontend"),
+                    &principal("admin"),
+                    id("rebind-child"),
+                    ExecutionRestrictions::unrestricted(),
+                    |association| {
+                        let adapter = adapter.clone();
+                        let reference = reference.clone();
+                        async move { adapter.persist_binding(&reference, &association).await }
+                    },
+                )
+                .await
+                .unwrap();
+            adapter.hold_binding(reference.clone(), original.clone()).await.unwrap();
+            Self {
+                owner,
+                adapter,
+                original,
+                reference,
+                session,
+                _directory: directory,
+            }
+        }
+
+        fn bind(
+            &self,
+            input: Input,
+            key: &str,
+        ) -> Result<(Input, PendingToolkitOriginal), RuntimeDriverError> {
+            self.owner.bind_authenticated_input(
+                &self.original,
+                &self.session,
+                input,
+                IdempotencyKey::new(key),
+                self.original.association().candidate().original_authentication.clone(),
+                ControllerModelClient::new(selection(), Arc::new(UnusedClient)),
+            )
+        }
+
+        fn admit(&self) {
+            let (_, pending) = self.bind(Input::Prompt(PromptInput::new("initial", None)), "initial")
+                .unwrap();
+            assert!(pending.pending);
+            pending.admit().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn admitted_public_rebind_and_exact_replay_preserve_publication() {
+        let fixture = Fixture::new().await;
+        fixture.admit();
+        let (_, stamp) = fixture.owner.publication.observe(|| ()).unwrap();
+        let input = Input::Prompt(PromptInput::new("later host input", None));
+        let input_id = input.id().clone();
+        let (bound, pending) = fixture.bind(input.clone(), "later").unwrap();
+        assert_eq!(bound.id(), &input_id);
+        assert!(
+            bound.header().authority_association.as_ref() == Some(fixture.original.association())
+        );
+        assert!(!pending.pending);
+        drop(pending);
+        assert!(
+            stamp.check_current().is_ok(),
+            "a read-only rebind must preserve the actual stamp"
+        );
+        let (replay, pending) = fixture.bind(input, "later").unwrap();
+        assert_eq!(replay.id(), &input_id);
+        assert!(!pending.pending);
+        assert!(Arc::ptr_eq(&pending.admit().unwrap(), &fixture.original));
+        assert!(
+            stamp.check_current().is_ok(),
+            "source replay acknowledgement must also be read-only"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_source_candidate_and_acknowledgement_publish_changes() {
+        let fixture = Fixture::new().await;
+        let (_, before_candidate) = fixture.owner.publication.observe(|| ()).unwrap();
+        let (_, pending) = fixture.bind(Input::Prompt(PromptInput::new("initial", None)), "initial")
+            .unwrap();
+        assert!(pending.pending);
+        assert!(matches!(before_candidate.check_current(), Err(PublicationError::Changed)));
+        let (_, before_acknowledgement) = fixture.owner.publication.observe(|| ()).unwrap();
+        pending.admit().unwrap();
+        assert!(matches!(
+            before_acknowledgement.check_current(),
+            Err(PublicationError::Changed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelled_and_poisoned_admitted_sources_cannot_rebind() {
+        let cancelled = Fixture::new().await;
+        cancelled.admit();
+        cancelled.adapter.record_operation_cancelled(&cancelled.reference)
+            .await.unwrap();
+        assert!(matches!(
+            cancelled.owner.record_candidate(&cancelled.original),
+            Err(OriginalWriterError::OperationCancelled),
+        ));
+        assert!(cancelled.bind(
+            Input::Prompt(PromptInput::new("after cancel", None)), "cancelled"
+        ).is_err());
+
+        let poisoned = Fixture::new().await;
+        poisoned.admit();
+        let (_, stamp) = poisoned.owner.publication.observe(|| ()).unwrap();
+        poisoned.owner.publication.poison();
+        assert!(matches!(stamp.check_current(), Err(PublicationError::Unavailable)));
+        assert!(matches!(
+            poisoned.owner.record_candidate(&poisoned.original),
+            Err(OriginalWriterError::Unavailable),
+        ));
+        assert!(poisoned.bind(
+            Input::Prompt(PromptInput::new("after poison", None)), "poisoned"
+        ).is_err());
+
+        let collection_poisoned = Fixture::new().await;
+        collection_poisoned.admit();
+        let owner = collection_poisoned.owner.clone();
+        let joined = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _collection = owner.originals.lock().unwrap();
+                panic!("synthetic collection owner unwind");
+            }).join()
+        });
+        assert!(joined.is_err());
+        assert!(collection_poisoned.owner.originals.is_poisoned());
+        assert!(matches!(
+            collection_poisoned.owner.record_candidate(&collection_poisoned.original),
+            Err(OriginalWriterError::Unavailable),
+        ));
+    }
+}

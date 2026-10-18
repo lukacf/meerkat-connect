@@ -13,7 +13,7 @@ use meerkat_authorization::{
         GrantDurabilityError, GrantOwnerStore, GrantRefusal, LocalGrantAuthority,
         LocalGrantConfiguration,
     },
-    publication::LocalAuthorizationPublication,
+    publication::{LocalAuthorizationPublication, PublicationError},
 };
 use meerkat_authorization_contracts::{
     constraints::{ExecutionRestrictions, ResourceDomain},
@@ -1496,6 +1496,39 @@ impl ToolkitOriginalOwner {
         original: &Arc<RetainedToolkitOriginal>,
         controller: Option<ControllerModelClient>,
     ) -> Result<PendingToolkitOriginal, OriginalWriterError> {
+        // An admitted source needs no new candidate or controller mutation.
+        // Observe its real custody without invalidating unrelated preparations.
+        // The read guard ends inside the closure; any slow-path write still
+        // takes the publication writer before the collection and rechecks facts.
+        let mut collection_unavailable = false;
+        let admitted = self.publication.observe(|| {
+            let originals = match self.originals.lock() {
+                Ok(originals) => originals,
+                Err(_) => {
+                    collection_unavailable = true;
+                    return false;
+                }
+            };
+            originals.iter().filter_map(OriginalRecord::bound).any(|held| {
+                Arc::ptr_eq(&held.retained, original)
+                    && held.operation == OriginalOperationDisposition::Open
+                    && held.source_custody == Some(SourceCustody::Admitted)
+            })
+        });
+        if collection_unavailable {
+            return Err(OriginalWriterError::Unavailable);
+        }
+        match admitted {
+            Ok((true, _)) => {
+                return Ok(PendingToolkitOriginal {
+                    owner: self.clone(),
+                    original: original.clone(),
+                    pending: false,
+                });
+            }
+            Ok((false, _)) | Err(PublicationError::Changed) => {}
+            Err(PublicationError::Unavailable) => return Err(OriginalWriterError::Unavailable),
+        }
         let _publication = self
             .publication
             .begin_owner_change()
