@@ -12,6 +12,7 @@ use meerkat_runtime::meerkat_machine::{AdmittedOriginalRefusal, AuthenticatedOri
 pub(super) enum PlanningSourceEvidence {
     Parent,
     Lead { parent: PrivateOriginalRef },
+    Waiter { workflow: meerkat_toolkit::setup::SetupWorkflowRef, planning: PrivateOriginalRef },
 }
 
 pub(super) fn validate(record: &SourceRecord) -> Result<(), PrivateOriginalError> {
@@ -21,6 +22,8 @@ pub(super) fn validate(record: &SourceRecord) -> Result<(), PrivateOriginalError
             return Err(PrivateOriginalError::Conflict),
         PlanningSourceEvidence::Lead { parent } if record.event.contributors.as_slice() != [parent.original.clone()]
             || record.event.original == parent.original || !valid_digest(&parent.event_sha256) => return Err(PrivateOriginalError::Conflict),
+        PlanningSourceEvidence::Waiter { planning, .. } if !record.event.contributors.is_empty()
+            || record.event.original == planning.original || !valid_digest(&planning.event_sha256) => return Err(PrivateOriginalError::Conflict),
         _ => (),
     }
     if let Some(association) = &record.final_association { check_binding(record, association)?; }
@@ -32,7 +35,8 @@ pub(super) fn check_binding(record: &SourceRecord, association: &InputAuthorityA
 {
     let Some(selection) = &record.planning_source_evidence else { return Ok(()); };
     if record.approved_task.is_some() || record.service_admission.is_some()
-        || record.setup_request.is_some() || record.configured_setup.is_some()
+        || record.setup_request.is_some()
+        || (record.configured_setup.is_some() && !matches!(selection, PlanningSourceEvidence::Waiter { .. }))
     { return Err(PrivateOriginalError::Conflict); }
     let claims = association.candidate();
     let matches = match selection {
@@ -43,6 +47,10 @@ pub(super) fn check_binding(record: &SourceRecord, association: &InputAuthorityA
                 && claims.contributing_work.as_slice() == [OriginalWorkRef {
                     authority: record.source.source_authority.clone(), work: parent.original.clone(),
                 }],
+        PlanningSourceEvidence::Waiter { .. } => record.configured_setup.as_ref().is_some_and(|saved|
+            saved.capability.helper.is_some() && saved.capability.helper_targets.is_empty())
+            && claims.contributing_work.is_empty()
+            && matches!(&claims.authority_basis, WorkAuthorityBasis::GrantLineage { lineage } if lineage.len() == 2),
     };
     if matches { Ok(()) } else { Err(PrivateOriginalError::Conflict) }
 }
@@ -213,3 +221,6 @@ impl PrivateOriginals {
         self.hold_binding(reference.clone(), retained).await
     }
 }
+
+mod lead;
+mod waiter;

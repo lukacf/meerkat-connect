@@ -1,5 +1,6 @@
-//! Host-owned fresh-member selection. Use with the existing held full-roster
-//! bootstrap; this is not an append operation on an active roster.
+//! Host-owned member selection before full-roster bootstrap. Fresh members use
+//! held completion; idle admitted members can restore exact historical custody.
+//! This is not an append operation on an active roster.
 use super::*;
 use crate::original_ingress::workflow_member::SelectedWorkflowMember;
 use meerkat_mobkit::identity_first::{AgentAddressability, DurableAgentSpec, HeldIdentityMember};
@@ -8,8 +9,10 @@ use meerkat_toolkit::setup::SetupWorkflowTerms;
 /// An opaque restrictive selection owned by this application's canonical
 /// workflow/source owner. Native registration and held completion supply the
 /// actual session and controller observation. It conveys no planning grant.
-/// The host must supply a compiled, fresh, InternalOnly member. Several
-/// unrelated workflows may reserve distinct compiled members in the same host.
+/// The host must supply a compiled InternalOnly member. Fresh members require
+/// held completion. Ordinary resumed members can restore restricted historical
+/// source custody from exact admitted evidence. Several unrelated workflows may
+/// reserve distinct compiled members in the same host.
 pub struct InstalledWorkflowMember {
     source: Weak<PrivateOriginals>,
     reference: SetupWorkflowRef,
@@ -65,6 +68,27 @@ impl PrivateOriginals {
     }
 }
 impl InstalledWorkflowMember {
+    /// Select this cohort's configured acquisition A for exact bound Input
+    /// retention before its first binding. The same selection is idempotent;
+    /// already-bound unselected inputs cannot be retrofitted. Ordinary bodies
+    /// remain with their application. Live Console login restoration and helper
+    /// effect targets are outside this host-submitted SDK profile.
+    /// This selects evidence only, not disclosure permission or a new grant.
+    pub async fn prepare_waiter_source(&self, original: &PrivateOriginalRef) -> Result<(), PrivateOriginalError> {
+        let source = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
+        source.select_workflow_waiter_evidence(&self.reference, &self.original, &self.member, original).await
+    }
+
+    /// Restore the exact selected A's Task custody after ordinary native resume.
+    /// Missing evidence stays unavailable. No input, issuer or delegation is
+    /// created. This can supply a later launch/delivery interest; it does not
+    /// reconstruct a waiter attachment or A-to-G effect authority. G remains
+    /// restricted until its actual workflow attachment is completed.
+    pub async fn restore_waiter_source(&self, original: &PrivateOriginalRef) -> Result<(), PrivateOriginalError> {
+        let source = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
+        source.restore_workflow_waiter_source(&self.reference, &self.original, &self.member, original).await
+    }
+
     /// Compose this participant with the host's existing registration hook.
     /// It observes that hook's actual selection before native installation.
     pub(crate) fn registration_participant(self: &Arc<Self>)
@@ -86,7 +110,22 @@ impl InstalledWorkflowMember {
         source.owner.finish_workflow_member(&self.reference, held).await.map_err(custody_error)
     }
 
-    /// Exact captured native session, available only after held completion.
+    /// Restore an idle G's historical source after ordinary native roster resume.
+    /// Actual registration must have captured the saved session and destination.
+    /// The canonical workflow and explicitly retained P/G inputs are rechecked;
+    /// native supplies G's historical admission and current controller custody.
+    /// Missing evidence or a fresh fallback cannot complete this selection.
+    /// This never sends an input, reconstructs waiters or starts recovery work.
+    /// The captured controller remains incomplete: native admission and operation
+    /// policy stay unavailable. A later exact workflow attachment must install
+    /// its retained waiter/operation custody and complete that controller together;
+    /// that restart attachment path is not implemented by this method.
+    pub async fn restore_admitted_source(&self) -> Result<(), PrivateOriginalError> {
+        let source = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
+        source.restore_workflow_lead_source(&self.reference, &self.original, &self.member).await
+    }
+
+    /// Exact captured native session, available only after native completion.
     /// This observation is not a live-session or exclusive-run capability.
     pub fn session(&self) -> Result<meerkat_core::SessionId, PrivateOriginalError> {
         self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?.owner

@@ -108,6 +108,7 @@ impl PrivateOriginals {
                 .any(|held| Arc::ptr_eq(&held.original, original) && held.console_login.get().is_some())
             { return Err(PrivateOriginalError::Denied); }
             self.check_planning_evidence_source(&record, reference)?;
+            self.check_workflow_waiter_binding(&record, reference).await?;
         } else if record.approved_task.is_none() {
             // Preserve ordinary fresh input behavior for other source classes.
             // They receive no new cold-recovery evidence or classification.

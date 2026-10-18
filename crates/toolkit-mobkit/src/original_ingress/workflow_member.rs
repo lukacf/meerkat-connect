@@ -119,6 +119,65 @@ impl ToolkitOriginalOwner {
         Ok(())
     }
 
+    /// The caller holds the source writer. Compare the actual registration
+    /// capture and native admitted controller without waiting or resolving grants.
+    pub(crate) fn check_admitted_workflow_member(
+        &self, reference: &SetupWorkflowRef, member: &MobMemberBinding,
+        original: &OriginalWorkRef, association: &InputAuthorityAssociation,
+        admitted: &meerkat_runtime::meerkat_machine::AdmittedOriginal<'_>,
+    ) -> Result<(), OriginalWriterError> {
+        let members = self.workflow_members.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let selected = members.iter().find(|row| &row.reference == reference)
+            .ok_or(OriginalWriterError::Unavailable)?;
+        let captured = selected.captured.as_ref().ok_or(OriginalWriterError::Unavailable)?;
+        if &selected.member != member || &selected.original != original
+            || selected.realm != association.candidate().ingress_namespace.realm
+            || admitted.association() != association || admitted.session_id() != &captured.session
+            || association.candidate().target != captured.target
+            || association.candidate().controller_model.as_ref() != Some(admitted.controller().selection())
+            || captured.controller.is_some()
+        { return Err(OriginalWriterError::Conflict); }
+        Ok(())
+    }
+
+    /// Use the same incomplete-controller restriction for operation policy.
+    /// A restored source without its workflow attachment must not take the
+    /// ordinary singleton policy path. This is no new readiness state.
+    pub(crate) fn check_workflow_policy_capture(&self, association: &InputAuthorityAssociation)
+        -> Result<(), OriginalWriterError>
+    {
+        let runtime = {
+            let members = self.workflow_members.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+            let claims = association.candidate();
+            let selected = members.iter().find(|row| row.original == claims.original_work
+                || row.captured.as_ref().is_some_and(|captured| captured.target.logical_runtime == claims.target.logical_runtime));
+            let Some(selected) = selected else { return Ok(()); };
+            let captured = selected.captured.as_ref().ok_or(OriginalWriterError::Unavailable)?;
+            LogicalRuntimeId::for_session(&captured.session)
+        };
+        self.check_workflow_member(&runtime, association, None).map_err(|error| match error {
+            NativeAdmissionError::Refused(_) => OriginalWriterError::OperationDenied,
+            _ => OriginalWriterError::Unavailable,
+        })
+    }
+
+    /// A saved row cannot select a different resumed destination. The caller
+    /// will separately obtain the native historical admission/controller proof.
+    pub(crate) fn check_saved_workflow_destination(
+        &self, reference: &SetupWorkflowRef, member: &MobMemberBinding, association: &InputAuthorityAssociation,
+    ) -> Result<(), OriginalWriterError> {
+        let members = self.workflow_members.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let selected = members.iter().find(|row| &row.reference == reference).ok_or(OriginalWriterError::Unavailable)?;
+        let captured = selected.captured.as_ref().ok_or(OriginalWriterError::Unavailable)?;
+        let claims = association.candidate();
+        if &selected.member != member || selected.original != claims.original_work
+            || selected.realm != claims.ingress_namespace.realm || captured.target != claims.target
+            || captured.session.to_string() != claims.target.context.as_str()
+        { return Err(OriginalWriterError::Conflict); }
+        if captured.controller.is_some() { return Err(OriginalWriterError::Conflict); }
+        Ok(())
+    }
+
     pub(crate) fn dedicated_workflow_session(
         &self, reference: &SetupWorkflowRef, member: &MobMemberBinding, original: &EvidenceId,
     ) -> Result<Option<SessionId>, OriginalWriterError> {
@@ -139,7 +198,7 @@ impl ToolkitOriginalOwner {
         controller: Option<&ControllerModelClient>,
     ) -> Result<(), NativeAdmissionError> {
         let members = self.workflow_members.lock().map_err(|_| unavailable())?;
-        // This opt-in supports an all-fresh full roster. Until every selected
+        // This opt-in selects the full roster before bootstrap. Until every
         // destination is captured, an omitted participant must not let an
         // unrelated source bypass the restriction through another gateway.
         // Reservation on an already active host is not supported.

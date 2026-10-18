@@ -163,6 +163,19 @@ pub(crate) async fn open_for_dedicated_workflow(facts: &ControllerModelFacts) ->
         false, false, false, false, None, true,
     );
     assert!(helper.is_none() && prepare.is_none());
+    reopen_for_dedicated_workflow(directory, selection).await
+}
+
+pub(crate) async fn open_for_configured_dedicated_workflow(facts: &ControllerModelFacts) -> DedicatedHost {
+    let (directory, selection, helper, prepare) = provision_selected_source_with_workflow_members(
+        facts, true, true, true, false, None, false, None, true, false, None,
+        Some(super::tests::principal("workflow-human")), false, false, false, false, None, true,
+    );
+    assert!(helper.is_some() && prepare.is_none());
+    reopen_for_dedicated_workflow(directory, selection).await
+}
+
+pub(crate) async fn reopen_for_dedicated_workflow(directory: Arc<tempfile::TempDir>, selection: HostBootstrapSelection) -> DedicatedHost {
     let (lifetime, installed) = InstalledToolkitHost::open(selection.clone(), NativeOwnerStartup::Restore).await.unwrap();
     let lifetime = Arc::new(lifetime);
     let source_path = state_directory(&selection, lifetime.selected_policy().native_host.as_ref().unwrap(),
@@ -316,7 +329,7 @@ fn provision_selected_source_with_workflow_members(facts: &ControllerModelFacts,
     }
     fs::write(&selection.policy_manifest.path, canonical_json(&manifest).unwrap()).unwrap();
     if workflow_members {
-        assert!(!helper && !human_policy && !configured_setup && !configured_report);
+        assert!(!helper && !human_policy && !configured_report);
         for name in ["planning_parent", "planning_lead"] {
             let mut member = native.members[0].clone();
             member.member.member = name.into();
@@ -468,6 +481,19 @@ fn provision_selected_source_with_workflow_members(facts: &ControllerModelFacts,
                 ).unwrap();
                 route.controller_parent = Some(vec![parent]);
             }
+            if configured_setup {
+                let member = &native.members[2];
+                let route = &native.routes[2];
+                acquisition_helper = Some(acquisition::InstalledSetupSelection {
+                    catalog_capability: None, report_capability: None,
+                    member: member.member.clone(), ingress_actor: native.grant_administrator.clone(),
+                    logical_executor: route.logical_executor.clone(), represented_subject: route.represented_subject.clone(),
+                    controller_parent: route.controller_parent.clone().unwrap(),
+                    operation_basis: meerkat_authorization_contracts::work_association::WorkAuthorityBasis::TargetedGrantLineages {
+                        base: None, targets: vec![],
+                    },
+                });
+            }
         }
         if helper {
             let member = &native.members[1];
@@ -552,6 +578,7 @@ fn provision_selected_source_with_workflow_members(facts: &ControllerModelFacts,
                     issuance_id: EvidenceId::new("configured-a-report-parent").unwrap() },
             ] } else { vec![] },
             route: native.routes[0].id.clone(), issuance_id: EvidenceId::new("configured-acquisition-parent").unwrap() };
+        if workflow_members { request.helper = acquisition_helper.as_ref().map(|helper| helper.member.clone()); }
         if human_policy && configured_report {
             request.helper_targets.push(operator_setup::SetupTargetRequest {
                 target: None, issuance_id: EvidenceId::new("warm-original-catalog-parent").unwrap(),

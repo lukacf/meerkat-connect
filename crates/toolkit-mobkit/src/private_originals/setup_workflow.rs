@@ -58,7 +58,7 @@ pub(crate) struct HeldWorkflowWaiter {
 }
 
 impl PrivateOriginals {
-    fn workflow_store(&self) -> Result<SetupStore<'_>, PrivateOriginalError> {
+    pub(in crate::private_originals) fn workflow_store(&self) -> Result<SetupStore<'_>, PrivateOriginalError> {
         Ok(SetupStore::new(
             self.store.as_ref(),
             SetupScope::new(
@@ -152,6 +152,7 @@ impl PrivateOriginals {
         association: &InputAuthorityAssociation,
         binding: &PreparedAuthorizationBinding,
     ) -> Result<Option<Arc<WorkflowCallCustody>>, PrivateOriginalError> {
+        self.owner.check_workflow_policy_capture(association).map_err(custody_error)?;
         let held = self
             .retained
             .lock()

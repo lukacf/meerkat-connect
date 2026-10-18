@@ -73,11 +73,14 @@ pub struct ToolkitGatewayHost {
 }
 
 impl ToolkitGatewayHost {
-    /// Reserve a compiled fresh planning member before `prepare_bootstrap`.
+    /// Reserve a compiled planning member before `prepare_bootstrap`.
     /// A validated reservation selects this exact host lifetime in the source
     /// owner and composes its retained registration hook. Invalid reservations
     /// select neither. Actual machine binding remains in normal bootstrap.
-    /// The caller retains the returned member for the real held completion.
+    /// Fresh members require real held completion. An ordinary resumed member
+    /// may restore historical source custody from exact retained P/G evidence,
+    /// but stays restricted pending workflow attachment. Neither path permits
+    /// appending to an already active host.
     /// A later host-currentness or bootstrap failure retains the restriction;
     /// it does not transfer the source to a different host or imply activation.
     pub async fn reserve_workflow_member(

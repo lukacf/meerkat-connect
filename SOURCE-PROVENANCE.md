@@ -502,6 +502,30 @@ or error evidence remains pending. No private Core codec or second index is adde
 These observations do not alter published 0.9.0 assets or the adopted dependency
 selection. CI-triggering publication remains held for the Core/Meta lead.
 
+### Selected workflow source custody
+
+The exact G/A composition `59917d99` plus `59da025c` contributes 13 source/test
+paths, including fixture corrections `37fc7d63` and `25f490b7`. The former rearms
+the one-shot observation between P and A. The latter supplies the actual session
+service through `MobBootstrapSpec.controller_pin_source` and checks exact runtime
+and source-owner identity. Bridge-only configuration did not populate that field.
+
+Outcome `e3ae16c4acdccc8021200545b39a20f08c817a719274d450b732d700fa3013a9`
+passes compilation and all seven exact native controls on Core `ab4d6227` / Meta
+`67fa0407`, using executable `d3b4308b`. Independent review `7c59a245` checks all
+104 saved references, source bytes/modes, raw markers and joined command,
+transport and cache owners. Strict in-test close assertions pass; no separate
+raw inner receipts are exported. Prior failures `88cb3452`, `3aeabc15` and
+`a1d4199c` remain part of the evidence.
+
+The tests cover selected G/A historical custody after ordinary native resume,
+exact input/history preservation, no model calls, a restricted G gate, no new
+caller-to-G effect authority, refusal/no-retrofit cases and affected parent/fresh
+planning behavior. This local source checkpoint does not include restored
+workflow interest, cold context-transfer reconstruction, SDK fixture changes,
+temporary diagnostics or a dependency change. It does not qualify the complete
+shared SDK journey or alter published 0.9.0 assets.
+
 ### Explicit Node build plans
 
 Private Toolkit checkpoint `07172f52e03b4a3c0ec9f383651bbfde4ebc2364` contributes 19 source/test

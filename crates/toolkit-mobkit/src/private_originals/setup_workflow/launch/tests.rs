@@ -274,8 +274,8 @@ async fn prepare_with_waiter_options(f: &FirstFixture, lifecycle: Option<(u64, b
     }
 }
 
-async fn join_waiter(
-    f: &FirstFixture,
+async fn join_waiter<S>(
+    f: &FirstFixture<S>,
     planning: &Arc<InstalledWorkflowPlanning>,
     original: &crate::private_originals::acquisition::AcquisitionOriginal,
     dispatch: &ToolDispatchContext,
@@ -288,8 +288,8 @@ async fn join_waiter(
 
 // Only lifecycle controls select a shorter deadline or a bounded readiness
 // proposal. None preserves every existing first-launch/control input exactly.
-async fn join_waiter_options(
-    f: &FirstFixture,
+async fn join_waiter_options<S>(
+    f: &FirstFixture<S>,
     planning: &Arc<InstalledWorkflowPlanning>,
     original: &crate::private_originals::acquisition::AcquisitionOriginal,
     dispatch: &ToolDispatchContext,
@@ -1317,3 +1317,9 @@ mod lifecycle_tests;
 
 #[path = "bind_tests.rs"]
 mod bind_tests;
+
+#[path = "idle_restore_tests.rs"]
+mod idle_restore_tests;
+
+#[path = "waiter_restore_tests.rs"]
+mod waiter_restore_tests;

@@ -1,5 +1,5 @@
-//! A fresh full roster through the real held bootstrap. The selected member
-//! names are test inputs, not a production singleton or an online append API.
+//! A fresh held roster, with a persistent mode for actual idle ordinary resume.
+//! Selected names are test inputs, not an online append API.
 use super::*;
 use meerkat_toolkit::setup::{SetupWorkBackend, SetupWorkContext, SetupWorkflowTerms};
 use meerkat_workgraph::{WorkGraphService, SqliteWorkGraphStore, WorkNamespace,
@@ -9,8 +9,10 @@ use meerkat_authorization_contracts::constraints::{DelegationDepth, LifetimeRest
 use toolkit_package::{ContentDigest, Revision};
 use meerkat_mobkit::rpc_gateway::GatewayHostComposition;
 
-pub(in crate::private_originals) struct DedicatedFixture {
-    pub f: FirstFixture,
+pub(in crate::private_originals) struct DedicatedFixture<S = EphemeralSessionService<FactoryAgentBuilder>> {
+    pub f: FirstFixture<S>,
+    pub history: Option<Arc<dyn meerkat_runtime::RuntimeStore>>,
+    durable: Option<DurableDedicated>,
     pub member: Arc<crate::private_originals::InstalledWorkflowMember>,
     pub parent: PrivateOriginalSubmit,
     pub lead: PrivateOriginalSubmit,
@@ -23,6 +25,20 @@ pub(in crate::private_originals) struct DedicatedFixture {
     _gateway: crate::host_gateway::ToolkitGatewayHost,
     _private_open: tokio::sync::watch::Sender<bool>,
 }
+// No native/source/controller owner survives the close/reopen boundary.
+#[derive(Clone)]
+pub(in crate::private_originals) struct DurableDedicated {
+    directory: Arc<tempfile::TempDir>,
+    selection: meerkat_toolkit::host_lifetime::control::HostBootstrapSelection,
+    parent: PrivateOriginalSubmit,
+    lead: PrivateOriginalSubmit,
+    submission: PrivateOriginalSubmit,
+    terms: SetupWorkflowTerms,
+    lineage: Vec<GrantLineageRef>,
+    work: SetupWorkContext,
+    sessions: Vec<SessionId>,
+}
+
 async fn event(source: &Arc<PrivateOriginals>, route: &str, label: &str, contributors: Vec<EvidenceId>) -> PrivateOriginalSubmit {
     let mut event = private_event(label);
     event.route = Id::new(route).unwrap();
@@ -47,22 +63,78 @@ impl DedicatedFixture {
     pub async fn new() -> Self { Self::with_participant(true).await }
     pub async fn without_participant() -> Self { Self::with_participant(false).await }
     async fn with_participant(capture_workflow: bool) -> Self {
+        Self::construct(capture_workflow, false, false, None, |mut builder, configuration, _| {
+            let machine = Arc::new(MeerkatMachine::ephemeral().with_local_grant_authorization(configuration).unwrap());
+            builder.default_session_store = Some(Arc::new(SessionStore::default()));
+            (Arc::new(EphemeralSessionService::new(builder, 4)), machine, None)
+        }).await
+    }
+}
+
+impl DedicatedFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
+    pub async fn persistent() -> Self { Self::persistent_from(false, None).await }
+    pub async fn persistent_configured_waiter() -> Self { Self::persistent_from(true, None).await }
+    pub async fn reopen(retained: DurableDedicated) -> Self { Self::persistent_from(false, Some(retained)).await }
+    async fn persistent_from(configured_waiter: bool, retained: Option<DurableDedicated>) -> Self {
+        Self::construct(true, true, configured_waiter, retained, |builder, configuration, directory| {
+            let persistence = meerkat::PersistenceBundle::new_with_local_grant_authorization(
+                Arc::new(meerkat::SqliteSessionStore::open(directory.join("dedicated-native.sqlite3")).unwrap()),
+                Arc::new(meerkat_runtime::store::SqliteRuntimeStore::new(directory.join("dedicated-native.sqlite3")).unwrap()),
+                Arc::new(meerkat::MemoryBlobStore::new()), configuration,
+            ).unwrap();
+            let history = persistence.runtime_store();
+            let (service, machine) = meerkat::surface::build_runtime_backed_service(builder, 4, persistence).unwrap();
+            (Arc::new(service), machine, Some(history))
+        }).await
+    }
+    pub fn durable_state(&self) -> DurableDedicated { self.durable.as_ref().unwrap().clone() }
+    pub async fn close(&self) -> Result<(), String> { self.f.close_durable_owners().await }
+}
+
+impl<S: meerkat_mob::MobSessionService + meerkat_mobkit::identity_first::ControllerPinSource + 'static> DedicatedFixture<S> {
+    async fn construct(
+        capture_workflow: bool, durable: bool, configured_waiter: bool, saved: Option<DurableDedicated>,
+        build_service: impl FnOnce(FactoryAgentBuilder,
+            meerkat_runtime::meerkat_machine::NativeGrantWorkConfiguration, &std::path::Path)
+            -> (Arc<S>, Arc<MeerkatMachine>, Option<Arc<dyn meerkat_runtime::RuntimeStore>>) + Send,
+    ) -> Self {
         let mut opened = None;
         let mut retained = None;
-        let result = std::panic::AssertUnwindSafe(Self::build(&mut opened, &mut retained, capture_workflow)).catch_unwind().await;
+        let result = std::panic::AssertUnwindSafe(Self::build(&mut opened, &mut retained, capture_workflow, durable, configured_waiter, saved, build_service)).catch_unwind().await;
         match result {
             Ok(result) => result,
             Err(panic) => {
-                let cleanup = match &opened { Some(native) => shutdown_fixture(native).await, None => Ok(()) };
+                // Observe every cleanup assertion without replacing the
+                // construction failure. Retain the same lifetime until joined.
+                let _cleanup = std::panic::AssertUnwindSafe(async {
+                    use meerkat_toolkit::host_lifetime::control::{HostCloseReason, HostCloseState, PrivateHostLifetimeControl};
+                    let close = retained.as_ref().filter(|_| durable).map(|(_, lifetime)|
+                        lifetime.begin_close_activation(HostCloseReason::Shutdown));
+                    let native = match &opened { Some(native) => shutdown_fixture(native).await, None => Ok(()) };
+                    if let (Some((_, lifetime)), Some(Ok(close))) = (&retained, &close) {
+                        assert_eq!(lifetime.join_close(&close.handle).await.unwrap().state, HostCloseState::Settled);
+                    }
+                    assert!(close.as_ref().is_none_or(|close| close.is_ok()), "host close entry refused: {close:?}");
+                    assert!(native.is_ok(), "{native:?}");
+                }).catch_unwind().await;
                 drop(retained);
-                assert!(cleanup.is_ok(), "{cleanup:?}");
                 std::panic::resume_unwind(panic)
             }
         }
     }
-    async fn build(opened: &mut Option<UnifiedRuntime>, retained: &mut Option<(Arc<tempfile::TempDir>, Arc<NativeHostLifetime>)>, capture_workflow: bool) -> Self {
+    async fn build(opened: &mut Option<UnifiedRuntime>, retained: &mut Option<(Arc<tempfile::TempDir>, Arc<NativeHostLifetime>)>,
+        capture_workflow: bool, durable: bool, configured_waiter: bool, saved: Option<DurableDedicated>,
+        build_service: impl FnOnce(FactoryAgentBuilder,
+            meerkat_runtime::meerkat_machine::NativeGrantWorkConfiguration, &std::path::Path)
+            -> (Arc<S>, Arc<MeerkatMachine>, Option<Arc<dyn meerkat_runtime::RuntimeStore>>) + Send,
+    ) -> Self {
         let facts = meerkat_core::ControllerModelFacts::new(selection(), ENDPOINT.into(), MODEL.into());
-        let mut host = crate::installed_host::controller_first_input_fixture::open_for_dedicated_workflow(&facts).await;
+        let mut host = match &saved {
+            Some(saved) => crate::installed_host::controller_first_input_fixture::reopen_for_dedicated_workflow(
+                saved.directory.clone(), saved.selection.clone()).await,
+            None if configured_waiter => crate::installed_host::controller_first_input_fixture::open_for_configured_dedicated_workflow(&facts).await,
+            None => crate::installed_host::controller_first_input_fixture::open_for_dedicated_workflow(&facts).await,
+        };
         *retained = Some((host.directory.clone(), host.lifetime.clone()));
         let source = host.originals.clone();
         assert!(source.host_lifetime.get().is_none(), "the dedicated fixture must not prebind a private lifetime");
@@ -74,6 +146,15 @@ impl DedicatedFixture {
             host.lifetime.clone(), crate::private_host::PrivateHostClosed(private_closed.clone())));
         let mut gateway = host.installed.take().unwrap().compose(
             host.lifetime.clone(), crate::private_host::PrivateHostClosed(private_closed));
+        let (parent, lead, submission, terms, lineage, backend, work) = if let Some(saved) = &saved {
+            let graph = WorkGraphService::with_scope(Arc::new(SqliteWorkGraphStore::open(host.source_path.with_extension("dedicated-work.sqlite")).unwrap()),
+                host.source_scope.realm.clone(), WorkNamespace::new("dedicated-workflow").unwrap());
+            let backend = SetupWorkBackend::new(graph, "dedicated-sqlite".into(), Id::new("one").unwrap(),
+                &[meerkat_core::DurabilityDeclaration::durable("workgraph", meerkat_core::DurabilityResolution::Persistent)]).unwrap();
+            assert_eq!(backend.pin(), &saved.terms.backend);
+            (saved.parent.clone(), saved.lead.clone(), saved.submission.clone(), saved.terms.clone(),
+                saved.lineage.clone(), backend, saved.work.clone())
+        } else {
         let parent = event(&source, "planning_parent", "dedicated parent request", vec![]).await;
         let lead = event(&source, "planning_lead", "dedicated planning request", vec![parent.original.original.clone()]).await;
         let submission = event(&source, "console", PROMPT, vec![]).await;
@@ -85,7 +166,8 @@ impl DedicatedFixture {
         let bounds = ExecutionRestrictions { delegation_depth: DelegationDepth::remaining(1),
             lifetime: LifetimeRestriction::window(now, deadline + 60_000), ..ExecutionRestrictions::unrestricted() };
         let root = source.owner.grants().issue_root(
-            &meerkat::governed_realm::stock::StockPrincipals::for_local_operator(&selected.realm).unwrap().operator,
+            selected.remote_operator.as_ref().unwrap_or(
+                &meerkat::governed_realm::stock::StockPrincipals::for_local_operator(&selected.realm).unwrap().operator),
             EvidenceId::new("dedicated-operation-root").unwrap(), selected.grant_administrator.clone(),
             route.represented_subject.clone(), bounds.clone(),
         ).unwrap();
@@ -108,6 +190,8 @@ impl DedicatedFixture {
             requester: route.requester.clone(), realm: route.realm.clone(), authority_revision: Revision::new("dedicated-policy").unwrap(),
             planning_source: source.source_record_key(&lead.original).await.unwrap(), lead: member_selection.member.clone(),
             envelope_digest: ContentDigest::of_bytes(&canonical_json(&child).unwrap()), deadline_ms: deadline, max_waiters: 8 };
+        (parent, lead, submission, terms, lineage, backend, work)
+        };
         let roster: Vec<_> = [MEMBER, "planning_parent", "planning_lead"].into_iter().map(|name| DurableAgentSpec {
             identity: AgentIdentity::parse(name).unwrap(), profile: ProfileName::from("worker"),
             addressability: if name == "planning_lead" { AgentAddressability::InternalOnly } else { AgentAddressability::Addressable },
@@ -127,15 +211,13 @@ impl DedicatedFixture {
         assert!(Arc::ptr_eq(&source.host_lifetime.get().and_then(std::sync::Weak::upgrade).unwrap(), &host.lifetime),
             "public replay confirms the existing exact host lifetime");
         let configuration = gateway.native_grant_work_configuration().unwrap().unwrap();
-        let machine = Arc::new(MeerkatMachine::ephemeral().with_local_grant_authorization(configuration).unwrap());
         let provider = Arc::new(ScriptedProvider::default());
         let probe = Arc::new(crate::installed_host::acquisition::ContextProbe::default());
         let custody = meerkat_mobkit::MemberMcpCustody::new();
         let mut builder = FactoryAgentBuilder::new(custody.install(AgentFactory::minimal().comms(true)), Config::default());
         builder.default_llm_client = Some(Arc::new(crate::installed_host::acquisition::ProbeProvider::with_probe(provider.clone(), &probe)));
         *builder.default_agent_llm_client_decorator.write().unwrap() = Some(fixture_controller_decorator());
-        builder.default_session_store = Some(Arc::new(SessionStore::default()));
-        let service = Arc::new(EphemeralSessionService::new(builder, 4));
+        let (service, machine, history) = build_service(builder, configuration, host.directory.path());
         let mut definition = definition(); definition.id = MobId::from("factory");
         let ProfileBinding::Inline(profile) = definition.profiles.get_mut(&ProfileName::from("worker")).unwrap() else { panic!("inline") };
         profile.tools = ToolConfig { comms: true, ..Default::default() };
@@ -156,9 +238,22 @@ impl DedicatedFixture {
             gateway = without_participant;
         }
         let tool_probe = probe.clone();
-        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service.clone())
+        let (storage, provenance) = if durable {
+            let (storage, provenance) = meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(
+                host.directory.path().join("dedicated-mob.sqlite3")).unwrap();
+            (storage, Some(provenance))
+        } else { (MobStorage::in_memory(), None) };
+        let spec = MobBootstrapSpec::new(definition, storage, service.clone())
             .with_session_runtime_adapter(machine.clone()).unwrap().with_member_mcp_custody(custody)
-            .with_declared_ephemeral_mob_storage().with_default_external_tools_provider(Arc::new(move || Some(tool_probe.clone() as Arc<dyn meerkat_core::AgentToolDispatcher>)));
+            .with_default_external_tools_provider(Arc::new(move || Some(tool_probe.clone() as Arc<dyn meerkat_core::AgentToolDispatcher>)));
+        let spec = match provenance {
+            Some(provenance) => spec.with_mob_storage_provenance(provenance)
+                .with_child_mob_storage(meerkat_mobkit::ChildMobStorage::ProcessBound),
+            None => spec.with_declared_ephemeral_mob_storage(),
+        };
+        let controller_pins: Arc<dyn meerkat_mobkit::identity_first::ControllerPinSource> = service.clone();
+        let mut spec = spec;
+        spec.controller_pin_source = Some(controller_pins.clone());
         let spec = gateway.prepare_bootstrap(spec).await.unwrap();
         assert!(Arc::ptr_eq(&source.host_lifetime.get().and_then(std::sync::Weak::upgrade).unwrap(), &host.lifetime));
         assert!(gateway.reserve_workflow_member(&terms, &lead.original, &roster[2]).await.is_err(),
@@ -169,7 +264,9 @@ impl DedicatedFixture {
         let bridge = MobSessionBridge::with_session_service(handle.clone(), native.mob_runtime().session_service().cloned().unwrap())
             .with_controller_pin_source(service.clone());
         let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
-            continuity_store: Arc::new(LocalContinuityStore::in_memory().unwrap()), lease_provider: Arc::new(LocalLeaseProvider::new()),
+            continuity_store: Arc::new(if durable {
+                LocalContinuityStore::open(host.directory.path().join("dedicated-continuity.sqlite3")).unwrap()
+            } else { LocalContinuityStore::in_memory().unwrap() }), lease_provider: Arc::new(LocalLeaseProvider::new()),
             runtime_instance_id: "dedicated-workflow-test".into(), has_runtime_store: true, durability_policy: DurabilityPolicy::SyncWriteThrough,
             bridge: Some(Arc::new(bridge)), default_timeout: None,
         }).with_runtime_services(meerkat_mobkit::identity_first::AgentRuntimeServices::new(handle.clone())));
@@ -179,6 +276,19 @@ impl DedicatedFixture {
         let runtime = native.identity_runtime().unwrap();
         gateway.bind_runtime(native).await.unwrap();
         gateway.bind_identity_runtime(native).await.unwrap();
+        let runtime_pins = native.mob_runtime().controller_pin_source().unwrap();
+        let source_pins = source.controller_pin_source.get().and_then(std::sync::Weak::upgrade).unwrap();
+        assert!(Arc::ptr_eq(&runtime_pins, &controller_pins), "runtime must retain the actual service pin owner");
+        assert!(Arc::ptr_eq(&source_pins, &controller_pins), "normal gateway bind must retain the actual service pin owner");
+        if saved.is_some() {
+            let restored = context.bootstrap_roster(&roster).await.unwrap();
+            for row in &roster {
+                assert!(matches!(restored.outcomes.get(&row.identity),
+                    Some(meerkat_mobkit::identity_first::RestoreOutcome::Resumed { .. })),
+                    "ordinary native resume required: {:?}", restored.outcomes.get(&row.identity));
+            }
+            assert!(member.session().is_err(), "actual destination capture is not source custody completion");
+        } else {
         let complete_member = member.clone();
         let result = context.bootstrap_roster_held(&roster, tokio::time::Instant::now() + Duration::from_secs(30), move |members, _completion| async move {
             let held = members.iter().find(|row| row.identity.as_str() == "planning_lead").ok_or("missing actual G")?;
@@ -192,6 +302,7 @@ impl DedicatedFixture {
                 panic!("held full-roster construction did not activate")
             }
         }
+        }
         let mut sessions = Vec::new();
         for row in &roster {
             let status = runtime.status(&row.identity).await.unwrap();
@@ -199,16 +310,22 @@ impl DedicatedFixture {
             sessions.push(status.session_id.unwrap());
         }
         assert!(sessions[0] != sessions[1] && sessions[0] != sessions[2] && sessions[1] != sessions[2]);
-        if capture_workflow { assert_eq!(member.session().unwrap(), sessions[2]); }
+        if let Some(saved) = &saved { assert_eq!(sessions, saved.sessions, "fresh fallback is not restoration"); }
+        else if capture_workflow { assert_eq!(member.session().unwrap(), sessions[2]); }
         else { assert!(member.session().is_err(), "omitting the participant cannot manufacture capture"); }
-        let actor = service.live_session_actor_witness(&sessions[2]).await.unwrap();
-        let pin = service.pin_controller_client_for_actor(&actor).await.unwrap();
+        let actor = service.live_actor(&sessions[2]).await.unwrap();
+        let pin = service.pin_actor(&actor).await.unwrap();
         meerkat_core::publish_token_lifecycle_acquired_for_identity_within(&machine.generated_auth_lease_handle(), pin.selection().credential(),
             &meerkat_core::auth::PersistedTokens::api_key("synthetic-controller-only-fixture"), tokio::time::Instant::now() + WAIT).await.unwrap();
+        let durable = durable.then(|| DurableDedicated {
+            directory: host.directory.clone(), selection: host.selection.clone(), parent: parent.clone(),
+            lead: lead.clone(), submission: submission.clone(), terms: terms.clone(), lineage: lineage.clone(),
+            work: work.clone(), sessions: sessions.clone(),
+        });
         let f = FirstFixture { store: host.store, source_path: host.source_path, scope: host.source_scope,
             service, probe: Some(probe), _directory: host.directory, _lifetime: host.lifetime, source,
             machine, native: opened.take().unwrap(), runtime, identity: roster[0].identity.clone(), session: sessions[0].clone(), provider, submission };
-        Self { f, member, parent, lead, terms, lineage, backend, work,
+        Self { f, history, durable, member, parent, lead, terms, lineage, backend, work,
             parent_session: sessions[1].clone(), lead_session: sessions[2].clone(),
             _gateway: gateway, _private_open: private_open }
     }

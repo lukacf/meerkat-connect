@@ -153,6 +153,33 @@ request coalescing, authorized waiter-context delivery and active lead retiremen
 remain under development. Selecting a member alone does not establish the complete
 shared setup journey.
 
+## Restore selected workflow sources (unreleased)
+
+After ordinary native resume, a host can restore the explicitly selected sources
+for a shared setup workflow without submitting their prompts again. The parent
+and caller must have opted into retaining their exact bound inputs before their
+first submission. Inputs that were not selected stay with their application and
+cannot be retrofitted from conversation history.
+
+| Source | Host selection and restoration |
+| --- | --- |
+| Planning parent | Call `PrivateOriginals::prepare_workflow_parent_source` before its first binding. The planning member restoration below restores this parent's current native custody. |
+| Setup agent | Retain the same canonical workflow and reserve its compiled member before ordinary roster resume. After native registration captures that member, await `InstalledWorkflowMember::restore_admitted_source`. |
+| Original caller | Before its first binding, call `InstalledWorkflowMember::prepare_waiter_source` for the exact original. After ordinary native resume, await `restore_waiter_source` on that same selected workflow member. |
+
+The composed `MobBootstrapSpec` must carry the application's actual
+`controller_pin_source`. Configuring that source only on a separate
+`MobSessionBridge` does not populate the runtime field used by the gateway.
+Keep the real session service and its current actor ownership; stored metadata
+cannot replace it.
+
+These methods restore source custody only. The setup agent remains restricted
+until its actual workflow attachment is completed. Restoring a caller does not
+grant its effects to the setup agent, create a delivery interest, start recovery
+or complete the original task. Missing, changed, cancelled or unselected evidence
+is refused. The current profile covers host-submitted configured callers without
+helper effect targets; restoring a live Console login remains a separate path.
+
 ## Cancel one original's operations
 
 These APIs describe unreleased development source. For an authenticated original

@@ -100,6 +100,16 @@ proven nonadmission survives a definite pre-claim revision conflict; foreign or
 older attempts, ambiguous responses and generic Pending/RetrySafe state cannot
 supply that proof. Existing recovery owns eventual durable waiter/effect paging and
 stop/join; missing evidence cannot authorize resubmission.
+Selected setup-agent and caller source restoration now passes seven native
+controls on that same r5 graph. After ordinary native resume, the exact selected
+inputs regain native custody without resubmission, history changes or model calls.
+The setup agent stays restricted and caller effects are not delegated. Foreign,
+missing, changed, cancelled and unselected evidence is refused; parent and fresh
+planning controls also pass. The 13 source/test paths include two fixture repairs:
+separate parent/caller probe capture and actual bootstrap controller-pin wiring.
+Earlier failed runs remain recorded. This is source-custody recovery, not restored
+workflow interest, automatic delivery or a complete process-restart journey.
+
 [Source provenance](../../SOURCE-PROVENANCE.md#r5-development-observations)
 records the current results separately from adopted source.
 
