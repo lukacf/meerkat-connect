@@ -292,15 +292,31 @@ P contributor; foreign and cancelled-P inputs refuse. Expiry and waiter-context
 disclosure are not covered. Old-production comparison `344bad83` (review
 `1bac4c53`) fails the expected stamp assertion, then restores corrected source.
 
-Full SDK outcome `d3105a29` still fails an obsolete approval-body assertion after
+Earlier full SDK outcome `d3105a29` fails an obsolete approval-body assertion after
 both Finds/checks succeed and both installs are emitted. Cleanup's strict empty
 assertion passes: zero live Python workers and both installed processes
 Closed/Reaped. The physical-entry count of one is historical. Later provider
 panics remain recorded and cancellation/result assertions are unentered.
 Planning outcome `a023d72c` passes corrected root issuance but stops at Unsettled
 held bootstrap; the awaited nested result was not exported. Its existing cleanup
-assertion passes. Neither SDK case qualifies shared completion. These development
-results do not change published 0.9.0 assets or supply a new released selection.
+assertion passes.
+
+Latest pair `7646af61` compiles but the full SDK case fails at A's catalog-load
+authorization refusal and helper barrier, before its typed-approval block. The
+generic readiness event remains unattributed. Exact-artifact planning continuation
+`ade4c091` returns NotHeld for original-b, without an inner construction reason.
+Independent reviews `01a8aef5` and `06b70670` confirm both strict cleanup assertions,
+source restoration and recorded owner joins; raw inner receipts are absent.
+Neither SDK case qualifies shared completion.
+
+The Core owner conditionally confirmed completed disclosure at an R1 Find-fenced
+durable transfer commit, with recipient-only scope, immutable payload validation
+and settled-attempt reconciliation. Later G/P consumption need not import A/B as
+contributors. The selected host policy already authorizes Find at native R1; its
+compiled R2 consequence label is separate and unchanged. Transfer remains
+unimplemented, and later waiter effects still recheck authority.
+These development results do not change published 0.9.0 assets or supply a new
+released selection.
 
 ### Explicit Node build plans
 

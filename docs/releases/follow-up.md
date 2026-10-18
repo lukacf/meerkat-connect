@@ -32,14 +32,19 @@ admission and native currentness checks remain required.
 
 The qualified follow-on includes seven toolkit-mobkit Rust paths and its guide,
 excluding unfinished SDK fixtures, dev-dependency/lock changes and diagnostics.
-The full SDK case still fails an obsolete approval-body assertion after both
-Finds/checks and emitted installs. Cleanup's strict empty assertion passes with
-zero live Python workers and both installed native processes Closed/Reaped;
-physical-entry count one is historical. The separate public SDK planning case
-passes root issuance but stops at Unsettled held bootstrap with an unexported
-nested result. Its cleanup assertion also passes. Neither case qualifies shared
-completion. Protected waiter-context delivery, online creation, active retirement
-and gateway/reset remain open.
+The latest full SDK case fails at A's catalog-load authorization refusal and the
+helper barrier; its typed-approval assertions are unentered. The generic readiness
+event remains unattributed. The separate planning case returns NotHeld for original-b,
+without the underlying construction reason. Both strict cleanup assertions pass;
+raw inner receipts are absent. The earlier approval-body failure remains recorded.
+Neither case qualifies shared completion. Protected waiter-context delivery, online
+creation, active retirement and gateway/reset remain open.
+
+The Core owner conditionally confirmed an R1 Find-fenced durable transfer commit
+as a disclosure boundary, with recipient-only scope and exact payload/reconciliation
+checks. The selected host policy already authorizes Find at native R1; its compiled
+R2 consequence label is separate and unchanged. Transfer remains unimplemented.
+Later waiter effects still require that waiter's authority.
 [Source provenance](../../SOURCE-PROVENANCE.md#public-locator-and-admitted-source-rebind)
 records the distinct outcomes, limits and retained historical failures.
 
