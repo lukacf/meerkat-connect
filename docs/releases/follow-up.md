@@ -36,8 +36,10 @@ The latest full SDK case fails at A's catalog-load authorization refusal and the
 helper barrier; its typed-approval assertions are unentered. The generic readiness
 event remains unattributed. A newer planning selection on Meta `a8ff89da` and the
 same Core passes bootstrap and parent admission, then fails at actual Find calls.
-A focused diagnostic exposes `access_denied` for both calls: `find_and_install`
-is not allowed by policy. The exact producer is under diagnosis. Both strict SDK
+A focused diagnostic exposes `access_denied` for both calls. A later diagnostic
+shows B passes host and canonical acquisition admission, then re-enters the host
+before refusal. The downstream check is under diagnosis; the result does not
+establish initial native Find-policy refusal. Both strict SDK
 cleanup assertions pass; raw inner receipts are absent.
 Earlier NotHeld and approval-body failures remain recorded. Neither case qualifies
 shared completion. Protected waiter-context delivery, online creation and active
@@ -49,7 +51,8 @@ sources passes. The latest installed reset returns a new ready helper session an
 generation in 11.207 seconds, exceeding the verifier's old 10-second limit. A
 reset-specific bounded observation retains the same request and overall deadline.
 The reply includes a cleanup warning that source review finds unconditional on
-reset success, so it does not establish failed retirement. The replacement helper's
+reset success. The actual log confirms old-session archive and native
+unregistration completed before replacement materialization. The replacement helper's
 setup MCP attachment then returns `Unavailable`, and catalog search returns zero
 tools. Search/schema completion and semantic shutdown remain failed despite joined
 process owners. The old connection state is under diagnosis; neither cancellation
@@ -59,10 +62,11 @@ failures remain recorded. This does not qualify the complete reset journey.
 The Core owner conditionally confirmed an R1 Find-fenced durable transfer commit
 as a disclosure boundary, with recipient-only scope and exact payload/reconciliation
 checks. The selected host policy already authorizes Find at native R1; its compiled
-R2 consequence label is separate and unchanged. Transfer/delivery compilation
-failed on test integration errors before any of three selected controls ran.
-Minimal corrections retain the existing dependency graph and actual admission-state
-comparison. Automatic coordinator/recovery delivery is a separate unqualified
+R2 consequence label is separate and unchanged. Three focused transfer controls
+now pass for retained commit, cancelled delivery observation and stale absence
+observation. The first compilation failure is retained; minimal test corrections
+preserve the dependency graph and compare the actual admission-state type.
+Automatic coordinator/recovery delivery is a separate unqualified
 candidate; review corrected cancellation of slow pre-delivery reads and preserved
 typed refusals. Explicit calls in controls do not prove that product path. Later
 waiter effects still require that waiter's authority.

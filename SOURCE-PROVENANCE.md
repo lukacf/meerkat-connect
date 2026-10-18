@@ -362,6 +362,13 @@ unlinked test import and a test admission-state type mismatch; zero of three
 selected controls enter. All 50 saved references independently validate and
 owners join. Minimal test corrections use declared `futures::FutureExt` and
 compare full `WorkItemAdmissionState` instead of the admission receipt type.
+Corrected outcome `cc9f1205` compiles and passes all three selected transfer
+controls. Its separate planning SDK control fails after B's host and canonical
+acquisition admissions succeed and the same correlation re-enters the host.
+That places the failure downstream; it does not prove initial native Find-policy
+refusal. A's later setup-facts denial follows the primary panic. All four controls
+enter, the planning cleanup assertion passes, temporary diagnostics restore and
+recorded command/transport/cache owners join. Automatic delivery remains untested.
 The separate automatic-delivery candidate retains slow pre-dispatch observation
 before polling can cancel it, distinguishes typed refusals from pending work and
 skips never-entered transfers in recovery. These are source-review outcomes,
