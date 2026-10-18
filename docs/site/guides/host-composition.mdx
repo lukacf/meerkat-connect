@@ -96,6 +96,35 @@ Installing a package does not grant every operation it exports. Operation
 filtering does not make an unsafe selected operation or unsafe startup behavior
 safe: inspect those behaviors before installation and access approval.
 
+## Cancel one original's operations
+
+These APIs describe unreleased development source. For an authenticated original
+retained by the host, pass its exact `PrivateOriginalRef`:
+
+| Surface | Method |
+| --- | --- |
+| Rust | `ToolkitGatewayHost::cancel_original_operation` |
+| Python | `PrivateHostClient.cancel_original_operation` |
+| TypeScript | `PrivateHostClient.cancelOriginalOperation` |
+
+The development SDKs return one of two states:
+
+| State | What the application can report |
+| --- | --- |
+| `operations_cancelled` | The source cancellation and selected workflow departure completed. |
+| `operations_cancelled_cleanup_pending` | Cancellation and departure completed; the host still owns unfinished workflow cleanup. |
+
+Keep the existing host recovery worker running for pending cleanup. Repeating
+cancellation is not required to drive it. Neither state means every entered
+operation, process or model run has stopped. Sibling requests and shared access
+retain their own owners. A timeout leaves the outcome unknown; the SDK does not
+repeat the command automatically.
+
+Use matching development SDK and host generations. Older SDK decoders reject the
+pending-cleanup state, and bootstrap v1 does not negotiate it. Focused
+cancellation/recovery controls pass; the complete shared setup journey is still
+under development.
+
 ## Recover unpublished service approvals
 
 <Note>
