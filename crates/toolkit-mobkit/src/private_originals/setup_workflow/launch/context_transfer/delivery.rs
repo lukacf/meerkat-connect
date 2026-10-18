@@ -589,7 +589,8 @@ impl GovernedEntryFence for DeliveryFence {
         let mut unavailable = false;
         for interest in interests.iter_mut() {
             if interest.closed || now >= interest.membership.deadline_ms() { continue; }
-            match source.owner.enter_workflow_launch(&interest.original) {
+            let Some(original) = &interest.original else { continue; };
+            match source.owner.enter_workflow_launch(original) {
                 Ok(entry) => {
                     if self.custody.entry.set(entry.clone()).is_err() {
                         let _ = entry.settle();

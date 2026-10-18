@@ -225,6 +225,28 @@ impl SetupStore<'_> {
         })
     }
 
+    /// Metadata-only recovery read for an already selected waiter. This does
+    /// not expose the saved request or replace its live Find authorization.
+    /// The caller must obtain the expected association from its native source
+    /// owner and separately serialize current interest with cancellation.
+    pub async fn workflow_waiter_recovery_snapshot(
+        &self, waiter: &SetupWorkflowWaiter,
+        expected: &meerkat_authorization_contracts::work_association::InputAuthorityAssociation,
+    ) -> Result<(SetupWorkflowSnapshot, Id), SetupError> {
+        let workflow = self.load_setup_workflow(waiter.workflow()).await?;
+        // Validate membership before following its exact acquisition locator.
+        exact_waiter(&workflow, waiter)?;
+        let stored = self.store.get(waiter.acquisition()).await?.ok_or(StoreError::NotFound)?;
+        let setup = self.recover(stored)?;
+        if setup.request().evidence().association() != expected
+            || self.workflow_waiter(workflow.terms(), &setup, waiter.source().clone())? != *waiter
+        { return Err(SetupError::Denied); }
+        if !matches!(setup.state().lifecycle_phase, AcquisitionPhase::Investigating | AcquisitionPhase::Preparing)
+            || workflow.departed(waiter)?
+        { return Err(SetupError::Denied); }
+        Ok((workflow, setup.request().host().correlation.clone()))
+    }
+
     /// Commit membership and its delivery obligation together. The first
     /// admission also commits exactly one immutable launch intent. Native
     /// launch/delivery are deliberately not called by this store operation.

@@ -62,6 +62,7 @@ impl PrivateOriginals {
             if self.owner.clock().now().map_err(|_| PrivateOriginalError::Unavailable)?.unix_ms >= terms.deadline_ms {
                 return Err(PrivateOriginalError::Denied);
             }
+            if admitted.input_id() != input.id() { return Err(PrivateOriginalError::Conflict); }
             self.owner.check_saved_workflow_destination(workflow, member, association).map_err(writer_error)?;
             self.owner.check_admitted_workflow_member(workflow, member, &claims.original_work, association, admitted)
                 .map_err(writer_error)?;

@@ -89,6 +89,19 @@ impl InstalledWorkflowMember {
         source.restore_workflow_waiter_source(&self.reference, &self.original, &self.member, original).await
     }
 
+    /// Reattach one exact canonical live interest after explicit A and idle
+    /// P/G source restoration. Reuses their actual native custody and original
+    /// input; it does not resolve a request, launch G or issue a Find/delegation.
+    /// Completing the G controller also installs the restrictive workflow with
+    /// no waiter effect custody. A host must separately select any authorized
+    /// context transfer; this is not process-loss delivery reconstruction.
+    pub async fn restore_waiter_interest(
+        &self, original: &PrivateOriginalRef, membership: &SetupWorkflowWaiter,
+    ) -> Result<Arc<InstalledWorkflowPlanning>, PrivateOriginalError> {
+        let source = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
+        source.restore_workflow_interest(&self.reference, &self.original, &self.member, original, membership).await
+    }
+
     /// Compose this participant with the host's existing registration hook.
     /// It observes that hook's actual selection before native installation.
     pub(crate) fn registration_participant(self: &Arc<Self>)

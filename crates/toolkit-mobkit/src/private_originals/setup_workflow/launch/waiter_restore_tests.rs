@@ -7,9 +7,9 @@ use crate::private_originals::{governed_submit::tests::first_input_tests::dedica
 use meerkat_authorization_contracts::{constraints::DelegationDepth, work_association::{InputAuthorityAssociation, WorkAuthorityBasis}};
 use meerkat_core::{SessionServiceHistoryExt, service::SessionHistoryQuery, lifecycle::InputId};
 
-type PersistentDedicated = DedicatedFixture<meerkat::PersistentSessionService<meerkat::FactoryAgentBuilder>>;
+pub(super) type PersistentDedicated = DedicatedFixture<meerkat::PersistentSessionService<meerkat::FactoryAgentBuilder>>;
 
-async fn histories(c: &PersistentDedicated) -> Vec<serde_json::Value> {
+pub(super) async fn histories(c: &PersistentDedicated) -> Vec<serde_json::Value> {
     let mut out = vec![];
     for session in [&c.f.session, &c.parent_session, &c.lead_session] {
         let rows = c.f.service.read_history(session, SessionHistoryQuery { offset: 0, limit: Some(100) }).await.unwrap();
@@ -18,19 +18,20 @@ async fn histories(c: &PersistentDedicated) -> Vec<serde_json::Value> {
     }
     out
 }
-async fn all_ids(c: &PersistentDedicated) -> Vec<Vec<InputId>> {
+pub(super) async fn all_ids(c: &PersistentDedicated) -> Vec<Vec<InputId>> {
     let mut out = vec![];
     for session in [&c.f.session, &c.parent_session, &c.lead_session] { out.push(ids(c, session).await); }
     out
 }
-struct Saved {
-    durable: DurableDedicated,
-    association: InputAuthorityAssociation,
-    row: toolkit_store::StoredRecord,
-    ids: Vec<Vec<InputId>>,
-    histories: Vec<serde_json::Value>,
+pub(super) struct Saved {
+    pub(super) durable: DurableDedicated,
+    pub(super) association: InputAuthorityAssociation,
+    pub(super) row: toolkit_store::StoredRecord,
+    pub(super) membership: SetupWorkflowWaiter,
+    pub(super) ids: Vec<Vec<InputId>>,
+    pub(super) histories: Vec<serde_json::Value>,
 }
-async fn selected_then_close() -> Saved {
+pub(super) async fn selected_then_close() -> Saved {
     let c = PersistentDedicated::persistent_configured_waiter().await;
     let body = AssertUnwindSafe(Box::pin(async {
         let reference = c.f.original_reference();
@@ -61,7 +62,7 @@ async fn selected_then_close() -> Saved {
         assert_eq!(original.original.association(), &c.f.binding().await.unwrap().unwrap());
         let planning = c.f.source.prepare_workflow_planning(&c.parent.original,
             c.lead.clone(), c.terms.clone(), c.lineage.clone()).await.unwrap();
-        let (_, snapshot) = join_waiter(&c.f, &planning, &original, &dispatch, &c.backend, &c.work, "selected-a-restore").await;
+        let (membership, snapshot) = join_waiter(&c.f, &planning, &original, &dispatch, &c.backend, &c.work, "selected-a-restore").await;
         let g = native(planning.launch(&snapshot).await.unwrap());
         finish(&c, "planning_lead", &g).await;
         let row = c.f.store.get(&key).await.unwrap().unwrap();
@@ -82,7 +83,7 @@ async fn selected_then_close() -> Saved {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("actual A body retires before ordinary resume");
-        Saved { durable: c.durable_state(), association, row, ids: all_ids(&c).await, histories: histories(&c).await }
+        Saved { durable: c.durable_state(), association, row, membership, ids: all_ids(&c).await, histories: histories(&c).await }
     })).catch_unwind().await;
     let cleanup = AssertUnwindSafe(async { let result = c.close().await; assert!(result.is_ok(), "{result:?}"); }).catch_unwind().await;
     drop(c);

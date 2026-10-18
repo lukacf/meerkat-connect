@@ -140,6 +140,82 @@ impl ToolkitOriginalOwner {
         Ok(())
     }
 
+    /// Caller holds the source writer after canonical membership validation.
+    /// Native supplies the exact current actor's pin. Compare its request-free
+    /// route with the source and member, then refresh only the canonical source
+    /// pin while publishing any new attachment/interest under the same guards.
+    pub(crate) fn complete_restored_workflow_member(
+        &self, reference: &SetupWorkflowRef, member: &MobMemberBinding,
+        association: &InputAuthorityAssociation,
+        admitted: &meerkat_runtime::meerkat_machine::AdmittedOriginal<'_>,
+        expected_route: &ControllerRouteKey,
+        // Inspect and, only after publication begins, apply the same exact
+        // attachment checks. The callback reports whether its owners differ.
+        mut attach: impl FnMut(bool) -> Result<bool, OriginalWriterError>,
+    ) -> Result<(), OriginalWriterError> {
+        let route = Self::admitted_controller_route(association, admitted)?;
+        if &route != expected_route { return Err(OriginalWriterError::Conflict); }
+        let validate = |selected: &SelectedWorkflowMember| -> Result<(), OriginalWriterError> {
+            let captured = selected.captured.as_ref().ok_or(OriginalWriterError::Unavailable)?;
+            let claims = association.candidate();
+            if &selected.member != member || selected.original != claims.original_work
+                || selected.realm != claims.ingress_namespace.realm || captured.target != claims.target
+                || admitted.session_id() != &captured.session
+                || captured.controller.as_ref().is_some_and(|prior| prior != &route)
+            { return Err(OriginalWriterError::Conflict); }
+            Ok(())
+        };
+        let validate_source = |held: &HeldOriginal| -> Result<(), OriginalWriterError> {
+            if held.association() != association { return Err(OriginalWriterError::Conflict); }
+            match held.operation {
+                OriginalOperationDisposition::Open => (),
+                OriginalOperationDisposition::CancellationPending => return Err(OriginalWriterError::Unavailable),
+                OriginalOperationDisposition::Cancelled { .. } => return Err(OriginalWriterError::OperationCancelled),
+            }
+            if held.source_custody != Some(SourceCustody::Admitted) { return Err(OriginalWriterError::Unavailable); }
+            let controller = held.controller.as_ref().ok_or(OriginalWriterError::Unavailable)?;
+            if controller.selection() != admitted.controller().selection()
+                || controller.plain_facts().map_err(|_| OriginalWriterError::Unavailable)?.route_key() != route
+            { return Err(OriginalWriterError::Conflict); }
+            Ok(())
+        };
+        // All replay identities match under one healthy observation. A fresh
+        // wrapper for this native actor is resource custody, not a policy change.
+        let (unchanged, stamp) = self.publication.observe(|| {
+            let members = self.workflow_members.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+            let mut originals = self.originals.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+            let _poison = self.publication.poison_on_unwind();
+            let selected = members.iter().find(|row| &row.reference == reference).ok_or(OriginalWriterError::Unavailable)?;
+            validate(selected)?;
+            let held = originals.iter_mut().filter_map(OriginalRecord::bound_mut)
+                .find(|held| held.association() == association).ok_or(OriginalWriterError::Unavailable)?;
+            validate_source(held)?;
+            let changed = attach(false)?;
+            let unchanged = selected.captured.as_ref().and_then(|captured| captured.controller.as_ref())
+                == Some(&route) && !changed;
+            if unchanged { held.controller = Some(admitted.controller().clone()); }
+            Ok::<_, OriginalWriterError>(unchanged)
+        }).map_err(|_| OriginalWriterError::Unavailable)?;
+        let unchanged = unchanged?;
+        stamp.check_current().map_err(|_| OriginalWriterError::Unavailable)?;
+        if unchanged { return Ok(()); }
+        let _publication = self.publication.try_begin_owner_change().map_err(|_| OriginalWriterError::Unavailable)?;
+        let mut members = self.workflow_members.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let mut originals = self.originals.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let _poison = self.publication.poison_on_unwind();
+        let selected = members.iter_mut().find(|row| &row.reference == reference).ok_or(OriginalWriterError::Unavailable)?;
+        validate(selected)?;
+        let held = originals.iter_mut().filter_map(OriginalRecord::bound_mut)
+            .find(|held| held.association() == association).ok_or(OriginalWriterError::Unavailable)?;
+        validate_source(held)?;
+        let captured = selected.captured.as_mut().ok_or(OriginalWriterError::Unavailable)?;
+        attach(true)?;
+        // Every fallible check precedes these paired resource/attachment writes.
+        held.controller = Some(admitted.controller().clone());
+        captured.controller = Some(route);
+        Ok(())
+    }
+
     /// Use the same incomplete-controller restriction for operation policy.
     /// A restored source without its workflow attachment must not take the
     /// ordinary singleton policy path. This is no new readiness state.
@@ -176,6 +252,23 @@ impl ToolkitOriginalOwner {
         { return Err(OriginalWriterError::Conflict); }
         if captured.controller.is_some() { return Err(OriginalWriterError::Conflict); }
         Ok(())
+    }
+
+    /// Read the host's actual selected/captured member for a canonical recovery
+    /// row. This does not select a member or establish current native custody.
+    /// Both incomplete and completed captures still need native observation.
+    pub(crate) fn captured_workflow_member(
+        &self, reference: &SetupWorkflowRef, association: &InputAuthorityAssociation,
+    ) -> Result<MobMemberBinding, OriginalWriterError> {
+        let members = self.workflow_members.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let selected = members.iter().find(|row| &row.reference == reference)
+            .ok_or(OriginalWriterError::Unavailable)?;
+        let captured = selected.captured.as_ref().ok_or(OriginalWriterError::Unavailable)?;
+        let claims = association.candidate();
+        if selected.original != claims.original_work || selected.realm != claims.ingress_namespace.realm
+            || captured.target != claims.target || captured.session.to_string() != claims.target.context.as_str()
+        { return Err(OriginalWriterError::Conflict); }
+        Ok(selected.member.clone())
     }
 
     pub(crate) fn dedicated_workflow_session(

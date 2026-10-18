@@ -210,6 +210,7 @@ impl PrivateOriginals {
             let _writer = self.owner.try_source_writer().map_err(writer_error)?;
             stamp.check_current().map_err(|_| PrivateOriginalError::Unavailable)?;
             controller.check_current().map_err(|_| PrivateOriginalError::Unavailable)?;
+            if admitted.input_id() != input.id() { return Err(PrivateOriginalError::Conflict); }
             self.owner.promote_historical_controller_only(association, custody, &sources, admitted).map_err(writer_error)
         }).await;
         let retained = match observed {

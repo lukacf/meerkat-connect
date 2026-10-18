@@ -1022,7 +1022,10 @@ async fn close_exercise(case: u8) {
             assert_eq!(f.inputs().await.unwrap(), 2, "the cancellation caller never dispatches unknown G");
             assert!(c.planning.retain_launch_interest(&c.snapshot, &c.membership, &c.a).await.is_err(),
                 "an old join snapshot cannot republish interest after cancellation");
-            assert!(c.planning.interests.lock().unwrap().is_empty());
+            let interests = c.planning.interests.lock().unwrap();
+            assert_eq!(interests.len(), 1);
+            assert!(interests[0].closed && interests[0].original.is_none());
+            drop(interests);
             f.source.cancel_original_operation(&f.original_reference()).await.unwrap();
             let replay = f.store.get_effect(&close.key).await.unwrap().unwrap();
             assert_eq!(replay.status, EffectStatus::Uncertain);
@@ -1323,3 +1326,9 @@ mod idle_restore_tests;
 
 #[path = "waiter_restore_tests.rs"]
 mod waiter_restore_tests;
+
+#[path = "interest_restore_tests.rs"]
+mod interest_restore_tests;
+
+#[path = "recovery_tests.rs"]
+mod recovery_tests;

@@ -13,6 +13,12 @@ impl ToolkitOriginalOwner {
         self.mutation.try_lock().map_err(|_| OriginalWriterError::Unavailable)
     }
 
+    /// Ordinary async membership changes use this same source writer. Native
+    /// callbacks use the nonwaiting variant above and never wait for this guard.
+    pub(crate) async fn source_writer(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutation.lock().await
+    }
+
     /// Warm custody remains the existing native resume path, including source
     /// classes outside the narrow cold reconstruction. This is no permission
     /// check: native still checks the complete contributor closure and grants.
@@ -83,6 +89,21 @@ impl ToolkitOriginalOwner {
         self.promote_historical_source(association, custody, sources, admitted, OriginalGrantBinding::ControllerOnly)
     }
 
+    /// The native callback owns the current registration, attachment and actor.
+    /// Facts are synchronous and request-free; route data alone is not custody.
+    pub(super) fn admitted_controller_route(
+        association: &InputAuthorityAssociation, admitted: &AdmittedOriginal<'_>,
+    ) -> Result<meerkat_core::ControllerRouteKey, OriginalWriterError> {
+        let claims = association.candidate();
+        if admitted.association() != association
+            || claims.controller_model.as_ref() != Some(admitted.controller().selection())
+            || claims.target.context.as_str() != admitted.session_id().to_string()
+            || claims.target.logical_runtime.as_str()
+                != meerkat_runtime::LogicalRuntimeId::for_session(admitted.session_id()).to_string()
+        { return Err(OriginalWriterError::Conflict); }
+        Ok(admitted.controller().plain_facts().map_err(|_| OriginalWriterError::Unavailable)?.route_key())
+    }
+
     fn promote_historical_source(
         &self, association: &InputAuthorityAssociation, custody: AuthenticatedOriginal,
         sources: &[OriginalCancellationSource], admitted: &AdmittedOriginal<'_>,
@@ -90,17 +111,69 @@ impl ToolkitOriginalOwner {
     ) -> Result<Arc<RetainedToolkitOriginal>, OriginalWriterError> {
         self.check_source(association, &custody,
             &association.candidate().requester, &association.candidate().ingress_actor)?;
-        if admitted.association() != association
-            || association.candidate().controller_model.as_ref() != Some(admitted.controller().selection())
-            || association.candidate().target.logical_runtime.as_str()
-                != meerkat_runtime::LogicalRuntimeId::for_session(admitted.session_id()).to_string()
-        { return Err(OriginalWriterError::Conflict); }
+        let route = Self::admitted_controller_route(association, admitted)?;
+        let check_route = |held: &HeldOriginal| -> Result<(), OriginalWriterError> {
+            if let Some(controller) = &held.controller {
+                if controller.selection() != admitted.controller().selection()
+                    || controller.plain_facts().map_err(|_| OriginalWriterError::Unavailable)?.route_key() != route
+                { return Err(OriginalWriterError::Conflict); }
+            }
+            Ok(())
+        };
+        // The source writer and native B/M/D custody are held throughout. An
+        // already-admitted exact source changes no policy, but must still adopt
+        // THIS callback's runnable pin, including after an actor rebuild. The
+        // workflow attachment retains only route metadata, never a second pin.
+        let (prior, stamp) = self.publication.observe(|| {
+            let mut originals = self.originals.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+            let _poison = self.publication.poison_on_unwind();
+            let index = Self::historical_source_index(association, sources, &class, &originals)?;
+            let Some(index) = index else { return Ok(None); };
+            let held = originals[index].bound_mut().ok_or(OriginalWriterError::Unavailable)?;
+            check_route(held)?;
+            if held.source_custody != Some(SourceCustody::Admitted) || held.controller.is_none() { return Ok(None); }
+            held.controller = Some(admitted.controller().clone());
+            Ok::<_, OriginalWriterError>(Some(held.retained.clone()))
+        }).map_err(|_| OriginalWriterError::Unavailable)?;
+        if let Some(prior) = prior? {
+            stamp.check_current().map_err(|_| OriginalWriterError::Unavailable)?;
+            return Ok(prior);
+        }
         // Required lock order inside native B/M/D: non-waiting publication,
-        // then non-waiting source collection. Neither failure mutates custody.
+        // then non-waiting source collection. Recheck before any mutation.
         let _publication = self.publication.try_begin_owner_change()
             .map_err(|_| OriginalWriterError::Unavailable)?;
         let mut originals = self.originals.try_lock()
             .map_err(|_| OriginalWriterError::Unavailable)?;
+        let index = Self::historical_source_index(association, sources, &class, &originals)?;
+        if let Some(index) = index {
+            let OriginalRecord::Bound(held) = &mut originals[index] else {
+                return Err(OriginalWriterError::Unavailable);
+            };
+            check_route(held)?;
+            held.source_custody = Some(SourceCustody::Admitted);
+            held.controller = Some(admitted.controller().clone());
+            return Ok(held.retained.clone());
+        }
+        let retained = Arc::new(RetainedToolkitOriginal {
+            association: association.clone(), custody,
+            // Historical admission preserves the selected class and cannot
+            // recover a task-revoke issuer.
+            grant_binding: class,
+        });
+        originals.push(OriginalRecord::Bound(HeldOriginal {
+            retained: retained.clone(), source_custody: Some(SourceCustody::Admitted),
+            controller: Some(admitted.controller().clone()), service_set_admission: None, operation: OriginalOperationDisposition::Open,
+        }));
+        Ok(retained)
+    }
+
+    /// Shared exact validation for publication-free replay and mutation passes.
+    /// Callers already hold the source collection and never wait here.
+    fn historical_source_index(
+        association: &InputAuthorityAssociation, sources: &[OriginalCancellationSource],
+        class: &OriginalGrantBinding, originals: &[OriginalRecord],
+    ) -> Result<Option<usize>, OriginalWriterError> {
         for source in sources {
             if let Some(retained) = originals.iter().find(|entry| entry.names(&source.realm, &source.original)) {
                 let operation = match retained {
@@ -124,40 +197,32 @@ impl ToolkitOriginalOwner {
                 }
             }
         }
-        if !matches!(&class, OriginalGrantBinding::ControllerOnly) {
-            Self::check_task_lineage_isolation(association, &originals)?;
+        if !matches!(class, OriginalGrantBinding::ControllerOnly) {
+            Self::check_task_lineage_isolation(association, originals)?;
         }
         let claims = association.candidate();
-        if let Some(record) = originals.iter_mut().find(|entry|
-            entry.names(&claims.ingress_namespace.realm, &claims.original_work))
-        {
-            let OriginalRecord::Bound(held) = record else { return Err(OriginalWriterError::Unavailable); };
-            let matching_class = match &class {
+        let index = originals.iter().position(|entry|
+            entry.names(&claims.ingress_namespace.realm, &claims.original_work));
+        if let Some(index) = index {
+            let OriginalRecord::Bound(held) = &originals[index] else { return Err(OriginalWriterError::Unavailable); };
+            let matching_class = match class {
                 OriginalGrantBinding::ControllerOnly => matches!(held.grant_binding, OriginalGrantBinding::ControllerOnly),
                 _ => matches!(held.grant_binding, OriginalGrantBinding::Task { .. } | OriginalGrantBinding::ServiceSet { .. }),
             };
             if held.association() != association || !matching_class {
                 return Err(OriginalWriterError::Conflict);
             }
+            match held.operation {
+                OriginalOperationDisposition::Open => (),
+                OriginalOperationDisposition::CancellationPending => return Err(OriginalWriterError::Unavailable),
+                OriginalOperationDisposition::Cancelled { .. } => return Err(OriginalWriterError::OperationCancelled),
+            }
             if held.source_custody == Some(SourceCustody::Candidate) {
                 // The warm native settlement still owns this guard.
                 return Err(OriginalWriterError::Unavailable);
             }
-            held.source_custody = Some(SourceCustody::Admitted);
-            held.controller = Some(admitted.controller().clone());
-            return Ok(held.retained.clone());
         }
-        let retained = Arc::new(RetainedToolkitOriginal {
-            association: association.clone(), custody,
-            // Historical admission preserves the selected class and cannot
-            // recover a task-revoke issuer.
-            grant_binding: class,
-        });
-        originals.push(OriginalRecord::Bound(HeldOriginal {
-            retained: retained.clone(), source_custody: Some(SourceCustody::Admitted),
-            controller: Some(admitted.controller().clone()), service_set_admission: None, operation: OriginalOperationDisposition::Open,
-        }));
-        Ok(retained)
+        Ok(index)
     }
 }
 

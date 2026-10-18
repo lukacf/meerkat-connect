@@ -7,7 +7,7 @@ use super::*;
 use crate::original_ingress::workflow_custody::{WorkflowCallCustody, WorkflowWaiterCustody};
 use meerkat_authorization_contracts::work_association::{GrantTarget, InputAuthorityAssociation};
 use meerkat_core::{
-    ControllerModelClient, MobMemberBinding, ToolCallView,
+    ControllerModelClient, ControllerRouteKey, MobMemberBinding, ToolCallView,
     authorization::PreparedAuthorizationBinding,
 };
 use meerkat_toolkit::{
@@ -29,18 +29,20 @@ pub use launch::{InstalledWorkflowPlanning, InstalledWorkflowContextTransfer, In
 pub(crate) use launch::WorkflowTransferObservation;
 pub(crate) use launch::WorkflowLaunchObservation;
 pub(crate) use launch::WorkflowTerminalRecovery;
+pub(crate) use launch::WorkflowInterestRecovery;
 pub(crate) use launch::InvocationPlanning;
 pub(in crate::private_originals) use launch::PreparedWorkflowLaunch;
 
 /// Process-local attachment under the actual G source, never reconstructed
-/// from workflow terms. It retains the controller supplied by native admission.
+/// from workflow terms. Runnable custody stays on the canonical source owner;
+/// this attachment retains only the route that admitted custody must match.
 pub(crate) struct HeldSetupWorkflow {
     source: Weak<PrivateOriginals>,
     planning: Arc<RetainedToolkitOriginal>,
     reference: SetupWorkflowRef,
     member: MobMemberBinding,
     session: meerkat_core::SessionId,
-    controller: ControllerModelClient,
+    controller_route: ControllerRouteKey,
     accepted: AtomicBool,
     deadline_ms: u64,
     waiters: Mutex<Vec<Arc<HeldWorkflowWaiter>>>,
@@ -116,13 +118,16 @@ impl PrivateOriginals {
             .owner
             .workflow_controller(&held.original)
             .map_err(custody_error)?;
+        let route = controller.plain_facts().map_err(|_| PrivateOriginalError::Unavailable)?.route_key();
+        let context_route = context.controller.plain_facts().map_err(|_| PrivateOriginalError::Unavailable)?.route_key();
+        if route != context_route { return Err(PrivateOriginalError::Conflict); }
         let candidate = Arc::new(HeldSetupWorkflow {
             source: Arc::downgrade(self),
             planning: held.original.clone(),
             reference: reference.clone(),
             member: member.clone(),
             session: context.session_id.clone(),
-            controller,
+            controller_route: route,
             accepted: AtomicBool::new(true),
             deadline_ms: terms.deadline_ms,
             waiters: Mutex::new(Vec::new()),
@@ -138,7 +143,7 @@ impl PrivateOriginals {
             || retained.member != *member
             || retained.session != context.session_id
             || !Arc::ptr_eq(&retained.planning, &held.original)
-            || retained.controller.selection() != context.controller.selection()
+            || retained.controller_route != context_route
         {
             return Err(PrivateOriginalError::Conflict);
         }
@@ -220,10 +225,10 @@ impl HeldSetupWorkflow {
         {
             return Err(PrivateOriginalError::Denied);
         }
-        source
-            .owner
-            .workflow_controller(&self.planning)
-            .map_err(custody_error)?;
+        let controller = source.owner.workflow_controller(&self.planning).map_err(custody_error)?;
+        if controller.plain_facts().map_err(|_| PrivateOriginalError::Unavailable)?.route_key() != self.controller_route {
+            return Err(PrivateOriginalError::Conflict);
+        }
         Ok(source)
     }
 

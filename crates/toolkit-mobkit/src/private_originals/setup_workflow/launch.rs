@@ -8,6 +8,9 @@ pub(crate) use context_transfer::OwnedTransferCommit;
 pub use context_transfer::{InstalledWorkflowContextTransfer, InstalledWorkflowContext, WorkflowContextObservation, WorkflowDeliveryObservation};
 pub(crate) use context_transfer::WorkflowTransferObservation;
 mod close;
+mod restore;
+mod recovery;
+pub(crate) use recovery::WorkflowInterestRecovery;
 pub(crate) use close::{WorkflowCloseObservation, WorkflowTerminalRecovery};
 use crate::private_originals::governed_submit::{OriginalBinder, evidence};
 use meerkat_authorization_contracts::{constraints::DelegationDepth, grant::GrantLineageRef};
@@ -49,7 +52,8 @@ pub struct InstalledWorkflowPlanning {
 
 struct LaunchInterest {
     membership: SetupWorkflowWaiter,
-    original: Arc<RetainedToolkitOriginal>,
+    // A closed membership may arrive before its local source interest.
+    original: Option<Arc<RetainedToolkitOriginal>>,
     closed: bool,
     entries: Vec<Arc<crate::original_ingress::shared_entry::SharedEntry>>,
 }
@@ -456,6 +460,11 @@ impl InstalledWorkflowPlanning {
             return Err(PrivateOriginalError::Denied);
         }
         source.owner.retain_followup_source(original.original.association(), || async {
+        let current = source.workflow_store().map_err(|_| OriginalWriterError::Unavailable)?
+            .load_setup_workflow(membership.workflow()).await.map_err(|_| OriginalWriterError::Unavailable)?;
+        if current.terms() != &self.terms || current.departed(membership).map_err(|_| OriginalWriterError::Conflict)? {
+            return Err(OriginalWriterError::OperationDenied);
+        }
         source
             .owner
             .workflow_controller(&original.original)
@@ -470,7 +479,7 @@ impl InstalledWorkflowPlanning {
                 .find(|interest| interest.membership.acquisition() == membership.acquisition())
             {
                 return if prior.membership == *membership
-                    && Arc::ptr_eq(&prior.original, &original.original)
+                    && prior.original.as_ref().is_some_and(|held| Arc::ptr_eq(held, &original.original))
                     && !prior.closed
                 {
                     Ok(())
@@ -483,7 +492,7 @@ impl InstalledWorkflowPlanning {
             }
             interests.push(LaunchInterest {
                 membership: membership.clone(),
-                original: original.original.clone(),
+                original: Some(original.original.clone()),
                 closed: false,
                 entries: Vec::new(),
             });
@@ -508,16 +517,48 @@ impl InstalledWorkflowPlanning {
             .map_err(|_| PrivateOriginalError::Conflict)? != *membership.workflow() {
             return Err(PrivateOriginalError::Denied);
         }
+        let _writer = source.owner.source_writer().await;
+        let prior_closed = {
+            let interests = self.interests.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            match interests.iter().find(|interest| interest.membership.acquisition() == membership.acquisition()) {
+                Some(interest) if interest.membership == *membership => Some(interest.closed),
+                Some(_) => return Err(PrivateOriginalError::Conflict),
+                None => None,
+            }
+        };
+        if prior_closed.is_none() {
+            // A lost join reply may have no local interest. Validate the exact
+            // canonical row before this portable value can consume a slot.
+            // The source writer prevents restoration from passing this read.
+            let current = source.workflow_store()?.load_setup_workflow(membership.workflow())
+                .await.map_err(|_| PrivateOriginalError::Unavailable)?;
+            if current.terms() != &self.terms { return Err(PrivateOriginalError::Conflict); }
+            current.departed(membership).map_err(|_| PrivateOriginalError::Conflict)?;
+            if self.interests.lock().map_err(|_| PrivateOriginalError::Unavailable)?.len()
+                >= usize::from(self.terms.max_waiters) { return Err(PrivateOriginalError::Unavailable); }
+        }
         {
+            let publication = source.owner.publication();
+            // Only first closure changes source policy. Exact closed replay
+            // retries entry closure and the canonical write without publishing.
+            let _publication = if prior_closed == Some(true) { None } else {
+                Some(publication.begin_owner_change().map_err(|_| PrivateOriginalError::Unavailable)?)
+            };
             let mut interests = self.interests.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
-            // A committed join can lose its reply before interest publication.
-            // Its canonical membership still needs departure; no missing local
-            // entry is invented or treated as settled native work.
             if let Some(interest) = interests.iter_mut().find(|interest| interest.membership == *membership) {
+                // An actual held interest closes before the first store await.
                 interest.closed = true;
                 for entry in &interest.entries { entry.close().map_err(custody_error)?; }
+            } else {
+                // Exact membership was validated above under this writer.
+                // A failed durable departure leaves its tombstone closed.
+                interests.push(LaunchInterest { membership: membership.clone(), original: None,
+                    closed: true, entries: Vec::new() });
             }
         }
+        // The closed entry is now published. Keep only the async source
+        // writer across storage: native readers see closure, and restoration
+        // cannot pass until canonical departure settles or the caller drops.
         source
             .workflow_store()?
             .depart_setup_workflow(membership)
@@ -783,13 +824,14 @@ impl PreparedWorkflowLaunch {
         {
             return Err(PrivateOriginalError::Denied);
         }
+        let route = context.controller.plain_facts().map_err(|_| PrivateOriginalError::Unavailable)?.route_key();
         let candidate = Arc::new(HeldSetupWorkflow {
             source: Arc::downgrade(&source),
             planning: held.original.clone(),
             reference: self.reference.clone(),
             member: self.selection.terms.lead.clone(),
             session: context.session_id.clone(),
-            controller: context.controller.clone(),
+            controller_route: route.clone(),
             accepted: AtomicBool::new(false),
             deadline_ms: self.selection.terms.deadline_ms,
             waiters: Mutex::new(Vec::new()),
@@ -803,7 +845,7 @@ impl PreparedWorkflowLaunch {
             || prior.session != context.session_id
             || prior.member != self.selection.terms.lead
             || !Arc::ptr_eq(&prior.planning, &held.original)
-            || prior.controller.selection() != context.controller.selection()
+            || prior.controller_route != route
         {
             return Err(PrivateOriginalError::Conflict);
         }
@@ -984,7 +1026,8 @@ impl GovernedEntryFence for LaunchFence {
             if interest.closed || now >= interest.membership.deadline_ms() {
                 continue;
             }
-            match source.owner.enter_workflow_launch(&interest.original) {
+            let Some(original) = &interest.original else { continue; };
+            match source.owner.enter_workflow_launch(original) {
                 Ok(entry) => {
                     interest.entries.push(entry.clone());
                     return Ok(Box::new(LaunchPermit { entry }));
@@ -1034,7 +1077,7 @@ impl HeldSetupWorkflow {
             .owner
             .workflow_controller(&self.planning)
             .map_err(custody_error)?;
-        if controller.selection() != self.controller.selection() {
+        if controller.plain_facts().map_err(|_| PrivateOriginalError::Unavailable)?.route_key() != self.controller_route {
             return Err(PrivateOriginalError::Conflict);
         }
         self.accepted.store(true, Ordering::Release);

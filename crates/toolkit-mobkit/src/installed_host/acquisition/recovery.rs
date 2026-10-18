@@ -285,6 +285,17 @@ impl InstalledAcquisition {
                             .reconcile_cancelled_workflow_source(&source).await;
                         sweep_delayed |= !matches!(outcome,
                             Ok(crate::private_originals::PrivateOriginalCancellation::OperationsCancelled));
+                        if !control.enter() { return; }
+                        // Selected live interests use this same canonical page
+                        // and retained task. No extra loop, input or Find is
+                        // created, and exact native replay need not republish.
+                        match self.host.originals.recover_workflow_interest_source(
+                            &source, || control.enter()).await
+                        {
+                            Ok(crate::private_originals::setup_workflow::WorkflowInterestRecovery::Stopped) => return,
+                            Ok(_) | Err(PrivateOriginalError::Denied | PrivateOriginalError::Conflict) => (),
+                            Err(PrivateOriginalError::Unavailable) => sweep_delayed = true,
+                        }
                     }
                 }
                 Err(SetupError::Denied | SetupError::WrongScope) => return,
