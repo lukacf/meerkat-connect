@@ -70,22 +70,41 @@ fails, with strict cleanup-empty passing. Delivery admission and acknowledgment
 recovery remain under investigation. The earlier install refusal remains unexplained. Neither complete
 shared journey is qualified; online creation and active retirement remain open.
 
-The latest resource-bound gateway builds and stages on the r6 pair above with
-the original resource archive and matching SDK sources. Installed reset returns
-a new ready helper session and generation in 11.408 seconds. The replacement
-helper's first catalog search returns typed `pending_source` for `toolkit-setup`.
-The scripted provider rejects that response before Load or schema inspection.
-This is neither a completed empty catalog nor the earlier R4 run's `Unavailable`
-result. The verifier must follow the existing pending-state contract within its
-original deadline and still require actual inspection and completion.
+The resource-bound gateway builds and stages on Core `75a23265` / Meta
+`263ecad4`, with the original resource archive and matching SDK sources. The
+pending-aware reset verifier now follows the existing catalog contract within
+its original deadline. The actual rerun returns a new helper session and
+generation in 11.499 seconds, then observes five exact `pending_source` responses
+and a sixth completed-empty catalog. Load, schema inspection and original-task
+completion remain unentered.
 
-Native shutdown reports host/runtime cleanup and exits normally; the provider
-and command process groups settle without forced cleanup. Success-only SDK reader,
-listener and descendant assertions remain unentered. The missing pre-reset child
-observation does not prove an old helper transport joined. The
-earlier R4 attachment and semantic-shutdown failures remain separate, and the
-unconditional reset warning is not retirement evidence. Complete installed reset
-recovery remains unqualified.
+Native construction 3 reports `PriorGuardUnsettled` before any replacement
+Connect `begin_enter` diagnostic. The old Initial cancellation returns its owner
+later. Its whole finish callback takes 12.332 seconds against the selected
+5-second cancellation/settlement bounds; source inspection finds synchronous
+full resource verification in that callback. This is a Connect-owned correction
+in progress, not an isolated hashing benchmark or an upstream defect finding.
+
+The reviewed two-path correction removes the redundant scan only when exact
+native Initial cancellation proves no spawn or normal successful child closure.
+Every next attachment still verifies current registration and all installed
+resources before use. Healthy settlement and successor protocol behavior remain
+unchanged. Two new changed-resource controls and the prior six cancellation
+controls are selected, followed by the rebuilt installed reset. These new runs
+have not passed yet; the earlier first-pending-response failure remains recorded.
+
+Native shutdown acknowledges host/runtime cleanup and exits normally; the
+provider and current command groups settle without forced cleanup. Success-only
+SDK reader, listener and descendant assertions remain unentered. The missing
+pre-reset child observation does not prove old-helper transport join. Complete
+installed reset recovery remains unqualified.
+
+Connect has accepted the Core lead's proposed `DomainBound::OwnedBy` adoption for
+0.9.4. Catalog, setup and report/account/public parent grants will bind the actual
+application resource authority while retaining exact session/origin children.
+New issuance IDs are required; old unrestricted grants and historical children
+cannot be silently relabeled or reparented. The actual Core API, migration
+handling and cross-application refusal tests remain to be qualified.
 
 The Core owner conditionally confirmed an R1 Find-fenced durable transfer commit
 as a disclosure boundary, with recipient-only scope and exact payload/reconciliation
