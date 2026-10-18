@@ -10,6 +10,7 @@ use meerkat_runtime::{SessionServiceRuntimeExt, identifiers::IdempotencyKey,
     input_state::verify_exact_replay};
 use toolkit_store::{EffectClaimKind, EffectIntent, EffectLease, ReplaySafety, StoredEffect};
 
+pub(super) mod historical;
 #[cfg(test)]
 mod tests;
 
@@ -82,8 +83,12 @@ struct DeliveryCustody {
 
 impl InstalledWorkflowContext {
     /// At most one owned attempt per call. Caller loss leaves the actual task
-    /// in the transfer's recovery owner. No call reconstructs a new Input ID.
+    /// in the transfer's recovery owner. Warm delivery reuses its retained
+    /// input; a restored disclosure can only acknowledge exact native history.
     pub async fn deliver(&self) -> Result<WorkflowDeliveryObservation, PrivateOriginalError> {
+        // This origin can acknowledge history only, even through deliver().
+        // Native absence never turns a recovered disclosure into a new input.
+        if !self.attempt.locally_entered() { return self.transfer.reconcile_delivery().await; }
         let source = self.transfer.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
         let slot = self.transfer.with_recipient(&source, |workflow| {
             if !Arc::ptr_eq(&workflow, &self.workflow) {
@@ -91,16 +96,9 @@ impl InstalledWorkflowContext {
             }
             let mut held = self.attempt.delivery.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
             if let Some(slot) = held.as_ref() { return Ok(slot.clone()); }
-            let bytes = canonical_json(&self.attempt.envelope).map_err(|_| PrivateOriginalError::Conflict)?;
-            let input = Input::Prompt(PromptInput::new(
-                String::from_utf8(bytes).map_err(|_| PrivateOriginalError::Conflict)?, None));
-            let key = self.attempt.envelope.membership.delivery_effect()
-                .map_err(|_| PrivateOriginalError::Conflict)?;
+            let (input, event) = delivery_input(&self.attempt)?;
             let slot = Arc::new(DeliverySlot {
-                input, event: IdempotencyKey::new(format!("workflow-context-{}",
-                    digest(&canonical_json(&(&key, &self.attempt.admission))
-                        .map_err(|_| PrivateOriginalError::Conflict)?))),
-                workflow, bound: OnceLock::new(), run: Mutex::new(None), native: Mutex::new(None),
+                input, event, workflow, bound: OnceLock::new(), run: Mutex::new(None), native: Mutex::new(None),
             });
             *held = Some(slot.clone());
             Ok(slot)
@@ -110,19 +108,18 @@ impl InstalledWorkflowContext {
 }
 
 impl InstalledWorkflowContextTransfer {
-    /// Metadata-only reconciliation of an already entered delivery. It may
-    /// acknowledge an exact accepted input after recipient closure, but never
-    /// exposes payload or submits anything, even if it proves nonadmission.
+    /// Metadata-only reconciliation of an entered delivery or an already
+    /// restored committed disclosure. It may acknowledge an exact accepted
+    /// input after recipient closure, but never exposes payload or submits.
+    /// Historical absence cannot establish nonadmission or retry permission.
     pub async fn reconcile_delivery(self: &Arc<Self>) -> Result<WorkflowDeliveryObservation, PrivateOriginalError> {
         let source = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
-        let original = self.original.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
-        // As in observe, an equal producer handle can be noncanonical. Resolve
-        // the first retained selection before looking for its attempt or slot.
-        let retained = source.retained_workflow_context_transfer(&original, &self.selected.correlation)?
-            .ok_or(PrivateOriginalError::Unavailable)?;
-        if !same_transfer(Some(&retained), Some(self))? { return Err(PrivateOriginalError::Conflict); }
+        let retained = self.canonical()?;
         let attempt = retained.attempt.lock().map_err(|_| PrivateOriginalError::Unavailable)?.clone();
         let Some(attempt) = attempt else { return Ok(WorkflowDeliveryObservation::Pending); };
+        if !attempt.locally_entered() {
+            return historical::reconcile(source, retained, attempt).await;
+        }
         let slot = attempt.delivery.lock().map_err(|_| PrivateOriginalError::Unavailable)?.clone();
         let Some(slot) = slot else { return Ok(WorkflowDeliveryObservation::Pending); };
         // The private retained handle identifies the existing host owner. No
@@ -159,35 +156,11 @@ impl DeliverySlot {
     async fn effect(&self, source: &PrivateOriginals, attempt: &TransferAttempt)
         -> Result<StoredEffect, PrivateOriginalError>
     {
-        let membership = &attempt.envelope.membership;
-        let key = membership.delivery_effect().map_err(|_| PrivateOriginalError::Conflict)?;
-        let request = RecordData {
-            schema: "meerkat_toolkit.setup_workflow.delivery".into(), version: 1,
-            body: serde_json::json!({"workflow": membership.workflow(), "payload": membership}),
-        };
-        let expected = EffectIntent {
-            id: key.id.clone(), kind: "setup_workflow_delivery".into(),
-            idempotency_key: ContentDigest::of_bytes(&canonical_json(&request)
-                .map_err(|_| PrivateOriginalError::Conflict)?).to_string(),
-            request, replay_safety: ReplaySafety::ReconcileBeforeRetry,
-        };
-        let effect = source.store.get_effect(&key).await.map_err(store_error)?
-            .ok_or(PrivateOriginalError::Unavailable)?;
-        if effect.key != key || effect.intent != expected
-            || effect.request_digest != expected.digest().map_err(store_error)? {
-            return Err(PrivateOriginalError::Conflict);
-        }
-        Ok(effect)
+        delivery_effect(source, attempt).await
     }
 
     fn receipt(&self, attempt: &TransferAttempt) -> Result<RecordData, PrivateOriginalError> {
-        Ok(RecordData { schema: RECEIPT_SCHEMA.into(), version: 1,
-            body: serde_json::to_value(DeliveryReceipt {
-                admission: attempt.admission.clone(), membership: attempt.envelope.membership.clone(),
-                session: self.workflow.session.clone(), input: self.input.id().clone(),
-                association: self.workflow.planning.association().clone(),
-            }).map_err(|_| PrivateOriginalError::Conflict)?,
-        })
+        delivery_receipt(attempt, &self.workflow.session, self.input.id(), self.workflow.planning.association())
     }
 
     fn admitted(&self) -> WorkflowDeliveryObservation {
@@ -200,6 +173,7 @@ impl DeliverySlot {
         owned_native: &Mutex<Option<Arc<DeliveryNative>>>)
         -> Result<WorkflowDeliveryObservation, PrivateOriginalError>
     {
+        let planning = transfer.planning()?;
         let effect = self.effect(source, attempt).await?;
         if !delivery_claim_ready(&self.native, &effect)? {
             return self.reconcile(source, attempt, &effect).await;
@@ -210,7 +184,7 @@ impl DeliverySlot {
         }).await?;
         let snapshot = source.workflow_store()?.load_setup_workflow(&transfer.selected.workflow)
             .await.map_err(|_| PrivateOriginalError::Unavailable)?;
-        if snapshot.terms() != &transfer.planning.terms {
+        if snapshot.terms() != &planning.terms {
             return Err(PrivateOriginalError::Conflict);
         }
         // Validates exact historical membership; a committed donor may now be
@@ -226,8 +200,8 @@ impl DeliverySlot {
             owner: source.owner.clone(), original: self.workflow.planning.clone(),
             slot: self.clone(), native: native.clone(), controller,
             authentication: evidence(&route.authentication_domain,
-                &transfer.planning.submission.transport_authentication)?,
-            planning: transfer.planning.clone(),
+                &planning.submission.transport_authentication)?,
+            planning,
         });
         let runtime = source.bound_identity_runtime()?;
         let identity = runtime.owned_identity_for_member_alias(&self.workflow.member.member).await
@@ -333,6 +307,69 @@ impl DeliverySlot {
         }
         Ok(())
     }
+}
+
+/// One producer representation for both live submission and exact historical
+/// queries. Its fresh ID/time are never acceptance evidence; Core excludes
+/// those two fields from replay and returns the actual admitted InputId.
+fn delivery_input(attempt: &TransferAttempt) -> Result<(Input, IdempotencyKey), PrivateOriginalError> {
+    delivery_input_for(&attempt.envelope, &attempt.admission)
+}
+fn delivery_input_for(envelope: &TransferEnvelope, admission: &WorkAdmission)
+    -> Result<(Input, IdempotencyKey), PrivateOriginalError>
+{
+    let bytes = canonical_json(envelope).map_err(|_| PrivateOriginalError::Conflict)?;
+    let input = Input::Prompt(PromptInput::new(
+        String::from_utf8(bytes).map_err(|_| PrivateOriginalError::Conflict)?, None));
+    let key = envelope.membership.delivery_effect().map_err(|_| PrivateOriginalError::Conflict)?;
+    let event = IdempotencyKey::new(format!("workflow-context-{}",
+        digest(&canonical_json(&(&key, admission)).map_err(|_| PrivateOriginalError::Conflict)?)));
+    Ok((input, event))
+}
+
+async fn delivery_effect(source: &PrivateOriginals, attempt: &TransferAttempt)
+    -> Result<StoredEffect, PrivateOriginalError>
+{
+    delivery_effect_for(source, &attempt.envelope.membership).await
+}
+async fn delivery_effect_for(source: &PrivateOriginals, membership: &SetupWorkflowWaiter)
+    -> Result<StoredEffect, PrivateOriginalError>
+{
+    let key = membership.delivery_effect().map_err(|_| PrivateOriginalError::Conflict)?;
+    let request = RecordData {
+        schema: "meerkat_toolkit.setup_workflow.delivery".into(), version: 1,
+        body: serde_json::json!({"workflow": membership.workflow(), "payload": membership}),
+    };
+    let expected = EffectIntent {
+        id: key.id.clone(), kind: "setup_workflow_delivery".into(),
+        idempotency_key: ContentDigest::of_bytes(&canonical_json(&request)
+            .map_err(|_| PrivateOriginalError::Conflict)?).to_string(),
+        request, replay_safety: ReplaySafety::ReconcileBeforeRetry,
+    };
+    let effect = source.store.get_effect(&key).await.map_err(store_error)?
+        .ok_or(PrivateOriginalError::Unavailable)?;
+    if effect.key != key || effect.intent != expected
+        || effect.request_digest != expected.digest().map_err(store_error)? {
+        return Err(PrivateOriginalError::Conflict);
+    }
+    Ok(effect)
+}
+
+fn delivery_receipt(attempt: &TransferAttempt, session: &SessionId, input: &InputId,
+    association: &InputAuthorityAssociation) -> Result<RecordData, PrivateOriginalError>
+{
+    delivery_receipt_for(&attempt.envelope.membership, &attempt.admission, session, input, association)
+}
+fn delivery_receipt_for(membership: &SetupWorkflowWaiter, admission: &WorkAdmission,
+    session: &SessionId, input: &InputId, association: &InputAuthorityAssociation)
+    -> Result<RecordData, PrivateOriginalError>
+{
+    Ok(RecordData { schema: RECEIPT_SCHEMA.into(), version: 1,
+        body: serde_json::to_value(DeliveryReceipt {
+            admission: admission.clone(), membership: membership.clone(),
+            session: session.clone(), input: input.clone(), association: association.clone(),
+        }).map_err(|_| PrivateOriginalError::Conflict)?,
+    })
 }
 
 /// Canonical Pending alone cannot grant a retry: RetrySafe can also produce it.

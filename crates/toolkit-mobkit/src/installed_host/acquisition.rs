@@ -13,10 +13,13 @@ pub use task_approval::InstalledServiceTaskSource;
 mod results;
 pub(crate) mod recovery;
 pub use results::setup_report_definition;
+pub(crate) mod context_recovery;
+pub use context_recovery::{installed_workflow_context_selector, InstalledWorkflowContextRead, InstalledWorkflowContextSelector};
 mod bootstrap;
 pub use bootstrap::{AcquisitionBootstrapStatus, AcquisitionDisabledReason, InstalledSetupBootstrap};
 pub(crate) use bootstrap::AcquisitionBootstrap;
 mod admission;
+pub(crate) use admission::installed_invocation_correlation;
 mod continuation;
 pub use continuation::InstalledNativeContinuation;
 #[cfg(test)]
@@ -176,6 +179,7 @@ pub(crate) struct InstalledAcquisition {
     // Same stop boundary as the existing joined worker. No worker means no
     // context-transfer attempt can enter through this acquisition.
     transfer_recovery: std::sync::Mutex<Option<std::sync::Weak<recovery::RecoveryControl>>>,
+    context_recovery: std::sync::OnceLock<InstalledWorkflowContextSelector>,
 }
 
 impl InstalledAcquisition {
@@ -234,6 +238,7 @@ impl InstalledAcquisition {
             work_step: owners.work_step,
             tools,
             transfer_recovery: std::sync::Mutex::new(None),
+            context_recovery: std::sync::OnceLock::new(),
         })
     }
 

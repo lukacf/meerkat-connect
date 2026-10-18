@@ -298,6 +298,17 @@ async fn join_waiter_options<S>(
     label: &str,
     lifecycle: Option<(u64, bool)>,
 ) -> (SetupWorkflowWaiter, SetupWorkflowSnapshot) {
+    let (membership, workflow, _) = join_waiter_context(f, planning, original, dispatch,
+        backend, work, label, lifecycle, None).await;
+    (membership, workflow)
+}
+
+pub(super) async fn join_waiter_context<S>(
+    f: &FirstFixture<S>, planning: &Arc<InstalledWorkflowPlanning>,
+    original: &crate::private_originals::acquisition::AcquisitionOriginal,
+    dispatch: &ToolDispatchContext, backend: &SetupWorkBackend, work: &SetupWorkContext,
+    label: &str, lifecycle: Option<(u64, bool)>, correlation: Option<Id>,
+) -> (SetupWorkflowWaiter, SetupWorkflowSnapshot, meerkat_toolkit::setup::SetupSnapshot) {
     let terms = &planning.terms;
     let deadline = lifecycle.map_or(terms.deadline_ms, |value| value.0);
     let now = u64::try_from(f.store.now_ms().await.unwrap()).unwrap();
@@ -357,7 +368,7 @@ async fn join_waiter_options<S>(
             setup_helper: None,
             work_context: Some(work.clone()),
             target: receiver,
-            correlation: id(&format!("{label}-call")),
+            correlation: correlation.unwrap_or_else(|| id(&format!("{label}-call"))),
             parent_operation: None,
             continuation: TaskContinuation {
                 owner: id("planning-test"),
@@ -409,7 +420,7 @@ async fn join_waiter_options<S>(
         .retain_launch_interest(&joined.snapshot, &membership, original)
         .await
         .unwrap();
-    (membership, joined.snapshot)
+    (membership, joined.snapshot, acquisition)
 }
 
 struct DepartAfterBind {

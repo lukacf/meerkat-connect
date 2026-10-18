@@ -114,6 +114,31 @@ impl ToolkitGatewayHost {
         if self.private_closed.is_closed() { return Err(HostLifetimeError::Denied); }
         Ok(member)
     }
+    /// Restore an already committed inline disclosure from the host's exact
+    /// private G/P WorkGraph service. The expected audiences must equal the
+    /// original recorded selection. This does not recreate Find or a native
+    /// input, start recovery, or resolve unknown historical delivery. An absent
+    /// record remains Pending; a reconstructed committed origin cannot dispatch.
+    pub async fn restore_committed_workflow_context(
+        &self, planning: &Arc<crate::private_originals::InstalledWorkflowPlanning>,
+        membership: &meerkat_toolkit::setup::SetupWorkflowWaiter,
+        recipient: meerkat_workgraph::WorkGraphService,
+        backend: &meerkat_toolkit::setup::SetupWorkBackend,
+        output_audiences: std::collections::BTreeSet<toolkit_package::Id>,
+    ) -> Result<crate::private_originals::WorkflowContextObservation, PrivateOriginalError> {
+        self.owner.validate_current_selection().map_err(|_| PrivateOriginalError::Unavailable)?;
+        if self.private_closed.is_closed() { return Err(PrivateOriginalError::Denied); }
+        let source = self.private_originals.as_ref().ok_or(PrivateOriginalError::Unavailable)?;
+        source.check_context_restore_host(&self.owner)?;
+        let acquisition = self.acquisition.lock().map_err(|_| PrivateOriginalError::Unavailable)?
+            .configured().ok_or(PrivateOriginalError::Unavailable)?;
+        // Only the control published after the normal Ready/start boundary is
+        // usable. An open default control cannot bypass that native lifecycle.
+        let control = self.acquisition_recovery.published_transfer_control(&acquisition, source, backend)
+            .map_err(|_| PrivateOriginalError::Unavailable)?;
+        planning.restore_committed_context(source, membership, recipient, backend, output_audiences, &control).await
+    }
+
     /// Join a trusted configured resource to the existing installed native
     /// owners before bootstrap takes them. The caller composes any existing
     /// attachment provider; the actual registration hook remains authoritative.

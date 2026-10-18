@@ -3,7 +3,11 @@
 //! driver merely selects private canonical operation IDs for bounded steps.
 use super::*;
 use meerkat_toolkit::setup::{ContinuationRecoveryPage, SetupDeadlineOwner, SetupSnapshot};
-use std::sync::Mutex;
+use std::{collections::BTreeSet, sync::Mutex};
+use futures::{stream::FuturesUnordered, StreamExt};
+use super::context_recovery::WorkflowContextRecovery;
+type ContextSteps = FuturesUnordered<std::pin::Pin<Box<dyn std::future::Future<
+    Output = (toolkit_store::StoreKey, Result<WorkflowContextRecovery, PrivateOriginalError>)> + Send>>>;
 use tokio::{runtime::Handle, sync::Notify, task::JoinHandle};
 
 const PAGE_SIZE: u32 = 32;
@@ -110,6 +114,20 @@ impl AcquisitionRecovery {
         ))));
         Ok(())
     }
+    pub(crate) fn published_transfer_control(&self, owner: &InstalledAcquisition,
+        source: &Arc<PrivateOriginals>, backend: &SetupWorkBackend)
+        -> Result<Arc<RecoveryControl>, HostLifetimeError>
+    {
+        if !Arc::ptr_eq(&owner.host.originals, source) || owner.work_backend.pin() != backend.pin()
+            || !Arc::ptr_eq(owner.work_backend.service().store(), backend.service().store()) {
+            return Err(HostLifetimeError::InvalidSelection);
+        }
+        let control = owner.transfer_recovery.lock().map_err(|_| HostLifetimeError::Unavailable)?
+            .as_ref().and_then(std::sync::Weak::upgrade).ok_or(HostLifetimeError::Unavailable)?;
+        if !Arc::ptr_eq(&control, &self.control) { return Err(HostLifetimeError::InvalidSelection); }
+        if !control.enter() { return Err(HostLifetimeError::Unavailable); }
+        Ok(control)
+    }
     #[cfg(test)]
     pub(crate) fn transfer_control(&self) -> Arc<RecoveryControl> { self.control.clone() }
     pub(crate) fn stop(&self) {
@@ -207,14 +225,26 @@ impl InstalledAcquisition {
         struct StopOnDrop(Arc<RecoveryControl>);
         impl Drop for StopOnDrop { fn drop(&mut self) { self.0.stop(); } }
         let _stop = StopOnDrop(control.clone());
-        self.clone().run_recovery_steps(control.clone()).await;
+        // Futures stay in the already retained worker, including across a
+        // dropped poll. The set records only futures physically retained here,
+        // not source authority, completion or a second recovery census.
+        let mut contexts = ContextSteps::new();
+        let mut context_sources = BTreeSet::new();
+        self.clone().run_recovery_steps(control.clone(), &mut contexts, &mut context_sources).await;
+        control.stop();
+        #[cfg(test)]
+        if let Some(probe) = self.host.originals.metadata_probe.get() { probe.draining(); }
+        // An entered native-history/CAS step is joined, never aborted. No new
+        // source step starts after stop; entered Applied may finish normally.
+        while let Some((source, _)) = contexts.next().await { context_sources.remove(&source); }
         control.stop();
         let _ = self.host.originals.join_workflow_context_transfers(false).await;
         // The same joined worker drains already entered attachment replies.
         // This does not start never-polled work or certify router cleanup.
         self.host.originals.join_service_attachments().await;
     }
-    async fn run_recovery_steps(self: Arc<Self>, control: Arc<RecoveryControl>) {
+    async fn run_recovery_steps(self: Arc<Self>, control: Arc<RecoveryControl>, contexts: &mut ContextSteps,
+        context_sources: &mut BTreeSet<toolkit_store::StoreKey>) {
         // The gateway starts this existing owner only after native Ready
         // publication. Each stored step still checks its current canonical
         // source and exact native admission/continuation owner; starting this
@@ -269,37 +299,77 @@ impl InstalledAcquisition {
             // pending, or its caller may disappear after the durable commit.
             // Reuse this joined owner and a disposable canonical-source cursor.
             // No source lock is held across these reads or native observations.
-            let workflows = self.host.originals.workflow_close_recovery_page(
-                workflow_after.as_deref(), PAGE_SIZE).await;
-            match self.recovery_disclose(workflows) {
-                Ok(Ok(page)) => {
-                    workflow_after = page.next_after_id;
-                    for source in page.sources {
-                        if !control.enter() { return; }
-                        match self.recovery_disclose(()) {
-                            Ok(()) => (),
-                            Err(SetupError::Denied | SetupError::WrongScope) => return,
-                            Err(_) => { sweep_delayed = true; break; }
-                        }
-                        let outcome = self.host.originals
-                            .reconcile_cancelled_workflow_source(&source).await;
-                        sweep_delayed |= !matches!(outcome,
-                            Ok(crate::private_originals::PrivateOriginalCancellation::OperationsCancelled));
-                        if !control.enter() { return; }
-                        // Selected live interests use this same canonical page
-                        // and retained task. No extra loop, input or Find is
-                        // created, and exact native replay need not republish.
-                        match self.host.originals.recover_workflow_interest_source(
-                            &source, || control.enter()).await
-                        {
-                            Ok(crate::private_originals::setup_workflow::WorkflowInterestRecovery::Stopped) => return,
-                            Ok(_) | Err(PrivateOriginalError::Denied | PrivateOriginalError::Conflict) => (),
-                            Err(PrivateOriginalError::Unavailable) => sweep_delayed = true,
-                        }
+            // Poll retained reads without restarting them. Free slots admit a
+            // capacity-bounded canonical page even when another read is held.
+            // If all slots remain held, discovery waits for actual completion.
+            if !contexts.is_empty() {
+                #[cfg(test)]
+                if let Some(probe) = self.host.originals.metadata_probe.get() { probe.polling(); }
+                if let Ok(Some((source, outcome))) = tokio::time::timeout(PAGE_PAUSE, contexts.next()).await {
+                    context_sources.remove(&source);
+                    match outcome {
+                        Ok(WorkflowContextRecovery::Stopped) => return,
+                        Ok(WorkflowContextRecovery::Observed { pending, .. }) => sweep_delayed |= pending != 0,
+                        Ok(WorkflowContextRecovery::NotSelected)
+                            | Err(PrivateOriginalError::Denied | PrivateOriginalError::Conflict) => (),
+                        Err(PrivateOriginalError::Unavailable) => sweep_delayed = true,
                     }
                 }
-                Err(SetupError::Denied | SetupError::WrongScope) => return,
-                _ => { workflow_after = None; sweep_delayed = true; }
+            }
+            #[cfg(test)]
+            if contexts.len() < PAGE_SIZE as usize {
+                if let Some(probe) = self.host.originals.metadata_probe.get() { probe.after_poll().await; }
+            }
+            // Stop may win while the retained poll is pending. Admit no new
+            // canonical page until this same owner has checked it again.
+            if !control.enter() { return; }
+            let capacity = PAGE_SIZE as usize - contexts.len();
+            if capacity != 0 {
+                #[cfg(test)]
+                if let Some(probe) = self.host.originals.metadata_probe.get() { probe.paging(workflow_after.is_none()); }
+                let workflows = self.host.originals.workflow_close_recovery_page(
+                    workflow_after.as_deref(), capacity as u32).await;
+                match self.recovery_disclose(workflows) {
+                    Ok(Ok(page)) => {
+                        workflow_after = page.next_after_id;
+                        for source in page.sources {
+                            if !control.enter() { return; }
+                            if self.context_recovery.get().is_some() && context_sources.insert(source.key.clone()) {
+                                // No await separates key retention and its future.
+                                // Cursor wrap cannot enter the same retained read twice.
+                                let owner = self.clone();
+                                let selected_control = control.clone();
+                                let selected_source = source.clone();
+                                contexts.push(Box::pin(async move {
+                                    let outcome = owner.recover_context_source(&selected_source, &selected_control).await;
+                                    (selected_source.key, outcome)
+                                }));
+                            }
+                            match self.recovery_disclose(()) {
+                                Ok(()) => (),
+                                Err(SetupError::Denied | SetupError::WrongScope) => return,
+                                Err(_) => { sweep_delayed = true; break; }
+                            }
+                            let outcome = self.host.originals
+                                .reconcile_cancelled_workflow_source(&source).await;
+                            sweep_delayed |= !matches!(outcome,
+                                Ok(crate::private_originals::PrivateOriginalCancellation::OperationsCancelled));
+                            if !control.enter() { return; }
+                            // Selected live interests use this same canonical page
+                            // and retained task. No extra loop, input or Find is
+                            // created, and exact native replay need not republish.
+                            match self.host.originals.recover_workflow_interest_source(
+                                &source, || control.enter()).await
+                            {
+                                Ok(crate::private_originals::setup_workflow::WorkflowInterestRecovery::Stopped) => return,
+                                Ok(_) | Err(PrivateOriginalError::Denied | PrivateOriginalError::Conflict) => (),
+                                Err(PrivateOriginalError::Unavailable) => sweep_delayed = true,
+                            }
+                        }
+                    }
+                    Err(SetupError::Denied | SetupError::WrongScope) => return,
+                    _ => { workflow_after = None; sweep_delayed = true; }
+                }
             }
             if !control.enter() { return; }
             let page = self.recovery_page(after.as_deref()).await;
@@ -390,7 +460,7 @@ impl InstalledAcquisition {
             }
             // Cursor state is disposable. Every completed sweep starts from
             // the same canonical scope; new lower-sorting IDs cannot be lost.
-            let pause = if after.is_some() || service_after.is_some() || workflow_after.is_some() {
+            let pause = if !contexts.is_empty() || after.is_some() || service_after.is_some() || workflow_after.is_some() {
                 PAGE_PAUSE
             } else if sweep_delayed {
                 let pause = backoff;

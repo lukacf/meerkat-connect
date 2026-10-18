@@ -48,6 +48,8 @@ pub struct InstalledWorkflowPlanning {
     terms: SetupWorkflowTerms,
     lineage: Vec<GrantLineageRef>,
     interests: Mutex<Vec<LaunchInterest>>,
+    // Canonical completed-context ownership survives donor departure.
+    context_transfers: Mutex<Vec<Arc<InstalledWorkflowContextTransfer>>>,
 }
 
 struct LaunchInterest {
@@ -61,7 +63,8 @@ struct LaunchInterest {
 pub(crate) struct InvocationPlanning {
     correlation: Id,
     selection: Option<Arc<InstalledWorkflowPlanning>>,
-    context_transfer: Option<Arc<InstalledWorkflowContextTransfer>>,
+    // Invocation selection is an alias; the recipient planning owner retains custody.
+    context_transfer: Option<Weak<InstalledWorkflowContextTransfer>>,
 }
 
 /// Canonical launch data staged before native admission. No durable store read
@@ -162,6 +165,7 @@ impl PrivateOriginals {
             terms,
             lineage,
             interests: Mutex::new(Vec::new()),
+            context_transfers: Mutex::new(Vec::new()),
         });
         candidate.check_for_binding(self, &candidate.submission.original)?;
         // This actual host planning choice opts G into exact input evidence.
@@ -247,7 +251,9 @@ impl PrivateOriginals {
             .find(|item| &item.correlation == correlation)
         {
             return if same_optional(prior.selection.as_ref(), selection)
-                && context_transfer::same_transfer(prior.context_transfer.as_ref(), context_transfer)? {
+                && context_transfer::same_transfer(
+                    prior.context_transfer.as_ref().map(|weak| weak.upgrade()
+                        .ok_or(PrivateOriginalError::Unavailable)).transpose()?.as_ref(), context_transfer)? {
                 Ok(())
             } else {
                 Err(PrivateOriginalError::Conflict)
@@ -256,10 +262,16 @@ impl PrivateOriginals {
         if selections.len() >= 128 {
             return Err(PrivateOriginalError::Unavailable);
         }
+        // All donor-selection failures precede canonical recipient retention.
+        let context_transfer = match context_transfer {
+            Some(candidate) => Some(Arc::downgrade(&selection.ok_or(PrivateOriginalError::Denied)?
+                .retain_context_transfer(candidate.clone())?)),
+            None => None,
+        };
         selections.push(InvocationPlanning {
             correlation: correlation.clone(),
             selection: selection.cloned(),
-            context_transfer: context_transfer.cloned(),
+            context_transfer,
         });
         Ok(())
     }

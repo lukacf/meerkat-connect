@@ -10,6 +10,17 @@ use meerkat_toolkit::{
 };
 use toolkit_package::{ContentDigest, Revision, canonical_json};
 
+// Mechanical retry correlation only. Both the actual invocation producer and
+// historical envelope validation share this exact serialized tuple. This pure
+// Connect-owned derivation grants no authority and is not a native input key.
+pub(crate) fn installed_invocation_correlation(
+    original: &PrivateOriginalRef, scope: &impl serde::Serialize, call_id: &str,
+) -> Result<Id, ToolAdmissionError> {
+    Id::new(format!("call-{}", ContentDigest::of_bytes(&canonical_json(&(
+        "toolkit-installed-invocation-v1", original, scope, call_id,
+    )).map_err(|_| ToolAdmissionError::Unavailable)?))).map_err(|_| ToolAdmissionError::Unavailable)
+}
+
 /// Only this installed source constructs the exact view passed to the existing
 /// original invocation owner. It supplies actual native staged identity, not a task ID.
 pub struct InstalledOriginalInvocation<'a> {
@@ -230,10 +241,8 @@ impl SetupToolHost for InstalledSetupAdmission {
         ))?;
         // Mechanical retry correlation, scoped by the actual retained native
         // original/input. It grants nothing and is not a continuation identity.
-        let correlation = Id::new(format!("call-{}", ContentDigest::of_bytes(&canonical_json(&(
-            "toolkit-installed-invocation-v1", &original.reference,
-            context.work_authorization().ok_or(ToolAdmissionError::Denied)?.execution_scope(), call_id,
-        )).map_err(|_| ToolAdmissionError::Unavailable)?))).map_err(|_| ToolAdmissionError::Unavailable)?;
+        let correlation = installed_invocation_correlation(&original.reference,
+            context.work_authorization().ok_or(ToolAdmissionError::Denied)?.execution_scope(), call_id)?;
         let current = HostAdmissionContext {
             tenant: facts.tenant, deployment: facts.deployment, realm: facts.realm,
             target: claims.target.clone(), policy_revision: policy_revision.clone(), now_ms: facts.now_ms,

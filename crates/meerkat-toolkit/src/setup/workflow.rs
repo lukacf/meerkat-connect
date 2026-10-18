@@ -247,6 +247,32 @@ impl SetupStore<'_> {
         Ok((workflow, setup.request().host().correlation.clone()))
     }
 
+    /// Compare a private committed inline envelope with this owner's exact
+    /// canonical waiter and acquisition. This returns no request or permission;
+    /// callers separately own recipient access and current consumption checks.
+    /// Donor departure, expiry or terminal cancellation does not recall an
+    /// already completed disclosure.
+    pub async fn validate_committed_workflow_context(
+        &self, waiter: &SetupWorkflowWaiter,
+        expected: &meerkat_authorization_contracts::work_association::InputAuthorityAssociation,
+        correlation: &Id, input_digest: &ContentDigest, request: &FindAndInstallRequest,
+        deadline_ms: u64, output_audiences: &BTreeSet<Id>,
+    ) -> Result<SetupWorkflowSnapshot, SetupError> {
+        let workflow = self.load_setup_workflow(waiter.workflow()).await?;
+        exact_waiter(&workflow, waiter)?;
+        let stored = self.store.get(waiter.acquisition()).await?.ok_or(StoreError::NotFound)?;
+        let setup = self.recover(stored)?;
+        let recorded = setup.request();
+        if recorded.evidence().association() != expected
+            || self.workflow_waiter(workflow.terms(), &setup, waiter.source().clone())? != *waiter
+            || &recorded.host().correlation != correlation || recorded.input_digest() != input_digest
+            || recorded.request() != request || recorded.host().limits.deadline_ms != deadline_ms
+            || output_audiences.is_empty()
+            || !output_audiences.is_subset(&recorded.constraints().ceiling.output_audiences)
+        { return Err(SetupError::Denied); }
+        Ok(workflow)
+    }
+
     /// Commit membership and its delivery obligation together. The first
     /// admission also commits exactly one immutable launch intent. Native
     /// launch/delivery are deliberately not called by this store operation.

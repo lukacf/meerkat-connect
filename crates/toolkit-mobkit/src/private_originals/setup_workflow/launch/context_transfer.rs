@@ -3,6 +3,10 @@
 //! grants no model input or waiter effect and exposes no raw payload getter.
 use super::*;
 mod delivery;
+mod restore;
+mod metadata;
+#[cfg(test)]
+mod restore_tests;
 pub use delivery::WorkflowDeliveryObservation;
 use crate::installed_host::acquisition::{InstalledOriginalInvocation, recovery::RecoveryControl};
 use meerkat_authorization_contracts::constraints::AudienceRef;
@@ -34,7 +38,7 @@ const PURPOSE: &str = "toolkit-workflow-inline-context-v1";
 pub struct InstalledWorkflowContextTransfer {
     source: Weak<PrivateOriginals>,
     original: Weak<RetainedToolkitOriginal>,
-    planning: Arc<InstalledWorkflowPlanning>,
+    planning: Weak<InstalledWorkflowPlanning>,
     service: WorkGraphService,
     selected: TransferSelection,
     attempt: Mutex<Option<Arc<TransferAttempt>>>,
@@ -74,10 +78,16 @@ struct TransferAttempt {
     envelope: TransferEnvelope,
     request: CreateWorkItemRequest,
     admission: WorkAdmission,
-    join: commit::OwnedTransferCommit,
+    origin: TransferOrigin,
     recovery: Weak<RecoveryControl>,
     delivery: Mutex<Option<Arc<delivery::DeliverySlot>>>,
     advance: Mutex<Option<Arc<delivery::DeliveryRun>>>,
+}
+
+/// A store hit is not a joined physical task and cannot prove absence or retry.
+enum TransferOrigin {
+    Entered(commit::OwnedTransferCommit),
+    ObservedCommitted,
 }
 
 
@@ -113,13 +123,25 @@ impl InstalledWorkflowPlanning {
         let source = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
         let reference = source.workflow_store()?.workflow_ref(&self.terms)
             .map_err(|_| PrivateOriginalError::Conflict)?;
-        WorkNamespace::new(format!("toolkit-workflow-context/{}", digest(&canonical_json(&reference)
-            .map_err(|_| PrivateOriginalError::Conflict)?)))
-            .map_err(|_| PrivateOriginalError::Conflict)
+        PrivateOriginals::workflow_context_namespace(&reference)
     }
 }
 
 impl PrivateOriginals {
+    pub(crate) fn workflow_context_namespace(workflow: &SetupWorkflowRef) -> Result<WorkNamespace, PrivateOriginalError> {
+        let bytes = canonical_json(workflow).map_err(|_| PrivateOriginalError::Conflict)?;
+        WorkNamespace::new(format!("toolkit-workflow-context/{}", digest(&bytes)))
+            .map_err(|_| PrivateOriginalError::Conflict)
+    }
+
+    pub(crate) fn check_context_restore_host(&self, expected: &Arc<meerkat_toolkit::host_lifetime::NativeHostLifetime>)
+        -> Result<(), PrivateOriginalError>
+    {
+        let actual = self.host_lifetime.get().and_then(Weak::upgrade).ok_or(PrivateOriginalError::Unavailable)?;
+        if !Arc::ptr_eq(&actual, expected) { return Err(PrivateOriginalError::Denied); }
+        self.service_input_host_current()
+    }
+
     /// The trusted original_binding producer explicitly allows the exact
     /// invocation's canonical inline request to this fixed G/P recipient.
     /// This first profile requires equal actual A/G native audiences. The
@@ -154,9 +176,9 @@ impl PrivateOriginals {
         };
         let candidate = Arc::new(InstalledWorkflowContextTransfer {
             source: Arc::downgrade(self), original: Arc::downgrade(&original.original),
-            planning, service: recipient, selected, attempt: Mutex::new(None),
+            planning: Arc::downgrade(&planning), service: recipient, selected, attempt: Mutex::new(None),
         });
-        candidate.check_selection(self, &original, invocation.correlation(), &candidate.planning)?;
+        candidate.check_selection(self, &original, invocation.correlation(), &planning)?;
         candidate.check_backend(backend)?;
         // Admission retains the first optional choice under its existing lock.
         // Equal later producer objects are discarded in favor of that actual
@@ -172,7 +194,8 @@ impl PrivateOriginals {
             .ok_or(PrivateOriginalError::Unavailable)?;
         let selected = held.workflow_selections.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
         Ok(selected.iter().find(|row| &row.correlation == correlation)
-            .and_then(|row| row.context_transfer.clone()))
+            .and_then(|row| row.context_transfer.as_ref()).map(|weak| weak.upgrade()
+                .ok_or(PrivateOriginalError::Unavailable)).transpose()?)
     }
 
     pub(crate) fn workflow_context_transfers(&self)
@@ -181,11 +204,12 @@ impl PrivateOriginals {
         let held = self.retained.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
         let mut transfers = Vec::new();
         for original in held.iter() {
-            let selected = original.workflow_selections.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
-            for row in selected.iter() {
-                if let Some(transfer) = &row.context_transfer {
-                    // Recovery cannot create a Find-fenced transfer. Dormant
-                    // selections therefore do not delay the maintenance sweep.
+            let plans = original.workflow_plans.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            for planning in plans.iter() {
+                let selected = planning.context_transfers.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+                for transfer in selected.iter() {
+                    // Dormant choices do not delay recovery. A cold committed
+                    // origin participates without inventing a physical join.
                     if transfer.attempt.lock().map_err(|_| PrivateOriginalError::Unavailable)?.is_some() {
                         transfers.push(transfer.clone());
                     }
@@ -196,24 +220,13 @@ impl PrivateOriginals {
     }
 
     pub(crate) async fn join_workflow_context_transfers(&self, finished_only: bool) -> Result<(), PrivateOriginalError> {
-        // Selection itself admits no blocking work. Registration uses the
-        // worker's stop mutex; the final caller stops it before this census.
-        let attempts = (|| {
-            let held = self.retained.lock().map_err(|_| ())?;
-            let mut attempts = Vec::new();
-            for original in held.iter() {
-                let selected = original.workflow_selections.lock().map_err(|_| ())?;
-                for row in selected.iter() {
-                    if let Some(transfer) = &row.context_transfer {
-                        if let Some(attempt) = transfer.attempt.lock().map_err(|_| ())?.clone() {
-                            attempts.push(attempt);
-                        }
-                    }
-                }
+        // The existing stop owner excludes registration before this census.
+        let mut attempts = Vec::new();
+        for transfer in self.workflow_context_transfers()? {
+            if let Some(attempt) = transfer.attempt.lock().map_err(|_| PrivateOriginalError::Unavailable)?.clone() {
+                attempts.push(attempt);
             }
-            Ok::<_, ()>(attempts)
-        })();
-        let attempts = attempts.map_err(|_| PrivateOriginalError::Unavailable)?;
+        }
         for attempt in attempts {
             // An unsuccessful transfer can still be joined. It is not a
             // shutdown failure unless its native task owner failed to join.
@@ -236,13 +249,27 @@ pub(super) fn same_transfer(
     Ok(match (prior, next) {
         (None, None) => true,
         (Some(a), Some(b)) => a.selected == b.selected
-            && Arc::ptr_eq(&a.planning, &b.planning)
+            && Weak::ptr_eq(&a.planning, &b.planning)
             && Arc::ptr_eq(a.service.store(), b.service.store()),
         _ => false,
     })
 }
 
 impl InstalledWorkflowContextTransfer {
+    fn planning(&self) -> Result<Arc<InstalledWorkflowPlanning>, PrivateOriginalError> {
+        self.planning.upgrade().ok_or(PrivateOriginalError::Unavailable)
+    }
+
+    fn canonical(self: &Arc<Self>) -> Result<Arc<Self>, PrivateOriginalError> {
+        let planning = self.planning()?;
+        let selected = planning.context_transfers.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+        let prior = selected.iter().find(|row| row.selected.original == self.selected.original
+            && row.selected.correlation == self.selected.correlation)
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        if !same_transfer(Some(prior), Some(self))? { return Err(PrivateOriginalError::Conflict); }
+        Ok(prior.clone())
+    }
+
     pub(crate) fn binding_digest(&self) -> Result<ContentDigest, PrivateOriginalError> {
         canonical_json(&(PURPOSE, &self.selected)).map(|bytes| ContentDigest::of_bytes(&bytes))
             .map_err(|_| PrivateOriginalError::Conflict)
@@ -256,7 +283,7 @@ impl InstalledWorkflowContextTransfer {
         let actual = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
         let a = self.original.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
         if !Arc::ptr_eq(&actual, source) || !Arc::ptr_eq(&a, &original.original)
-            || !Arc::ptr_eq(planning, &self.planning) || &self.selected.correlation != correlation
+            || !Weak::ptr_eq(&Arc::downgrade(planning), &self.planning) || &self.selected.correlation != correlation
             || self.selected.original != original.reference
             || &self.selected.association != original.original.association()
             || self.selected.planning_source != planning.submission.original
@@ -271,14 +298,15 @@ impl InstalledWorkflowContextTransfer {
     }
 
     fn check_backend(&self, backend: &SetupWorkBackend) -> Result<(), PrivateOriginalError> {
+        let planning = self.planning()?;
         let grant = self.service.namespace_grant();
-        if backend.pin() != &self.selected.backend || backend.pin() != &self.planning.terms.backend
+        if backend.pin() != &self.selected.backend || backend.pin() != &planning.terms.backend
             || !Arc::ptr_eq(backend.service().store(), self.service.store())
             || self.service.store().kind() != WorkGraphStoreKind::Sqlite
-            || grant.realm_id != self.planning.terms.realm.to_string()
+            || grant.realm_id != planning.terms.realm.to_string()
             || grant.realm_id != self.selected.recipient_realm
             || grant.namespace != self.selected.recipient_namespace.as_str()
-            || self.service.default_namespace() != &self.planning.context_namespace()?
+            || self.service.default_namespace() != &planning.context_namespace()?
             || self.service.default_namespace() == backend.service().default_namespace()
         { return Err(PrivateOriginalError::Denied); }
         Ok(())
@@ -305,9 +333,10 @@ impl InstalledWorkflowContextTransfer {
     ) -> Result<WorkflowTransferObservation, PrivateOriginalError> {
         let source = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
         let original = source.acquisition_original(context).await?;
+        let planning = self.planning()?;
         let request = snapshot.request();
         self.check_invocation(&source, &original, &request.host().correlation,
-            &self.planning, backend, &request.constraints().ceiling)?;
+            &planning, backend, &request.constraints().ceiling)?;
         let parsed: FindAndInstallRequest = call.parse_args().map_err(|_| PrivateOriginalError::Denied)?;
         if call.name != crate::FIND_AND_INSTALL || &parsed != request.request()
             || request.request().user_context.iter().any(|item| matches!(item, RequestContext::Reference(_)))
@@ -319,7 +348,7 @@ impl InstalledWorkflowContextTransfer {
         { return Err(PrivateOriginalError::Denied); }
         let canonical = source.workflow_store()?.load_setup_workflow(&self.selected.workflow)
             .await.map_err(|_| PrivateOriginalError::Unavailable)?;
-        if canonical.terms() != &self.planning.terms || canonical.departed(membership)
+        if canonical.terms() != &planning.terms || canonical.departed(membership)
             .map_err(|_| PrivateOriginalError::Conflict)?
         { return Err(PrivateOriginalError::Denied); }
         let envelope = TransferEnvelope {
@@ -331,8 +360,7 @@ impl InstalledWorkflowContextTransfer {
             request: parsed, deadline_ms: request.host().limits.deadline_ms,
         };
         let create = creation_request(&envelope)?;
-        let key = WorkAdmissionKey::new(format!("toolkit-context-{}", digest(&canonical_json(membership.acquisition())
-            .map_err(|_| PrivateOriginalError::Conflict)?))).map_err(|_| PrivateOriginalError::Conflict)?;
+        let key = admission_key(membership)?;
         let admission = self.service.admission_identity(key.clone(), create.clone())
             .map_err(|_| PrivateOriginalError::Conflict)?;
         // No await separates spawn from retention. The same stop lock excludes
@@ -347,7 +375,7 @@ impl InstalledWorkflowContextTransfer {
             let join = commit::OwnedTransferCommit::start(call, context, source.owner.clone(),
                 self.service.clone(), key, create.clone(), envelope.deadline_ms)?;
             let held = Arc::new(TransferAttempt { envelope, request: create, admission,
-                join,
+                origin: TransferOrigin::Entered(join),
                 recovery: Arc::downgrade(control), delivery: Mutex::new(None), advance: Mutex::new(None) });
             *slot = Some(held.clone());
             Ok(held)
@@ -365,6 +393,9 @@ impl InstalledWorkflowContextTransfer {
     {
         let attempt = self.attempt.lock().map_err(|_| PrivateOriginalError::Unavailable)?.clone();
         let Some(attempt) = attempt else { return Ok(WorkflowDeliveryObservation::Pending); };
+        // Reconstructed disclosures can only observe historical admission.
+        // Their existing advance owner never enters the fresh delivery path.
+        if !attempt.locally_entered() { return self.reconcile_delivery().await; }
         if !attempt.finished() { return Ok(WorkflowDeliveryObservation::Pending); }
         let control = attempt.recovery.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
         let transfer = self.clone();
@@ -388,12 +419,8 @@ impl InstalledWorkflowContextTransfer {
     /// returned custody still requires G admission checks before future use.
     pub async fn observe(self: &Arc<Self>) -> Result<WorkflowContextObservation, PrivateOriginalError> {
         let source = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
-        let original = self.original.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
-        // Concurrent equal producer calls may have constructed different
-        // candidates. Only the existing first canonical selection owns entry.
-        let retained = source.retained_workflow_context_transfer(&original, &self.selected.correlation)?
-            .ok_or(PrivateOriginalError::Unavailable)?;
-        if !same_transfer(Some(&retained), Some(self))? { return Err(PrivateOriginalError::Conflict); }
+        // Recipient ownership survives A departure and equal producer aliases.
+        let retained = self.canonical()?;
         retained.observe_retained(&source).await
     }
 
@@ -414,7 +441,8 @@ impl InstalledWorkflowContextTransfer {
             // private until this final recipient reservation. No A-current
             // helper or historical permission token authorizes this release.
             match result.map_err(|_| PrivateOriginalError::Unavailable)? {
-                None => Ok(WorkflowContextObservation::Absent),
+                None if attempt.locally_entered() => Ok(WorkflowContextObservation::Absent),
+                None => Ok(WorkflowContextObservation::Pending),
                 Some(WorkAdmissionOutcome::Replayed(item)) => {
                     validate_item(&self.service, &attempt.admission, &attempt.request, &item)?;
                     Ok(WorkflowContextObservation::Committed(InstalledWorkflowContext {
@@ -430,17 +458,37 @@ impl InstalledWorkflowContextTransfer {
         disclose: impl FnOnce(Arc<HeldSetupWorkflow>) -> Result<T, PrivateOriginalError> + Send)
         -> Result<T, PrivateOriginalError>
     {
+        let planning = self.planning()?;
         let actual = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
+        if !Arc::ptr_eq(source, &actual) || self.selected.planning_source != planning.submission.original
+            || &self.selected.parent != planning.parent.association() || self.selected.lead != planning.terms.lead
+            || self.selected.workflow != source.workflow_store()?.workflow_ref(&planning.terms)
+                .map_err(|_| PrivateOriginalError::Conflict)?
+            || self.selected.native_audience != source.route(&planning.submission.original.route)?.grant_audience
+        { return Err(PrivateOriginalError::Denied); }
+        planning.with_context_recipient(source, disclose).await
+    }
+}
+
+impl InstalledWorkflowPlanning {
+    async fn with_context_recipient<T: Send>(&self, source: &Arc<PrivateOriginals>,
+        disclose: impl FnOnce(Arc<HeldSetupWorkflow>) -> Result<T, PrivateOriginalError> + Send)
+        -> Result<T, PrivateOriginalError>
+    {
+        let actual = self.source.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
+        let planning = self;
+        let reference = source.workflow_store()?.workflow_ref(&self.terms).map_err(|_| PrivateOriginalError::Conflict)?;
+        let audience = source.route(&self.submission.original.route)?.grant_audience.clone();
         if !Arc::ptr_eq(source, &actual) { return Err(PrivateOriginalError::Denied); }
-        let snapshot = source.workflow_store()?.load_setup_workflow(&self.selected.workflow)
+        let snapshot = source.workflow_store()?.load_setup_workflow(&reference)
             .await.map_err(|_| PrivateOriginalError::Unavailable)?;
         // A may be departed. At least one recipient workflow interest must
         // remain; final closure fences consumption of every transferred item.
-        if snapshot.terms() != &self.planning.terms || snapshot.active_waiters() == 0 {
+        if snapshot.terms() != &planning.terms || snapshot.active_waiters() == 0 {
             return Err(PrivateOriginalError::Denied);
         }
         let held = source.retained.lock().map_err(|_| PrivateOriginalError::Unavailable)?
-            .iter().find(|held| held.reference == self.selected.planning_source).cloned()
+            .iter().find(|held| held.reference == self.submission.original).cloned()
             .ok_or(PrivateOriginalError::Unavailable)?;
         let workflow = held.setup_workflow.get().cloned().ok_or(PrivateOriginalError::Unavailable)?;
         let lifetime = source.host_lifetime.get().and_then(Weak::upgrade)
@@ -449,16 +497,16 @@ impl InstalledWorkflowContextTransfer {
         // publication reservation. No callback reenters the host owner.
         lifetime.with_current_setup(|| {
             source.owner.grants().try_with_owner_changes_excluded(|| {
-                self.planning.check_for_binding(source, &self.selected.planning_source)?;
+                planning.check_for_binding(source, &self.submission.original)?;
                 workflow.current_source()?;
-                if workflow.reference != self.selected.workflow || workflow.member != self.selected.lead
+                if workflow.reference != reference || workflow.member != self.terms.lead
                     || !Arc::ptr_eq(&workflow.planning, &held.original)
-                    || held.original.association().candidate().target.audience != self.selected.native_audience
-                    || source.owner.dedicated_workflow_session(&self.selected.workflow, &self.selected.lead,
-                        &self.selected.planning_source.original).map_err(custody_error)?
+                    || held.original.association().candidate().target.audience != audience
+                    || source.owner.dedicated_workflow_session(&reference, &self.terms.lead,
+                        &self.submission.original.original).map_err(custody_error)?
                         .as_ref() != Some(&workflow.session)
                 { return Err(PrivateOriginalError::Denied); }
-                for original in [&self.planning.parent, &held.original] {
+                for original in [&planning.parent, &held.original] {
                     let claims = original.association().candidate();
                     source.owner.workflow_controller(original).map_err(custody_error)?;
                     for lineage in claims.authority_basis.grant_lineages() {
@@ -472,10 +520,10 @@ impl InstalledWorkflowContextTransfer {
                         .check_current().map_err(|_| PrivateOriginalError::Unavailable)?;
                 }
                 let now = source.owner.clock().now().map_err(|_| PrivateOriginalError::Unavailable)?;
-                let interests = self.planning.interests.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+                let interests = planning.interests.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
                 if !interests.iter().any(|interest| !interest.closed
                     && now.unix_ms < interest.membership.deadline_ms()
-                    && interest.membership.workflow() == &self.selected.workflow) {
+                    && interest.membership.workflow() == &reference) {
                     return Err(PrivateOriginalError::Denied);
                 }
                 disclose(workflow)
@@ -488,8 +536,23 @@ impl InstalledWorkflowContextTransfer {
 }
 
 impl TransferAttempt {
-    fn finished(&self) -> bool { self.join.finished() }
-    async fn join(&self) -> Result<WorkAdmission, PrivateOriginalError> { self.join.join().await }
+    fn locally_entered(&self) -> bool { matches!(self.origin, TransferOrigin::Entered(_)) }
+    fn finished(&self) -> bool {
+        match &self.origin { TransferOrigin::Entered(join) => join.finished(), TransferOrigin::ObservedCommitted => true }
+    }
+    async fn join(&self) -> Result<WorkAdmission, PrivateOriginalError> {
+        match &self.origin {
+            TransferOrigin::Entered(join) => join.join().await,
+            // This returns only the already verified immutable admission. It
+            // does not record or impersonate a physical task settlement.
+            TransferOrigin::ObservedCommitted => Ok(self.admission.clone()),
+        }
+    }
+}
+
+fn admission_key(membership: &SetupWorkflowWaiter) -> Result<WorkAdmissionKey, PrivateOriginalError> {
+    WorkAdmissionKey::new(format!("toolkit-context-{}", digest(&canonical_json(membership.acquisition())
+        .map_err(|_| PrivateOriginalError::Conflict)?))).map_err(|_| PrivateOriginalError::Conflict)
 }
 
 fn creation_request(envelope: &TransferEnvelope) -> Result<CreateWorkItemRequest, PrivateOriginalError> {

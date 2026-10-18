@@ -67,6 +67,7 @@ pub enum AcquisitionDisabledReason {
 #[derive(Default)]
 pub(crate) struct AcquisitionBootstrap {
     state: BootstrapState,
+    context_recovery: Option<super::InstalledWorkflowContextSelector>,
 }
 #[derive(Default)]
 enum BootstrapState {
@@ -100,6 +101,7 @@ impl AcquisitionBootstrap {
     pub(crate) fn selected(acquisition: Arc<InstalledAcquisition>) -> Self {
         Self {
             state: BootstrapState::Selected(acquisition),
+            context_recovery: None,
         }
     }
 
@@ -138,7 +140,19 @@ impl AcquisitionBootstrap {
                 additional_helpers,
                 tools,
             })),
+            context_recovery: None,
         })
+    }
+
+    pub(crate) fn select_context_recovery(&mut self, selected: super::InstalledWorkflowContextSelector)
+        -> Result<(), HostLifetimeError>
+    {
+        if self.context_recovery.is_some()
+            || matches!(self.state, BootstrapState::Unconfigured | BootstrapState::Finished(_)) {
+            return Err(HostLifetimeError::InvalidSelection);
+        }
+        self.context_recovery = Some(selected);
+        Ok(())
     }
 
     pub(crate) fn status(&self) -> AcquisitionBootstrapStatus {
@@ -229,6 +243,9 @@ impl AcquisitionBootstrap {
             }
             BootstrapState::Finished(_) => unreachable!("completed state checked above"),
         };
+        if let Some(selected) = self.context_recovery.take() {
+            acquisition.context_recovery.set(selected).map_err(|_| HostLifetimeError::InvalidSelection)?;
+        }
         self.state = BootstrapState::Finished(FinishedAcquisition::Configured(acquisition.clone()));
         Ok(Some(acquisition))
     }
@@ -444,6 +461,7 @@ mod tests {
         let reason = AcquisitionDisabledReason::MissingService;
         let mut selection = AcquisitionBootstrap {
             state: BootstrapState::Finished(FinishedAcquisition::Disabled(reason)),
+            context_recovery: None,
         };
         assert!(matches!(
             selection.prepare(None, None),

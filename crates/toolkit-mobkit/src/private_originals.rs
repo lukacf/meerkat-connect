@@ -16,6 +16,8 @@ use toolkit_store::{
     AdmissionRequest, RecordData, StoreKey, StoreScope, StoredRecord, ToolkitStore, Transition,
 };
 
+#[cfg(test)]
+pub(crate) mod recovery_probe;
 pub(crate) mod acquisition;
 pub(crate) mod setup_results;
 mod setup_admission;
@@ -391,6 +393,8 @@ pub trait ServiceInstallationReadback: Send + Sync {
 }
 
 pub struct PrivateOriginals {
+    #[cfg(test)]
+    pub(crate) metadata_probe: OnceLock<Arc<recovery_probe::MetadataRecoveryProbe>>,
     scope: StoreScope,
     store: Arc<dyn ToolkitStore>,
     owner: Arc<ToolkitOriginalOwner>,
@@ -516,6 +520,8 @@ impl PrivateOriginals {
         store.capabilities().require_durable_contract()
             .map_err(|_| PrivateOriginalError::Unavailable)?;
         let value = Self {
+            #[cfg(test)]
+            metadata_probe: OnceLock::new(),
             scope,
             store,
             owner,

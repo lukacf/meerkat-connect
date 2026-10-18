@@ -18,23 +18,23 @@ default = []
 console = ["dep:meerkat-mobkit", "dep:meerkat-mob", "dep:axum"]
 
 [dependencies]
-meerkat-authorization = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
+meerkat-authorization = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
 axum = { version = "0.8", optional = true }
-meerkat-authorization-contracts = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
-meerkat-mob = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01", optional = true }
-meerkat-mobkit = { package = "meerkat-meta", git = "https://github.com/lukacf/meerkat-meta.git", rev = "f04125c45e732b3ef05aab2ac2a0f642fc1b08a1", optional = true }
-meerkat = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01", features = ["local-authorization", "session-store", "mcp", "skills", "native-keyring"] }
-meerkat-core = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
-meerkat-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
-meerkat-runtime = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
-meerkat-session = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
-meerkat-store = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01", features = ["sqlite", "jsonl"] }
-meerkat-models = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
-meerkat-llm-core = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01", default-features = false }
-meerkat-auth-core = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
-meerkat-openai = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01", default-features = false }
-meerkat-anthropic = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01", default-features = false, features = ["oauth"] }
-meerkat-gemini = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01", default-features = false, features = ["oauth"] }
+meerkat-authorization-contracts = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
+meerkat-mob = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1", optional = true }
+meerkat-mobkit = { package = "meerkat-meta", git = "https://github.com/lukacf/meerkat-meta.git", rev = "263ecad41260a0b89c5dd0b8caa251164369be22", optional = true }
+meerkat = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1", features = ["local-authorization", "session-store", "mcp", "skills", "native-keyring"] }
+meerkat-core = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
+meerkat-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
+meerkat-runtime = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
+meerkat-session = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
+meerkat-store = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1", features = ["sqlite", "jsonl"] }
+meerkat-models = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
+meerkat-llm-core = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1", default-features = false }
+meerkat-auth-core = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
+meerkat-openai = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1", default-features = false }
+meerkat-anthropic = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1", default-features = false, features = ["oauth"] }
+meerkat-gemini = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1", default-features = false, features = ["oauth"] }
 clap = { version = "4.5", features = ["derive"] }
 futures-util = "0.3"
 serde.workspace = true
@@ -60,14 +60,18 @@ dbus-secret-service = { version = "=4.1.0", default-features = false, features =
 toolkit-mobkit = { path = "../toolkit-mobkit", features = ["native-host"] }
 
 [dev-dependencies]
+# Canonical definitions for mandatory mob comms in the fresh SDK fixture.
+meerkat-comms = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1", default-features = false }
+# Native definitions for the fresh SDK host's expected surface, not a capture.
+meerkat-tools = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1", default-features = false }
 # Exact read-only backend evidence in the SDK fixture, never a second Toolkit owner.
 rusqlite.workspace = true
 toolkit-store = { path = "../toolkit-store" }
-meerkat-workgraph = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
+meerkat-workgraph = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
 # Native fault controls are available only to this crate's tests.
-meerkat = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01", features = ["test-support"] }
-meerkat-client = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
-meerkat-mob = { git = "https://github.com/lukacf/meerkat.git", rev = "953437864bbb21b135661a0e61a09b5aa1f6ba01" }
+meerkat = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1", features = ["test-support"] }
+meerkat-client = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
+meerkat-mob = { git = "https://github.com/lukacf/meerkat.git", rev = "75a23265f6125f3ce61560ba8388c076a1caccf1" }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

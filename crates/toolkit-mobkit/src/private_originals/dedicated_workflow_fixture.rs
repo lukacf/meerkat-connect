@@ -75,6 +75,20 @@ impl DedicatedFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
     pub async fn persistent() -> Self { Self::persistent_from(false, None).await }
     pub async fn persistent_configured_waiter() -> Self { Self::persistent_from(true, None).await }
     pub async fn reopen(retained: DurableDedicated) -> Self { Self::persistent_from(false, Some(retained)).await }
+    pub async fn persistent_configured_waiter_for_gateway() -> Self {
+        Self::construct(true, true, true, None, |builder, configuration, directory| {
+            let layout = meerkat_mobkit::storage_layout::MetaStorageLayout::standalone(
+                directory.to_path_buf(), directory.join("gateway-home"));
+            let persistence = meerkat::PersistenceBundle::new_with_local_grant_authorization(
+                Arc::new(meerkat::SqliteSessionStore::open(layout.session_db().unwrap().path).unwrap()),
+                Arc::new(meerkat_runtime::store::SqliteRuntimeStore::new(layout.runtime_db()).unwrap()),
+                Arc::new(meerkat::MemoryBlobStore::new()), configuration,
+            ).unwrap();
+            let history = persistence.runtime_store();
+            let (service, machine) = meerkat::surface::build_runtime_backed_service(builder, 4, persistence).unwrap();
+            (Arc::new(service), machine, Some(history))
+        }).await
+    }
     async fn persistent_from(configured_waiter: bool, retained: Option<DurableDedicated>) -> Self {
         Self::construct(true, true, configured_waiter, retained, |builder, configuration, directory| {
             let persistence = meerkat::PersistenceBundle::new_with_local_grant_authorization(
@@ -328,5 +342,92 @@ impl<S: meerkat_mob::MobSessionService + meerkat_mobkit::identity_first::Control
         Self { f, history, durable, member, parent, lead, terms, lineage, backend, work,
             parent_session: sessions[1].clone(), lead_session: sessions[2].clone(),
             _gateway: gateway, _private_open: private_open }
+    }
+}
+
+/// Reopen the same durable stores and normal installed host preparation without
+/// materializing any roster. This tests the metadata page before actor revival;
+/// it does not fabricate native Ready or start the recovery worker.
+pub(in crate::private_originals) struct MetadataDedicated {
+    pub source: Arc<PrivateOriginals>,
+    pub machine: Arc<MeerkatMachine>,
+    pub service: Arc<meerkat::PersistentSessionService<FactoryAgentBuilder>>,
+    pub history: Arc<dyn meerkat_runtime::RuntimeStore>,
+    pub backend: SetupWorkBackend,
+    pub sessions: Vec<SessionId>,
+    provider: Arc<ScriptedProvider>,
+    host: crate::installed_host::controller_first_input_fixture::DedicatedHost,
+    _gateway: crate::host_gateway::ToolkitGatewayHost,
+    _private_open: tokio::sync::watch::Sender<bool>,
+}
+impl DurableDedicated {
+    pub async fn reopen_stdio_host(&self) -> crate::installed_host::controller_first_input_fixture::DedicatedHost {
+        crate::installed_host::controller_first_input_fixture::reopen_for_dedicated_workflow(
+            self.directory.clone(), self.selection.clone()).await
+    }
+    pub fn lead_source(&self) -> &PrivateOriginalRef { &self.lead.original }
+    pub fn sessions(&self) -> &[SessionId] { &self.sessions }
+    pub fn terms(&self) -> &SetupWorkflowTerms { &self.terms }
+    pub async fn reopen_metadata(self) -> MetadataDedicated {
+        let mut host = crate::installed_host::controller_first_input_fixture::reopen_for_dedicated_workflow(
+            self.directory, self.selection).await;
+        let lifetime = host.lifetime.clone();
+        let directory = host.directory.clone();
+        let result = std::panic::AssertUnwindSafe(async move {
+        let source = host.originals.clone();
+        let (private_open, private_closed) = tokio::sync::watch::channel(false);
+        let gateway = host.installed.take().unwrap().compose(host.lifetime.clone(),
+            crate::private_host::PrivateHostClosed(private_closed));
+        let configuration = gateway.native_grant_work_configuration().unwrap().unwrap();
+        let provider = Arc::new(ScriptedProvider::default());
+        let mut builder = FactoryAgentBuilder::new(AgentFactory::minimal().comms(true), Config::default());
+        builder.default_llm_client = Some(provider.clone());
+        let persistence = meerkat::PersistenceBundle::new_with_local_grant_authorization(
+            Arc::new(meerkat::SqliteSessionStore::open(host.directory.path().join("dedicated-native.sqlite3")).unwrap()),
+            Arc::new(meerkat_runtime::store::SqliteRuntimeStore::new(host.directory.path().join("dedicated-native.sqlite3")).unwrap()),
+            Arc::new(meerkat::MemoryBlobStore::new()), configuration,
+        ).unwrap();
+        let history = persistence.runtime_store();
+        let (service, machine) = meerkat::surface::build_runtime_backed_service(builder, 4, persistence).unwrap();
+        let service = Arc::new(service);
+        let mut definition = definition(); definition.id = MobId::from("factory");
+        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service.clone())
+            .with_session_runtime_adapter(machine.clone()).unwrap().with_declared_ephemeral_mob_storage();
+        let prepared = gateway.prepare_bootstrap(spec).await.unwrap();
+        assert!(Arc::ptr_eq(&source.machine().unwrap(), &machine));
+        assert!(source.bound_identity_runtime().is_err());
+        // The prepared spec is not a bootstrapped runtime or Ready token.
+        drop(prepared);
+        let graph = WorkGraphService::with_scope(Arc::new(SqliteWorkGraphStore::open(
+            host.source_path.with_extension("dedicated-work.sqlite")).unwrap()),
+            host.source_scope.realm.clone(), WorkNamespace::new("dedicated-workflow").unwrap());
+        let backend = SetupWorkBackend::new(graph, "dedicated-sqlite".into(), Id::new("one").unwrap(),
+            &[meerkat_core::DurabilityDeclaration::durable("workgraph", meerkat_core::DurabilityResolution::Persistent)]).unwrap();
+        assert_eq!(backend.pin(), &self.terms.backend);
+        MetadataDedicated { source, machine, service, history, backend, sessions: self.sessions,
+            provider, host, _gateway: gateway, _private_open: private_open }
+        }).catch_unwind().await;
+        match result {
+            Ok(fixture) => fixture,
+            Err(panic) => {
+                // No roster/actor was entered. Still observe the original host
+                // close owner on construction failure, preserving that failure.
+                let _cleanup = std::panic::AssertUnwindSafe(async {
+                    use meerkat_toolkit::host_lifetime::control::{HostCloseReason, HostCloseState, PrivateHostLifetimeControl};
+                    let close = lifetime.begin_close_activation(HostCloseReason::Shutdown).unwrap();
+                    assert_eq!(lifetime.join_close(&close.handle).await.unwrap().state, HostCloseState::Settled);
+                }).catch_unwind().await;
+                drop(directory);
+                std::panic::resume_unwind(panic)
+            }
+        }
+    }
+}
+impl MetadataDedicated {
+    pub fn model_requests(&self) -> usize { self.provider.0.load(Ordering::SeqCst) }
+    pub async fn close(&self) {
+        use meerkat_toolkit::host_lifetime::control::{HostCloseReason, HostCloseState, PrivateHostLifetimeControl};
+        let close = self.host.lifetime.begin_close_activation(HostCloseReason::Shutdown).unwrap();
+        assert_eq!(self.host.lifetime.join_close(&close.handle).await.unwrap().state, HostCloseState::Settled);
     }
 }

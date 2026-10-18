@@ -464,6 +464,17 @@ impl InstalledToolkitHost {
         Ok(self)
     }
 
+    /// Select private historical context reads as trusted host assembly. The
+    /// callback is frozen before bootstrap but receives later canonical terms,
+    /// so it does not freeze a roster of workflows. It grants no input, effect
+    /// or payload-delivery authority and is never decoded from model input.
+    pub fn with_workflow_context_recovery(mut self,
+        selector: acquisition::InstalledWorkflowContextSelector,
+    ) -> Result<Self, HostLifetimeError> {
+        self.acquisition.select_context_recovery(selector)?;
+        Ok(self)
+    }
+
     pub fn compose(
         mut self,
         owner: Arc<NativeHostLifetime>,
