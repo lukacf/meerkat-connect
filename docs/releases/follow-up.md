@@ -17,12 +17,17 @@ The correction retries once only when native policy-change refusal confirms
 nonadmission, preserving the same input and deadline. Cancellation, expiry and
 uncertain acceptance retain their distinct outcomes.
 
-The latest two-requester SDK diagnostic still fails. A's first Find reports
-`operation_authorization_unavailable`; its cause is unassigned. B reaches the
-held installer, then the two-requester barrier expires. Cancellation and sibling
-survival remain unreached. Both native attempts close with their direct children
-reaped, the Python owner exits and the worker count reaches zero. This cleanup
-evidence does not qualify the unfinished shared flow.
+Four focused SDK feedback controls now pass, including two actual native cases:
+one fresh Find after pre-entry refusal creates exactly one acquisition; persistent
+refusal stops after two proposals with no acquisition. This is a test-agent
+correction, not product retry policy.
+
+The full two-requester SDK case still fails at B's helper integration check and
+the shared-worker barrier, before independent cancellation and sibling completion.
+The generic `other_error` result does not identify its cause. The fixture's cleanup
+predicate passes, but two provider cleanup-thread panics remain recorded and raw
+inner receipts are absent. Outer command/transport owners join. Earlier failures
+and their separately verified cleanup retain their original scope.
 
 The planning-input source is now checkpointed. Seven focused native controls
 pass after correcting a binding path that applied the configured helper's root

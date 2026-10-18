@@ -2,6 +2,7 @@
 //! Two real Original routes/helpers use one inert worker. No service activation,
 //! useful business tool, stock application restart or large fan-out is claimed.
 use super::native_case_artifacts::publish;
+mod find_feedback;
 use super::sdk_host::{SdkClient, SdkLaunchOwner, SdkParent};
 use super::*;
 use async_trait::async_trait;
@@ -156,6 +157,11 @@ fn model_facts() -> meerkat_core::authorization::ModelAuthorizationFacts {
 #[derive(Default)]
 struct Script {
     selected: std::sync::OnceLock<Value>,
+    seen_results: Mutex<BTreeMap<String, meerkat_core::ToolResult>>,
+    find_deadline: std::sync::OnceLock<tokio::time::Instant>,
+    find_only: bool,
+    find_refusals: find_feedback::RefusalMode,
+    injected_find: Mutex<BTreeMap<String, String>>,
     calls: Mutex<Vec<(String, String, Value)>>,
     results: Mutex<BTreeMap<String, Value>>,
     finished: AtomicUsize,
@@ -220,6 +226,9 @@ impl Script {
             .iter()
             .any(|tool| tool.name == meerkat_toolkit::setup::SETUP_REPORT);
         let prefix = format!("{tag}-{}", if helper { "helper" } else { "original" });
+        if helper && self.find_only {
+            return done("The focused Find control performs no helper tools.");
+        }
         let mut returned = BTreeMap::new();
         for message in &request.messages {
             if let Message::ToolResults { results, .. } = message {
@@ -249,14 +258,22 @@ impl Script {
                             Some(_) => "other_error",
                             None => "none",
                         };
-                        eprintln!("{}", json!({
-                            "event":"d5_sdk_tool_result", "member":prefix,
-                            "call":result.tool_use_id, "operation":operation,
-                            "is_error":result.is_error, "error_code":code,
-                        }));
-                        assert!(!result.is_error,
+                        let first_observation = self.observe_result(result);
+                        if first_observation {
+                            eprintln!("{}", json!({
+                                "event":"d5_sdk_tool_result", "member":prefix,
+                                "call":result.tool_use_id, "operation":operation,
+                                "is_error":result.is_error, "error_code":code,
+                            }));
+                        }
+                        let bounded_find_feedback = !helper
+                            && operation == toolkit_mobkit::FIND_AND_INSTALL
+                            && find_feedback::canonical_unavailable(result);
+                        assert!(!result.is_error || bounded_find_feedback,
                             "{prefix}: native call {} refused with {code}", result.tool_use_id);
-                        returned.insert(result.tool_use_id.clone(), value.clone());
+                        if !result.is_error {
+                            returned.insert(result.tool_use_id.clone(), value.clone());
+                        }
                         self.results
                             .lock()
                             .unwrap()
@@ -273,10 +290,11 @@ impl Script {
                 "call":key, "operation":name, "offered":offered,
             }));
             assert!(offered, "{key}: the actual request must offer {name}");
-            self.calls
-                .lock()
-                .unwrap()
-                .push((key.clone(), name.into(), args.clone()));
+            let mut calls = self.calls.lock().unwrap();
+            assert!(!calls.iter().any(|(prior, _, _)| prior == &key),
+                "the controlled model must emit each actual call ID once");
+            calls.push((key.clone(), name.into(), args.clone()));
+            drop(calls);
             vec![
                 LlmEvent::ToolCallComplete {
                     id: key,
@@ -303,12 +321,19 @@ impl Script {
                     "The shared physical preparation completed, but no service was activated.",
                 );
             }
-            if !has("find") {
-                return call(
-                    "find",
-                    toolkit_mobkit::FIND_AND_INSTALL,
-                    json!({"request":format!("sdk-child-{tag}: inspect and prepare the selected inert software; report activation honestly")}),
-                );
+            let args = find_feedback::request_arguments(tag);
+            match self.find_choice(&prefix, &args) {
+                find_feedback::FindChoice::Emit(suffix) => {
+                    assert!(tokio::time::Instant::now() < *self.find_deadline.get()
+                        .expect("the existing scenario deadline is retained before launch"));
+                    return call(suffix, toolkit_mobkit::FIND_AND_INSTALL, args);
+                }
+                find_feedback::FindChoice::Accepted => (),
+                find_feedback::FindChoice::Exhausted if self.find_only => {
+                    return done("Both bounded Find proposals were refused before entry.");
+                }
+                find_feedback::FindChoice::Exhausted => panic!(
+                    "{prefix}: both bounded Find proposals were refused before entry"),
             }
             return done(
                 "The setup helper is running; its existing owner will deliver the result.",
@@ -780,6 +805,8 @@ struct Case {
     launch: Option<Arc<SdkLaunchOwner>>,
     client: Arc<tokio::sync::Mutex<SdkClient>>,
     script: Arc<Script>,
+    audit_store: Option<Arc<dyn meerkat_runtime::store::RuntimeStore>>,
+    audit_sessions: BTreeMap<String, SessionId>,
     reviews: Vec<crate::approval::ApprovalPresenter>,
     review_tasks: Vec<tokio::task::JoinHandle<Result<(), String>>>,
     review_close: tokio::sync::watch::Sender<bool>,
@@ -804,6 +831,8 @@ impl Case {
             launch: None,
             client,
             script: Arc::new(Script::default()),
+            audit_store: None,
+            audit_sessions: BTreeMap::new(),
             reviews: vec![],
             review_tasks: vec![],
             review_close: tokio::sync::watch::channel(false).0,
@@ -949,13 +978,19 @@ impl Case {
         );
         let originals = prepared.originals();
         let member_mcp_custody = meerkat_mobkit::MemberMcpCustody::new();
-        let (factory, configuration) = shared
+        let (factory, mut configuration) = shared
             .configure_factory_with_attempt_guards(
                 member_mcp_custody.install(AgentFactory::minimal().comms(true)),
                 participant.service_tasks(),
                 self.resource.as_ref().unwrap(),
             )
             .unwrap();
+        if self.script.find_refusals != find_feedback::RefusalMode::None {
+            configuration.operation_owner = Arc::new(find_feedback::FindRefusalOwner {
+                inner: configuration.operation_owner.clone(),
+                script: self.script.clone(),
+            });
+        }
         let mut builder = FactoryAgentBuilder::new(factory, Config::default());
         builder.default_llm_client = Some(self.script.clone());
         *builder.default_agent_llm_client_decorator.write().unwrap() = Some(Arc::new(|client| {
@@ -981,6 +1016,7 @@ impl Case {
         )
         .unwrap();
         let history = persistence.runtime_store();
+        self.audit_store = Some(history.clone());
         let jobs = persistence.job_store();
         let (service, machine) =
             meerkat::surface::build_runtime_backed_service(builder, 4, persistence).unwrap();
@@ -1084,6 +1120,7 @@ impl Case {
                 .bridge_session_id()
                 .cloned()
                 .unwrap();
+            self.audit_sessions.insert(name.into(), session.clone());
             let boundary = service
                 .acquire_live_session_actor_turn_boundary_lease(&session)
                 .await
@@ -1435,6 +1472,7 @@ impl Case {
     }
 
     async fn run(&mut self) {
+        self.script.find_deadline.set(tokio::time::Instant::now() + BOUND).unwrap();
         self.approve_independently();
         let launch = self.launch.as_ref().unwrap().clone();
         launch.create_parent().await;
@@ -1615,16 +1653,8 @@ impl Case {
         let results = self.script.results.lock().unwrap();
         assert!(results.contains_key("b-helper-job"));
         assert!(results.contains_key("b-helper-report"));
-        assert_eq!(
-            self.script
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(_, name, _)| name == toolkit_mobkit::FIND_AND_INSTALL)
-                .count(),
-            2
-        );
+        drop(results);
+        self.assert_find_feedback(&["a", "b"], true).await;
         assert_eq!(
             self.worker().unwrap()["entries"].as_array().unwrap().len(),
             1

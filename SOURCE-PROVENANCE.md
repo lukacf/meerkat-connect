@@ -191,6 +191,31 @@ bootstrap v1 has no version negotiation. Dedicated planning-session creation,
 terminal-result/expiry departure, authorized waiter-context delivery and the
 complete shared SDK journey remain open. Published 0.9.0 assets are unchanged.
 
+### Bounded SDK feedback controls
+
+Private Toolkit checkpoint `3356cad1577bc9fa877f4816af6ca98fe1198cff` contributes two test paths.
+The scripted agent may make one fresh local Find proposal after exact pre-entry
+authorization feedback, preserving the request and original deadline. It does
+not replay an entered effect or retry uncertain helper/MCP work.
+
+Outcome `5ad14d9a` passes the two scripted controls but fails the first native
+test because its call snapshot precedes the existing terminal wait. After moving
+that wait, outcome `3dca5919` passes both native controls: one exact refused
+operation followed by a fresh proposal produces one acquisition and one succeeded
+work-admission effect; persistent refusal produces two refused operations and
+zero such effects. Complete native audits export 21 and 11 rows. Independent
+review `f87efb79` joins these with the two earlier scripted passes.
+
+The full SDK case in that same outcome remains failed. B's fresh Find succeeds,
+then its helper check reports `other_error`; A's check succeeds, but the shared
+barrier expires. The exact error and full-case audit were not exported, so no
+cause or MCP leaf entry is inferred. Two provider cleanup-thread panics remain;
+the cleanup-empty predicate passes but raw inner receipts are absent. Outer
+owners join and all 741 selected source rows remain exact. The earlier compiler
+failure `57003027` and prior native/SDK failures remain failed. This qualifies
+four controlled feedback tests, not shared setup completion or product automatic
+retry. Published 0.9.0 assets are unchanged.
+
 ### Explicit Node build plans
 
 Private Toolkit checkpoint `07172f52e03b4a3c0ec9f383651bbfde4ebc2364` contributes 19 source/test
