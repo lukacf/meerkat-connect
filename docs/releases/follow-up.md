@@ -111,7 +111,21 @@ bounded same-input reprepare and never infers a new admission from a source row.
 The six reviewed paths are committed locally as private `717de80b` and
 public-follow-up `54a30ebc`; all recorded owners joined and source was restored.
 
-The latest [recovery and writer-contention execution](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-cold-contention-driver-eight-y1qfj_hc/FINAL.json)
+The latest [combined helper and admission execution](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-helper-currentness-twenty-five-mpd2m19p/FINAL.json)
+(`c2d6fb3d`) compiles successfully and runs all 23 selected Toolkit controls:
+20 pass and three fail. The failures are the three new helper cold-recovery
+controls, all at the check that the old source, runtime, service, lifetime and
+history owners have been released. They reach this check after the explicit
+close/join assertions and before reopening. The logs do not identify which owner
+survives. The [outcome review](/private/tmp/connect-combined25-root-outcome-9eodxj9q/REVIEW.json)
+(`3121f7d8`) confirms the exact results, restored 800-file source, unchanged lock,
+and 25 runner plus 23 child process groups absent. Process cleanup does not
+prove the failed Rust-owner release condition. Both Driver controls remain
+unlisted and unentered; the gateway, installed product and adoption stay held.
+The currentness, original cold/wake/tamper and writer families all pass, together
+with eleven retained helper controls.
+
+The preceding [recovery and writer-contention execution](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-cold-contention-driver-eight-y1qfj_hc/FINAL.json)
 (`25271039`) compiles both libraries and runs six Toolkit controls: five pass
 and one fails. Cold completion wake, coherent-input tamper refusal, and all three
 writer-contention controls pass. The first cold restoration control fails earlier
@@ -138,9 +152,9 @@ The [independent contract review](/private/tmp/connect-cold-custody-contract-tyq
 starts at `(false, false)`; restoration preserves its issuer and changes custody
 to `(true, false)`. Tamper refusal must preserve the preexisting binding. The
 [fixture correction](/private/tmp/connect-cold-tuple-independent-272j4exe/REVIEW.json)
-(`280d528e`) is included in the latest execution. The wake and tamper controls
-now pass; the first cold control fails before reaching restoration. Both batches
-remain failed, with no source adoption.
+(`280d528e`) is included in the preceding combined8 execution. In that run, the
+wake and tamper controls pass; the first cold control fails before reaching
+restoration. Both older batches remain failed, with no source adoption.
 
 The [independent outcome review](/private/tmp/connect-affected6-root-outcome-r3ti_pbi/REVIEW.json)
 (`77c08279`) verifies all six raw results, eight absent runner groups, six absent
@@ -161,18 +175,20 @@ wait. These passes do not qualify the whole recovery composition or attribute th
 earlier raw Bind failure.
 
 The [helper payload correction](/private/tmp/connect-helper-cold-payload-r1-j59wo8pp/MANIFEST.json)
-(`2580b607`) has independent source and cleanup review, but has not run. Version 5
-retains the exact prepared Input in the existing canonical helper row before
-Candidate and uses native replay/current-authority checks. Legacy rows without
-recoverable bytes stay unavailable, without reconstruction or resubmission.
+(`2580b607`) has independent source and cleanup review. Its eleven retained
+helper controls now pass; the three new cold controls fail before reopening.
+Version 5 retains the exact prepared Input in the existing canonical helper row
+before Candidate and uses native replay/current-authority checks. Legacy rows
+without recoverable bytes stay unavailable. Full cold recovery remains unqualified.
 
 A further admission race has an independently reviewed source correction: legitimate
 custody receipt progress can change the canonical revision while the acquisition
 host awaits admission. The correction permits only typed, reachable progress of
 the same attempt, with all other source facts unchanged. Cancellation and actual
 request changes still refuse admission. The [source review](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-acquisition-progress-independent-ehufpxps/REVIEW.json)
-(`e111405d`) approves three prepared native controls, which remain unexecuted.
-This is not yet an attribution of the historical Denied failure.
+(`e111405d`) is now followed by three passing native controls: legitimate custody
+progress succeeds, cancellation refuses, and substantive source change refuses.
+These results do not attribute the historical Denied failure.
 
 The conditional recovery adoption map remains held. The direct Connect
 application driver separately needs its two cleanup controls, a fresh production
