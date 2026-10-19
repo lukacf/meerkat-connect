@@ -18,9 +18,16 @@ advances its stored revision while persisting restart data, but software
 preparation still requires the old revision. A narrow correction is in progress,
 retaining exact input and authority checks. The corrupted-resource case remains
 unentered and source adoption stays held. The revised custody-progress regression
-passes, including refusal and cancellation checks. Ordinary preparation advances
-past the original conflict but encounters another stale historical-condition
-comparison downstream. That seam is being repaired before the production rerun.
+passes, including refusal and cancellation checks. The downstream historical-condition
+comparison is now corrected, and all three affected preparation/store/refusal
+controls pass. The corrected production build passes. Its installed rerun reaches
+fresh input and catalog search, then fails because the controlled provider rejects
+valid native reprepare feedback at that point. Five focused Python controls pass
+for the verifier correction. The next same-binary run then receives an actual
+catalog search refusal: native ReprepareRequired before tool entry. No HN call
+completes and corruption remains unentered; cleanup passes. Expose that refusal
+instead of the verifier's misleading KeyError. Approval process-loss can run
+independently because it invokes neither catalog search nor the HN service.
 This is development evidence, not a 0.9.4 release claim.
 
 
@@ -104,12 +111,22 @@ Entered native operations remain separately owned until actual settlement or
 close. The exact Core 0.9.4 API revision and Connect's durable-ordering
 implementation remain pending; r7 startup alone does not close this gap.
 
-Core has offered owner-scoped resource domains on `fix/094-domain-owned-by`
-at `366b8311`. Connect's 23-path consumer patch now has independent source approval,
-including two new controls for distinct application authorities, exact session
-children, restart and legacy parent IDs. The controls have not run. The lead plans
-a matching r8 Core/Meta/SDK tuple; it has not been offered. Instances sharing one
-authority are one owner. The selected development graph remains unchanged.
+The matched r8 development offer is now available:
+[Core `60509a43`](https://github.com/lukacf/meerkat/commit/60509a43e4fb42a0ccccdeca34218190e34db6e1)
+and [Meta `c63e643e`](https://github.com/lukacf/meerkat-meta/commit/c63e643ee1bed5e64a33f375e57b85a21b64c8ed).
+Its owner-domain API is identical to the reviewed offer, so reuse Connect's
+23-path patch and two focused isolation/restore controls. They have not run.
+Instances sharing one authority are one owner. Python and TypeScript SDK trees
+are unchanged from r7. The only additional identified source adjustment routes
+finalization ExternalEvent inputs through native `bind_host_outcome`; ordinary
+Prompt inputs retain `bind_prompt`. Do not change the active r6 run or reopen
+r8 state with r6: r8 writes state version 7.
+
+The offer includes bootstrap completion and the r6 refusal trace. It explicitly
+excludes admission-recovery #14, the host refusal observer, the additional
+authorization-audit work and initialized Console-reset fixes. Those remain
+upstream follow-up work for r9. An offered revision is not a passing Connect
+consumer or release qualification.
 
 Connect's preparation/store-binding, attempt schema and foreground persistence
 are now committed locally as private `6ec07fc5` and public-follow-up `4abe7fcc`.
