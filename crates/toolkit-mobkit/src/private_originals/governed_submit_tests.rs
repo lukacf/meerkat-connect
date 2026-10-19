@@ -1,6 +1,7 @@
 //! The production private caller runs through real native admission and source
 //! custody. Faults wrap the real bridge before lookup or after fresh acceptance.
 
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 
 // Test-only result context. Production admission types do not
@@ -189,7 +190,7 @@ fn domain() -> ResourceDomain {
 fn ceiling(action_name: &str) -> ExecutionRestrictions {
     let mut bounds = ExecutionRestrictions::unrestricted();
     bounds.actions = ExactRestriction::exact([action(action_name)]);
-    bounds.resource_domains = ExactRestriction::exact([domain()]);
+    bounds.resource_domains = DomainRestriction::exact([domain()]);
     bounds.processors = ExactRestriction::exact([ProcessorRef::Principal {
         principal: principal("agent"),
     }]);

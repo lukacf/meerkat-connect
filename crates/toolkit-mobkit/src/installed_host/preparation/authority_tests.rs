@@ -66,11 +66,11 @@ fn empty_owner_issues_separate_real_parents_then_recovers_same_ids() {
     assert_ne!(report.parent, helper.controller_parent);
     let setup_resolved = owner.source.grants().resolve_lineage(std::slice::from_ref(&setup.parent), application, None).unwrap();
     assert_eq!(setup_resolved.restrictions(), &application_operations::configured_setup_parent(
-        &resolved.native_host.routes[0].logical_executor, &resolved.native_host.members[0].audience));
+        application, &resolved.native_host.routes[0].logical_executor, &resolved.native_host.members[0].audience));
     setup_resolved.check_current().unwrap();
     let report_resolved = owner.source.grants().resolve_controller_lineage(&report.parent, application, None).unwrap();
     assert_eq!(report_resolved.restrictions(), &operator_setup::configured_report::report_parent(
-        &helper.logical_executor, &resolved.native_host.members[0].audience));
+        application, &helper.logical_executor, &resolved.native_host.members[0].audience));
     report_resolved.check_current().unwrap();
     drop(report_resolved); drop(setup_resolved);
     owner.configure_authorities(&mut helper, &requests).unwrap();
@@ -686,7 +686,7 @@ fn helper_catalog_successor_parent_is_explicit_catalog_only_and_not_an_executabl
     owner.configure_authorities_with_helper_resources(&mut helper, &requests, None, Some((&member, &session))).unwrap();
     assert!(helper.operation_basis.lineage_for(None).is_none());
     let capability = helper.catalog_capability.as_ref().unwrap();
-    let expected = application_operations::configured_catalog_parent(&helper.logical_executor,
+    let expected = application_operations::configured_catalog_parent(&selected.native_host.grant_administrator, &helper.logical_executor,
         &selected.native_host.members[0].audience);
     let current = owner.source.grants().resolve_lineage(&capability.parent,
         &selected.native_host.grant_administrator, helper.represented_subject.as_ref()).unwrap();
@@ -785,6 +785,6 @@ fn helper_catalog_successor_does_not_reinterpret_existing_original_catalog_targe
         &owner.selected.native_host.grant_administrator, owner.selected.native_host.routes[0].represented_subject.as_ref()).unwrap();
     assert_eq!(current.restrictions(), &old_target.restrictions);
     current.check_current().unwrap();
-    assert_ne!(current.restrictions(), &application_operations::configured_catalog_parent(&helper.logical_executor,
+    assert_ne!(current.restrictions(), &application_operations::configured_catalog_parent(&owner.selected.native_host.grant_administrator, &helper.logical_executor,
         &owner.selected.native_host.members[0].audience));
 }

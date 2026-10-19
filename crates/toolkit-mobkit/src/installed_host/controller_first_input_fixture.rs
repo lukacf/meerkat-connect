@@ -540,7 +540,7 @@ fn provision_selected_source_with_workflow_members(facts: &ControllerModelFacts,
             let parent = source.grants().issue_root(&root,
                 EvidenceId::new("warm-helper-catalog-parent").unwrap(),
                 native.grant_administrator.clone(), helper.represented_subject.clone(),
-                application_operations::configured_catalog_parent(&helper.logical_executor, &member.audience)).unwrap();
+                application_operations::configured_catalog_parent(&native.grant_administrator, &helper.logical_executor, &member.audience)).unwrap();
             helper.catalog_capability = Some(acquisition::ConfiguredHelperCatalogCapability { parent: vec![parent] });
         }
         assert!(native.routes[0].application_parent.is_none());

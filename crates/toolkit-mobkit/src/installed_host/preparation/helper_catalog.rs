@@ -41,7 +41,7 @@ impl PreparedHelperCatalog {
             }
             PreparedHelperCatalogScope::CurrentHelperSuccessors => {
                 if base.is_some() { return Err(HostLifetimeError::Denied); }
-                (application.clone(), application_operations::configured_catalog_parent(&helper.logical_executor, audience))
+                (application.clone(), application_operations::configured_catalog_parent(application, &helper.logical_executor, audience))
             }
         };
         let selected = Self { id: request.issuance_id.clone(), scope: request.scope, grantee, restrictions };

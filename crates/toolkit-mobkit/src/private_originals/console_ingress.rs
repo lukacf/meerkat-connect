@@ -27,6 +27,26 @@ pub(super) struct ConsoleEntry {
 }
 impl ConsoleEntry {
     pub(super) fn login(&self) -> &ConsoleLoginHandle { &self.login }
+    pub(super) fn validate_custody_input(
+        &self, record: &SourceRecord, raw: &Input, bound: &Input,
+    ) -> Result<(), PrivateOriginalError> {
+        self.check().map_err(|_| PrivateOriginalError::Denied)?;
+        let key = stock_console_event_key(raw).map_err(|_| PrivateOriginalError::Conflict)?;
+        let raw_digest = digest(&canonical_json(raw).map_err(|_| PrivateOriginalError::Conflict)?);
+        let (Input::Prompt(raw_prompt), Input::Prompt(bound_prompt)) = (raw, bound)
+            else { return Err(PrivateOriginalError::Conflict); };
+        if record.event.original.as_str() != raw.id().to_string()
+            || record.event.occurrence != record.event.original
+            || record.event.root_event.resource_id != record.event.original
+            || record.event.root_event.sha256 != raw_digest
+            || record.event.content_sha256 != raw_digest
+            || bound.id() != raw.id()
+            || bound.header().idempotency_key.as_ref() != Some(&key)
+            || canonical_json(&bound_prompt.content).map_err(|_| PrivateOriginalError::Conflict)?
+                != canonical_json(&raw_prompt.content).map_err(|_| PrivateOriginalError::Conflict)?
+        { return Err(PrivateOriginalError::Conflict); }
+        Ok(())
+    }
     pub(super) fn check(&self) -> Result<(), String> {
         self.login.check().map_err(|_| "The Console login is unavailable")?;
         let subject = self.human.current().map_err(|_| "The Console human is no longer current")?;

@@ -4,6 +4,7 @@
 //! to guess a target nor issue permission. The native grant owner conjoins the
 //! exact resulting tuple with the separately reviewed grant at each boundary.
 
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use meerkat_authorization::policy::LocalOperationValues;
 use meerkat_authorization_contracts::constraints::{
     ActionRef, AudienceRef, DelegationDepth, ExactRestriction, ExecutionRestrictions,
@@ -99,14 +100,14 @@ pub(crate) fn catalog_read(
 }
 
 /// Explicit host selection for catalog reads by this helper's successors.
-/// Only the application receives this one-level parent; the native binder
-/// narrows its resource to the observed helper session before execution.
-pub(crate) fn configured_catalog_parent(executor: &PrincipalRef, audience: &AudienceRef)
+/// Only the selected application receives this one-level parent over its own
+/// domains; the native binder narrows it to the observed helper session.
+pub(crate) fn configured_catalog_parent(application: &PrincipalRef, executor: &PrincipalRef, audience: &AudienceRef)
     -> ExecutionRestrictions
 {
     ExecutionRestrictions {
         actions: ExactRestriction::exact([ActionRef { feature: "toolkit".into(), action: "catalog-read".into() }]),
-        resource_domains: ExactRestriction::unrestricted(),
+        resource_domains: DomainRestriction::owned_by([application.clone()]),
         processors: ExactRestriction::exact([ProcessorRef::Principal { principal: executor.clone() }]),
         audiences: ExactRestriction::exact([audience.clone()]),
         lifetime: LifetimeRestriction::unrestricted(),
@@ -116,14 +117,15 @@ pub(crate) fn configured_catalog_parent(executor: &PrincipalRef, audience: &Audi
 
 /// Admin-issued capability for the exact setup action and selected destination.
 pub(crate) fn configured_setup_parent(
+    application: &PrincipalRef,
     executor: &PrincipalRef,
     audience: &AudienceRef,
 ) -> ExecutionRestrictions {
     ExecutionRestrictions {
         actions: ExactRestriction::exact([setup_request_action()]),
-        // Sessions do not exist at configuration. Only the application may
-        // delegate this single action one level to an exact session resource.
-        resource_domains: ExactRestriction::unrestricted(),
+        // Sessions do not exist at configuration. The selected application may
+        // delegate this action only to its own exact session resources.
+        resource_domains: DomainRestriction::owned_by([application.clone()]),
         processors: ExactRestriction::exact([ProcessorRef::Principal { principal: executor.clone() }]),
         audiences: ExactRestriction::exact([audience.clone()]),
         lifetime: LifetimeRestriction::unrestricted(),
@@ -326,7 +328,7 @@ pub(crate) fn mcp_access_restrictions_with_service_scope<'a>(
         actions: ExactRestriction::exact(actions.chain(std::iter::once(approval))
             .chain(attachment.iter().map(|value| value.action.clone()))
             .chain(catalog.iter().map(|value| value.action.clone()))),
-        resource_domains: ExactRestriction::exact([operation.resource_domain, connector_domain].into_iter()
+        resource_domains: DomainRestriction::exact([operation.resource_domain, connector_domain].into_iter()
             .chain(attachment.iter().map(|value| value.resource_domain.clone()))
             .chain(catalog.iter().map(|value| value.resource_domain.clone()))),
         processors: ExactRestriction::exact([operation.processor]),
@@ -342,10 +344,14 @@ pub(crate) fn mcp_access_restrictions_with_service_scope<'a>(
 pub(crate) fn parent_restrictions(values: LocalOperationValues) -> ExecutionRestrictions {
     ExecutionRestrictions {
         actions: ExactRestriction::exact([values.action]),
-        resource_domains: ExactRestriction::exact([values.resource_domain]),
+        resource_domains: DomainRestriction::exact([values.resource_domain]),
         processors: ExactRestriction::exact([values.processor]),
         audiences: ExactRestriction::exact([values.audience]),
         lifetime: LifetimeRestriction::unrestricted(),
         delegation_depth: DelegationDepth::remaining(1),
     }
 }
+
+#[cfg(test)]
+#[path = "application_operations_owned_domains_tests.rs"]
+mod owned_domains_tests;

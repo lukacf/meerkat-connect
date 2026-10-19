@@ -73,7 +73,7 @@ fn report_parent_bootstraps_absent_capability_and_recovers_without_publication()
         assert_eq!(capability.parent.len(), 1);
         assert_eq!(capability.parent[0].root_authority, *operator);
         let resolved = source.grants().resolve_controller_lineage(&capability.parent, &native.grant_administrator, None).unwrap();
-        assert_eq!(resolved.restrictions(), &report_parent(&fixture.helper.logical_executor, &native.members[0].audience));
+        assert_eq!(resolved.restrictions(), &report_parent(&native.grant_administrator, &fixture.helper.logical_executor, &native.members[0].audience));
         resolved.check_current().unwrap();
         drop(resolved); drop(originals); drop(source);
         Ok(())
@@ -220,8 +220,8 @@ fn public_parent_is_one_action_recovers_and_never_relabels_the_account_parent() 
             &native.grant_administrator, None).unwrap();
         let account = source.grants().resolve_controller_lineage(all.account_parent.as_ref().unwrap(),
             &native.grant_administrator, None).unwrap();
-        assert_eq!(public.restrictions(), &super::super::configured_report::public_parent(executor, audience));
-        assert_eq!(account.restrictions(), &super::super::configured_report::account_parent(executor, audience));
+        assert_eq!(public.restrictions(), &super::super::configured_report::public_parent(&native.grant_administrator, executor, audience));
+        assert_eq!(account.restrictions(), &super::super::configured_report::account_parent(&native.grant_administrator, executor, audience));
         assert_eq!(public.restrictions().actions, meerkat_authorization_contracts::constraints::ExactRestriction::exact([
             meerkat_authorization_contracts::constraints::ActionRef {
                 feature: "toolkit".into(), action: "setup-public-service-request".into(),
@@ -230,5 +230,73 @@ fn public_parent_is_one_action_recovers_and_never_relabels_the_account_parent() 
         assert_ne!(public.restrictions().actions, account.restrictions().actions);
         public.check_current().unwrap(); account.check_current().unwrap();
         drop(public); drop(account); drop(originals); drop(source); Ok(())
+    }).unwrap();
+}
+
+#[test]
+fn report_parent_recovery_refuses_legacy_unrestricted_id_and_new_id_selects_owned_parent() {
+    let fixture = Fixture::new();
+    let (legacy, legacy_child, legacy_child_bounds) = NativeHostLifetime::with_candidate_installation(&fixture.selection, |policy| {
+        let native = policy.native_host.as_ref().unwrap();
+        let operator = native.remote_operator.as_ref().unwrap();
+        let (source, originals) = open_owner_pair(&fixture.selection, native, operator, OperatorOwnerStartup::Restore)?;
+        let mut bounds = report_parent(&native.grant_administrator, &fixture.helper.logical_executor, &native.members[0].audience);
+        bounds.resource_domains = meerkat_authorization_contracts::constraints::DomainRestriction::unrestricted();
+        let legacy = source.grants().issue_root(operator, fixture.request.issuance_id.clone(),
+            native.grant_administrator.clone(), fixture.helper.represented_subject.clone(), bounds).unwrap();
+        let mut child_bounds = crate::installed_host::application_operations::parent_restrictions(
+            crate::installed_host::application_operations::setup_report(&native.grant_administrator,
+                &fixture.helper.logical_executor, &native.members[0].audience, &meerkat_core::SessionId::new()));
+        child_bounds.delegation_depth = DelegationDepth::remaining(0);
+        let child = source.grants().issue_child(&native.grant_administrator, &legacy,
+            EvidenceId::new("historical-report-child").unwrap(), fixture.helper.logical_executor.clone(), child_bounds.clone()).unwrap();
+        drop(originals);
+        drop(source);
+        Ok((legacy, child, child_bounds))
+    }).unwrap();
+    let before = fixture.bytes();
+    assert!(matches!(fixture.configure(fixture.helper.clone(), &fixture.request), Err(HostLifetimeError::Denied)));
+    assert_eq!(fixture.bytes(), before, "old issuance must not be narrowed or relabelled in place");
+    let mut fresh = fixture.request.clone();
+    fresh.issuance_id = EvidenceId::new("fresh-owned-helper-report-parent").unwrap();
+    let selected = fixture.configure(fixture.helper.clone(), &fresh).unwrap();
+    let after = fixture.bytes();
+    assert_eq!(selected.parent[0].grant_id, fresh.issuance_id);
+    assert_ne!(selected.parent[0], legacy);
+    assert!(fixture.configure(fixture.helper.clone(), &fresh).unwrap() == selected);
+    assert_eq!(fixture.bytes(), after, "the exact fresh issuance is recovered without another append");
+    NativeHostLifetime::with_candidate_installation(&fixture.selection, |policy| {
+        let native = policy.native_host.as_ref().unwrap();
+        let operator = native.remote_operator.as_ref().unwrap();
+        let (source, originals) = open_owner_pair(&fixture.selection, native, operator, OperatorOwnerStartup::Restore)?;
+        let grants = source.grants();
+        assert_eq!(grants.issued_reference(&fixture.request.issuance_id).unwrap(), Some(legacy.clone()));
+        let old = grants.resolve_controller_lineage(std::slice::from_ref(&legacy), &native.grant_administrator,
+            fixture.helper.represented_subject.as_ref()).unwrap();
+        assert_eq!(old.restrictions().resource_domains, meerkat_authorization_contracts::constraints::DomainRestriction::unrestricted());
+        let old_child = grants.resolve_controller_lineage(&[legacy.clone(), legacy_child.clone()],
+            &fixture.helper.logical_executor, fixture.helper.represented_subject.as_ref()).unwrap();
+        assert_eq!(old_child.restrictions(), &legacy_child_bounds);
+        let rebound_child = meerkat_authorization::grants::ChildGrantIntent {
+            issuer: native.grant_administrator.clone(), parent_lineage: selected.parent.clone(),
+            id: legacy_child.grant_id.clone(), grantee: fixture.helper.logical_executor.clone(),
+            represented_subject: fixture.helper.represented_subject.clone(), requested: legacy_child_bounds.clone(),
+        };
+        assert_eq!(grants.issue_or_recover_child_under_exclusion(&rebound_child, || Ok(meerkat_authorization::grants::ChildGrantValidity {
+            not_before_ms: 0, expires_at_ms: u64::MAX,
+            deadline: meerkat_core::time_compat::Instant::now() + std::time::Duration::from_secs(60),
+        })), Err(meerkat_authorization::grants::ChildGrantRefusal::Denied));
+        assert_eq!(fixture.bytes(), after, "a historical child cannot be recovered under another parent");
+        let current = grants.resolve_controller_lineage(&selected.parent, &native.grant_administrator,
+            fixture.helper.represented_subject.as_ref()).unwrap();
+        assert_eq!(current.restrictions(), &report_parent(&native.grant_administrator,
+            &fixture.helper.logical_executor, &native.members[0].audience));
+        drop(current);
+        drop(old_child);
+        drop(old);
+        drop(grants);
+        drop(originals);
+        drop(source);
+        Ok(())
     }).unwrap();
 }

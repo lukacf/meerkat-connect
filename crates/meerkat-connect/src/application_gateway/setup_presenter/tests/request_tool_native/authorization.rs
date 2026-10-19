@@ -2,6 +2,7 @@
 //! owner. The native machine still creates all work authorization and tickets.
 //! This owns one immutable original, not a production source/permission store.
 
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use std::sync::{Arc, OnceLock};
 
 use meerkat_authorization::{
@@ -276,7 +277,7 @@ fn bounds<const N: usize>(domain: &ResourceDomain, executor: &PrincipalRef,
 {
     let mut restrictions = ExecutionRestrictions::unrestricted();
     restrictions.actions = ExactRestriction::exact(actions.into_iter().map(action_ref));
-    restrictions.resource_domains = ExactRestriction::exact([domain.clone()]);
+    restrictions.resource_domains = DomainRestriction::exact([domain.clone()]);
     restrictions.processors = ExactRestriction::exact([ProcessorRef::Principal { principal: executor.clone() }]);
     restrictions.audiences = ExactRestriction::exact([AudienceRef::Principal { principal: audience.clone() }]);
     restrictions.delegation_depth = DelegationDepth::remaining(0);

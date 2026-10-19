@@ -20,7 +20,7 @@ fn helper(owner: &OperatorSetup) -> InstalledSetupSelection {
         &owner.operator, &helper, &HelperReportCapabilityRequest { member: helper.member.clone(),
             issuance_id: EvidenceId::new("paired-helper-report").unwrap(),
             account_issuance_id: Some(EvidenceId::new("paired-helper-account").unwrap()), public_issuance_id: Some(EvidenceId::new("paired-helper-public").unwrap()) },
-        configured_report::report_parent(&helper.logical_executor, &member.audience), &member.audience).unwrap());
+        configured_report::report_parent(&owner.native.grant_administrator, &helper.logical_executor, &member.audience), &member.audience).unwrap());
     helper
 }
 

@@ -388,7 +388,7 @@ impl PreparedInstallationOwner {
             if request.member != helper.member
                 || crate::installed_host::acquisition::ConfiguredHelperReportCapability::validate_basis(&helper.operation_basis).is_err()
             { return Err(HostLifetimeError::Denied); }
-            let expected = operator_setup::configured_report::report_parent(&helper.logical_executor, &helper_audience);
+            let expected = operator_setup::configured_report::report_parent(&self.selected.native_host.grant_administrator, &helper.logical_executor, &helper_audience);
             let capability = operator_setup::configured_report::issue_or_recover(&self.source,
                 &self.selected.native_host.grant_administrator, &operator, helper, request, expected, &helper_audience)?;
             if helper.report_capability.as_ref().is_some_and(|old| old != &capability) { return Err(HostLifetimeError::Denied); }

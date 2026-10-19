@@ -6,6 +6,7 @@
 //! and audience. The row below is immutable decision/binding evidence; native
 //! LocalGrantAuthority remains the sole current grant owner.
 
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 use meerkat_authorization::grants::GrantRefusal;
 use meerkat_authorization_contracts::{
@@ -176,7 +177,7 @@ fn restrictions(
             feature: "mcp".into(),
             action: permission.operation.to_string(),
         }]),
-        resource_domains: ExactRestriction::exact([ResourceDomain {
+        resource_domains: DomainRestriction::exact([ResourceDomain {
             authority: route.grant_caller.clone(),
             namespace: format!(
                 "toolkit-mcp-account/{}",
@@ -966,7 +967,10 @@ pub(crate) mod tests {
         let now_ms = owner.clock().now().unwrap().unix_ms;
         let values = OperationRestrictionValues {
             action: first(&bounds.actions),
-            resource_domain: first(&bounds.resource_domains),
+            resource_domain: match bounds.resource_domains.bound() {
+                meerkat_authorization_contracts::constraints::DomainBound::Exact(domains) => domains.first().unwrap(),
+                _ => panic!("the selected service child must name an exact domain"),
+            },
             processor: first(&bounds.processors),
             audience: first(&bounds.audiences),
             now_ms,

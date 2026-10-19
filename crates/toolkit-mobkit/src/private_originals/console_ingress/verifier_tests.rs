@@ -290,6 +290,49 @@ async fn controlled_console(case: Case) {
             assert_eq!(observed.login_scope(), Some(SCOPE));
             let rows = fixture.store.list_records(&fixture.scope, None, 100).await.unwrap();
             assert!(rows.len() > before_rows.len(), "actual Console source was retained");
+            let held = fixture.source.retained.lock().unwrap().iter()
+                .find(|held| Some(held.original.association()) == bound.header().authority_association.as_ref())
+                .cloned().expect("actual Console binder retained its source");
+            let row = fixture.store.get(&fixture.source.key(&held.reference).unwrap()).await.unwrap().unwrap();
+            let record = fixture.source.decode_record(&row, &held.reference).unwrap();
+            assert!(record.custody_attempt.as_ref().expect("Console first attempt persisted")
+                .matches_input(&bound).unwrap());
+            assert_eq!(record.event.content_sha256, digest(&canonical_json(&raw).unwrap()));
+            assert_ne!(bound.header().idempotency_key.as_ref(),
+                Some(&cold_service_admission::source_event_key(&record).unwrap()));
+            let entry = ConsoleEntry {
+                source: fixture.source.clone(),
+                identity: fixture.source.bound_identity_runtime().unwrap()
+                    .owned_identity_for_member_alias(&member).await.unwrap(),
+                human: observed, access: None, login: login.clone(),
+            };
+            entry.validate_custody_input(&record, &raw, &bound).unwrap();
+            let Input::Prompt(mut changed) = bound.clone() else { panic!("Console prompt missing") };
+            changed.header.idempotency_key = Some(cold_service_admission::source_event_key(&record).unwrap());
+            assert!(matches!(entry.validate_custody_input(&record, &raw, &Input::Prompt(changed)),
+                Err(PrivateOriginalError::Conflict)));
+            let Input::Prompt(mut changed) = raw.clone() else { panic!("Console prompt missing") };
+            changed.header.idempotency_key = Some(IdempotencyKey::new("substituted-stock-key"));
+            assert!(matches!(entry.validate_custody_input(&record, &Input::Prompt(changed), &bound),
+                Err(PrivateOriginalError::Conflict)));
+            let mut changed = record.clone();
+            changed.event.content_sha256 = digest(b"substituted source digest");
+            assert!(matches!(entry.validate_custody_input(&changed, &raw, &bound),
+                Err(PrivateOriginalError::Conflict)));
+            let mut changed = record.clone();
+            changed.event.root_event.sha256 = digest(b"substituted root event digest");
+            assert!(matches!(entry.validate_custody_input(&changed, &raw, &bound),
+                Err(PrivateOriginalError::Conflict)));
+            // Repeat the same actual HTTP idempotency key. Queue deduplication
+            // returns existing coordinates without a second native input/effect.
+            let replay = post(address, &bearer, &member).await;
+            assert_eq!(replay.0, reply.0);
+            for coordinate in ["session_id", "interaction_id", "input_frame_id"] {
+                assert_eq!(replay.1[coordinate], reply.1[coordinate]);
+            }
+            assert_eq!(fixture.inputs().await, Ok(1));
+            assert_eq!(fixture.model_requests(), 2);
+            assert_eq!(fixture.store.get(&row.key).await.unwrap().unwrap(), row);
         } else {
             if matches!(case, Case::RetiredAfterSelection) {
                 assert!(observation.failure.lock().unwrap().is_some(), "retained login refuses inside actual binder");

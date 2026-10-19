@@ -833,16 +833,31 @@ impl PrivateOriginals {
         original: &Arc<RetainedToolkitOriginal>, session: &meerkat_core::SessionId,
         input: &meerkat_runtime::Input,
     ) -> Result<Transition, PrivateOriginalError> {
+        self.prepare_custody_enrollment_from(stored, reference, original, session, input, None)
+    }
+
+    fn prepare_custody_enrollment_from(
+        &self, stored: &StoredRecord, reference: &PrivateOriginalRef,
+        original: &Arc<RetainedToolkitOriginal>, session: &meerkat_core::SessionId,
+        input: &meerkat_runtime::Input,
+        console: Option<(&console_ingress::ConsoleEntry, &meerkat_runtime::Input)>,
+    ) -> Result<Transition, PrivateOriginalError> {
         self.owner.check_canonical_source(self.store.as_ref(), &self.scope)
             .map_err(cold_service_admission::writer_error)?;
         self.owner.check_bound_source(original).map_err(cold_service_admission::writer_error)?;
         let record = self.decode_record(stored, reference)?;
         if record.operation_cancelled || record.final_association.as_ref() != Some(original.association())
-            || input.header().idempotency_key.as_ref() != Some(&cold_service_admission::source_event_key(&record)?)
-            || !matches!(input, meerkat_runtime::Input::Prompt(prompt)
-                if matches!(&prompt.content, meerkat_core::ContentInput::Text(text)
-                    if digest(text.as_bytes()) == record.event.content_sha256))
         { return Err(PrivateOriginalError::Conflict); }
+        match console {
+            Some((entry, raw)) => entry.validate_custody_input(&record, raw, input)?,
+            None => {
+                if input.header().idempotency_key.as_ref() != Some(&cold_service_admission::source_event_key(&record)?)
+                    || !matches!(input, meerkat_runtime::Input::Prompt(prompt)
+                        if matches!(&prompt.content, meerkat_core::ContentInput::Text(text)
+                            if digest(text.as_bytes()) == record.event.content_sha256))
+                { return Err(PrivateOriginalError::Conflict); }
+            }
+        }
         let mut next = crate::original_ingress::custody_attempt::CustodyAttempt::for_prepared(
             session, input, original.association()).map_err(cold_service_admission::writer_error)?;
         if let Some(existing) = &record.custody_attempt {
@@ -860,9 +875,18 @@ impl PrivateOriginals {
 
     /// The native tracked binder owns this entire future, including an entered
     /// SQLite write after caller loss. No Candidate exists until it returns.
+    #[cfg(test)]
     async fn persist_first_custody_attempt(
         &self, held: &Arc<HeldPrivateOriginal>, session: &meerkat_core::SessionId,
         input: &meerkat_runtime::Input,
+    ) -> Result<(), PrivateOriginalError> {
+        self.persist_first_custody_attempt_from(held, session, input, None).await
+    }
+
+    async fn persist_first_custody_attempt_from(
+        &self, held: &Arc<HeldPrivateOriginal>, session: &meerkat_core::SessionId,
+        input: &meerkat_runtime::Input,
+        console: Option<(&console_ingress::ConsoleEntry, &meerkat_runtime::Input)>,
     ) -> Result<(), PrivateOriginalError> {
         let _writer = self.owner.source_writer().await;
         let stored = self.store.get(&self.key(&held.reference)?).await.map_err(store_error)?
@@ -872,8 +896,8 @@ impl PrivateOriginals {
             // Legacy absence cannot prove that native never saw an input.
             return Err(PrivateOriginalError::Unavailable);
         }
-        let transition = self.prepare_custody_enrollment(
-            &stored, &held.reference, &held.original, session, input)?;
+        let transition = self.prepare_custody_enrollment_from(
+            &stored, &held.reference, &held.original, session, input, console)?;
         if transition.data != stored.data {
             self.store.compare_and_swap(transition).await.map_err(store_error)?;
         }

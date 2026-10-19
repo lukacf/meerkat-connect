@@ -634,6 +634,9 @@ impl OriginalBinder {
             &self.source.key(&self.original).map_err(|_| "Toolkit original source is unavailable")?,
             &held.original,
         ).await.map_err(|_| "Toolkit historical original custody is unavailable")?;
+        // Console owns the raw input's key and canonical source bytes.
+        // Keep that exact value before native adds its authority and custody.
+        let console_input = self.console.as_ref().map(|_| input.clone());
         let mut prepared = self
             .source
             .owner
@@ -675,7 +678,8 @@ impl OriginalBinder {
                 })?;
         }
         if admitted.is_none() {
-            self.source.persist_first_custody_attempt(&held, &context.session_id, prepared.input())
+            self.source.persist_first_custody_attempt_from(&held, &context.session_id, prepared.input(),
+                self.console.as_ref().zip(console_input.as_ref()))
                 .await.map_err(|_| "Toolkit could not persist the first original attempt".to_owned())?;
         }
         if let Some(entry) = &self.console { entry.check()?; }

@@ -1,5 +1,6 @@
 //! Correlated target selection by the existing installed helper/operator owners.
 //! Each target has one independent native root; no tuple dimensions are united.
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 use crate::installed_host::acquisition::{ConfiguredHelperReportCapability, InstalledSetupSelection};
 use crate::original_ingress::helper_originals::HelperSetupOrigin;
@@ -58,7 +59,7 @@ pub(super) fn helper_intents(source: &ToolkitOriginalOwner, helper: &InstalledSe
         let requested = if target.is_none() && helper.catalog_capability.is_some() {
             let capability = helper.catalog_capability.as_ref().ok_or(HostLifetimeError::Denied)?;
             capability.validate(&helper.operation_basis)?;
-            let expected = application_operations::configured_catalog_parent(&helper.logical_executor, audience);
+            let expected = application_operations::configured_catalog_parent(application, &helper.logical_executor, audience);
             let current = source.grants().resolve_lineage(&capability.parent, application,
                 helper.represented_subject.as_ref()).map_err(|_| HostLifetimeError::Denied)?;
             if current.restrictions() != &expected { return Err(HostLifetimeError::Denied); }
@@ -68,17 +69,17 @@ pub(super) fn helper_intents(source: &ToolkitOriginalOwner, helper: &InstalledSe
             expected
         } else if target.as_ref() == Some(&ConfiguredHelperReportCapability::target()) {
             if helper.report_capability.is_none() { return Err(HostLifetimeError::Denied); }
-            configured_report::report_parent(&helper.logical_executor, audience)
+            configured_report::report_parent(application, &helper.logical_executor, audience)
         } else if target.as_ref() == Some(&ConfiguredHelperReportCapability::account_target()) {
             if helper.report_capability.as_ref().and_then(|cap| cap.account_parent.as_ref()).is_none() {
                 return Err(HostLifetimeError::Denied);
             }
-            configured_report::account_parent(&helper.logical_executor, audience)
+            configured_report::account_parent(application, &helper.logical_executor, audience)
         } else if target.as_ref() == Some(&ConfiguredHelperReportCapability::public_target()) {
             if helper.report_capability.as_ref().and_then(|cap| cap.public_parent.as_ref()).is_none() {
                 return Err(HostLifetimeError::Denied);
             }
-            configured_report::public_parent(&helper.logical_executor, audience)
+            configured_report::public_parent(application, &helper.logical_executor, audience)
         } else {
             let lineage = helper.operation_basis.lineage_for(target.as_ref()).ok_or(HostLifetimeError::Denied)?;
             let current = source.grants().resolve_lineage(lineage, &helper.logical_executor,
@@ -117,7 +118,7 @@ pub(crate) fn child_bounds(application: &meerkat_core::PrincipalRef,
         } else { "setup-public-service-request" };
         let resource = application_operations::qualified_setup_resource(application, origin, action)
             .map_err(|_| HostLifetimeError::InvalidSelection)?;
-        requested.resource_domains = ExactRestriction::exact([resource]);
+        requested.resource_domains = DomainRestriction::exact([resource]);
     }
     requested.delegation_depth = DelegationDepth::remaining(0);
     Ok(requested)

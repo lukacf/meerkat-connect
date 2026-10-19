@@ -6,7 +6,7 @@
 use super::*;
 use meerkat_core::{SessionId, mcp_attachment::{ConfiguredMcpAttachmentAuthority, McpAttachmentRefusal}};
 use meerkat_mob::{MemberDestinationSelection, MemberRuntimeBuildIdentity, MobError};
-use meerkat_runtime::meerkat_machine::{AgentBindingUnavailable, ConfiguredMcpAttachmentProvider, SessionAgentBinding};
+use meerkat_runtime::meerkat_machine::{AgentBindingUnavailable, ConfiguredMcpAttachmentProvider, RuntimeSessionRegistrationWitness, SessionAgentBinding};
 use std::{collections::BTreeMap, sync::{Arc, Mutex, OnceLock, Weak}};
 
 enum ResourceProjection {
@@ -241,13 +241,13 @@ impl SetupResourceProvider {
     }
 }
 impl ConfiguredMcpAttachmentProvider for SetupResourceProvider {
-    fn configured(&self, session: &SessionId, agent: SessionAgentBinding)
+    fn configured(&self, registration: &RuntimeSessionRegistrationWitness, agent: SessionAgentBinding)
         -> Option<Arc<dyn ConfiguredMcpAttachmentAuthority>>
     {
-        let installed = self.installed.as_ref().and_then(|owner| owner.configured(session, agent.clone()));
+        let installed = self.installed.as_ref().and_then(|owner| owner.configured(registration, agent.clone()));
         let selections = self.selections.iter().map(|selection| SetupResourceAuthority {
             selection: selection.clone(), agent: agent.clone(),
-            registration: selection.retain_registration(session, &agent).ok(),
+            registration: selection.retain_registration(registration.session_id(), &agent).ok(),
         }).collect();
         Some(Arc::new(SetupResourceAuthorities { selections, installed }))
     }

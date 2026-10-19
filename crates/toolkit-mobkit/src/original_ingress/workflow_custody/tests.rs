@@ -1,5 +1,6 @@
 //! Native grant/source-owner controls only. These do not launch a lead, enter
 //! a native effect, deliver context, or establish installed SDK behavior.
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 use crate::original_ingress::tests::{claims, initialized, machine, principal, source};
 use meerkat_core::OperationExecutionScope;
@@ -380,7 +381,7 @@ fn delegation_requires_its_own_connector_record_and_actual_g_audience() {
     let g_audience = f.g.association.candidate().target.audience.clone();
     let recorded = |approval: &McpConnectorApproval, audience: AudienceRef| ExecutionRestrictions {
         actions: ExactRestriction::exact([mcp_connector_action("setup", approval)]),
-        resource_domains: ExactRestriction::exact([domain.clone()]),
+        resource_domains: DomainRestriction::exact([domain.clone()]),
         audiences: ExactRestriction::exact([audience]),
         ..ExecutionRestrictions::unrestricted()
     };

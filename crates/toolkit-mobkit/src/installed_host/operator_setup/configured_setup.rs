@@ -133,7 +133,7 @@ pub(crate) fn configure_prepared(
             request.helper_targets.iter().map(|target| target.target.clone()))?
     };
     let expected =
-        application_operations::configured_setup_parent(&route.logical_executor, &member.audience);
+        application_operations::configured_setup_parent(&native.grant_administrator, &route.logical_executor, &member.audience);
     let grants = source.grants();
     let operation = || {
         // A retained identity never implies usability. Reconcile only the same

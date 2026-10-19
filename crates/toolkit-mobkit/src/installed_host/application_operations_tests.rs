@@ -3,6 +3,7 @@
 //! effect execution or resumed run is exercised by these component tests.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::operator_setup::{
     OperatorOwnerStartup, OperatorParentOutcome, OperatorParentProposal, OperatorParentPurpose,
     OperatorSetup,
@@ -157,7 +158,7 @@ fn memory_bounds(native: &CompiledNativeHost, session: &SessionId) -> ExecutionR
             feature: "toolkit".into(),
             action: "memory-read".into(),
         }]),
-        resource_domains: ExactRestriction::exact([ResourceDomain {
+        resource_domains: DomainRestriction::exact([ResourceDomain {
             authority: native.grant_administrator.clone(),
             namespace: format!("toolkit-session-memory/{session}"),
         }]),
@@ -405,7 +406,7 @@ impl Fixture {
             .unwrap();
         assert_eq!(
             selected_parent.restrictions().resource_domains,
-            ExactRestriction::exact([ResourceDomain {
+            DomainRestriction::exact([ResourceDomain {
                 authority: native.grant_administrator.clone(),
                 namespace: format!("toolkit-model-route/{}", plain(&facts).route_key()),
             }])
@@ -794,7 +795,7 @@ fn catalog_bounds(native: &CompiledNativeHost, session: &SessionId) -> Execution
             feature: "toolkit".into(),
             action: "catalog-read".into(),
         }]),
-        resource_domains: ExactRestriction::exact([ResourceDomain {
+        resource_domains: DomainRestriction::exact([ResourceDomain {
             authority: native.grant_administrator.clone(),
             namespace: format!("toolkit-session-catalog/{session}"),
         }]),
@@ -931,13 +932,13 @@ async fn catalog_grants_remain_bound_to_session_authority_executor_and_audience(
             let mut bounds = catalog_bounds(native, session);
             match dimension {
                 0 => {
-                    bounds.resource_domains = ExactRestriction::exact([ResourceDomain {
+                    bounds.resource_domains = DomainRestriction::exact([ResourceDomain {
                         authority: native.grant_administrator.clone(),
                         namespace: format!("toolkit-session-catalog/{}", SessionId::new()),
                     }])
                 }
                 1 => {
-                    bounds.resource_domains = ExactRestriction::exact([ResourceDomain {
+                    bounds.resource_domains = DomainRestriction::exact([ResourceDomain {
                         authority: super::tests::principal("other-application"),
                         namespace: format!("toolkit-session-catalog/{session}"),
                     }])
@@ -1427,13 +1428,13 @@ async fn setup_parent_is_bound_to_native_session_authority_executor_and_audience
             let mut bounds = setup_request_bounds(native, session);
             match wrong {
                 0 => {
-                    bounds.resource_domains = ExactRestriction::exact([ResourceDomain {
+                    bounds.resource_domains = DomainRestriction::exact([ResourceDomain {
                         authority: native.grant_administrator.clone(),
                         namespace: format!("toolkit-session-setup/{}", SessionId::new()),
                     }])
                 }
                 1 => {
-                    bounds.resource_domains = ExactRestriction::exact([ResourceDomain {
+                    bounds.resource_domains = DomainRestriction::exact([ResourceDomain {
                         authority: super::tests::principal("foreign-application"),
                         namespace: format!("toolkit-session-setup/{session}"),
                     }])

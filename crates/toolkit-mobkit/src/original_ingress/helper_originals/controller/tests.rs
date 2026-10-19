@@ -207,6 +207,7 @@ impl Fixture {
                 EvidenceId::new("independent-successor-catalog-parent").unwrap(),
                 crate::original_ingress::tests::principal("agent"), None,
                 crate::installed_host::application_operations::configured_catalog_parent(
+                    &crate::original_ingress::tests::principal("agent"),
                     &crate::original_ingress::tests::principal("setup-agent"),
                     &parent.association().candidate().target.audience),
             ).unwrap();

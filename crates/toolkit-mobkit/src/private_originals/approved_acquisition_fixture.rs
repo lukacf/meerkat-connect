@@ -433,7 +433,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             // opt-in selects an application parent for exact successor children.
             let (grantee, bounds) = if probe.successor {
                 (native.grant_administrator.clone(),
-                    application_operations::configured_catalog_parent(&helper.logical_executor, &member.audience))
+                    application_operations::configured_catalog_parent(&native.grant_administrator, &helper.logical_executor, &member.audience))
             } else {
                 let mut bounds = application_operations::parent_restrictions(application_operations::catalog_read(
                     &native.grant_administrator, &helper.logical_executor, &member.audience,

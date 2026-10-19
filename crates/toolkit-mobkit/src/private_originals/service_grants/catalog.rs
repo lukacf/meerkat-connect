@@ -1,6 +1,7 @@
 //! An explicit, task-specific catalog leaf for a reviewed public service set.
 //! It uses the existing access intent and native grant owners. It carries no
 //! MCP operation and cannot authorize a missing target through a broad base.
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 use meerkat_core::SessionId;
 use meerkat_toolkit::authority::RoleLifetime;
@@ -54,7 +55,7 @@ impl ServiceCatalogDecision {
                 ProcessorRef::Principal { principal: route.logical_executor.clone() },
                 ProcessorRef::Principal { principal: helper.logical_executor.clone() },
             ]);
-            result.resource_domains = ExactRestriction::exact([
+            result.resource_domains = DomainRestriction::exact([
                 original_values.resource_domain, helper_values.resource_domain,
             ]);
         }

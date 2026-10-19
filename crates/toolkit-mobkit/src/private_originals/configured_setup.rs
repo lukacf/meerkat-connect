@@ -30,6 +30,7 @@ struct ConfiguredSetup {
 impl ConfiguredSetup {
     fn parent_bounds(&self) -> ExecutionRestrictions {
         application_operations::configured_setup_parent(
+            &self.application,
             &self.route.logical_executor,
             &self.member.audience,
         )

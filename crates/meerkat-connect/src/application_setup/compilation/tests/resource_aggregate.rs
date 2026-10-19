@@ -8,7 +8,7 @@ use meerkat_core::{
     SessionId,
     mcp_attachment::{ConfiguredMcpAttachmentAuthority, McpAttachmentRefusal},
 };
-use meerkat_runtime::meerkat_machine::{ConfiguredMcpAttachmentProvider, SessionAgentBinding};
+use meerkat_runtime::meerkat_machine::{ConfiguredMcpAttachmentProvider, RuntimeSessionRegistrationWitness, SessionAgentBinding};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Default)]
@@ -27,7 +27,7 @@ impl ConfiguredMcpAttachmentAuthority for InheritedAuthority {
 impl ConfiguredMcpAttachmentProvider for Inherited {
     fn configured(
         &self,
-        _: &SessionId,
+        _: &RuntimeSessionRegistrationWitness,
         _: SessionAgentBinding,
     ) -> Option<Arc<dyn ConfiguredMcpAttachmentAuthority>> {
         self.configured.fetch_add(1, Ordering::SeqCst);

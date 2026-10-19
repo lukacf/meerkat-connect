@@ -1,4 +1,5 @@
 //! Canonical intent/grant controls; the separate native fixture covers reset.
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 
 fn issue(f: &Fixture, intent: &ChildGrantIntent) -> Vec<GrantLineageRef> {
@@ -62,7 +63,7 @@ async fn helper_catalog_child_freezes_current_session_and_preserves_other_operat
         &helper.logical_executor, helper.represented_subject.as_ref()).unwrap();
     assert_eq!(current.restrictions(), &expected);
     assert_eq!(current.restrictions().resource_domains,
-        meerkat_authorization_contracts::constraints::ExactRestriction::exact([
+        DomainRestriction::exact([
             meerkat_authorization_contracts::constraints::ResourceDomain {
                 authority: f.admitted.selection().grant_caller.clone(),
                 namespace: format!("toolkit-session-catalog/{session}"),

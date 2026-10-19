@@ -1,8 +1,9 @@
 //! Joined trusted parent producer, ordinary helper child issuance and real
 //! report leaf. Fixture configuration is not Forge publication or Console auth.
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 use meerkat_authorization_contracts::{
-    constraints::{DelegationDepth, ExactRestriction},
+    constraints::DelegationDepth,
     work_association::WorkAuthorityBasis,
 };
 
@@ -117,7 +118,7 @@ async fn configured_report_parent_reaches_actual_helper_report_and_consumed_inpu
         );
         exact_report.delegation_depth = DelegationDepth::remaining(0);
         let mut parent_bounds = exact_report.clone();
-        parent_bounds.resource_domains = ExactRestriction::unrestricted();
+        parent_bounds.resource_domains = DomainRestriction::owned_by([native.grant_administrator.clone()]);
         parent_bounds.delegation_depth = DelegationDepth::remaining(1);
         assert_eq!(parent.restrictions(), &parent_bounds);
         parent.check_current().unwrap();
