@@ -437,6 +437,12 @@ pub(crate) fn cold_custody_attempt(scope: &StoreScope, saved: &StoredRecord)
     Ok(cold_helper_record(scope, saved)?.custody_attempt)
 }
 
+pub(crate) fn cold_association(scope: &StoreScope, saved: &StoredRecord)
+    -> Result<InputAuthorityAssociation, OriginalWriterError>
+{
+    Ok(cold_helper_record(scope, saved)?.bound()?.1.clone())
+}
+
 pub(crate) fn cold_bound_attempt(scope: &StoreScope, saved: &StoredRecord,
     association: &InputAuthorityAssociation,
 ) -> Result<Option<super::custody_attempt::CustodyAttempt>, OriginalWriterError> {
@@ -1678,7 +1684,7 @@ mod tests {
         assert!(matches!(owner.check_helper_contributors(&one, &sources),
             Err(OriginalWriterError::Unavailable)));
         let c = one.association().candidate();
-        assert!(owner.retained_original(&c.ingress_namespace, &c.original_work).unwrap().is_none());
+        assert!(owner.admitted_original_basis(&c.ingress_namespace, &c.original_work).unwrap().is_none());
         // Only the existing source guard settles this fixture's acknowledgement.
         // No live-dispatch membership is stored in AdmittedHelperWork.
         pending.admit().unwrap();
@@ -2380,7 +2386,7 @@ mod tests {
         let mut namespace = parent.association().candidate().ingress_namespace.clone();
         namespace.occurrence_scope = original.work.clone();
         assert!(owner.original_disposition(&namespace, &original).is_err());
-        assert!(owner.retained_original(&namespace, &original).unwrap().is_none());
+        assert!(owner.admitted_original_basis(&namespace, &original).unwrap().is_none());
         let observed = service
             .observe_admission(
                 admitted.facts.admission.key.clone(),

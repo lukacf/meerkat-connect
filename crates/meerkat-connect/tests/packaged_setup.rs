@@ -126,9 +126,7 @@ impl LlmClient for Probe {
                 usage: TurnUsage::host_declared(Provider::OpenAI, &request.model, Usage::default()),
             }),
             Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: StopReason::ToolUse,
-                },
+                outcome: LlmDoneOutcome::success(StopReason::ToolUse),
             }),
         ];
         Box::pin(futures_util::stream::iter(events))

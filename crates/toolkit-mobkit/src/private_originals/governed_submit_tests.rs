@@ -449,9 +449,7 @@ impl LlmClient for ScriptedProvider {
                 meta: None,
             }),
             Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: StopReason::EndTurn,
-                },
+                outcome: LlmDoneOutcome::success(StopReason::EndTurn),
             }),
         ]);
         let pause = self.1.lock().unwrap().take();
@@ -894,7 +892,7 @@ impl Fixture {
     fn contributor(&self) -> Result<bool, meerkat_core::authorization::ControllerReadinessFailure> {
         let c = self.association.candidate();
         self.owner
-            .retained_original(&c.ingress_namespace, &c.original_work)
+            .admitted_original_basis(&c.ingress_namespace, &c.original_work)
             .map(|original| original.is_some())
     }
 

@@ -347,7 +347,7 @@ impl LlmClient for PublicReadProvider {
             }
             LlmEvent::Done { outcome: LlmDoneOutcome::Success { .. } }
                 if tool_response => LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
+                    outcome: LlmDoneOutcome::success(StopReason::ToolUse),
                 },
             other => other,
         })))
@@ -589,7 +589,7 @@ fn assert_public_tool_audit(row: &StoredInputState, session: &meerkat_core::Sess
                         "adapter entry must precede refusal or returned outcome");
                     entered = true;
                 }
-                AuditObservation::Refused { target: actual, reason } => {
+                AuditObservation::Refused { target: actual, reason, .. } => {
                     assert_eq!(failure, Some(PublicReadFailure::ReprepareRequired));
                     assert!(!returned);
                     assert!(actual.as_ref() == target, "refusal must bind the exact operation target");
@@ -1221,7 +1221,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                     let (kind, target, reason, publication, observed_at) = match &observation.observation {
                         AuditObservation::Prepared { target, policy } =>
                             ("prepared", Some(target.as_ref()), None, Some(policy.publication_sequence), Some(policy.observed_at_ms)),
-                        AuditObservation::Refused { target, reason } =>
+                        AuditObservation::Refused { target, reason, .. } =>
                             ("refused", Some(target.as_ref()), Some(*reason), None, None),
                         AuditObservation::AuthorizationUnavailable { target } =>
                             ("authorization_unavailable", Some(target.as_ref()), None, None, None),
@@ -1229,6 +1229,7 @@ async fn actual_attachment_case(cancel: bool, public: bool) {
                         AuditObservation::Outcome { .. } => ("outcome", None, None, None, None),
                         AuditObservation::ReviewAttemptStarted { .. } => ("review_attempt_started", None, None, None, None),
                         AuditObservation::MandatoryHookWithheld { .. } => ("mandatory_hook_withheld", None, None, None, None),
+                        _ => ("unknown", None, None, None, None),
                     };
                     // Do not print prompts, tool arguments/digests, credentials,
                     // accounts, endpoints, grant lineages or output payloads.

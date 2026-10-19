@@ -393,7 +393,7 @@ fn failed_source_insert_never_publishes_the_issued_child_as_an_original() {
     );
     assert!(
         owner
-            .retained_original(
+            .admitted_original_basis(
                 &original.candidate().ingress_namespace,
                 &original.candidate().original_work
             )
@@ -444,15 +444,17 @@ fn source_candidate_self_authenticates_but_cannot_be_a_contributor_and_drop_with
             .unwrap()
             .is_none()
     );
-    assert!(owner.retained_original(namespace, work).unwrap().is_none());
+    assert!(owner.admitted_original_basis(namespace, work).unwrap().is_none());
     let pending = owner.record_candidate(&a).unwrap();
+    assert!(matches!(owner.retained_custody(namespace, work), Ok(RetainedCustody::NotRetained)),
+        "an unenrolled candidate has no recovery promise");
     assert!(
         owner
             .authenticated_original(&ingress, namespace, work)
             .unwrap()
             .is_some()
     );
-    assert!(owner.retained_original(namespace, work).unwrap().is_none());
+    assert!(owner.admitted_original_basis(namespace, work).unwrap().is_none());
     assert!(matches!(
         owner.record_candidate(&b),
         Err(OriginalWriterError::Conflict)
@@ -496,7 +498,7 @@ fn source_candidate_self_authenticates_but_cannot_be_a_contributor_and_drop_with
             .unwrap()
             .is_none()
     );
-    assert!(owner.retained_original(namespace, work).unwrap().is_none());
+    assert!(owner.admitted_original_basis(namespace, work).unwrap().is_none());
     // Withdrawn source custody does not erase the exact durable binding.
     assert!(Arc::ptr_eq(&recover(&owner, &a.association).unwrap(), &a));
     drop(owner.record_candidate(&b).unwrap());
@@ -528,10 +530,10 @@ fn source_settlement_promotes_exact_custody_but_cold_restore_does_not() {
             .unwrap()
             .is_some()
     );
-    assert!(owner.retained_original(&next, work).unwrap().is_some());
+    assert!(owner.admitted_original_basis(&next, work).unwrap().is_some());
     // An exact replay guard does not withdraw already admitted custody.
     drop(owner.record_candidate(&a).unwrap());
-    assert!(owner.retained_original(&next, work).unwrap().is_some());
+    assert!(owner.admitted_original_basis(&next, work).unwrap().is_some());
     let mut later = claims("later", &base).candidate().clone();
     later.contributing_work = vec![work.clone()];
     let later = enroll(
@@ -541,7 +543,7 @@ fn source_settlement_promotes_exact_custody_but_cold_restore_does_not() {
     );
     drop(owner.record_candidate(&later).unwrap());
     owner.release_original(&a).unwrap();
-    assert!(owner.retained_original(&next, work).unwrap().is_none());
+    assert!(owner.admitted_original_basis(&next, work).unwrap().is_none());
     assert!(matches!(
         owner.record_candidate(&later),
         Err(OriginalWriterError::Conflict)
@@ -550,7 +552,7 @@ fn source_settlement_promotes_exact_custody_but_cold_restore_does_not() {
     drop(owner);
     let owner = restored(&path);
     let restored = recover(&owner, &saved).unwrap();
-    assert!(owner.retained_original(namespace, work).unwrap().is_none());
+    assert!(owner.admitted_original_basis(namespace, work).unwrap().is_none());
     assert!(
         owner
             .authenticated_original(&ingress, namespace, work)
@@ -564,7 +566,7 @@ fn source_settlement_promotes_exact_custody_but_cold_restore_does_not() {
             .unwrap()
             .is_some()
     );
-    assert!(owner.retained_original(namespace, work).unwrap().is_none());
+    assert!(owner.admitted_original_basis(namespace, work).unwrap().is_none());
     drop(pending);
 }
 
@@ -843,7 +845,7 @@ async fn private_binding_cas_precedes_native_handle_and_cancel_is_original_speci
     );
     assert!(
         owner
-            .retained_original(
+            .admitted_original_basis(
                 &originals[0].1.association().candidate().ingress_namespace,
                 &originals[0].1.association().candidate().original_work
             )
@@ -1056,7 +1058,7 @@ async fn standing_original_cancel_is_durable_without_revoking_shared_grant_or_co
     // restored admitted contributor custody or native cancellation settlement.
     assert!(
         owner
-            .retained_original(&old_a.candidate().ingress_namespace, &a_work)
+            .admitted_original_basis(&old_a.candidate().ingress_namespace, &a_work)
             .unwrap()
             .is_none()
     );
@@ -1551,7 +1553,7 @@ pub(crate) mod cancellation_store_faults {
                     &originals[0],
                     OriginalRecord::Bound(HeldOriginal {
                         operation: OriginalOperationDisposition::CancellationPending,
-                        source_custody: Some(SourceCustody::Admitted),
+                        source_custody: Some(SourceCustody::Admitted), custody_settlement: None,
                         ..
                     }) | OriginalRecord::UnboundCancellation {
                         operation: OriginalOperationDisposition::CancellationPending,
@@ -1566,7 +1568,7 @@ pub(crate) mod cancellation_store_faults {
                 ));
                 assert!(
                     owner
-                        .retained_original(
+                        .admitted_original_basis(
                             &association.candidate().ingress_namespace,
                             &association.candidate().original_work
                         )
@@ -1651,7 +1653,7 @@ pub(crate) mod cancellation_store_faults {
             let evidence = match &originals[0] {
                 OriginalRecord::Bound(HeldOriginal {
                     operation: OriginalOperationDisposition::Cancelled { record },
-                    source_custody: None,
+                    source_custody: None, custody_settlement: None,
                     ..
                 })
                 | OriginalRecord::UnboundCancellation {
@@ -2755,7 +2757,7 @@ mod admitted_rebind {
         let ingress = prepared.input().header().ingress_context.as_ref().unwrap().clone();
         assert!(fixture.owner.authenticated_original(&ingress, &claims.ingress_namespace,
             &claims.original_work).unwrap().is_none());
-        assert!(fixture.owner.retained_original(&claims.ingress_namespace, &claims.original_work)
+        assert!(fixture.owner.admitted_original_basis(&claims.ingress_namespace, &claims.original_work)
             .unwrap().is_none());
         before.check_current().unwrap();
         drop(prepared);
@@ -2774,10 +2776,10 @@ mod admitted_rebind {
         assert!(pending.pending);
         assert!(matches!(before.check_current(), Err(PublicationError::Changed)));
         assert!(fixture.owner.authenticated_original(&ingress, &claims.ingress_namespace, &claims.original_work).unwrap().is_some());
-        assert!(fixture.owner.retained_original(&claims.ingress_namespace, &claims.original_work)
+        assert!(fixture.owner.admitted_original_basis(&claims.ingress_namespace, &claims.original_work)
             .unwrap().is_none());
         pending.admit().unwrap();
-        assert!(fixture.owner.retained_original(&claims.ingress_namespace, &claims.original_work)
+        assert!(fixture.owner.admitted_original_basis(&claims.ingress_namespace, &claims.original_work)
             .unwrap().is_some());
     }
 
@@ -2794,7 +2796,7 @@ mod admitted_rebind {
         fixture.adapter.record_operation_cancelled(&fixture.reference).await.unwrap();
         assert!(prepared.stage().is_err());
         let claims = fixture.original.association().candidate();
-        assert!(fixture.owner.retained_original(&claims.ingress_namespace, &claims.original_work)
+        assert!(fixture.owner.admitted_original_basis(&claims.ingress_namespace, &claims.original_work)
             .unwrap().is_none());
         // Refused staging does not turn cancellation into retained custody.
         assert!(matches!(fixture.owner.original_disposition(

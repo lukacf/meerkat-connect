@@ -8,12 +8,24 @@ acquisition goals while limiting supported deployment breadth.
 Current development work consumes the r9 offer:
 [Core `9281f3b0`](https://github.com/lukacf/meerkat/commit/9281f3b05b846ff31f9d74a146b8020c507aa818)
 and [Meta `2ea41584`](https://github.com/lukacf/meerkat-meta/commit/2ea415849867ad2cfddee4090a9685c9ec11457e).
-Connect is adapting its existing bounded recovery owner to retained-custody #14
-and preparing affected adversarial checks in the existing native lane. No r9
-native compile or runtime pass is claimed yet. These are development refs; the
+Connect has adapted its existing bounded recovery owner to retained-custody #14.
+Both native test targets compile, and all eleven affected controls execute:
+nine custody/recovery checks pass and both shared-setup Driver cases fail.
+The shared cancellation case first fails during Original binding. The planning
+case passes native tool-policy entry before an inner access_denied. Their retained
+audits do not yet identify the exact failing Connect branches. Physical owners
+join, but the first case also reports unsettled semantic cleanup.
+These are development refs; the
 host refusal observer and initialized Console-reset correction remain outside
 this offer. Fresh stores are required because r9 event/audit writes cannot be
 safely downgraded to r8.
+
+The reviewed r9 source and exact graph are adopted locally as work in progress,
+with 51 selected paths per checkout and intentional private evidence variants
+preserved. The nine passing controls do not qualify a complete shared journey.
+The included static Console 503 diagnostics still await their ordinary gateway
+build; the separate Bind/AA1 diagnostic overlays are not included. Installed
+Hacker News and independent approval consumers remain pending on r9.
 
 The latest executed r8 compatibility and Console custody changes
 compile. Five of seven affected controls pass: both Console custody checks, both

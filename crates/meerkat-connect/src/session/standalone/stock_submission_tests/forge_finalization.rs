@@ -197,6 +197,7 @@ fn turn_error_labels(error:&meerkat_core::TurnErrorMetadata)->(&'static str,&'st
         Some(Reason::LlmRateLimited {..})=>"LlmRateLimited",
         Some(Reason::LlmContextExceeded {..})=>"LlmContextExceeded",
         Some(Reason::LlmAuthError)=>"LlmAuthError",
+        Some(Reason::ContentFiltered {..})=>"ContentFiltered",
         Some(Reason::LlmInvalidModel {..})=>"LlmInvalidModel",
         Some(Reason::LlmProviderError {..})=>"LlmProviderError",
         Some(Reason::LlmNetworkTimeout {..})=>"LlmNetworkTimeout",

@@ -203,7 +203,7 @@ impl ToolkitOriginalOwner {
             first_binding: None,
         });
         originals.push(OriginalRecord::Bound(HeldOriginal {
-            retained: retained.clone(), source_custody: Some(SourceCustody::Admitted),
+            retained: retained.clone(), source_custody: Some(SourceCustody::Admitted), custody_settlement: None,
             controller: Some(admitted.controller().clone()), service_set_admission: None, operation: OriginalOperationDisposition::Open,
         }));
         Ok(retained)

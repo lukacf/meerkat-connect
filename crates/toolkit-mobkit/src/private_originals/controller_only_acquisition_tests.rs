@@ -307,9 +307,7 @@ impl LlmClient for AcquisitionResponse {
                 LlmEvent::Done {
                     outcome: LlmDoneOutcome::Success { .. },
                 } => LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::ToolUse,
-                    },
+                    outcome: LlmDoneOutcome::success(StopReason::ToolUse),
                 },
                 other => other,
             })

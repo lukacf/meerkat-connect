@@ -296,7 +296,7 @@ impl LlmClient for ReportResponse {
                 args: serde_json::json!({"kind":"unavailable","detail":DETAIL}), meta: None,
             },
             LlmEvent::Done { outcome: LlmDoneOutcome::Success { .. } } => LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
+                outcome: LlmDoneOutcome::success(StopReason::ToolUse),
             },
             other => other,
         })))

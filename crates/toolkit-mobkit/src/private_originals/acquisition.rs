@@ -23,7 +23,7 @@ pub(crate) struct AcquisitionOriginal {
     pub own_originals: Vec<Arc<RetainedToolkitOriginal>>,
     /// Complete same-owner original set for a future helper: each staged
     /// source in native order, then its recorded ancestors in first-seen order. Native
-    /// retained_original returns one basis, never recursive contributor custody.
+    /// admitted_original_basis returns one basis, never recursive contributor custody.
     /// Each exact handle retains the canonical recorded contributor edges. The
     /// set preserves source identity and relationships, not a union of grants;
     /// each original remains a separate native conjunct at helper admission.
@@ -328,7 +328,7 @@ impl PrivateOriginals {
         }
         let basis = self
             .owner
-            .retained_original(&claims.ingress_namespace, &claims.original_work)
+            .admitted_original_basis(&claims.ingress_namespace, &claims.original_work)
             .map_err(|_| PrivateOriginalError::Unavailable)?
             .ok_or(PrivateOriginalError::Unavailable)?;
         if basis != claims.authority_basis {
@@ -864,7 +864,7 @@ mod tests {
         );
         let c = fixture.original.association().candidate();
         let retained_basis = || fixture.adapter.owner
-            .retained_original(&c.ingress_namespace, &c.original_work).unwrap();
+            .admitted_original_basis(&c.ingress_namespace, &c.original_work).unwrap();
         assert!(retained_basis().is_none());
         let resolved = fixture.adapter.acquisition_original(&context).await.unwrap();
         assert!(Arc::ptr_eq(&resolved.original, &fixture.original));
@@ -891,7 +891,7 @@ mod tests {
         drop(fixture.pending.take());
         fixture.adapter.acquisition_original(&context).await.unwrap();
         let c = fixture.original.association().candidate();
-        assert!(fixture.adapter.owner.retained_original(
+        assert!(fixture.adapter.owner.admitted_original_basis(
             &c.ingress_namespace, &c.original_work,
         ).unwrap().is_none());
         fixture.adapter.record_operation_cancelled(&fixture.reference).await.unwrap();
@@ -926,7 +926,7 @@ mod tests {
         assert!(Arc::ptr_eq(&resolved.original, &child));
         assert!(Arc::ptr_eq(&resolved.own_originals[1], &fixture.original));
         let c = fixture.original.association().candidate();
-        assert!(fixture.adapter.owner.retained_original(
+        assert!(fixture.adapter.owner.admitted_original_basis(
             &c.ingress_namespace, &c.original_work,
         ).unwrap().is_none());
     }
@@ -967,7 +967,7 @@ mod tests {
             fixture
                 .adapter
                 .owner
-                .retained_original(&child_claims.ingress_namespace, &child_claims.original_work)
+                .admitted_original_basis(&child_claims.ingress_namespace, &child_claims.original_work)
                 .unwrap()
                 .is_some()
         );

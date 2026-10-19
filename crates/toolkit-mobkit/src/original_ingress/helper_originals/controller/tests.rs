@@ -236,7 +236,7 @@ impl Fixture {
         let mut namespace = self.admitted.contributor.association().candidate().ingress_namespace.clone();
         namespace.occurrence_scope = original.work.clone();
         assert!(self.owner.original_disposition(&namespace, &original).is_err());
-        assert!(self.owner.retained_original(&namespace, &original).unwrap().is_none());
+        assert!(self.owner.admitted_original_basis(&namespace, &original).unwrap().is_none());
     }
 }
 

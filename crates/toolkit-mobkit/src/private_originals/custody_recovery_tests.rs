@@ -59,6 +59,20 @@ async fn exercise(order: CloseOrder) {
                 "Meta has not yet delivered its actual acknowledgement");
             assert!(publication(&held).is_none());
             assert_eq!(fixture.observe_contributor().await, Ok(false));
+            let claims = fixture.association.candidate();
+            assert!(matches!(fixture.owner.retained_custody(&claims.ingress_namespace, &claims.original_work),
+                Ok(meerkat_runtime::meerkat_machine::RetainedCustody::AdmissionPending)));
+            assert!(matches!(meerkat_runtime::meerkat_machine::require_source_original_live(
+                fixture.owner.grants().as_ref(), fixture.owner.as_ref(), &claims.ingress_namespace,
+                &claims.original_work, &claims.logical_executor, claims.represented_subject.as_ref()),
+                Err(meerkat_runtime::input_authority::NativeAdmissionError::Readiness(
+                    meerkat_core::authorization::ControllerReadinessFailure::OriginalAdmissionPending))));
+            // A source read has no I/O/native lock dependency: hold the actual
+            // source writer and the handoff lock and require prompt refusal.
+            {
+                let _writer = fixture.owner.source_writer().await;
+                held.handoff.assert_read_is_nonblocking_for_test(&fixture.owner, claims);
+            }
             if matches!(order, CloseOrder::PoisonedBeforeCallback) {
                 // Poison only the actual source control while the real native
                 // acceptance reply is held. This does not fabricate a receipt.
@@ -66,6 +80,9 @@ async fn exercise(order: CloseOrder) {
             } else {
                 fixture.source.stop_custody_recovery();
             }
+            assert!(!matches!(fixture.owner.retained_custody(&claims.ingress_namespace, &claims.original_work),
+                Ok(meerkat_runtime::meerkat_machine::RetainedCustody::AdmissionPending)),
+                "stop fences pending before the actual native callback returns");
             fixture.fault.release.add_permits(1);
             submit.await
         } else {

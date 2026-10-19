@@ -67,9 +67,7 @@ impl LlmClient for FixtureClient {
             }));
         }
         events.push(Ok(LlmEvent::Done {
-            outcome: LlmDoneOutcome::Success {
-                stop_reason: StopReason::EndTurn,
-            },
+            outcome: LlmDoneOutcome::success(StopReason::EndTurn),
         }));
         Box::pin(futures_util::stream::iter(events))
     }

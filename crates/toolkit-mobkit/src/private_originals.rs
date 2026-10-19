@@ -45,7 +45,7 @@ mod first_input;
 mod source_locator_tests;
 #[cfg(test)]
 mod custody_attempt_tests;
-mod custody_recovery;
+pub(crate) mod custody_recovery;
 mod service_approved_input;
 mod service_input_receipt;
 pub use service_input_receipt::{PrivateServiceInputObservation, PrivateServiceInputReceipt,

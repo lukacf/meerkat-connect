@@ -630,7 +630,7 @@ impl PrivateOriginals {
         Ok(
             if self
                 .owner
-                .retained_original(&candidate.ingress_namespace, &candidate.original_work)
+                .admitted_original_basis(&candidate.ingress_namespace, &candidate.original_work)
                 .map_err(|_| PrivateOriginalError::Unavailable)?
                 .is_some()
             {

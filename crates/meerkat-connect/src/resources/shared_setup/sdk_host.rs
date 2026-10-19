@@ -36,7 +36,8 @@ use toolkit_mobkit::{
     private_host::{InheritedHostPipes, PRIVATE_HOST_PROTOCOL_VERSION},
     private_originals::{
         PrivateAuthenticatedEvent, PrivateOriginalRef, PrivateOriginalSubmission,
-        PrivateOriginalSubmit, PrivateSourceSettlement,
+        PrivateOriginalSubmit, PrivateSourceSettlement, InstalledWorkflowPlanning,
+        PrivateOriginals, InstalledWorkflowContextTransfer,
     },
 };
 use toolkit_package::{Id, canonical_json};
@@ -168,6 +169,7 @@ impl SdkClient {
 struct Admission {
     session: String,
     input: String,
+    ticket: String,
 }
 struct ChildLaunch {
     original: PrivateOriginalRef,
@@ -191,6 +193,9 @@ pub(super) struct SdkLaunchOwner {
     client: Arc<tokio::sync::Mutex<SdkClient>>,
     children: Mutex<Vec<Arc<ChildLaunch>>>,
     launches: Mutex<Vec<tokio::task::JoinHandle<Result<PrivateOriginalRef, String>>>>,
+    planning: Option<OnceLock<Arc<InstalledWorkflowPlanning>>>,
+    transfer_source: OnceLock<Arc<PrivateOriginals>>,
+    transfers: Mutex<Vec<(PrivateOriginalRef, Arc<InstalledWorkflowContextTransfer>, meerkat_workgraph::WorkGraphService)>>,
 }
 impl SdkLaunchOwner {
     pub(super) fn new(
@@ -200,6 +205,22 @@ impl SdkLaunchOwner {
         client: Arc<tokio::sync::Mutex<SdkClient>>,
         parent_owner: WorkOwnerKey,
         cycle: String,
+    ) -> Arc<Self> {
+        Self::new_selected(native, host, backend_generation, client, parent_owner, cycle, false)
+    }
+
+    pub(super) fn new_shared(
+        native: Arc<InstalledNativeContinuation>, host: Arc<NativeHostLifetime>,
+        backend_generation: Id, client: Arc<tokio::sync::Mutex<SdkClient>>,
+        parent_owner: WorkOwnerKey, cycle: String,
+    ) -> Arc<Self> {
+        Self::new_selected(native, host, backend_generation, client, parent_owner, cycle, true)
+    }
+
+    fn new_selected(
+        native: Arc<InstalledNativeContinuation>, host: Arc<NativeHostLifetime>,
+        backend_generation: Id, client: Arc<tokio::sync::Mutex<SdkClient>>,
+        parent_owner: WorkOwnerKey, cycle: String, shared: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             native,
@@ -212,7 +233,49 @@ impl SdkLaunchOwner {
             client,
             children: Mutex::new(vec![]),
             launches: Mutex::new(vec![]),
+            planning: shared.then(OnceLock::new),
+            transfer_source: OnceLock::new(), transfers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Explicit test-host opt-in, independent of selecting a planning member.
+    /// The actual graph backend is already captured from public preparation.
+    pub(super) fn enable_context_transfers(&self, source: Arc<PrivateOriginals>) {
+        assert!(self.planning.is_some() && self.children.lock().unwrap().is_empty());
+        assert!(self.transfer_source.set(source).is_ok());
+    }
+
+    pub(super) fn context_transfers(&self) -> Vec<(PrivateOriginalRef,
+        Arc<InstalledWorkflowContextTransfer>, meerkat_workgraph::WorkGraphService)> {
+        self.transfers.lock().unwrap().clone()
+    }
+
+    /// These are the actual captured backend and claimed parent, not a new
+    /// graph opened to reconstruct apparently equal terms.
+    pub(super) fn workflow_parent(&self) -> Result<(
+        meerkat_toolkit::setup::SetupWorkBackendPin, WorkItemRef, WorkOwnerKey, String,
+    ), ToolAdmissionError> {
+        self.host.validate_current_selection().map_err(|_| ToolAdmissionError::Unavailable)?;
+        Ok((self.backend.get().ok_or(ToolAdmissionError::Unavailable)?.pin().clone(),
+            self.parent.get().ok_or(ToolAdmissionError::Unavailable)?.clone(),
+            self.parent_owner.clone(), self.cycle.clone()))
+    }
+
+    pub(super) fn select_planning(&self, plan: Arc<InstalledWorkflowPlanning>)
+        -> Result<(), ToolAdmissionError>
+    {
+        self.host.validate_current_selection().map_err(|_| ToolAdmissionError::Unavailable)?;
+        let selected = self.planning.as_ref().ok_or(ToolAdmissionError::Denied)?;
+        let retained = selected.get_or_init(|| plan.clone());
+        if !Arc::ptr_eq(retained, &plan) { return Err(ToolAdmissionError::Denied); }
+        Ok(())
+    }
+
+    pub(super) fn selected_planning(&self)
+        -> Result<Option<Arc<InstalledWorkflowPlanning>>, ToolAdmissionError>
+    {
+        self.planning.as_ref().map(|selected|
+            selected.get().cloned().ok_or(ToolAdmissionError::Unavailable)).transpose()
     }
 
     /// Called only by the actual ToolkitGatewayHost bootstrap projection. It
@@ -489,7 +552,7 @@ impl SdkLaunchOwner {
             session_id,
             input_id,
             deduplicated: false,
-            turn_ticket: Some(_),
+            turn_ticket: Some(ticket),
             source_settlement: PrivateSourceSettlement::FreshAcceptancePromoted,
         } = outcome
         else {
@@ -498,6 +561,7 @@ impl SdkLaunchOwner {
         launch.admitted.send_replace(Some(Admission {
             session: session_id,
             input: input_id,
+            ticket,
         }));
         Ok(original)
     }
@@ -528,7 +592,8 @@ impl SdkLaunchOwner {
                 let admitted = child.admitted.borrow();
                 json!({"original":child.original,"member":child.member,"work":child.work,
                 "session":admitted.as_ref().map(|value|value.session.clone()),
-                "input":admitted.as_ref().map(|value|value.input.clone())})
+                "input":admitted.as_ref().map(|value|value.input.clone()),
+                "ticket":admitted.as_ref().map(|value|value.ticket.clone())})
             })
             .collect()
     }
@@ -559,7 +624,6 @@ impl InstalledOriginalTaskOwner for SdkLaunchOwner {
         let Some(launch) = launch else {
             return self.native.original_binding(invocation).await;
         };
-        let continuation = self.native.original_task(invocation).await?;
         let mut admitted = launch.admitted.subscribe();
         let receipt = tokio::time::timeout(BOUND, async {
             loop {
@@ -574,6 +638,33 @@ impl InstalledOriginalTaskOwner for SdkLaunchOwner {
         })
         .await
         .map_err(|_| ToolAdmissionError::Unavailable)??;
+        let planning = self.selected_planning()?;
+        let context_transfer = if let Some(source) = self.transfer_source.get() {
+            let plan = planning.as_ref().ok_or(ToolAdmissionError::Denied)?;
+            let backend = self.backend.get().ok_or(ToolAdmissionError::Unavailable)?;
+            // The host explicitly scopes its own actual backend to G/P. No A/B
+            // model-facing service receives this namespace or payload reader.
+            let service = meerkat_workgraph::WorkGraphService::with_scope(backend.service().store().clone(),
+                backend.service().default_realm_id(), plan.context_namespace().map_err(|_| ToolAdmissionError::Denied)?);
+            // A real foreign scope on the same backend is insufficient, and
+            // rejecting it must not alter the canonical workflow or graph.
+            assert!(source.prepare_workflow_context_transfer(&invocation, plan.clone(),
+                backend.service().clone(), backend, [Id::new("human").unwrap()].into()).await.is_err());
+            let transfer = source.prepare_workflow_context_transfer(&invocation, plan.clone(), service.clone(),
+                backend, [Id::new("human").unwrap()].into()).await.map_err(|_| ToolAdmissionError::Denied)?;
+            // Keep an equal discarded producer candidate for observation and
+            // reconciliation controls. The first candidate is the actual
+            // binding; the canonical source must resolve both to that owner.
+            let equivalent = source.prepare_workflow_context_transfer(&invocation, plan.clone(), service.clone(),
+                backend, [Id::new("human").unwrap()].into()).await.map_err(|_| ToolAdmissionError::Denied)?;
+            assert!(!Arc::ptr_eq(&transfer, &equivalent));
+            let mut observed = self.transfers.lock().unwrap();
+            if !observed.iter().any(|(old,_,_)| old == invocation.original()) {
+                observed.push((invocation.original().clone(), equivalent, service));
+            }
+            Some(transfer)
+        } else { None };
+        let continuation = self.native.original_task(invocation).await?;
         let native = continuation
             .native_original
             .as_ref()
@@ -592,8 +683,8 @@ impl InstalledOriginalTaskOwner for SdkLaunchOwner {
         Ok(InstalledOriginalTaskBinding {
             continuation,
             work_context: Some(launch.work.clone()),
-            planning: None,
-            context_transfer: None,
+            planning,
+            context_transfer,
         })
     }
 }

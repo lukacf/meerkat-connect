@@ -20,8 +20,9 @@ struct HandoffState {
     native_box_live: bool,
     foreground_live: bool,
     definite_refusal: bool,
+    canonical_readable: bool,
 }
-pub(super) struct CustodyHandoff {
+pub(crate) struct CustodyHandoff {
     enrolled: bool,
     state: Mutex<HandoffState>,
     observation: Mutex<Option<NativeObservation>>,
@@ -44,12 +45,49 @@ impl CustodyHandoff {
     pub(super) fn new(enrolled: bool, source: &Arc<PrivateOriginals>) -> Arc<Self> {
         Arc::new(Self { enrolled, state: Mutex::new(HandoffState {
             phase: HandoffPhase::Foreground, native_box_live: true,
-            foreground_live: true, definite_refusal: false,
+            foreground_live: true, definite_refusal: false, canonical_readable: true,
         }), observation: Mutex::new(None), closed_failure: std::sync::atomic::AtomicBool::new(false), last_observation: Mutex::new(None),
             #[cfg(test)] observations: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)] write_attempts: std::sync::atomic::AtomicUsize::new(0), source: Arc::downgrade(source) })
     }
-    pub(super) fn enrolled(&self) -> bool { self.enrolled }
+    pub(crate) fn enrolled(&self) -> bool { self.enrolled }
+    /// Foreground is bounded by the actual tracked submission and native
+    /// owner close. Transfer wakes the existing eight-step, five-second
+    /// recovery. Reader timeouts never spend or reset that budget.
+    pub(crate) fn pending_readiness(&self) -> Result<(), meerkat_core::authorization::ControllerReadinessFailure> {
+        use meerkat_core::authorization::ControllerReadinessFailure::PolicyUnavailable;
+        let source = self.source.upgrade().ok_or(PolicyUnavailable)?;
+        let control = source.custody_recovery.control.state.try_lock().map_err(|_| PolicyUnavailable)?;
+        let state = self.state.try_lock().map_err(|_| PolicyUnavailable)?;
+        if !self.enrolled || !control.selected || control.stopped || !state.canonical_readable {
+            return Err(PolicyUnavailable);
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(super) fn assert_read_is_nonblocking_for_test(&self, owner: &ToolkitOriginalOwner,
+        claims: &meerkat_authorization_contracts::work_association::InputAuthorityAssociationCandidate,
+    ) {
+        let _state = self.state.lock().unwrap();
+        assert!(meerkat_runtime::meerkat_machine::AuthenticatedOriginalSource::retained_custody(
+            owner, &claims.ingress_namespace, &claims.original_work).is_err());
+    }
+    #[cfg(test)]
+    pub(super) fn canonical_readable_for_test(&self) -> bool {
+        self.state.lock().unwrap().canonical_readable
+    }
+    fn canonical_readable(&self, readable: bool) {
+        let Some(source) = self.source.upgrade() else { return; };
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.canonical_readable == readable { return; }
+        let publication = source.owner.publication();
+        match publication.begin_owner_change() {
+            Ok(_publication) => state.canonical_readable = readable,
+            // A failed publication is permanently unavailable. It may fence
+            // reads conservatively, but can never restore Pending readiness.
+            Err(_) => state.canonical_readable = false,
+        }
+    }
     pub(super) fn closed_failure(&self) -> bool {
         self.closed_failure.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -90,7 +128,7 @@ impl CustodyHandoff {
         let next = Arc::new(Self {
             enrolled: true, state: Mutex::new(HandoffState {
                 phase: HandoffPhase::Foreground, native_box_live: true,
-                foreground_live: true, definite_refusal: false,
+                foreground_live: true, definite_refusal: false, canonical_readable: true,
             }), observation: Mutex::new(None), closed_failure: std::sync::atomic::AtomicBool::new(false),
             last_observation: Mutex::new(*self.last_observation.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)),
@@ -189,13 +227,11 @@ const ROUND_PAUSE: Duration = Duration::from_secs(5);
 #[derive(Default)]
 struct ControlState { selected: bool, stopped: bool }
 #[derive(Default)]
-struct Control { state: Mutex<ControlState>, wake: Notify }
+struct Control { state: Mutex<ControlState>, wake: Notify, publication: OnceLock<meerkat_authorization::publication::LocalAuthorizationPublication> }
 struct TaskExit(Arc<Control>);
 impl Drop for TaskExit {
     fn drop(&mut self) {
-        let mut state = self.0.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.stopped = true;
-        self.0.wake.notify_waiters();
+        self.0.stop();
     }
 }
 #[derive(Default)]
@@ -245,12 +281,21 @@ impl CustodyRecovery {
     }
 
     fn stop(&self) {
-        if let Ok(mut control) = self.control.state.lock() { control.stopped = true; }
-        self.control.wake.notify_waiters();
+        self.control.stop();
     }
 
 }
 impl Control {
+    fn stop(&self) {
+        let mut control = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Same order as enrollment: source control, grant publication, source
+        // collection. A reader never waits for any of these locks.
+        // Failure already makes publication observations permanently unavailable;
+        // stop still fences source Pending without claiming a readable decision.
+        let _publication = self.publication.get().map(|publication| publication.begin_owner_change());
+        control.stopped = true;
+        self.wake.notify_waiters();
+    }
     async fn pause(&self) {
         let notified = self.wake.notified();
         tokio::pin!(notified);
@@ -293,6 +338,8 @@ impl PrivateOriginals {
     pub(super) fn poison_custody_control_for_test(&self) {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _control = self.custody_recovery.control.state.lock().unwrap();
+            let publication = self.owner.publication();
+            let _publication = publication.begin_owner_change();
             panic!("controlled custody publication panic");
         }));
         assert!(result.is_err());
@@ -319,6 +366,8 @@ impl PrivateOriginals {
         if control.stopped || control.selected || task.is_some() {
             return Err(PrivateOriginalError::Unavailable);
         }
+        self.custody_recovery.control.publication.set(self.owner.publication())
+            .map_err(|_| PrivateOriginalError::Conflict)?;
         self.custody_recovery.announcer.set(announcer)
             .map_err(|_| PrivateOriginalError::Conflict)?;
         let source = Arc::downgrade(self);
@@ -536,6 +585,7 @@ impl PrivateOriginals {
         let row = self.store.get(&entry.key(self)?).await.map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
         let attempt = entry.attempt(self, &row)?;
+        entry.handoff().canonical_readable(attempt.decision() == CustodyDecision::Pending);
         Ok((row, attempt))
     }
 
@@ -674,6 +724,13 @@ impl PrivateOriginals {
         };
         if let NativeObservation::Present(stored) = observed {
             if stored.state.input_id != *entry.input().id() || verify_exact_replay(&stored.state, entry.input()).is_err() {
+                // An observation of another input cannot settle this one as
+                // admitted. End source custody without inventing a native
+                // cancellation, nonadmission or replacement submission.
+                if entry.handoff().withdraw() {
+                    self.custody_change(entry, CustodyChange::Withdraw).await?;
+                    entry.withdraw(); entry.handoff().done(); return Ok(false);
+                }
                 return Err(PrivateOriginalError::Conflict);
             }
             // The recovery owner has the actual transfer. Persist promotion
@@ -742,6 +799,7 @@ impl PrivateOriginals {
             match self.recover_entry(&entry).await {
                 Ok(value) => progress.pending |= value,
                 Err(_) => {
+                    entry.handoff().canonical_readable(false);
                     if self.custody_recovery.stopped() {
                         if !self.finish_closed_error(&entry).await {
                             entry.handoff().retain_closed_failure();

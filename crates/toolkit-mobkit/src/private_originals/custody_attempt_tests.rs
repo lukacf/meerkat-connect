@@ -116,7 +116,7 @@ impl Fixture {
         let ingress = self.input.header().ingress_context.as_ref().unwrap();
         assert!(self.adapter.owner.authenticated_original(ingress, &claims.ingress_namespace,
             &claims.original_work).unwrap().is_none());
-        assert!(self.adapter.owner.retained_original(&claims.ingress_namespace, &claims.original_work).unwrap().is_none());
+        assert!(self.adapter.owner.admitted_original_basis(&claims.ingress_namespace, &claims.original_work).unwrap().is_none());
     }
     fn enrollment(&self, row: &StoredRecord) -> Transition {
         self.adapter.prepare_custody_enrollment(row, &self.reference, &self.original,
@@ -459,5 +459,60 @@ async fn source_guard_acknowledgement_survives_later_callback_error_and_panic() 
         drop(rebound);
         assert!(f.row().await == canonical,
             "source guard settlement must not invent a durable terminal write");
+    }
+}
+
+/// Component control over actual SQLite and grant-owner reopen. It selects the
+/// existing cold census explicitly; no native admission or installed opener is
+/// claimed by this schema fixture. The native delivery control is separate.
+#[tokio::test]
+async fn withdrawn_custody_reopens_as_terminal_absence_without_reenrollment() {
+    let f = Fixture::new().await;
+    let bound = f.row().await;
+    let enrolled = f.adapter.store.compare_and_swap(f.enrollment(&bound)).await.unwrap();
+    let attempt = f.adapter.decode_record(&enrolled, &f.reference).unwrap().custody_attempt.unwrap();
+    let withdrawn = f.adapter.store.compare_and_swap(f.adapter.prepare_custody_transition(
+        &enrolled, &f.reference, attempt.changed(CustodyChange::Withdraw).unwrap()).unwrap()).await.unwrap();
+    let association = f.original.association().clone();
+    let reference = f.reference.clone();
+    let prior_owner = Arc::downgrade(&f.adapter.owner);
+    let Fixture { adapter, original, input, faults, prepared, _directory: directory, .. } = f;
+    drop(prepared);
+    drop(input);
+    drop(original);
+    drop(adapter);
+    drop(faults);
+    assert!(prior_owner.upgrade().is_none(), "reopen must not retain the prior source/grant owner");
+    for _ in 0..2 {
+        let owner = Arc::new(ToolkitOriginalOwner::restore(
+            Arc::new(meerkat_authorization::grants::FileGrantOwnerStore::new(directory.path().join("grants"))),
+            Arc::new(meerkat_authorization::clock::HostAuthorizationClock),
+            association.candidate().ingress_namespace.ingress.clone()).unwrap());
+        let source = private_originals_with_store(owner.clone(), Arc::new(
+            toolkit_store::SqliteStore::open(directory.path().join("source.sqlite3")).unwrap())).await;
+        let claims = association.candidate();
+        assert!(owner.original_disposition(&claims.ingress_namespace, &claims.original_work).is_err(),
+            "unknown source remains unavailable until canonical readback");
+        source.select_installed_pair_recovery().unwrap();
+        source.start_custody_recovery(None).unwrap();
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if matches!(owner.original_disposition(&claims.ingress_namespace, &claims.original_work),
+                    Ok(meerkat_runtime::meerkat_machine::OriginalDisposition::Active)) { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await;
+        source.stop_custody_recovery();
+        source.join_custody_recovery().await.unwrap();
+        observed.unwrap();
+        assert!(matches!(owner.retained_custody(&claims.ingress_namespace, &claims.original_work),
+            Ok(meerkat_runtime::meerkat_machine::RetainedCustody::NotRetained)));
+        assert!(matches!(meerkat_runtime::meerkat_machine::require_source_original_live(
+            owner.grants().as_ref(), owner.as_ref(), &claims.ingress_namespace,
+            &claims.original_work, &claims.logical_executor, claims.represented_subject.as_ref()),
+            Err(meerkat_runtime::input_authority::NativeAdmissionError::Refused(ref refusal))
+                if refusal.kind() == meerkat_core::OperationRefusalKind::Denied));
+        assert!(source.store.get(&withdrawn.key).await.unwrap().unwrap() == withdrawn);
+        assert_eq!(source.binding_evidence(&reference).await.unwrap().as_ref(), Some(&association));
     }
 }

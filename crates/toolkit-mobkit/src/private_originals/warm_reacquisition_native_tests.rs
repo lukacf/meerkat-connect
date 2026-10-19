@@ -1042,9 +1042,7 @@ impl LlmClient for WarmProvider {
                     Ok(LlmEvent::Done {
                         outcome: LlmDoneOutcome::Success { .. },
                     }) if tool => Ok(LlmEvent::Done {
-                        outcome: LlmDoneOutcome::Success {
-                            stop_reason: StopReason::ToolUse,
-                        },
+                        outcome: LlmDoneOutcome::success(StopReason::ToolUse),
                     }),
                     other => other,
                 };

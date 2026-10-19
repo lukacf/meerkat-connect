@@ -707,6 +707,7 @@ impl OriginalBinder {
             },
         };
         let enrolled = handoff.enrolled();
+        pending.enroll_settlement(&handoff).map_err(|_| PrivateOriginalError::Unavailable)?;
         let pending = Arc::new(PendingOriginalAdmission {
             session: context.session_id.clone(),
             input: input.clone(),

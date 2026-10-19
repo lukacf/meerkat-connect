@@ -1033,6 +1033,7 @@ impl GovernedInputBinder for SubmitHelperBinder {
                 },
             };
             let enrolled = handoff.enrolled();
+        pending.enroll_settlement(&handoff).map_err(|_| PrivateOriginalError::Unavailable)?;
             let pending = Arc::new(PendingHelperAdmission {
                 handoff,
                 held: Arc::downgrade(&self.held), admitted: self.admitted.clone(),

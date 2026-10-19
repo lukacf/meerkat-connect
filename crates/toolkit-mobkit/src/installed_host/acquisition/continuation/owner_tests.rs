@@ -127,7 +127,7 @@ impl LlmClient for ProbeProvider {
                 args: serde_json::json!({}), meta: None,
             },
             LlmEvent::Done { outcome: LlmDoneOutcome::Success { .. } } => LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
+                outcome: LlmDoneOutcome::success(StopReason::ToolUse),
             },
             other => other,
         })))
@@ -319,25 +319,24 @@ async fn applied_case(case: ResumeCase) {
                 }
             }).await.expect("native owner publishes the attempted resume");
             let status = service.continuation_status(&owner, &key).await.unwrap();
-            if case == ResumeCase::ClosedHost {
+            if matches!(case, ResumeCase::ClosedHost | ResumeCase::ReleasedSource) {
+                // An actual source release is NotRetained. The wrapper must
+                // preserve native's terminal verdict before looking for a pin.
                 assert!(matches!(status, ContinuationStatus::Refused {
+                    receipt: ref observed,
                     reason: meerkat_runtime::RuntimeDeliveryRefusalReason::AuthorityDenied, ..
-                }), "{status:?}; {pass:?}");
+                } if observed == &receipt), "{status:?}; {pass:?}");
                 assert_eq!(pass.refused, 1, "{pass:?}");
-                assert!(close_after_found.close.lock().unwrap().is_none(),
-                    "the real canonical Found result must precede this close");
+                if case == ResumeCase::ClosedHost {
+                    assert!(close_after_found.close.lock().unwrap().is_none(),
+                        "the real canonical Found result must precede this close");
+                }
             } else {
                 assert!(matches!(status, ContinuationStatus::Pending { admitted: None, .. }),
                     "{status:?}; {pass:?}");
                 assert_eq!(pass.refused, 0, "{pass:?}");
-                if case == ResumeCase::ClosedBeforeJobRead {
-                    assert!(pass.failures.iter().any(|failure| failure.contains("canonical setup result is unavailable")),
-                        "closed private disclosure must remain unavailable, not fabricate missing job facts: {pass:?}");
-                } else {
-                    let reason = meerkat_core::authorization::ControllerReadinessFailure::PolicyUnavailable;
-                    assert!(pass.failures.iter().any(|failure| failure.contains(&reason.to_string())),
-                        "missing source custody stays retryable: {pass:?}");
-                }
+                assert!(pass.failures.iter().any(|failure| failure.contains("canonical setup result is unavailable")),
+                    "closed private disclosure must remain unavailable, not fabricate missing job facts: {pass:?}");
                 assert_eq!(pass.blocked_sessions, vec![fixture.session.clone()], "{pass:?}");
             }
             assert_eq!(pass.applied, 0, "{pass:?}");
@@ -407,7 +406,7 @@ async fn installed_retained_resume_rechecks_current_host_before_native_admission
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn installed_retained_resume_without_source_custody_stays_pending_without_input() {
+async fn installed_retained_resume_after_source_release_refuses_without_input() {
     Box::pin(applied_case(ResumeCase::ReleasedSource)).await;
 }
 

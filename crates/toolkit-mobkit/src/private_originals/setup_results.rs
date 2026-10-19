@@ -247,7 +247,7 @@ impl PrivateOriginals {
         }
         let basis = self
             .owner
-            .retained_original(&claims.ingress_namespace, &claims.original_work)
+            .admitted_original_basis(&claims.ingress_namespace, &claims.original_work)
             .map_err(|_| PrivateOriginalError::Unavailable)?
             .ok_or(PrivateOriginalError::Unavailable)?;
         if basis != claims.authority_basis {
@@ -291,7 +291,7 @@ mod tests {
         assert!(matches!(adapter.require_result_source(association, false),
             Err(PrivateOriginalError::Unavailable)));
         let c = association.candidate();
-        assert!(owner.retained_original(&c.ingress_namespace, &c.original_work).unwrap().is_none());
+        assert!(owner.admitted_original_basis(&c.ingress_namespace, &c.original_work).unwrap().is_none());
         let mut foreign = c.clone();
         foreign.ingress_namespace.realm = meerkat_core::RealmId::parse("foreign-realm").unwrap();
         let foreign = InputAuthorityAssociation::new(foreign).unwrap();

@@ -2,6 +2,9 @@
 //! The selected policy and captured native identities supply every compiled
 //! fact. Artifact hashes establish consistency, not grants or member readiness.
 
+mod planning_expected;
+pub(super) use planning_expected::publish_expected;
+
 use meerkat_core::{SessionId, ToolIdentity};
 use meerkat_mob::MobDefinition;
 use meerkat_toolkit::host_lifetime::{

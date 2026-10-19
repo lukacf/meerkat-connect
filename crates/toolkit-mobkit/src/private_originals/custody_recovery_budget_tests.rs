@@ -10,6 +10,7 @@ use crate::private_originals::custody_recovery::HandoffPhase;
 
 struct BudgetStore {
     inner: Arc<dyn ToolkitStore>, fault: Arc<DeliveryFault>,
+    fail_read: AtomicBool,
     hold_read: AtomicBool, entered: tokio::sync::Notify, release: tokio::sync::Semaphore,
     hold_terminal: AtomicBool, terminal_entered: tokio::sync::Notify,
     terminal_release: tokio::sync::Semaphore, terminal_commits: AtomicUsize,
@@ -17,7 +18,7 @@ struct BudgetStore {
 }
 impl BudgetStore {
     fn new(inner: Arc<dyn ToolkitStore>, fault: Arc<DeliveryFault>) -> Self {
-        Self { inner, fault, hold_read: AtomicBool::new(true), entered: tokio::sync::Notify::new(),
+        Self { inner, fault, fail_read: AtomicBool::new(false), hold_read: AtomicBool::new(true), entered: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0), hold_terminal: AtomicBool::new(true),
             terminal_entered: tokio::sync::Notify::new(), terminal_release: tokio::sync::Semaphore::new(0),
             terminal_commits: AtomicUsize::new(0), terminal_returned: AtomicUsize::new(0) }
@@ -35,6 +36,7 @@ impl ToolkitStore for BudgetStore {
             self.entered.notify_one();
             self.release.acquire().await.unwrap().forget();
         }
+        if self.fail_read.load(Ordering::SeqCst) { return Err(StoreError::OwnerUnavailable); }
         self.inner.get(key).await
     }
     async fn list_records(&self, scope: &StoreScope, after: Option<&str>, limit: u32) -> StoreResult<Vec<StoredRecord>> {
@@ -150,6 +152,9 @@ async fn exercise(final_step: bool) {
         assert!(pending.handoff.enrolled());
         assert!(pending.native_admission.lock().unwrap().is_none());
         assert!(pending.handoff.phase() == HandoffPhase::Resolving);
+        let claims = fixture.association.candidate();
+        assert!(matches!(fixture.owner.retained_custody(&claims.ingress_namespace, &claims.original_work),
+            Ok(meerkat_runtime::meerkat_machine::RetainedCustody::AdmissionPending)));
         let key = fixture.source.key(&fixture.submission.original).unwrap();
         let original = store.inner.get(&key).await.unwrap().unwrap();
         let first = fixture.source.decode_record(&original, &fixture.submission.original).unwrap().custody_attempt.unwrap();
@@ -169,7 +174,23 @@ async fn exercise(final_step: bool) {
             }
         }
         assert_eq!(pending.handoff.observations.load(Ordering::SeqCst), 0);
+        if !final_step { store.fail_read.store(true, Ordering::SeqCst); }
         store.release.add_permits(1);
+        if !final_step {
+            // The actual owner observes an unreadable canonical store. Reader
+            // calls neither spend its budget nor turn that failure into absence.
+            tokio::time::timeout(WAIT, async {
+                loop {
+                    if !pending.handoff.canonical_readable_for_test() { break; }
+                    tokio::task::yield_now().await;
+                }
+            }).await.unwrap();
+            assert!(matches!(fixture.owner.retained_custody(&claims.ingress_namespace, &claims.original_work),
+                Err(meerkat_core::authorization::ControllerReadinessFailure::PolicyUnavailable)));
+            assert_eq!(pending.handoff.observations.load(Ordering::SeqCst), 0);
+            store.fail_read.store(false, Ordering::SeqCst);
+            fixture.source.custody_recovery.changed();
+        }
         store.terminal_entered.notified().await;
         assert_eq!(store.terminal_commits.load(Ordering::SeqCst), 1);
         assert_eq!(store.terminal_returned.load(Ordering::SeqCst), 0);
@@ -184,6 +205,8 @@ async fn exercise(final_step: bool) {
         meerkat_runtime::input_state::verify_exact_replay(&native.state, &pending.input).unwrap();
         assert_eq!(fixture.native_inputs().await, Ok((1, 1)));
         fixture.source.stop_custody_recovery();
+        assert!(!matches!(fixture.owner.retained_custody(&claims.ingress_namespace, &claims.original_work),
+            Ok(meerkat_runtime::meerkat_machine::RetainedCustody::AdmissionPending)));
         native_cleanup = Some(native_shutdown.as_mut().await);
         native_cleanup.as_ref().unwrap().as_ref().unwrap();
         let mut joining = Box::pin(fixture.source.join_custody_recovery());
@@ -194,6 +217,9 @@ async fn exercise(final_step: bool) {
         fixture.source.join_custody_recovery().await.unwrap();
         assert_eq!(store.terminal_returned.load(Ordering::SeqCst), 1);
         assert!(pending.handoff.phase() == HandoffPhase::Done);
+        assert!(matches!(fixture.owner.retained_custody(&claims.ingress_namespace, &claims.original_work),
+            Ok(meerkat_runtime::meerkat_machine::RetainedCustody::NotRetained)),
+            "withdrawal or unpublished close is never pending, even when the exact native input exists");
         assert!(store.inner.get(&key).await.unwrap().unwrap() == committed,
             "lost terminal reply is resolved by exact readback, without another write");
         assert_eq!(pending.handoff.observations.load(Ordering::SeqCst), usize::from(final_step),
@@ -202,6 +228,7 @@ async fn exercise(final_step: bool) {
         fixture.source.join_custody_recovery().await.unwrap();
     })).catch_unwind().await;
     fixture.source.stop_custody_recovery();
+    store.fail_read.store(false, Ordering::SeqCst);
     store.release.add_permits(1); store.terminal_release.add_permits(1);
     let native = match native_cleanup {
         Some(completed) => completed,

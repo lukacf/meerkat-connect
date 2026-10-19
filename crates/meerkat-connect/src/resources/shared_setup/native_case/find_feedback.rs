@@ -201,6 +201,37 @@ impl Case {
         wait_terminal: bool,
     ) -> Vec<meerkat_authorization_contracts::audit::StoredAuthorizationAuditObservation> {
         let session = self.audit_sessions.get(&format!("original-{tag}")).unwrap();
+        self.session_audits(session, tag, wait_terminal).await
+    }
+
+    pub(super) async fn retain_failed_audits(&self) {
+        if self.audit_store.is_none() {
+            return;
+        }
+        // Diagnostics must not delay cleanup indefinitely or replace the case panic.
+        let exported = tokio::time::timeout(BOUND, async {
+            for (member, session) in &self.audit_sessions {
+                if std::panic::AssertUnwindSafe(self.session_audits(session, member, false))
+                    .catch_unwind()
+                    .await
+                    .is_err()
+                {
+                    eprintln!("native audit export failed for {member}; retaining original failure");
+                }
+            }
+        })
+        .await;
+        if exported.is_err() {
+            eprintln!("native audit export exceeded existing bound; continuing cleanup");
+        }
+    }
+
+    async fn session_audits(
+        &self,
+        session: &SessionId,
+        tag: &str,
+        wait_terminal: bool,
+    ) -> Vec<meerkat_authorization_contracts::audit::StoredAuthorizationAuditObservation> {
         let runtime = meerkat_runtime::identifiers::LogicalRuntimeId::for_session(session);
         let store = self.audit_store.as_ref().unwrap();
         tokio::time::timeout(BOUND, async {

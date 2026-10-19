@@ -208,22 +208,47 @@ impl PrivateOriginals {
         if entry.attempt(self, &saved)? != next { return Err(PrivateOriginalError::Conflict); }
         Ok(next)
     }
+    async fn publish_cold_terminal(&self, entry: &ColdEntry) -> Result<(), PrivateOriginalError> {
+        let _writer = self.owner.source_writer().await;
+        if self.owner.has_live_first_binding(&entry.baseline.key).map_err(cold_service_admission::writer_error)? {
+            return Err(PrivateOriginalError::Unavailable);
+        }
+        let (row, current) = self.cold_row(entry).await?;
+        match current.decision() {
+            CustodyDecision::Pending => return Err(PrivateOriginalError::Unavailable),
+            CustodyDecision::Promoted => (), // Admission still needs native restoration.
+            CustodyDecision::Withdrawn => {
+                let (association, cancelled) = match entry.kind {
+                    Kind::Original => {
+                        let source = self.cold_original(&row)?;
+                        (source.final_association.ok_or(PrivateOriginalError::Conflict)?, source.operation_cancelled)
+                    }
+                    Kind::Helper => (helper_originals::cold_association(&self.scope, &row)
+                        .map_err(cold_service_admission::writer_error)?, false),
+                };
+                self.owner.retain_cold_withdrawal(association, Arc::new(row), cancelled)
+                    .map_err(cold_service_admission::writer_error)?;
+            }
+        }
+        // Announce only after exact durable readback is synchronously readable.
+        self.custody_recovery.announce();
+        Ok(())
+    }
+
     async fn recover_cold_entry(&self, entry: &mut ColdEntry) -> Result<bool, PrivateOriginalError> {
         if self.owner.has_live_first_binding(&entry.baseline.key).map_err(cold_service_admission::writer_error)? {
             return Ok(false);
         }
         let (row, current) = self.cold_row(entry).await?;
         if current.decision() != CustodyDecision::Pending {
-            // Terminal readback does not manufacture a current controller or
-            // live source. Existing native historical restore checks both.
-            self.custody_recovery.announce();
+            self.publish_cold_terminal(entry).await?;
             return Ok(false);
         }
         if !current.observation_entered() {
             entry.observation = None;
             if self.custody_recovery.stopped() || !current.can_observe() {
                 self.cold_change(entry, CustodyChange::Withdraw).await?;
-                self.custody_recovery.announce();
+                self.publish_cold_terminal(entry).await?;
                 return Ok(false);
             }
             if !entry.due() { return Ok(true); }
@@ -252,7 +277,7 @@ impl PrivateOriginals {
         if let NativeObservation::Present(stored) = observation {
             self.verified_cold_input(entry.kind, &row, &current, &stored)?;
             self.cold_change(entry, CustodyChange::Promote).await?;
-            self.custody_recovery.announce();
+            self.publish_cold_terminal(entry).await?;
             return Ok(false);
         }
         self.cold_change(entry, CustodyChange::ResolutionSettled).await?;
@@ -264,8 +289,7 @@ impl PrivateOriginals {
         // Pending/unavailable readback retains the completed observation.
         let Ok((_, current)) = self.cold_row(entry).await else { return false; };
         if current.decision() == CustodyDecision::Pending { return false; }
-        self.custody_recovery.announce();
-        true
+        self.publish_cold_terminal(entry).await.is_ok()
     }
 
     pub(super) async fn recover_cold_round(&self, scan: &mut ColdScan)
@@ -296,10 +320,11 @@ impl PrivateOriginals {
                             }
                         }
                         Ok(Some(_)) => {
-                            // A prior process may have committed a terminal row
-                            // before announcing it. Reannounce actual readback;
-                            // this is a wake, not live custody or delivery proof.
-                            self.custody_recovery.announce();
+                            // Close the commit-before-publication crash window
+                            // using this same canonical row and source owner.
+                            let entry = ColdEntry { kind, baseline: row.clone(), observation: None,
+                                last_observation: None, closed_failure: false };
+                            self.publish_cold_terminal(&entry).await?;
                         }
                         Ok(None) => (),
                         Err(_) => unavailable = true,

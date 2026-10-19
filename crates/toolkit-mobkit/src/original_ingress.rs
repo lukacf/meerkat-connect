@@ -32,7 +32,7 @@ use meerkat_runtime::{
     input_authority::NativeIngressContext,
     meerkat_machine::{
         AuthenticatedOriginal, AuthenticatedOriginalSource, NativeGrantWorkConfiguration,
-        NativeRetainedResumeCheck, OriginalDisposition, ScopedGrantComposition, ScopedInvocation,
+        NativeRetainedResumeCheck, OriginalDisposition, RetainedCustody, ScopedGrantComposition, ScopedInvocation,
         bind_scoped_original,
     },
 };
@@ -128,6 +128,8 @@ enum OriginalGrantBinding {
 struct HeldOriginal {
     retained: Arc<RetainedToolkitOriginal>,
     source_custody: Option<SourceCustody>,
+    // The actual bounded settlement, never reconstructed from durable IDs.
+    custody_settlement: Option<Weak<crate::private_originals::custody_recovery::CustodyHandoff>>,
     // Actual native client supplied with the bound input. Its availability is
     // governed by this same candidate/admitted custody, never selection data.
     controller: Option<ControllerModelClient>,
@@ -164,6 +166,7 @@ enum OriginalRecord {
         source_record: Arc<toolkit_store::StoredRecord>,
         operation: OriginalOperationDisposition,
         first_binding: Option<InputAuthorityAssociation>,
+        withdrawn_association: Option<InputAuthorityAssociation>,
     },
 }
 
@@ -315,6 +318,20 @@ impl PendingToolkitOriginal {
     /// Intrinsic state of this actual guard, not a native admission observation.
     /// A later input may carry an admitted-only guard without staging Candidate.
     pub(crate) fn is_first_candidate(&self) -> bool { self.pending }
+
+    pub(crate) fn enroll_settlement(
+        &self, settlement: &Arc<crate::private_originals::custody_recovery::CustodyHandoff>,
+    ) -> Result<(), OriginalWriterError> {
+        if !self.pending || !settlement.enrolled() { return Ok(()); }
+        let _publication = self.owner.publication.begin_owner_change()
+            .map_err(|_| OriginalWriterError::Unavailable)?;
+        let mut originals = self.owner.originals.lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let held = originals.iter_mut().filter_map(OriginalRecord::bound_mut)
+            .find(|held| Arc::ptr_eq(&held.retained, &self.original)).ok_or(OriginalWriterError::WrongOwner)?;
+        if held.source_custody != Some(SourceCustody::Candidate) { return Err(OriginalWriterError::Conflict); }
+        held.custody_settlement = Some(Arc::downgrade(settlement));
+        Ok(())
+    }
 
     /// Settle this source candidate after exact native admission. An error is
     /// a post-admission source-publication failure, never evidence that the
@@ -1278,8 +1295,50 @@ impl ToolkitOriginalOwner {
         originals.push(OriginalRecord::UnboundCancellation {
             realm: claims.ingress_namespace.realm.clone(), original: claims.original_work.clone(),
             source_record, operation: OriginalOperationDisposition::Open,
-            first_binding: Some(association.clone()),
+            first_binding: Some(association.clone()), withdrawn_association: None,
         });
+        Ok(())
+    }
+
+    /// Publish a validated, durable withdrawal in the existing source owner.
+    /// Cold readback grants no controller or contributor custody and cannot
+    /// reopen this first attempt. Cancellation remains an independent fact.
+    pub(crate) fn retain_cold_withdrawal(&self, association: InputAuthorityAssociation,
+        row: Arc<toolkit_store::StoredRecord>, cancelled: bool,
+    ) -> Result<(), OriginalWriterError> {
+        let claims = association.candidate();
+        if claims.ingress_namespace.ingress != self.ingress_domain {
+            return Err(OriginalWriterError::WrongOwner);
+        }
+        let _publication = self.publication.begin_owner_change()
+            .map_err(|_| OriginalWriterError::Unavailable)?;
+        let mut originals = self.originals.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        if let Some(existing) = originals.iter_mut().find(|entry|
+            entry.names(&claims.ingress_namespace.realm, &claims.original_work)) {
+            match existing {
+                OriginalRecord::Bound(held) => {
+                    if held.association != association { return Err(OriginalWriterError::Conflict); }
+                    held.source_custody = None;
+                    held.custody_settlement = None;
+                    if cancelled { held.operation = OriginalOperationDisposition::Cancelled { record: row }; }
+                }
+                OriginalRecord::UnboundCancellation { source_record, first_binding, withdrawn_association, operation, .. } => {
+                    if source_record.key != row.key || first_binding.is_some()
+                        || withdrawn_association.as_ref().is_some_and(|prior| prior != &association)
+                    { return Err(OriginalWriterError::Conflict); }
+                    if cancelled { *operation = OriginalOperationDisposition::Cancelled { record: row.clone() }; }
+                    *source_record = row;
+                    *withdrawn_association = Some(association);
+                }
+            }
+        } else {
+            originals.push(OriginalRecord::UnboundCancellation {
+                realm: claims.ingress_namespace.realm.clone(), original: claims.original_work.clone(),
+                operation: if cancelled { OriginalOperationDisposition::Cancelled { record: row.clone() } }
+                    else { OriginalOperationDisposition::Open }, source_record: row,
+                first_binding: None, withdrawn_association: Some(association),
+            });
+        }
         Ok(())
     }
 
@@ -1355,7 +1414,7 @@ impl ToolkitOriginalOwner {
         let operation_cancelled = cancelled_record.is_some();
         let bound = OriginalRecord::Bound(HeldOriginal {
             retained: retained.clone(),
-            source_custody: None,
+            source_custody: None, custody_settlement: None,
             controller: None,
             service_set_admission: None,
             operation: match cancelled_record {
@@ -1451,7 +1510,7 @@ impl ToolkitOriginalOwner {
                     original: original.clone(),
                     source_record: source_record.clone(),
                     operation: OriginalOperationDisposition::CancellationPending,
-                    first_binding: None,
+                    first_binding: None, withdrawn_association: None,
                 });
             }
             entries = self.close_shared_entries(&binding.into_iter().collect::<Vec<_>>())?;
@@ -1638,7 +1697,7 @@ impl ToolkitOriginalOwner {
                         realm: source.realm.clone(), original: source.original.clone(),
                         source_record: source.record.clone(),
                         operation: OriginalOperationDisposition::CancellationPending,
-                        first_binding: None,
+                        first_binding: None, withdrawn_association: None,
                     });
                 }
             }
@@ -1872,6 +1931,7 @@ impl ToolkitOriginalOwner {
         }
         let held = originals[index].bound_mut().ok_or(OriginalWriterError::WrongOwner)?;
         held.source_custody = Some(SourceCustody::Candidate);
+        held.custody_settlement = None;
         held.controller = controller;
         held.service_set_admission = None;
         Ok(PendingToolkitOriginal {
@@ -1987,7 +2047,7 @@ impl AuthenticatedOriginalSource for ToolkitOriginalOwner {
         }
         let originals = self
             .originals
-            .lock()
+            .try_lock()
             .map_err(|_| ControllerReadinessFailure::PolicyUnavailable)?;
         let record = originals
             .iter()
@@ -1998,7 +2058,8 @@ impl AuthenticatedOriginalSource for ToolkitOriginalOwner {
             OriginalRecord::UnboundCancellation { operation, .. } => operation,
         };
         match operation {
-            OriginalOperationDisposition::Open if matches!(record, OriginalRecord::Bound(_)) => {
+            OriginalOperationDisposition::Open if matches!(record, OriginalRecord::Bound(_)
+                | OriginalRecord::UnboundCancellation { withdrawn_association: Some(_), .. }) => {
                 Ok(OriginalDisposition::Active)
             }
             OriginalOperationDisposition::Cancelled { record } => {
@@ -2058,7 +2119,34 @@ impl AuthenticatedOriginalSource for ToolkitOriginalOwner {
         Ok(Some(retained.custody.clone()))
     }
 
-    fn retained_original(
+    fn retained_custody(
+        &self,
+        namespace: &QualifiedIngressNamespace,
+        original: &OriginalWorkRef,
+    ) -> Result<RetainedCustody, ControllerReadinessFailure> {
+        let originals = self.originals.try_lock()
+            .map_err(|_| ControllerReadinessFailure::PolicyUnavailable)?;
+        let Some(held) = originals.iter().filter_map(OriginalRecord::bound)
+            .find(|held| held.names(namespace, original)) else { return Ok(RetainedCustody::NotRetained); };
+        match held.source_custody {
+            Some(SourceCustody::Admitted) => Ok(RetainedCustody::Retained(held.custody.authority_basis.clone())),
+            Some(SourceCustody::Candidate) => match &held.custody_settlement {
+                Some(settlement) => {
+                    let settlement = settlement.upgrade().ok_or(ControllerReadinessFailure::PolicyUnavailable)?;
+                    // Both reads are nonblocking source locks. No native lock,
+                    // storage read or recovery action belongs in this callback.
+                    settlement.pending_readiness()?;
+                    Ok(RetainedCustody::AdmissionPending)
+                }
+                None => Ok(RetainedCustody::NotRetained),
+            },
+            None => Ok(RetainedCustody::NotRetained),
+        }
+    }
+}
+
+impl ToolkitOriginalOwner {
+    pub(crate) fn admitted_original_basis(
         &self,
         namespace: &QualifiedIngressNamespace,
         original: &OriginalWorkRef,

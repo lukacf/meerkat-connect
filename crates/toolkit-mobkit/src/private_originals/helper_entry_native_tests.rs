@@ -667,7 +667,7 @@ impl LlmClient for CatalogResponse {
                 LlmEvent::ToolCallComplete { id: id.into(), name: name.into(), args: args.clone(), meta: None }
             }
             LlmEvent::Done { outcome: LlmDoneOutcome::Success { .. } } => LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
+                outcome: LlmDoneOutcome::success(StopReason::ToolUse),
             },
             other => other,
         })))

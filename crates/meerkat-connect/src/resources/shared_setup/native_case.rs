@@ -3,6 +3,7 @@
 //! useful business tool, stock application restart or large fan-out is claimed.
 use super::native_case_artifacts::publish;
 mod find_feedback;
+mod planning_admission;
 use super::sdk_host::{SdkClient, SdkLaunchOwner, SdkParent};
 use super::*;
 use async_trait::async_trait;
@@ -253,24 +254,34 @@ impl Script {
                         let code = match value.get("error").and_then(Value::as_str) {
                             Some("operation_authorization_unavailable") => "operation_authorization_unavailable",
                             Some("operation_refused") => "operation_refused",
+                            Some("access_denied") => "access_denied",
                             Some("tool_not_found") => "tool_not_found",
                             Some("tool_unavailable") => "tool_unavailable",
                             Some(_) => "other_error",
                             None => "none",
                         };
+                        // Keep only typed, bounded error fields from the actual
+                        // result. Non-JSON text and all other fields stay private.
+                        let refusal = if result.is_error {
+                            let field = |name: &str| value.get(name).and_then(Value::as_str)
+                                .map(|text| text.chars().filter(|ch| !ch.is_control())
+                                    .take(512).collect::<String>());
+                            json!({"error":field("error"), "message":field("message")})
+                        } else { Value::Null };
                         let first_observation = self.observe_result(result);
                         if first_observation {
                             eprintln!("{}", json!({
                                 "event":"d5_sdk_tool_result", "member":prefix,
                                 "call":result.tool_use_id, "operation":operation,
                                 "is_error":result.is_error, "error_code":code,
+                                "refusal":refusal,
                             }));
                         }
                         let bounded_find_feedback = !helper
                             && operation == toolkit_mobkit::FIND_AND_INSTALL
                             && find_feedback::canonical_unavailable(result);
                         assert!(!result.is_error || bounded_find_feedback,
-                            "{prefix}: native call {} refused with {code}", result.tool_use_id);
+                            "{prefix}: native call {} refused with {code}: {refusal}", result.tool_use_id);
                         if !result.is_error {
                             returned.insert(result.tool_use_id.clone(), value.clone());
                         }
@@ -303,9 +314,7 @@ impl Script {
                     meta: None,
                 },
                 LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::ToolUse,
-                    },
+                    outcome: LlmDoneOutcome::success(StopReason::ToolUse),
                 },
             ]
         };
@@ -396,9 +405,7 @@ fn done(text: &str) -> Vec<LlmEvent> {
             meta: None,
         },
         LlmEvent::Done {
-            outcome: LlmDoneOutcome::Success {
-                stop_reason: StopReason::EndTurn,
-            },
+            outcome: LlmDoneOutcome::success(StopReason::EndTurn),
         },
     ]
 }
@@ -1569,28 +1576,56 @@ impl Case {
         assert_eq!(child("a")["work"]["parent"], child("b")["work"]["parent"]);
         assert_ne!(child("a")["work"]["child"], child("b")["work"]["child"]);
         let approved = self.approved.lock().unwrap().clone();
+        assert_eq!(approved.len(), 2);
         assert_ne!(approved[0].approval_id, approved[1].approval_id);
-        let mut reviewed = approved
+        assert_ne!(self.audit_sessions["helper-a"], self.audit_sessions["helper-b"]);
+        let emitted = self.script.calls.lock().unwrap().clone();
+        let returned = self.script.results.lock().unwrap().clone();
+        let reviewed = approved
             .iter()
             .map(|record| {
-                record
-                    .request_body
-                    .clone()
-                    .expect("each exact software approval retains its request body")
+                let meerkat_core::ApprovalOwnerRef::Session { session_id } = &record.owner
+                else {
+                    panic!("each native approval must retain its exact helper session owner");
+                };
+                let tag = ["a", "b"].into_iter().find(|tag|
+                    self.audit_sessions.get(&format!("helper-{tag}")) == Some(session_id))
+                    .expect("approval owner must be an actual captured helper session");
+                assert_eq!(record.resource.kind, meerkat_core::ApprovalResourceKind::ToolCall);
+                assert_eq!(record.resource.id.as_str(), "setup_selected_install");
+                assert_eq!(record.proposed_action.kind, meerkat_core::ApprovalActionKind::ToolCall);
+                assert_eq!(record.proposed_action.summary,
+                    "Ask the selected package owner to install this exact checked software configuration once. The returned job and receipt are software-only observations; this does not authenticate an account, attach usable tools, grant access or complete the original task.");
+                let call_id = format!("{tag}-helper-install");
+                let matching = emitted.iter().filter(|(id, _, _)| id == &call_id).collect::<Vec<_>>();
+                assert_eq!(matching.len(), 1, "each approval must match one emitted call");
+                assert_eq!(matching[0].1, "setup_selected_install");
+                let check_id = format!("{tag}-helper-check");
+                let checks = emitted.iter().filter(|(id, _, _)| id == &check_id).collect::<Vec<_>>();
+                assert_eq!(checks.len(), 1, "each proposal must retain its actual check call");
+                assert_eq!(checks[0].1, "setup_selected_check");
+                let checked = returned.get(&check_id).expect("successful owner check must be retained");
+                assert_eq!(matching[0].2, json!({
+                    "validation_id":checked["validation_id"], "effect_sha256":checked["effect_sha256"]}));
+                // The approval reviews the owner's checked software proposal,
+                // not merely the validation key used by the install call.
+                let proposal = json!({"kind":"service_software_install", "check_tool":checks[0].1,
+                    "selection":checks[0].2, "owner_proposal":checked, "scope":"software_installation_only"});
+                let mut expected = proposal.clone();
+                expected["tool"] = matching[0].1.clone().into();
+                expected["call_id"] = call_id.clone().into();
+                assert_eq!(record.proposed_action.body.as_ref(), Some(&expected));
+                (call_id, proposal)
             })
             .collect::<Vec<_>>();
         let call_ids = reviewed
             .iter()
-            .map(|body| body["call_id"].as_str().unwrap())
+            .map(|(call_id, _)| call_id.as_str())
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(call_ids, ["a-helper-install", "b-helper-install"].into());
-        for body in &mut reviewed {
-            assert_eq!(body["tool"], "setup_selected_install");
-            body.as_object_mut().unwrap().remove("call_id");
-        }
         assert_eq!(
-            reviewed[0], reviewed[1],
-            "each exact native call independently reviews the same physical effect"
+            reviewed[0].1, reviewed[1].1,
+            "each exact native call independently reviews the same checked software proposal"
         );
         self.script.cancel_requested.store(true, Ordering::SeqCst);
         let cancelled = self
@@ -1774,6 +1809,9 @@ fn two_sdk_children_share_one_preparation_and_cancel_independently() {
         })
         .catch_unwind()
         .await;
+        if result.is_err() {
+            case.retain_failed_audits().await;
+        }
         let cleanup = case.cleanup().await;
         assert!(
             cleanup.is_empty(),

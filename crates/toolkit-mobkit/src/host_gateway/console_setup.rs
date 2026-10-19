@@ -160,11 +160,24 @@ impl ConsoleSetupBinding {
     pub fn check_status_page(&self, page: &ConsoleStatusPage,
         current: &(impl Fn() -> Option<ConsoleViewerContext> + Sync),
     ) -> Result<(), HostLifetimeError> {
-        let fresh = current().ok_or(HostLifetimeError::Denied)?;
-        if !Arc::ptr_eq(&self.source, &page.source) || !page.login.same_owner(&self.current_login(&fresh)?)
-            || fresh.human.as_ref().and_then(|human| human.principal().ok()).as_ref() != Some(&page.principal)
-            || fresh.access_view.as_ref().is_some_and(|view| view.enforced()
-                && page.visible_members.iter().any(|identity| !view.can_view_agent(identity.as_str()))) {
+        let fresh = current().ok_or(HostLifetimeError::Denied).map_err(|error| {
+            status_owner_refused("binding.check_status_page.viewer", error); error
+        })?;
+        if !Arc::ptr_eq(&self.source, &page.source) {
+            status_read_refused("binding.check_status_page.source", "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        if !page.login.same_owner(&self.current_login(&fresh)?) {
+            status_read_refused("binding.check_status_page.login_owner", "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        if fresh.human.as_ref().and_then(|human| human.principal().ok()).as_ref() != Some(&page.principal) {
+            status_read_refused("binding.check_status_page.principal", "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        if fresh.access_view.as_ref().is_some_and(|view| view.enforced()
+            && page.visible_members.iter().any(|identity| !view.can_view_agent(identity.as_str()))) {
+            status_read_refused("binding.check_status_page.member_visibility", "Denied");
             return Err(HostLifetimeError::Denied);
         }
         if let Some(Ok(offer)) = &page.access { offer.check_visible(&fresh)?; }
@@ -181,13 +194,32 @@ impl ConsoleSetupBinding {
     }
 
     pub fn current_login(&self, viewer: &ConsoleViewerContext) -> Result<ConsoleLoginHandle, HostLifetimeError> {
-        if self.closed.is_closed() || viewer.service_identity { return Err(HostLifetimeError::Denied); }
-        self.owner.validate_current_selection()?;
-        let human = viewer.human.as_ref().ok_or(HostLifetimeError::Denied)?;
-        human.current().map_err(|_| HostLifetimeError::Denied)?;
-        human.principal().map_err(|_| HostLifetimeError::Denied)?;
-        self.logins.resolve(human.issuer(), human.subject(), human.login_scope().ok_or(HostLifetimeError::Denied)?)
-            .map_err(|_| HostLifetimeError::Denied)
+        if self.closed.is_closed() {
+            status_read_refused("binding.current_login.closed", "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        if viewer.service_identity {
+            status_read_refused("binding.current_login.service_identity", "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        self.owner.validate_current_selection().map_err(|error| {
+            status_owner_refused("binding.current_login.selection", error); error
+        })?;
+        let human = viewer.human.as_ref().ok_or(HostLifetimeError::Denied).map_err(|error| {
+            status_owner_refused("binding.current_login.human", error); error
+        })?;
+        human.current().map_err(|_| {
+            status_read_refused("binding.current_login.current", "Denied"); HostLifetimeError::Denied
+        })?;
+        human.principal().map_err(|_| {
+            status_read_refused("binding.current_login.principal", "Denied"); HostLifetimeError::Denied
+        })?;
+        let scope = human.login_scope().ok_or(HostLifetimeError::Denied).map_err(|error| {
+            status_owner_refused("binding.current_login.scope", error); error
+        })?;
+        self.logins.resolve(human.issuer(), human.subject(), scope).map_err(|_| {
+            status_read_refused("binding.current_login.resolve", "Denied"); HostLifetimeError::Denied
+        })
     }
     /// Pure canonical read. Re-resolve the HTTP viewer after this await before
     /// disclosing the result. This is not a reconciliation or readiness call.
@@ -248,18 +280,33 @@ pub struct ConsoleServiceRecoverySnapshot {
 }
 impl ConsoleServiceRecoverySnapshot {
     fn check_visible(&self, viewer: &ConsoleViewerContext) -> Result<(), HostLifetimeError> {
-        let human = viewer.human.as_ref().ok_or(HostLifetimeError::Denied)?;
-        let subject = human.current().map_err(|_| HostLifetimeError::Denied)?;
-        if viewer.service_identity || viewer.principal.as_ref() != Some(&subject)
-            || human.principal().ok().as_ref() != Some(&self.read.human)
-            || human.login_scope() != Some(self.scope.as_str())
-            || viewer.access_view.as_ref().is_none_or(|access| !access.can_administer()) {
+        let human = viewer.human.as_ref().ok_or(HostLifetimeError::Denied).map_err(|error| {
+            status_owner_refused("recovery.check_visible.human", error); error
+        })?;
+        let subject = human.current().map_err(|_| {
+            status_read_refused("recovery.check_visible.current", "Denied"); HostLifetimeError::Denied
+        })?;
+        let denied = if viewer.service_identity { Some("recovery.check_visible.service_identity") }
+            else if viewer.principal.as_ref() != Some(&subject) { Some("recovery.check_visible.subject") }
+            else if human.principal().ok().as_ref() != Some(&self.read.human) { Some("recovery.check_visible.principal") }
+            else if human.login_scope() != Some(self.scope.as_str()) { Some("recovery.check_visible.scope") }
+            else if viewer.access_view.as_ref().is_none_or(|access| !access.can_administer()) { Some("recovery.check_visible.admin") }
+            else { None };
+        if let Some(stage) = denied {
+            status_read_refused(stage, "Denied");
             return Err(HostLifetimeError::Denied);
         }
         self.read.check_visible(|member| self.members.iter().find(|(selected, _)| selected == member)
             .is_some_and(|(_, identity)| viewer.access_view.as_ref().is_some_and(|access|
                 !access.enforced() || access.can_view_agent(identity.as_str()))))
-            .map_err(|_| HostLifetimeError::Denied)
+            .map_err(|error| {
+                status_read_refused("recovery.check_visible.read", match error {
+                    PrivateOriginalError::Unavailable => "Unavailable",
+                    PrivateOriginalError::Conflict => "Conflict",
+                    PrivateOriginalError::Denied => "Denied",
+                });
+                HostLifetimeError::Denied
+            })
     }
     pub fn projection(&self) -> serde_json::Value {
         serde_json::json!({"scope":"operator_service_recovery",
@@ -288,7 +335,14 @@ impl ConsoleAccessSnapshot {
         self.read.check_visible(|member| self.members.iter().find(|(selected, _)| selected == member)
             .is_some_and(|(_, identity)| !viewer.access_view.as_ref().is_some_and(|view|
                 view.enforced() && !view.can_view_agent(identity.as_str()))))
-            .map_err(|_| HostLifetimeError::Denied)
+            .map_err(|error| {
+                status_read_refused("access.check_visible.read", match error {
+                    PrivateOriginalError::Unavailable => "Unavailable",
+                    PrivateOriginalError::Conflict => "Conflict",
+                    PrivateOriginalError::Denied => "Denied",
+                });
+                HostLifetimeError::Denied
+            })
     }
     pub fn projection(&self) -> serde_json::Value {
         serde_json::json!({"scope":"application_issued_access",

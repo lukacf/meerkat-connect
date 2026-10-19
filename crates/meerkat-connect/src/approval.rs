@@ -3015,9 +3015,7 @@ mod tests {
                     ),
                 }),
                 Ok(meerkat::LlmEvent::Done {
-                    outcome: meerkat::LlmDoneOutcome::Success {
-                        stop_reason: meerkat::StopReason::ToolUse,
-                    },
+                    outcome: meerkat::LlmDoneOutcome::success(meerkat::StopReason::ToolUse),
                 }),
             ]))
         }
