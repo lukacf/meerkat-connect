@@ -104,11 +104,22 @@ failures remain recorded. The scoped 23-path commits include only this qualified
 slice; nothing was pushed or released.
 
 The first input remains recorded before Candidate staging, and exact retry
-rebuilds current native authentication. A further reviewed slice retains the
-exact native receipt through callback errors without resubmitting; its 15-control
-run is compiling on the same r6 graph. Bounded settlement, permanent withdrawal,
-restart, wake and stop/join remain in implementation. None of these source reviews
-closes admission recovery.
+rebuilds current native authentication. The [15-control handoff run](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-settlement-fifteen-ylf0f1pl/FINAL.json)
+(`db915f80`) now passes on r6: 14 native controls and one source-guard control.
+It retains the exact native receipt through later callback failures, preserves
+bounded same-input reprepare and never infers a new admission from a source row.
+The six reviewed paths are committed locally as private `717de80b` and
+public-follow-up `54a30ebc`; all recorded owners joined and source was restored.
+
+The [20-path recovery batch](/private/tmp/connect-c1-recovery-tjet3qmk/MANIFEST.json)
+(`2c3dc6be`) has independent source approval. Its 40-control runtime composition
+is in preparation, with no execution outcome yet. It adds one retained source
+owner, bounded canonical settlement, permanent withdrawal and joined shutdown.
+Restart restoration against an actual installed native input, pending-completion
+delivery after the recovery announcement and helper recovery acceptance remain
+separate required tests. The direct Connect application-driver close changes also
+need their installed-gateway build and affected runtime qualification. Neither
+this source review nor the narrower handoff pass closes admission recovery.
 
 An earlier full SDK diagnostic gets through both helpers' catalog/check calls,
 independent approvals, cancellation of A while B installs. Preparation completes
