@@ -40,6 +40,9 @@ session. Resource corruption is refused before setup/model work, and both cases
 join physical owners without forced cleanup. CLI setup -> exit -> fresh ordinary
 rkat in the same realm -> three stories remains unverified. Console approval and
 both shared cases remain open. This is not 0.9.4 release qualification.
+The ordinary meerkat-connect CLI binary now also builds on the exact r9 graph
+and passes independent artifact review without test-support features. It reports
+version 0.9.0; the matching stock rkat build and actual CLI journey remain pending.
 
 The r9 approval development gateway build also passes. Its affected consumer
 fails at setup-data HTTP 403 before intentional process loss or successor
