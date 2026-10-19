@@ -111,7 +111,23 @@ bounded same-input reprepare and never infers a new admission from a source row.
 The six reviewed paths are committed locally as private `717de80b` and
 public-follow-up `54a30ebc`; all recorded owners joined and source was restored.
 
-The latest [focused recovery run](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-retired-affected-six-laqknsj1/FINAL.json)
+The latest [recovery and writer-contention execution](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-cold-contention-driver-eight-y1qfj_hc/FINAL.json)
+(`25271039`) compiles both libraries and runs six Toolkit controls: five pass
+and one fails. Cold completion wake, coherent-input tamper refusal, and all three
+writer-contention controls pass. The first cold restoration control fails earlier
+at original-task completion, before teardown or restoration. Its raw log does not
+identify the native outcome; diagnosis remains open. Both Driver controls remain
+unentered under the batch's prerequisite rule. The [outcome review](/private/tmp/connect-combined8-root-outcome-jel0f1w3/REVIEW.json)
+(`87f960a0`) confirms these results and all recorded process joins.
+
+A stale source-count assertion also interrupts the runner's final restoration
+check. The original failed receipt remains unchanged. A separate
+[bookkeeping verification](/private/tmp/connect-combined8-root-outcome-jel0f1w3/RESTORATION-ADDENDUM.json)
+(`5585a478`) verifies all 798 selected files, modes, unchanged native lock and
+absent process groups under exclusive ownership. The correction derives the
+count from the selected manifest. This qualifies cleanup only.
+
+The preceding [focused recovery run](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-retired-affected-six-laqknsj1/FINAL.json)
 (`ff8468cd`) completes all six selected checks: three pass and three fail.
 Compilation and exact listing pass. The stopped helper publication, 33-entry
 stopped traversal and cold failed-write controls pass. The two positive cold
@@ -122,8 +138,9 @@ The [independent contract review](/private/tmp/connect-cold-custody-contract-tyq
 starts at `(false, false)`; restoration preserves its issuer and changes custody
 to `(true, false)`. Tamper refusal must preserve the preexisting binding. The
 [fixture correction](/private/tmp/connect-cold-tuple-independent-272j4exe/REVIEW.json)
-(`280d528e`) has source approval and still requires a rerun. This remains a failed
-batch, with no source adoption.
+(`280d528e`) is included in the latest execution. The wake and tamper controls
+now pass; the first cold control fails before reaching restoration. Both batches
+remain failed, with no source adoption.
 
 The [independent outcome review](/private/tmp/connect-affected6-root-outcome-r3ti_pbi/REVIEW.json)
 (`77c08279`) verifies all six raw results, eight absent runner groups, six absent
@@ -137,16 +154,25 @@ The preceding [46-control run](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/
 (`757f9db8`) remains 26 pass, 16 fail and one timeout; three compiler failures
 also remain recorded. These results are separate runs, not one all-pass suite.
 
-Two concrete Connect recovery gaps are now being fixed. An asynchronous ordinary
-binder can return Unavailable merely because the recovery worker holds the source
-writer during a store CAS. The correction will wait on that existing writer and
-recheck current authority. Separately, helper records retain only an input
-fingerprint, so cold recovery cannot verify a consumed helper after Core retires
-its payload. The proposed versioned correction retains the exact prepared input
-in the same canonical helper row before Candidate. It reuses the existing codec
-and native replay checks. Legacy rows with no recoverable bytes stay unavailable;
-no input is reconstructed from IDs or resubmitted. Both fixes need focused native
-qualification and independent source review.
+The asynchronous writer correction now passes its three focused runtime controls:
+ordinary admission waits for the recovery CAS, a cancelled caller leaves the
+admission operation owned, and source closure refuses a new Candidate after the
+wait. These passes do not qualify the whole recovery composition or attribute the
+earlier raw Bind failure.
+
+The [helper payload correction](/private/tmp/connect-helper-cold-payload-r1-j59wo8pp/MANIFEST.json)
+(`2580b607`) has independent source and cleanup review, but has not run. Version 5
+retains the exact prepared Input in the existing canonical helper row before
+Candidate and uses native replay/current-authority checks. Legacy rows without
+recoverable bytes stay unavailable, without reconstruction or resubmission.
+
+A further admission race has an independently reviewed source correction: legitimate
+custody receipt progress can change the canonical revision while the acquisition
+host awaits admission. The correction permits only typed, reachable progress of
+the same attempt, with all other source facts unchanged. Cancellation and actual
+request changes still refuse admission. The [source review](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-acquisition-progress-independent-ehufpxps/REVIEW.json)
+(`e111405d`) approves three prepared native controls, which remain unexecuted.
+This is not yet an attribution of the historical Denied failure.
 
 The conditional recovery adoption map remains held. The direct Connect
 application driver separately needs its two cleanup controls, a fresh production
