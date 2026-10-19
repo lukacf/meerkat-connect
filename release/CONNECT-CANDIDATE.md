@@ -10,9 +10,10 @@ no default to the public 0.9.0 artifacts or to a development pair.
 The existing producer path is used without weakening its acceptance:
 
 1. Fetch each exact public input by URL, SHA-256 and byte size.
-2. Check published Core/Meta 0.9.4 tag commits, the selected Cargo manifest/lock,
-   complete actual package/feature/dependency graph, and the actual published
-   Meta SDK wheel against that release source. Build the Connect wheel from a
+2. Fetch the exact selected Core/Meta 0.9.4 commits and check any explicitly
+   selected tags against them. Check the selected Cargo manifest/lock,
+   complete actual package/feature/dependency graph, and the original public
+   Meta SDK wheel against that source. Build the Connect wheel from a
    scratch copy of the dispatched `sdk/python` using its existing PEP 517 backend
    and an explicit offline build-tool wheel batch. Compare the complete original
    wheel payload to the dispatched source; retain its command, log and metadata.
@@ -33,7 +34,7 @@ The existing producer path is used without weakening its acceptance:
    `installed_gateway_schema4_resource_startup_and_shutdown_preview` and its
    existing exclusions remain in `assembly.json`.
 7. Emit the existing `forge-meta-toolkit-runtime-selection-v1` shape, then invoke
-   the selected Meta release's actual `parse_candidate_selection` and
+   the selected Meta commit's actual `parse_candidate_selection` and
    `read_meta_toolkit_artifacts` reader. Its absence or incompatibility refuses.
 8. Upload the whole candidate closure once. A separate job, which executes no
    native product, checks the original upload ID, run/attempt/source and archive
@@ -53,7 +54,18 @@ native build. The existing owners must supply all of the following:
 
 - The final dispatched public Connect source commit, its native package version,
   SDK distribution/version, and exact native Cargo manifest/lock hashes.
-- The actual published Core and Meta `v0.9.4` source commits. Their complete
+- The exact Core and Meta source commits whose native packages are `0.9.4`.
+  Each existing `native_release.core` / `native_release.meta` selector has
+  exactly `repository`, `version`, `source_sha` and `tag`. `source_sha` is a
+  full lowercase 40-character commit SHA. Set `tag` to `""` for an explicit
+  commit-only selection, including an offered RC before final tags or registry
+  publication. A nonempty tag is an additional binding: its exact
+  `refs/tags/<tag>` must peel to that same commit. Tags use 1-128 ASCII letters,
+  digits, dots, underscores or hyphens, start with a letter or digit, contain no
+  `..`, and end with neither `.` nor `.lock`. No branch, default HEAD, inferred
+  RC tag or final-release tag is substituted. A tag check does not establish
+  publication or release authorization. The draft's existing final-tag values
+  remain unbound until the owner supplies its exact selection. Their complete
   selected Cargo package IDs, features, dependency edges/kinds/target predicates
   and native family membership must match. Workspace IDs alone use the explicit
   `path+workspace:///` comparison form. `expected_resolve` contains `root` and
@@ -78,8 +90,8 @@ native build. The existing owners must supply all of the following:
   the build frontend and the selected source backend requirements. No versions
   are inferred. `--no-isolation` uses only that fresh build environment; the
   existing source-owned backend remains responsible for creating the wheel.
-- The exact hashes of the four Forge reader source files in the actual published
-  Meta release checkout. The historical r5 Meta source has no installer reader;
+- The exact hashes of the four Forge reader source files in the selected
+  Meta commit checkout. The historical r5 Meta source has no installer reader;
   its availability is not implied by a version string. Missing or differing
   reader source refuses before resource/native production.
 - One complete offline dependency requirements file and wheel batch. The
@@ -143,10 +155,13 @@ The repository is fixed to `lukacf/meerkat-connect` and the workflow to
 verifies each subject; the checked result must match the exact source,
 workflow, ref, run/attempt, issuer and GitHub-hosted runner. The manifest and
 original input selection bind the input digest, native releases and Connect
-version. The Meta checkout must be the exact selected published `v0.9.4`
-commit, with a clean original `installer/launchkit` package and matching reader
-source pins. Neither an SDK wheel nor a separate reader wheel substitutes for
-that checkout.
+version. The Meta checkout's HEAD must be the exact selected commit, with a
+clean original `installer/launchkit` package and matching reader source pins.
+If the selector includes a tag, its explicit `refs/tags/<tag>` must also resolve
+to that commit. Commit-only selection requires no tag. Neither an SDK wheel
+nor a separate reader wheel substitutes for that checkout. Both paths retain
+the same `0.9.4` native package and Meta SDK version requirements, exact SDK
+source comparison, graph checks and actual owner-reader acceptance.
 
 Acceptance performs bounded data-only extraction, preserves original bytes,
 and checks the complete retained inventory. The selected Meta package supplies
@@ -214,14 +229,15 @@ Actions artifact alone is not that handoff.
 
 The candidate workflow was checked by source reading, Python AST parsing,
 JSON parsing, YAML parsing and exact patch roundtrip. The publication commands
-also passed 52 offline controls using controlled verifier results, a controlled
+also passed 76 offline controls using controlled verifier results, a controlled
 reader and transport responses. Those controls include input substitution,
-conflicting assets at each position, partial writes and repository visibility
-changes. They do
-not establish actual signature verification, published Meta-reader acceptance,
+conflicting assets at each position, partial writes, repository visibility
+changes, commit-only/tagged native selection, and real local Git fetches that
+refuse commit/tag mismatches before checkout. They do
+not establish actual signature verification, selected Meta-reader acceptance,
 public upload or Forge inclusion. No Cargo, packager, native verifier, native
 binary, GitHub job or remote host was executed for this draft. Actual attested
-candidate inputs and the exact published Meta package must still pass acceptance;
+candidate inputs and the exact selected Meta package must still pass acceptance;
 the selected source and input joins need a real owner-authorized CI run.
 The Linux installed-product scope is narrower than shared setup workflow,
 acquisition, account login, model/task completion, installation or another OS.

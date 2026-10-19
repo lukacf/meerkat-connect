@@ -131,13 +131,17 @@ def selected_runtime_artifacts(target):
     c.pack = pack
     c.pack()
     c.commands, c.mutate_verified = [], None
+    c.git_commands = []
+    c.git_refs = {'HEAD^{commit}': 'd' * 40, 'refs/tags/v0.9.4^{commit}': 'd' * 40}
     real_output = subprocess.check_output
     def output(argv, **kwargs):
         args = [str(x) for x in argv]
         if args[0] == 'git':
             command = args[3:]
+            c.git_commands.append(command)
             if command[:1] == ['rev-parse']:
-                return 'd' * 40 + '\n'
+                assert command[:2] == ['rev-parse', '--verify']
+                return c.git_refs[command[2]] + '\n'
             if command[:1] == ['status']:
                 return ''
             raise AssertionError(args)
@@ -174,6 +178,141 @@ def test_acceptance_keeps_original_bytes_and_uses_scrubbed_verifier_and_reader(f
     for name in p.PUBLICATION_FILES:
         assert (c.root / 'accepted/assets' / name).read_bytes() == before[name] == (c.candidate / name).read_bytes()
     assert not (c.root / 'accepted/publication.json').exists()
+    assert ['rev-parse', '--verify', 'refs/tags/v0.9.4^{commit}'] in c.git_commands
+
+
+def reselect_native(c):
+    inputs = p.read_json(c.export / 'inputs-selection.json')
+    inputs['native_release'] = c.native
+    dump(c.export / 'inputs-selection.json', inputs)
+    c.request['inputs_sha256'] = p.digest(c.export / 'inputs-selection.json')
+    c.pack()
+
+
+@pytest.mark.parametrize('tag', ['', 'v0.9.4-rc.1'])
+def test_exact_rc_selection_accepts_without_final_release_tag(fixture, tag):
+    c = fixture
+    for selected in c.native.values():
+        selected['tag'] = tag
+    c.git_refs.pop('refs/tags/v0.9.4^{commit}')
+    if tag:
+        c.git_refs['refs/tags/' + tag + '^{commit}'] = c.native['meta']['source_sha']
+    reselect_native(c)
+    accepted = c.accept()
+    assert accepted['publication'] == 'not_performed' and len(c.reader_calls) == 1
+    refs = [args[2] for args in c.git_commands if args[:1] == ['rev-parse']]
+    assert refs == ['HEAD^{commit}'] + (['refs/tags/' + tag + '^{commit}'] if tag else [])
+    retained = p.read_json(c.root / 'accepted/assets' / p.SUBJECTS[1])
+    assert retained['native_release'] == c.native
+
+
+@pytest.mark.parametrize('tag', ['', 'v0.9.4'])
+def test_selected_meta_commit_mismatch_refuses_before_reader(fixture, tag):
+    c = fixture
+    c.native['meta']['tag'] = tag
+    reselect_native(c)
+    c.git_refs['HEAD^{commit}'] = 'e' * 40
+    with pytest.raises(ValueError, match='exact clean selected Meta checkout'):
+        c.accept()
+    assert not c.reader_calls
+
+
+def test_selected_meta_tag_must_resolve_to_exact_selected_commit(fixture):
+    c = fixture
+    c.git_refs['refs/tags/v0.9.4^{commit}'] = 'e' * 40
+    with pytest.raises(ValueError, match='exact clean selected Meta checkout'):
+        c.accept()
+    assert not c.reader_calls
+
+
+@pytest.mark.parametrize('field,value', [
+    ('source_sha', 'main'), ('source_sha', 'D' * 40), ('source_sha', None),
+    ('version', '0.9.3'), ('repository', 'other/meerkat-meta'),
+    ('tag', None), ('tag', '--upload-pack=foreign'), ('tag', 'v0.9.4^{commit}'),
+    ('tag', 'v0.9.4..rc1'), ('tag', 'v0.9.4.lock'), ('tag', 'v0.9.4.'),
+    ('tag', 'refs/tags/v0.9.4'), ('tag', 'v0.9.4 rc1')])
+def test_malformed_native_selector_refuses_before_verifier_or_reader(fixture, field, value):
+    c = fixture
+    c.native['meta'][field] = value
+    c.pack()
+    with pytest.raises(ValueError):
+        c.accept()
+    assert not c.commands and not c.reader_calls and not c.git_commands
+
+
+def test_native_commit_selection_must_match_original_input_bytes(fixture):
+    c = fixture
+    c.native['meta']['source_sha'] = 'e' * 40
+    c.native['meta']['tag'] = ''
+    c.pack()
+    with pytest.raises(ValueError, match='original input selection differs'):
+        c.accept()
+    assert not c.reader_calls and not c.git_commands
+
+
+@pytest.fixture
+def local_native_fetch(tmp_path):
+    """Actual Git fetch/peel/checkout, with only the remote URL replaced locally."""
+    source, work = tmp_path / 'upstream', tmp_path / 'work'
+    source.mkdir(); work.mkdir()
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(source), *args], text=True).strip()
+    git('init', '-q')
+    (source / 'payload').write_text('selected commit\n')
+    git('add', 'payload')
+    git('-c', 'user.name=Offline Control', '-c', 'user.email=offline@example.invalid',
+        'commit', '-qm', 'selected source')
+    selected = git('rev-parse', 'HEAD')
+    (source / 'payload').write_text('unselected current branch\n')
+    git('add', 'payload')
+    git('-c', 'user.name=Offline Control', '-c', 'user.email=offline@example.invalid',
+        'commit', '-qm', 'unselected source')
+    other = git('rev-parse', 'HEAD')
+    class LocalRecorder:
+        def __init__(self):
+            self.commands = []
+            self.wrong_commit = False
+        def run(self, name, argv, *, cwd=None):
+            args = [str(x) for x in argv]
+            self.commands.append(args)
+            actual = [str(source) if x == 'https://github.com/lukacf/meerkat-meta.git' else x for x in args]
+            if self.wrong_commit and name == 'meta-fetch':
+                actual[-1] = other
+            log = work / (name + '.log')
+            with log.open('xb') as output:
+                subprocess.run(actual, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, check=True)
+            return {}, log
+    return git, work, selected, other, LocalRecorder()
+
+
+@pytest.mark.parametrize('tag', ['', 'v0.9.4', 'v0.9.4-rc.1'])
+def test_source_fetch_uses_exact_commit_and_only_explicit_tag(local_native_fetch, tag):
+    git, work, selected, _, record = local_native_fetch
+    if tag:
+        git('-c', 'user.name=Offline Control', '-c', 'user.email=offline@example.invalid',
+            'tag', '-a', tag, selected, '-m', 'selected tag')
+    checkout = p.fetch_native_source(record, work, 'meta', {
+        'repository': 'lukacf/meerkat-meta', 'source_sha': selected, 'tag': tag})
+    assert subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip() == selected
+    assert (checkout / 'payload').read_text() == 'selected commit\n'
+    assert record.commands[1][-1] == selected
+    tag_fetches = [args for args in record.commands if args[:2] == ['git', 'fetch'] and args[-1].startswith('refs/tags/')]
+    assert [args[-1] for args in tag_fetches] == (['refs/tags/' + tag + ':refs/tags/' + tag] if tag else [])
+
+
+@pytest.mark.parametrize('mismatch', ['commit', 'tag'])
+def test_source_fetch_mismatch_refuses_before_checkout(local_native_fetch, mismatch):
+    git, work, selected, other, record = local_native_fetch
+    tag = ''
+    if mismatch == 'tag':
+        tag = 'v0.9.4'
+        git('tag', tag, other)
+    else:
+        record.wrong_commit = True
+    with pytest.raises(ValueError, match='fetched native commit differs|selected native tag points elsewhere'):
+        p.fetch_native_source(record, work, 'meta', {
+            'repository': 'lukacf/meerkat-meta', 'source_sha': selected, 'tag': tag})
+    assert not any(args[:2] == ['git', 'checkout'] for args in record.commands)
 
 
 @pytest.mark.parametrize('field,value', [('source_sha','e'*40), ('source_tree','f'*40), ('run_id',124),

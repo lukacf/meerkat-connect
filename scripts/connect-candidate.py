@@ -118,6 +118,27 @@ def source_state():
     return revision, git("rev-parse", "HEAD^{tree}")
 
 
+def checked_native_releases(value):
+    require(isinstance(value, dict) and set(value) == {"core", "meta"},
+            "exact Core/Meta selection required")
+    for name, repository in (("core", "meerkat"), ("meta", "meerkat-meta")):
+        selected = value[name]
+        require(isinstance(selected, dict)
+                and set(selected) == {"repository", "version", "tag", "source_sha"}
+                and selected["repository"] == "lukacf/" + repository
+                and selected["version"] == "0.9.4"
+                and isinstance(selected["source_sha"], str) and SHA.fullmatch(selected["source_sha"]),
+                "exact Core/Meta 0.9.4 commit selection required")
+        tag = selected["tag"]
+        # A conservative single-component Git tag name. Empty is an explicit
+        # commit-only selection, not an unbound value or a mutable-ref fallback.
+        require(isinstance(tag, str) and (tag == "" or (
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", tag)
+            and ".." not in tag and not tag.endswith((".", ".lock")))),
+            "native tag must be empty or a safe single-component Git tag")
+    return value
+
+
 def preflight():
     require(os.environ.get("GITHUB_ACTIONS") == "true"
             and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
@@ -140,17 +161,13 @@ def preflight():
     require(sdk["name"] == value["sdks"]["toolkit"]["distribution"]
             and sdk["version"] == value["sdks"]["toolkit"]["version"], "Connect SDK metadata differs")
     require(value["rust_toolchain"] == "1.97.0", "unreviewed Rust toolchain")
-    for name, repository in (("core", "meerkat"), ("meta", "meerkat-meta")):
-        selected = value["native_release"][name]
-        require(selected["version"] == "0.9.4" and SHA.fullmatch(selected["source_sha"])
-                and selected["repository"] == "lukacf/" + repository
-                and selected["tag"] == "v0.9.4", "exact published Core/Meta 0.9.4 required")
+    checked_native_releases(value["native_release"])
     require(value["sdks"]["meta"]["version"] == "0.9.4", "Meta application SDK must match native release")
     require("meerkat-meta==0.9.4" in sdk.get("optional-dependencies", {}).get("native-host", []),
             "selected Connect SDK must declare the matching native-host dependency")
     require(set(value["forge_reader_source_pins"]) == FORGE_READERS
             and all(HEX.fullmatch(pin) for pin in value["forge_reader_source_pins"].values()),
-            "exact published Meta reader source inventory required")
+            "exact selected Meta reader source inventory required")
     files = value["files"]
     require(isinstance(files, dict) and 0 < len(files) <= 512, "bounded complete public file selection required")
     for name, row in files.items():
@@ -328,6 +345,26 @@ def archive_tree(directory, destination):
                     archive.addfile(info)
 
 
+def fetch_native_source(record, work, domain, selected):
+    checkout = work / (domain + "-source")
+    repository = "https://github.com/" + selected["repository"] + ".git"
+    record.run(domain + "-init", ["git", "init", checkout])
+    record.run(domain + "-fetch", ["git", "fetch", "--no-tags", "--depth=1",
+        repository, selected["source_sha"]], cwd=checkout)
+    _, identity = record.run(domain + "-identity",
+        ["git", "rev-parse", "--verify", "FETCH_HEAD^{commit}"], cwd=checkout)
+    require(identity.read_text().strip() == selected["source_sha"], "fetched native commit differs")
+    if selected["tag"]:
+        tag = "refs/tags/" + selected["tag"]
+        record.run(domain + "-tag-fetch", ["git", "fetch", "--no-tags", "--depth=1",
+            repository, tag + ":" + tag], cwd=checkout)
+        _, identity = record.run(domain + "-tag-identity",
+            ["git", "rev-parse", "--verify", tag + "^{commit}"], cwd=checkout)
+        require(identity.read_text().strip() == selected["source_sha"], "selected native tag points elsewhere")
+    record.run(domain + "-checkout", ["git", "checkout", "--detach", selected["source_sha"]], cwd=checkout)
+    return checkout
+
+
 def build():
     value, revision, tree = preflight()
     work = Path(os.environ["RUNNER_TEMP"]) / "connect-candidate"
@@ -343,22 +380,15 @@ def build():
     for name, row in value["files"].items():
         download(inputs / name, row)
         inspect_prebuilt(inputs / name)
-    # Fetch the actual immutable published release tags into fresh checkouts.
-    # A tag/source mismatch refuses; no previous checkout or native cache is used.
+    # Fetch only the selected commits into fresh checkouts. An optional tag
+    # adds a binding check; neither a default branch nor a prior cache is used.
     releases = {}
     for domain in ("core", "meta"):
-        selected = value["native_release"][domain]
-        checkout = work / (domain + "-source")
-        record.run(domain + "-clone", ["git", "clone", "--no-checkout", "--filter=blob:none", "--single-branch",
-            "--branch", selected["tag"], "https://github.com/" + selected["repository"] + ".git", checkout])
-        _, identity_log = record.run(domain + "-identity", ["git", "rev-parse", "HEAD"], cwd=checkout)
-        require(identity_log.read_text().strip() == selected["source_sha"], "published native tag points elsewhere")
-        record.run(domain + "-checkout", ["git", "checkout", "--detach", selected["source_sha"]], cwd=checkout)
-        releases[domain] = checkout
+        releases[domain] = fetch_native_source(record, work, domain, value["native_release"][domain])
     for name, expected in value["forge_reader_source_pins"].items():
         path = releases["meta"] / name
         require(path.is_file() and not path.is_symlink() and digest(path) == expected,
-                "published Meta release lacks the selected actual Forge reader")
+                "selected Meta commit lacks the selected actual Forge reader")
     # --no-index alone does not forbid direct URLs or included requirements.
     # The selected owner's existing reader validates the exact single-hash
     # grammar and each original wheel/RECORD before either pip installation.
@@ -485,17 +515,17 @@ def build():
             families.append(package)
     require({package["name"] for package in families} == set(value["native_family_packages"])
             and all(package["version"] == "0.9.4" for package in families),
-            "native family is not the complete selected published 0.9.4 graph")
+            "native family is not the complete selected 0.9.4 graph")
     for package in families:
         source = package["source"]
-        require(isinstance(source, str), "path-sourced native family package is not a published release")
+        require(isinstance(source, str), "path-sourced native family package is not a selected registry/Git source")
         if source == "registry+https://github.com/rust-lang/crates.io-index":
             continue  # Cargo verifies the exact selected lock's registry checksum.
         domain = "meta" if package["name"] == "meerkat-meta" else "core"
         release = value["native_release"][domain]
         require(source.startswith("git+https://github.com/" + release["repository"] + ".git?")
                 and source.endswith("#" + release["source_sha"]),
-                "native Git source is not the selected published release commit")
+                "native Git source is not the selected commit")
     # Exact IDs distinguish registry versions from Git commit sources; the
     # registry checksums remain pinned by the unchanged selected lock bytes.
     source_files = []
@@ -777,11 +807,7 @@ def checked_publication_candidate(directory, request):
             and manifest["target"] == TARGET and manifest["scope"] == SCOPE
             and manifest["connect_version"] == request["connect_version"]
             and manifest["publication"] == "not_performed", "candidate scope or source differs")
-    for name, repository in (("core", "meerkat"), ("meta", "meerkat-meta")):
-        value = manifest["native_release"][name]
-        require(value == {"repository": "lukacf/" + repository, "version": "0.9.4",
-                          "tag": "v0.9.4", "source_sha": value["source_sha"]}
-                and SHA.fullmatch(value["source_sha"]), "exact published native selection required")
+    checked_native_releases(manifest["native_release"])
     return manifest, rows
 
 
@@ -844,8 +870,10 @@ def read_publication_product(root, meta, manifest, request, work, env):
             and inputs["connect_version"] == request["connect_version"], "original input selection differs")
     def git(*args):
         return subprocess.check_output(["git", "-C", str(meta), *args], env=env, timeout=30, text=True).strip()
-    selected = manifest["native_release"]["meta"]["source_sha"]
-    require(git("rev-parse", "HEAD") == selected == git("rev-parse", "v0.9.4^{commit}")
+    selected = checked_native_releases(manifest["native_release"])["meta"]
+    require(git("rev-parse", "--verify", "HEAD^{commit}") == selected["source_sha"]
+            and (not selected["tag"] or git("rev-parse", "--verify",
+                "refs/tags/" + selected["tag"] + "^{commit}") == selected["source_sha"])
             and git("status", "--porcelain", "--untracked-files=all", "--ignored", "--", "installer") == "",
             "reader is not the exact clean selected Meta checkout")
     require(not any(meta.joinpath("installer").rglob("*.pyc")), "reader checkout contains cached Python code")
