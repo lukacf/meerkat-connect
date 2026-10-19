@@ -36,6 +36,12 @@ join physical owners without forced cleanup. CLI setup -> exit -> fresh ordinary
 rkat in the same realm -> three stories remains unverified. Console approval and
 both shared cases remain open. This is not 0.9.4 release qualification.
 
+The r9 approval development gateway build also passes. Its affected consumer
+fails at setup-data HTTP 403 before intentional process loss or successor
+recovery, with natural physical cleanup. The precise refusal remains under
+investigation; the earlier recovery-read Unavailable observation is not proof
+of the 403's cause. Approval/restart recovery remains unqualified.
+
 The latest executed r8 compatibility and Console custody changes
 compile. Five of seven affected controls pass: both Console custody checks, both
 configured-parent isolation/restore checks, and same-conversation finalization.
