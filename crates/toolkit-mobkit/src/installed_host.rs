@@ -246,37 +246,13 @@ impl InstalledToolkitHost {
             None => tool_policy.prepare()?,
         };
         let directory = state_directory(&selection, &native, startup)?;
-        let grant_path = directory.join("grants.jsonl");
-        let original_path = directory.join("originals.sqlite3");
-        for path in [&grant_path, &original_path] {
-            match fs::symlink_metadata(path) {
-                Ok(metadata) if !metadata.is_file() => {
-                    return Err(HostLifetimeError::InvalidSelection);
-                }
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err(HostLifetimeError::Unavailable),
-            }
-        }
-        let grants = Arc::new(FileGrantOwnerStore::new(grant_path));
-        let source = Arc::new(
-            match startup {
-                NativeOwnerStartup::Restore => ToolkitOriginalOwner::restore(
-                    grants,
-                    Arc::new(HostAuthorizationClock),
-                    native.ingress_domain.clone(),
-                ),
-                NativeOwnerStartup::Initialize => return Err(HostLifetimeError::Denied),
-            }
-            .map_err(|_| HostLifetimeError::Unavailable)?,
-        );
-        let store = Arc::new(
-            match startup {
-                NativeOwnerStartup::Restore => SqliteStore::open_existing_published(&original_path, source.clone()),
-                NativeOwnerStartup::Initialize => SqliteStore::open(&original_path),
-            }
-            .map_err(|_| HostLifetimeError::Unavailable)?,
-        );
+        // Use the same intact canonical pair contract as stopped preparation.
+        // Its native lease is acquired before the published source store opens.
+        let (source, store) = operator_setup::open_owner_pair_in(
+            &directory, &native.ingress_domain, native.remote_operator.as_ref(),
+            operator_setup::OperatorOwnerStartup::Restore, true,
+        )?;
+        let store = Arc::new(store);
         let routes = native
             .routes
             .iter()
@@ -321,6 +297,7 @@ impl InstalledToolkitHost {
                 .await
                 .map_err(|_| HostLifetimeError::InvalidSelection)?,
         );
+        originals.select_installed_pair_recovery()?;
         let service_policy = tool_policy.bind_service_owner(store.clone(), source_scope.clone(),
             native.grant_administrator.clone(), participant).await?;
         originals.bind_service_tool_policy(service_policy)?;

@@ -30,6 +30,7 @@ pub(crate) use setup_workflow::WorkflowLaunchObservation;
 pub(crate) mod service_grants;
 mod governed_submit;
 mod cold_service_admission;
+pub(crate) use cold_service_admission::RetainedBoundInput;
 mod cold_setup_admission;
 mod planning_source_evidence;
 mod console_ingress;
@@ -44,6 +45,7 @@ mod first_input;
 mod source_locator_tests;
 #[cfg(test)]
 mod custody_attempt_tests;
+mod custody_recovery;
 mod service_approved_input;
 mod service_input_receipt;
 pub use service_input_receipt::{PrivateServiceInputObservation, PrivateServiceInputReceipt,
@@ -95,6 +97,19 @@ pub(crate) fn same_source_origin(left: &StoredRecord, right: &StoredRecord) -> b
             && left.planning_source_evidence == right.planning_source_evidence,
         _ => false,
     }
+}
+
+// Legacy rows still require all existing exact native restoration evidence.
+// New rows additionally require their canonical recovery decision; this is
+// source custody, not a claim that a withdrawn native input was not admitted.
+pub(crate) fn historical_custody_attempt(record: &StoredRecord)
+    -> Result<Option<crate::original_ingress::custody_attempt::CustodyAttempt>, OriginalWriterError>
+{
+    if record.data.schema == SOURCE_SCHEMA {
+        return decode_source_record(record).map(|row| row.custody_attempt)
+            .map_err(|_| OriginalWriterError::Conflict);
+    }
+    crate::original_ingress::helper_originals::historical_custody_attempt(record)
 }
 
 /// An observation in the application's selected source domain. The domain and
@@ -315,6 +330,7 @@ struct HeldPrivateOriginal {
     // Historical exact first-input bytes, with no process controller/ingress
     // backpointer. The tracked binder rebuilds those through native on retry.
     first_input: OnceLock<cold_service_admission::RetainedBoundInput>,
+    first_custody: Mutex<Option<Arc<governed_submit::PendingOriginalAdmission>>>,
     unresolved: Mutex<Vec<Arc<governed_submit::PendingOriginalAdmission>>>,
     service_attachments: Mutex<Vec<Arc<service_approved_input::attachment::HeldServiceAttachment>>>,
     shared_preparations: Mutex<Vec<service_approved_input::shared_preparation::HeldSharedPreparation>>,
@@ -404,6 +420,7 @@ pub trait ServiceInstallationReadback: Send + Sync {
 pub struct PrivateOriginals {
     #[cfg(test)]
     pub(crate) metadata_probe: OnceLock<Arc<recovery_probe::MetadataRecoveryProbe>>,
+    custody_recovery: custody_recovery::CustodyRecovery,
     scope: StoreScope,
     store: Arc<dyn ToolkitStore>,
     owner: Arc<ToolkitOriginalOwner>,
@@ -530,6 +547,7 @@ impl PrivateOriginals {
         store.capabilities().require_durable_contract()
             .map_err(|_| PrivateOriginalError::Unavailable)?;
         let value = Self {
+            custody_recovery: Default::default(),
             #[cfg(test)]
             metadata_probe: OnceLock::new(),
             scope,
@@ -825,10 +843,17 @@ impl PrivateOriginals {
                 if matches!(&prompt.content, meerkat_core::ContentInput::Text(text)
                     if digest(text.as_bytes()) == record.event.content_sha256))
         { return Err(PrivateOriginalError::Conflict); }
-        let next = crate::original_ingress::custody_attempt::CustodyAttempt::for_prepared(
+        let mut next = crate::original_ingress::custody_attempt::CustodyAttempt::for_prepared(
             session, input, original.association()).map_err(cold_service_admission::writer_error)?;
         if let Some(existing) = &record.custody_attempt {
-            if existing != &next { return Err(PrivateOriginalError::Conflict); }
+            if existing.decision() != crate::original_ingress::custody_attempt::CustodyDecision::Pending
+                || existing.session() != session
+                || existing.observation_entered()
+                || !existing.matches_input(input).map_err(cold_service_admission::writer_error)?
+            { return Err(PrivateOriginalError::Conflict); }
+            // Exact refused-input reuse retains the charged budget and any
+            // entered step. It cannot reset or replace the first attempt.
+            next = existing.clone();
         }
         Self::custody_transition(stored, record, next)
     }
@@ -839,11 +864,11 @@ impl PrivateOriginals {
         &self, held: &Arc<HeldPrivateOriginal>, session: &meerkat_core::SessionId,
         input: &meerkat_runtime::Input,
     ) -> Result<(), PrivateOriginalError> {
-        let _writer = self.owner.try_source_writer().map_err(cold_service_admission::writer_error)?;
+        let _writer = self.owner.source_writer().await;
         let stored = self.store.get(&self.key(&held.reference)?).await.map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
         let record = self.decode_record(&stored, &held.reference)?;
-        if record.custody_attempt.is_none() && !held.original.first_binding_for(&stored.key) {
+        if !held.original.first_binding_for(&stored.key) {
             // Legacy absence cannot prove that native never saw an input.
             return Err(PrivateOriginalError::Unavailable);
         }
@@ -1236,6 +1261,7 @@ impl PrivateOriginals {
             retain_bound_input,
             console_login: OnceLock::new(),
             first_input: OnceLock::new(),
+            first_custody: Mutex::new(None),
             unresolved: Mutex::new(Vec::new()),
             service_attachments: Mutex::new(Vec::new()),
             shared_preparations: Mutex::new(Vec::new()),

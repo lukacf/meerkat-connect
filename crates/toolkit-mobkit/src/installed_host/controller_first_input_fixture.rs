@@ -618,6 +618,18 @@ pub(crate) async fn reopen_for_continuation(directory: Arc<tempfile::TempDir>, s
     restore_selected(directory, selection, None, None, false).await
 }
 
+pub(crate) async fn reopen_for_continuation_with_source(directory: Arc<tempfile::TempDir>,
+    selection: HostBootstrapSelection, source_store: PrepareOriginalSource) -> Host {
+    restore_selected(directory, selection, None, Some(source_store), false).await
+}
+
+pub(crate) async fn reopen_for_helper_recovery(directory: Arc<tempfile::TempDir>,
+    selection: HostBootstrapSelection, helper: acquisition::InstalledSetupSelection,
+    source_store: Option<PrepareOriginalSource>,
+) -> Host {
+    restore_selected(directory, selection, Some(helper), source_store, false).await
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum ApplicationServiceSource {
     StockOperator,
@@ -832,6 +844,14 @@ pub(crate) async fn open_for_acquisition(
     open_selected_source(facts, true, false, true, false, Some(tool), true, None, false, false,
         None, None, false, private_helper_entry, false, catalog_probe).await
 }
+
+pub(crate) async fn open_for_helper_recovery(
+    facts: &ControllerModelFacts, tool: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    source_store: Option<PrepareOriginalSource>,
+) -> Host {
+    open_selected_source(facts, true, false, true, false, Some(tool), true, None, false, false,
+        source_store, None, false, true, false, false).await
+}
 #[path = "controller_first_input_acquisition_fixture.rs"]
 mod approved_acquisition;
 pub(crate) use approved_acquisition::{bind_approved_acquisition, prepare_approved_acquisition};
@@ -851,6 +871,13 @@ pub(crate) async fn open_with_configured_setup(facts: &ControllerModelFacts) -> 
 
 pub(crate) async fn open_with_configured_setup_probe(facts: &ControllerModelFacts) -> Host {
     open_selected_subject(facts, true, true, true, false, None, false, None, true, false).await
+}
+
+pub(crate) async fn open_with_configured_setup_probe_source(
+    facts: &ControllerModelFacts, prepare_source: PrepareOriginalSource,
+) -> Host {
+    open_selected_subject_with_source(facts, true, true, true, false, None, false, None, true, false,
+        Some(prepare_source)).await
 }
 
 pub(crate) async fn open_with_configured_setup_source(

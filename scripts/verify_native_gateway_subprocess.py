@@ -1919,7 +1919,15 @@ def original_catalog_history(messages, request, operation, fresh, *, allow_contr
             # This schedules a new controller choice, not a replay of a tool.
             # Text cannot establish the reason: final acceptance additionally
             # requires this exact B's persisted ReprepareRequired audit.
-            require(allow_controller_recovery and recovery is None and i < first_tool,
+            before = messages[fresh + 1:i]
+            calls = [call.get("id") if isinstance(call, dict) else None
+                for row in before for call in row.get("tool_calls", [])]
+            results = [row.get("tool_call_id") for row in before if row.get("role") == "tool"]
+            completed_boundary = (bool(calls) and all(isinstance(value, str) and value for value in calls)
+                and len(calls) == len(set(calls))
+                and calls == results)
+            require(allow_controller_recovery and recovery is None
+                    and (i < first_tool or completed_boundary),
                     "unexpected original controller feedback stage or count")
             recovery = i
         elif kind == "boundary":
@@ -1946,21 +1954,25 @@ def original_reprepare_projection(state, session_id, input_id, run_id):
             and [item["input_id"] for item in row["contributors"]] == [input_id]
             for row in records), "controller recovery audit has foreign contributors or run")
     observations = [row["observation"] for row in records]
-    prepared_at = next((i for i, row in enumerate(observations)
-                        if row["observation"]["kind"] != "refused"), len(observations))
-    require(0 < prepared_at < len(observations), "controller recovery lacks refused/prepared boundaries")
-    refused, prepared = observations[0], observations[prepared_at]
+    refusal_indices = [i for i, row in enumerate(observations)
+                       if row["observation"]["kind"] == "refused"]
+    require(refusal_indices and not any(row["observation"]["kind"] == "authorization_unavailable"
+            for row in observations), "controller recovery lacks a refusal or includes unavailable authorization")
+    refused_at, prepared_at = refusal_indices[0], refusal_indices[-1] + 1
+    require(refusal_indices == list(range(refused_at, prepared_at))
+            and prepared_at < len(observations), "controller recovery lacks one contiguous refusal boundary")
+    refused, prepared = observations[refused_at], observations[prepared_at]
     target = refused["observation"]["target"]
     require(target["kind"] == "model" and target["model"] == "fixture-original-model"
             and target["provider"] == "self_hosted" and target["usage"] == "controller_inference"
             and target["hosted_capabilities"] == [], "controller recovery target is not the selected controller")
     require(all(row["operation_id"] == refused["operation_id"]
-                and row["observation"] == refused["observation"] for row in observations[:prepared_at])
+                and row["observation"] == refused["observation"]
+                for row in observations[refused_at:prepared_at])
             and refused["observation"]["reason"] == "reprepare_required"
-            and all(row["operation_id"] != refused["operation_id"] for row in observations[prepared_at:])
-            and not any(row["observation"]["kind"] in ("refused", "authorization_unavailable")
-                        for row in observations[prepared_at:]),
-            "controller recovery includes a denial, malformed facts or later refusal")
+            and all(row["operation_id"] != refused["operation_id"]
+                    for row in observations[:refused_at] + observations[prepared_at:]),
+            "controller recovery includes a denial, malformed facts or reused refused operation")
     require(prepared["operation_id"] != refused["operation_id"]
             and prepared["observation"]["kind"] == "prepared"
             and prepared["observation"]["target"] == target,
@@ -1972,7 +1984,7 @@ def original_reprepare_projection(state, session_id, input_id, run_id):
             "controller recovery lacks its successful model entry and response")
     policy = prepared["observation"]["policy"]
     return {"session_id": session_id, "input_id": input_id, "run_id": run_id,
-        "refused_operation_id": refused["operation_id"], "refusal_count": prepared_at,
+        "refused_operation_id": refused["operation_id"], "refusal_count": prepared_at - refused_at,
         "reason": "reprepare_required", "model": target["model"], "provider": target["provider"],
         "usage": target["usage"], "hosted_capabilities": [],
         "recovery_operation_id": prepared["operation_id"], "recovered_http_status": 200,
@@ -2126,6 +2138,8 @@ class InstalledAcquisitionProvider:
                     value = {"content": message["content"], "story": installed_public_story(message["content"])}
                 else:
                     value = unique_json(message["content"].encode())
+                    if isinstance(value, dict) and "error" in value:
+                        raise AssertionError("actual tool result " + identifier + " refused: " + str(value["error"]))
                 require(identifier not in results, "duplicate tool result in actual model history")
                 results[identifier] = value
                 if identifier in self.results:

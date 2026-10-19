@@ -336,6 +336,9 @@ impl PrivateOriginals {
             unresolved.first().cloned()
         };
         let Some(pending) = pending else { return Ok(None); };
+        if pending.handoff.enrolled() && pending.handoff.phase() != custody_recovery::HandoffPhase::Done {
+            return Ok(Some(PrivateOriginalSubmission::AdmissionUnresolved));
+        }
         // This is the already bound machine, never a reconstructed session or
         // an idempotency-key presence check. No new input is submitted here.
         let observed = self.machine()?.input_state(&pending.session, pending.input.id()).await;
@@ -445,8 +448,13 @@ impl PrivateOriginals {
         // The alias is the installed target, resolved and rechecked by the
         // same identity owner under its native lease. There is no fallback.
         let result = runtime
-            .send_governed_with_turn_ticket(&identity, Some(alias), input, binder)
+            .send_governed_with_turn_ticket(&identity, Some(alias), input, binder.clone())
             .await;
+        if let Some(pending) = binder.pending.get() {
+            if result.as_ref().err().is_some_and(|error| definite_original_refusal(error, &pending.session)) {
+                pending.handoff.record_definite_refusal();
+            }
+        }
         Ok(match result {
             Ok(outcome) => PrivateOriginalSubmission::Admitted {
                 session_id: outcome.admission.session_id.to_string(),
@@ -515,6 +523,21 @@ pub(super) struct OriginalBinder {
     pub(super) event_key: IdempotencyKey,
     pub(super) console: Option<super::console_ingress::ConsoleEntry>,
     pub(super) approved_login: Option<crate::private_host::ConsoleLoginHandle>,
+}
+
+impl Drop for OriginalBinder {
+    fn drop(&mut self) {
+        if let Some(pending) = self.pending.get() { pending.handoff.foreground_finished(); }
+    }
+}
+
+fn definite_original_refusal(error: &IdentityRuntimeError, session: &SessionId) -> bool {
+    match error {
+        IdentityRuntimeError::GovernedInput(GovernedInputError::Unbound | GovernedInputError::EntryRefused(_) | GovernedInputError::Bind(_)) => true,
+        IdentityRuntimeError::GovernedInput(GovernedInputError::Mob(error)) =>
+            matches!(error.as_ref(), meerkat_mob::MobError::MemberInputRefused { session_id, .. } if session_id == session),
+        _ => false,
+    }
 }
 
 #[async_trait]
@@ -607,6 +630,10 @@ impl OriginalBinder {
                 return Err("Toolkit original custody changed".to_owned());
             }
         }
+        self.source.restore_promoted_custody(
+            &self.source.key(&self.original).map_err(|_| "Toolkit original source is unavailable")?,
+            &held.original,
+        ).await.map_err(|_| "Toolkit historical original custody is unavailable")?;
         let mut prepared = self
             .source
             .owner
@@ -655,10 +682,27 @@ impl OriginalBinder {
         if let Some(login) = &self.approved_login {
             login.check().map_err(|_| "The approved Console login is unavailable")?;
         }
-        let (input, pending) = match admitted {
-            Some(admitted) => admitted,
-            None => prepared.stage().map_err(|_| "Toolkit original candidate is unavailable".to_owned())?,
+        let (input, pending) = self.source.custody_recovery.enroll(|selected| {
+        let mut retained = held.first_custody.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+        let (input, pending, handoff) = match admitted {
+            Some((input, pending)) => (input, pending, custody_recovery::CustodyHandoff::new(false, &self.source)),
+            None => match retained.as_ref().filter(|_| selected) {
+                Some(prior) => {
+                    if prior.session != context.session_id { return Err(PrivateOriginalError::Conflict); }
+                    let ((input, pending), handoff) = prior.handoff.rebind(|| {
+                        prior.pending.lock().map_err(|_| PrivateOriginalError::Unavailable)?
+                            .rebind_candidate(prepared, &prior.input)
+                    })?;
+                    (input, pending, handoff)
+                }
+                None => {
+                    let (input, pending) = prepared.stage().map_err(|_| PrivateOriginalError::Unavailable)?;
+                    let handoff = custody_recovery::CustodyHandoff::new(selected && pending.is_first_candidate(), &self.source);
+                    (input, pending, handoff)
+                }
+            },
         };
+        let enrolled = handoff.enrolled();
         let pending = Arc::new(PendingOriginalAdmission {
             session: context.session_id.clone(),
             input: input.clone(),
@@ -667,14 +711,23 @@ impl OriginalBinder {
             service_grant: self.grant.clone(),
             service_batch: self.batch.clone(),
             first_candidate: pending.is_first_candidate(),
+            handoff,
+            native_admission: Mutex::new(None),
             pending: Mutex::new(SourcePublication::Pending(pending)),
             held: Arc::downgrade(&held),
             workflow,
         });
+        if enrolled { *retained = Some(pending.clone()); }
+        Ok((input, pending))
+        }).map_err(|_| "Toolkit original recovery enrollment is unavailable".to_owned())?;
+        // This actual settlement owns every later fallible step/await too.
+        let settlement = Box::new(OriginalSettlement(pending.clone()));
         // Native calls this binder once. Keep the guard in the native box and
         // this binder until either definite refusal or retained uncertainty.
-        self.pending.set(pending.clone())
-            .map_err(|_| "Toolkit original was bound more than once".to_owned())?;
+        if self.pending.set(pending.clone()).is_err() {
+            pending.handoff.foreground_finished();
+            return Err("Toolkit original was bound more than once".to_owned());
+        }
         let entry_fence = if let Some(batch) = &self.batch {
             let login = self.approved_login.as_ref().ok_or("The public service set has no Console login")?;
             Some(self.source.batch_entry_fence(&self.original, batch, &held.original, login).await
@@ -687,7 +740,7 @@ impl OriginalBinder {
         };
         Ok(BoundGovernedInput {
             input,
-            settlement: Box::new(OriginalSettlement(pending)),
+            settlement,
             entry_fence,
         })
     }
@@ -697,13 +750,15 @@ impl OriginalBinder {
 /// Existing pending source custody together with the actual native-bound
 /// input. This is not a second input ledger or an admission status mirror.
 pub(super) struct PendingOriginalAdmission {
-    session: SessionId,
-    input: Input,
+    pub(super) session: SessionId,
+    pub(super) input: Input,
+    pub(super) handoff: Arc<custody_recovery::CustodyHandoff>,
     service_grant: Option<PrivateServiceGrantRef>,
     service_batch: Option<service_approved_input::ApprovedTaskLink>,
     first_candidate: bool,
-    pending: Mutex<SourcePublication>,
-    held: Weak<HeldPrivateOriginal>,
+    pub(super) native_admission: Mutex<Option<GovernedAdmission>>,
+    pub(super) pending: Mutex<SourcePublication>,
+    pub(super) held: Weak<HeldPrivateOriginal>,
     workflow: Option<Arc<setup_workflow::HeldSetupWorkflow>>,
 }
 
@@ -717,6 +772,19 @@ pub(super) enum SourcePublication {
 }
 
 impl SourcePublication {
+    pub(super) fn rebind_candidate(&mut self, prepared: crate::original_ingress::PreparedToolkitOriginal, expected: &Input)
+        -> Result<(Input, PendingToolkitOriginal), PrivateOriginalError>
+    {
+        if serde_json::to_value(prepared.input()).map_err(|_| PrivateOriginalError::Conflict)?
+            != serde_json::to_value(expected).map_err(|_| PrivateOriginalError::Conflict)?
+        { return Err(PrivateOriginalError::Conflict); }
+        let Self::Pending(pending) = self else { return Err(PrivateOriginalError::Unavailable); };
+        let input = prepared.rebind_candidate(pending).map_err(cold_service_admission::writer_error)?;
+        let prior = std::mem::replace(self, Self::Settled { source_acknowledged: false,
+            result: Err("The same source candidate moved to its exact native reprepare".into()) });
+        let Self::Pending(pending) = prior else { unreachable!() };
+        Ok((input, pending))
+    }
     /// Consume this guard once and retain its acknowledgement before the
     /// subsequent synchronous publication callback. No native outcome is made.
     pub(super) fn admit_then(
@@ -775,6 +843,7 @@ impl PendingOriginalAdmission {
     }
 
     fn retain_unresolved(self: &Arc<Self>) {
+        self.handoff.release();
         if let Some(held) = self.held.upgrade() {
             let mut unresolved = held.unresolved.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -784,7 +853,7 @@ impl PendingOriginalAdmission {
         }
     }
 
-    fn admit(&self) -> Result<(), String> {
+    pub(super) fn admit(&self) -> Result<(), String> {
         let mut publication = self.pending.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // The source guard releases its publication reservation before this
@@ -800,6 +869,9 @@ impl PendingOriginalAdmission {
 }
 
 struct OriginalSettlement(Arc<PendingOriginalAdmission>);
+impl Drop for OriginalSettlement {
+    fn drop(&mut self) { self.0.handoff.native_box_finished(); }
+}
 
 impl GovernedSettlement for OriginalSettlement {
     fn accepted(self: Box<Self>, admission: &GovernedAdmission) -> Result<(), String> {
@@ -809,7 +881,8 @@ impl GovernedSettlement for OriginalSettlement {
             self.0.retain_unresolved();
             return Err("Toolkit source settlement acknowledgement did not match".into());
         }
-        let result = self.0.admit();
+        *self.0.native_admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(admission.clone());
+        let result = self.0.handoff.accepted(|| self.0.admit());
         if result.is_err() || self.0.service_grant.is_some() || self.0.service_batch.is_some()
             || self.0.workflow.is_some() {
             self.0.retain_unresolved();

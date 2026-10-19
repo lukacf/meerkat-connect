@@ -26,6 +26,9 @@ pub(crate) struct DurableFirstInput {
     submission: PrivateOriginalSubmit,
 }
 
+#[path = "custody_recovery_cold_native_tests.rs"]
+mod custody_recovery_cold_native_tests;
+
 impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
     pub(crate) async fn for_live_attachment() -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
         let (fixture, store, _, _) = Self::construct_persistent(false, None, None, false, None).await;
@@ -80,6 +83,17 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             Arc<crate::installed_host::acquisition::InstalledNativeContinuation>)
     {
         let (fixture, store, _, continuation) = Self::construct_persistent(true, Some(retained), None, false, None).await;
+        (fixture, store, continuation.unwrap())
+    }
+
+    pub(crate) async fn reopen_durable_continuation_with_source(
+        retained: DurableFirstInput,
+        decorate: crate::installed_host::controller_first_input_fixture::PrepareOriginalSource,
+    ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>,
+        Arc<crate::installed_host::acquisition::InstalledNativeContinuation>)
+    {
+        let (fixture, store, _, continuation) = Self::construct_persistent_observed_source(
+            true, Some(retained), None, false, None, None, Some(decorate)).await;
         (fixture, store, continuation.unwrap())
     }
 
@@ -150,7 +164,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         Ok(())
     }
 
-    async fn publish_fixture_controller(service: &meerkat::PersistentSessionService<FactoryAgentBuilder>,
+    pub(super) async fn publish_fixture_controller(service: &meerkat::PersistentSessionService<FactoryAgentBuilder>,
         machine: &MeerkatMachine, session: &SessionId)
     {
         let lease = service.acquire_live_session_actor_turn_boundary_lease(session).await.unwrap();
@@ -178,11 +192,22 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>, Option<DurableFirstInput>,
             Option<Arc<crate::installed_host::acquisition::InstalledNativeContinuation>>)
     {
+        Self::construct_persistent_observed_source(durable, retained, decorate,
+            human_policy, console_human, observations, None).await
+    }
+
+    async fn construct_persistent_observed_source(durable: bool, retained: Option<DurableFirstInput>,
+        decorate: Option<AttachmentModelDecorator>, human_policy: bool,
+        console_human: Option<meerkat_core::PrincipalRef>, observations: Option<NativeIngressObservations>,
+        source_store: Option<crate::installed_host::controller_first_input_fixture::PrepareOriginalSource>,
+    ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>, Option<DurableFirstInput>,
+        Option<Arc<crate::installed_host::acquisition::InstalledNativeContinuation>>)
+    {
         let mut opened = None;
         let mut owners = None;
         let built = std::panic::AssertUnwindSafe(tokio::time::timeout(
             WAIT,
-            Box::pin(Self::build_persistent(&mut opened, &mut owners, durable, retained, decorate, human_policy, console_human, observations)),
+            Box::pin(Self::build_persistent(&mut opened, &mut owners, durable, retained, decorate, human_policy, console_human, observations, source_store)),
         ))
         .catch_unwind()
         .await;
@@ -216,6 +241,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         durable: bool, retained: Option<DurableFirstInput>,
         decorate: Option<AttachmentModelDecorator>, human_policy: bool, console_human: Option<meerkat_core::PrincipalRef>,
         observations: Option<NativeIngressObservations>,
+        source_store: Option<crate::installed_host::controller_first_input_fixture::PrepareOriginalSource>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>, Option<DurableFirstInput>,
             Option<Arc<crate::installed_host::acquisition::InstalledNativeContinuation>>) {
         assert!(!human_policy || (!durable && retained.is_none()), "human policy fixture is selected only for this fresh public attachment");
@@ -223,9 +249,17 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             meerkat_core::ControllerModelFacts::new(selection(), ENDPOINT.into(), MODEL.into());
         use crate::installed_host::controller_first_input_fixture as installed;
         let console_owned_identity = console_human.is_some();
+        assert!(source_store.is_none() || durable, "source decorator only selects an actual durable pair");
         let mut host = match &retained {
-            Some(retained) => installed::reopen_for_continuation(retained.directory.clone(), retained.selection.clone()).await,
-            None if durable => installed::open_with_configured_setup_probe(&facts).await,
+            Some(retained) => match source_store {
+                Some(source_store) => installed::reopen_for_continuation_with_source(
+                    retained.directory.clone(), retained.selection.clone(), source_store).await,
+                None => installed::reopen_for_continuation(retained.directory.clone(), retained.selection.clone()).await,
+            },
+            None if durable => match source_store {
+                Some(source_store) => installed::open_with_configured_setup_probe_source(&facts, source_store).await,
+                None => installed::open_with_configured_setup_probe(&facts).await,
+            },
             None if console_owned_identity => installed::open_for_console_service_batch(&facts, console_human.unwrap()).await,
             None if human_policy => installed::open_for_service_input_with_human_policy(&facts).await,
             None => installed::open_for_service_input(&facts).await,
@@ -500,3 +534,6 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         )
     }
 }
+
+#[path = "custody_recovery_snapshot_tests.rs"]
+mod custody_recovery_snapshot_tests;

@@ -32,6 +32,7 @@ use toolkit_store::{
 const SCHEMA: &str = "meerkat_toolkit.helper_original";
 const SOURCE_VERSION: u32 = 3;
 const CUSTODY_SOURCE_VERSION: u32 = 4;
+const RETAINED_INPUT_SOURCE_VERSION: u32 = 5;
 
 mod controller;
 mod settlement;
@@ -200,6 +201,8 @@ struct HelperAdmissionFacts {
 struct HelperSourceRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     custody_attempt: Option<super::custody_attempt::CustodyAttempt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bound_input: Option<crate::private_originals::RetainedBoundInput>,
     facts: HelperAdmissionFacts,
     controller: HelperControllerIntent,
     state: HelperSourceState,
@@ -227,29 +230,46 @@ impl HelperSourceRecord {
             let (_, association) = self.bound()?;
             attempt.validate_binding(association)?;
         }
+        if let Some(retained) = &self.bound_input {
+            let attempt = self.custody_attempt.as_ref().ok_or(OriginalWriterError::Conflict)?;
+            let input = retained.decode().map_err(|_| OriginalWriterError::Conflict)?;
+            let event_key = IdempotencyKey::new(
+                helper_identity(&self.facts.namespace, &self.facts.item)?.as_str().to_owned());
+            if input.header().authority_association.as_ref() != Some(self.bound()?.1)
+                || input.header().idempotency_key.as_ref() != Some(&event_key)
+                || !attempt.matches_input(&input)?
+            { return Err(OriginalWriterError::Conflict); }
+        }
         Ok(())
     }
     fn encode(&self) -> Result<RecordData, OriginalWriterError> {
         self.validate_custody()?;
         Ok(RecordData { schema: SCHEMA.into(),
-            version: if self.custody_attempt.is_some() { CUSTODY_SOURCE_VERSION } else { SOURCE_VERSION },
+            version: if self.bound_input.is_some() { RETAINED_INPUT_SOURCE_VERSION }
+                else if self.custody_attempt.is_some() { CUSTODY_SOURCE_VERSION } else { SOURCE_VERSION },
             body: serde_json::to_value(self).map_err(|_| OriginalWriterError::Conflict)? })
     }
     fn same_bound_facts(&self, other: &Self) -> bool {
         matches!(&self.state, HelperSourceState::Bound { .. })
             && self.facts == other.facts && self.controller == other.controller && self.state == other.state
+            && match (&self.bound_input, &other.bound_input) {
+                (Some(left), Some(right)) => left == right,
+                _ => true, // A retained v3 snapshot predates first enrollment.
+            }
     }
     fn decode(saved: &StoredRecord) -> Result<Self, OriginalWriterError> {
-        if saved.data.schema != SCHEMA || !matches!(saved.data.version, SOURCE_VERSION | CUSTODY_SOURCE_VERSION)
+        if saved.data.schema != SCHEMA || !matches!(saved.data.version,
+            SOURCE_VERSION | CUSTODY_SOURCE_VERSION | RETAINED_INPUT_SOURCE_VERSION)
             || saved.content_digest != saved.data.digest().map_err(|_| OriginalWriterError::Conflict)?
         { return Err(OriginalWriterError::Conflict); }
         let record: Self = serde_json::from_value(saved.data.body.clone())
             .map_err(|_| OriginalWriterError::Conflict)?;
         record.validate_custody()?;
-        let revision_matches = match (saved.data.version, &record.state, &record.custody_attempt) {
-            (SOURCE_VERSION, HelperSourceState::ControllerPending, None) => saved.revision == 1,
-            (SOURCE_VERSION, HelperSourceState::Bound { .. }, None) => saved.revision == 2,
-            (CUSTODY_SOURCE_VERSION, HelperSourceState::Bound { .. }, Some(_)) => saved.revision >= 3,
+        let revision_matches = match (saved.data.version, &record.state, &record.custody_attempt, &record.bound_input) {
+            (SOURCE_VERSION, HelperSourceState::ControllerPending, None, None) => saved.revision == 1,
+            (SOURCE_VERSION, HelperSourceState::Bound { .. }, None, None) => saved.revision == 2,
+            (CUSTODY_SOURCE_VERSION, HelperSourceState::Bound { .. }, Some(_), None) => saved.revision >= 3,
+            (RETAINED_INPUT_SOURCE_VERSION, HelperSourceState::Bound { .. }, Some(_), Some(_)) => saved.revision >= 3,
             _ => false,
         };
         if !revision_matches
@@ -297,23 +317,72 @@ impl RetainedHelperSource {
                 .same_bound_facts(&HelperSourceRecord::decode(&other.source_record)?))
     }
 
+    /// A live helper's result may observe its own first-input accounting CAS.
+    /// Keep immutable source facts and the actual retained input exact; this
+    /// validates data progress only and supplies no native operation authority.
+    pub(crate) fn check_result_record(
+        &self, saved: &StoredRecord,
+        first: Option<(&crate::private_originals::RetainedBoundInput,
+            &meerkat_core::SessionId)>,
+    ) -> Result<(), OriginalWriterError> {
+        let retained = HelperSourceRecord::decode(&self.source_record)?;
+        let current = HelperSourceRecord::decode(saved)?;
+        if saved.key != self.source_record.key || !current.same_bound_facts(&retained)
+            || saved.revision < self.source_record.revision
+            || (saved.revision == self.source_record.revision
+                && saved.content_digest != self.source_record.content_digest)
+        { return Err(OriginalWriterError::Conflict); }
+        let Some((input, session)) = first else {
+            return if saved.revision == self.source_record.revision
+                && saved.content_digest == self.source_record.content_digest {
+                Ok(())
+            } else { Err(OriginalWriterError::Conflict) };
+        };
+        let last = current.custody_attempt.as_ref().ok_or(OriginalWriterError::Conflict)?;
+        if current.bound_input.as_ref() != Some(input) || last.session() != session
+            || last.decision() == super::custody_attempt::CustodyDecision::Withdrawn
+        { return Err(OriginalWriterError::Conflict); }
+        // The custody owner validates its writes. This reader checks exact
+        // correlation and returns the current condition, never reconstructing
+        // an intervening transition history or authorizing native execution.
+        Ok(())
+    }
+
     pub(crate) fn policy_source(&self) -> Result<HelperPolicySource, OriginalWriterError> {
         let saved = self.source_record.as_ref();
         let record = HelperSourceRecord::decode(saved)?;
+        let (_, association) = record.bound()?;
+        if association != self.original.association()
+            || association.candidate().original_authentication != self.authentication
+        { return Err(OriginalWriterError::Conflict); }
+        checked_helper_policy_source(saved, record)
+    }
+
+    pub(crate) fn matches_admission(&self, admitted: &AdmittedHelperWork) -> bool {
+        let Ok(record) = HelperSourceRecord::decode(&self.source_record) else { return false; };
+        let Ok((_, association)) = record.bound() else { return false; };
+        record.facts == admitted.facts && association == self.original.association()
+            && admitted.original_work().as_ref().ok()
+                == Some(&self.original.association().candidate().original_work)
+    }
+}
+
+fn checked_helper_policy_source(saved: &StoredRecord, record: HelperSourceRecord)
+    -> Result<HelperPolicySource, OriginalWriterError>
+{
         let (binding, association) = record.bound()?;
         record.controller.check_record_binding(&record.facts, binding)?;
-        let claims = self.original.association().candidate();
+        let claims = association.candidate();
         let helper = &record.facts.selection.helper;
         let member = &record.facts.selection.member;
-        if *association != *self.original.association()
-            || canonical_json(&record).map_err(|_| OriginalWriterError::Conflict)?
+        if canonical_json(&record).map_err(|_| OriginalWriterError::Conflict)?
                 != canonical_json(&saved.data.body).map_err(|_| OriginalWriterError::Conflict)?
             || saved.key.realm != record.facts.realm
             || saved.key.id != helper_identity(&record.facts.namespace, &record.facts.item)?.as_str()
             || claims.original_work.work.as_str() != saved.key.id
             || claims.ingress_namespace.occurrence_scope != claims.original_work.work
             || claims.ingress_namespace.realm.as_str() != record.facts.realm
-            || claims.original_authentication != self.authentication || claims.root_event != self.authentication
+            || claims.root_event != claims.original_authentication
             || claims.original_authentication != admission_evidence(&claims.ingress_namespace.ingress, &record.facts)?
             || claims.ingress_actor != helper.ingress_actor || claims.logical_executor != helper.logical_executor
             || claims.represented_subject != helper.represented_subject
@@ -339,14 +408,109 @@ impl RetainedHelperSource {
             selection: record.facts.selection,
             contributors: record.facts.contributors,
         })
-    }
 
-    pub(crate) fn matches_admission(&self, admitted: &AdmittedHelperWork) -> bool {
-        let Ok(record) = HelperSourceRecord::decode(&self.source_record) else { return false; };
-        let Ok((_, association)) = record.bound() else { return false; };
-        record.facts == admitted.facts && association == self.original.association()
-            && admitted.original_work().as_ref().ok()
-                == Some(&self.original.association().candidate().original_work)
+}
+
+// Data-only decoding for the same intact installed pair's retained recovery
+// task. It creates no RetainedHelperSource, grant, actor or native custody.
+fn cold_helper_record(scope: &StoreScope, saved: &StoredRecord)
+    -> Result<HelperSourceRecord, OriginalWriterError>
+{
+    let record = HelperSourceRecord::decode(saved)?;
+    let key = StoreKey { realm: scope.realm.clone(),
+        owner: format!("toolkit/helper-originals/{}", scope.owner),
+        id: helper_identity(&record.facts.namespace, &record.facts.item)?.as_str().to_owned() };
+    if saved.key != key { return Err(OriginalWriterError::WrongOwner); }
+    checked_helper_policy_source(saved, record.clone())?;
+    Ok(record)
+}
+
+pub(crate) fn cold_custody_attempt(scope: &StoreScope, saved: &StoredRecord)
+    -> Result<Option<super::custody_attempt::CustodyAttempt>, OriginalWriterError>
+{
+    if saved.data.schema != SCHEMA { return Ok(None); }
+    // An unbound/legacy row is not an enrollment request or non-entry proof.
+    // It must still decode; unsupported selected versions cannot disappear.
+    let decoded = HelperSourceRecord::decode(saved)?;
+    if saved.data.version == SOURCE_VERSION { return Ok(None); }
+    if decoded.custody_attempt.is_none() { return Err(OriginalWriterError::Conflict); }
+    Ok(cold_helper_record(scope, saved)?.custody_attempt)
+}
+
+pub(crate) fn cold_bound_attempt(scope: &StoreScope, saved: &StoredRecord,
+    association: &InputAuthorityAssociation,
+) -> Result<Option<super::custody_attempt::CustodyAttempt>, OriginalWriterError> {
+    let record = cold_helper_record(scope, saved)?;
+    if record.bound()?.1 != association {
+        return Err(OriginalWriterError::Conflict);
+    }
+    Ok(record.custody_attempt)
+}
+
+pub(crate) fn cold_bound_input(scope: &StoreScope, saved: &StoredRecord)
+    -> Result<Option<crate::private_originals::RetainedBoundInput>, OriginalWriterError>
+{
+    // Legacy v3/v4 rows remain decodable but gain no missing input evidence.
+    Ok(cold_helper_record(scope, saved)?.bound_input)
+}
+
+pub(crate) fn cold_custody_transition(scope: &StoreScope, baseline: &StoredRecord,
+    saved: &StoredRecord, next: super::custody_attempt::CustodyAttempt,
+) -> Result<toolkit_store::Transition, OriginalWriterError> {
+    let mut current = cold_helper_record(scope, saved)?;
+    if saved.key != baseline.key || !current.same_bound_facts(&cold_helper_record(scope, baseline)?) {
+        return Err(OriginalWriterError::Conflict);
+    }
+    if current.bound_input != cold_helper_record(scope, baseline)?.bound_input {
+        return Err(OriginalWriterError::Conflict);
+    }
+    super::custody_attempt::CustodyAttempt::validate_transition(current.custody_attempt.as_ref(), &next)?;
+    current.custody_attempt = Some(next);
+    Ok(toolkit_store::Transition { key: saved.key.clone(), expected_revision: saved.revision,
+        expected_digest: Some(saved.content_digest.clone()), data: current.encode()?,
+        claim: None, events: vec![], effects: vec![] })
+}
+
+pub(crate) fn historical_custody_attempt(saved: &StoredRecord)
+    -> Result<Option<super::custody_attempt::CustodyAttempt>, OriginalWriterError>
+{
+    if saved.data.schema != SCHEMA { return Ok(None); }
+    Ok(HelperSourceRecord::decode(saved)?.custody_attempt)
+}
+
+#[cfg(test)]
+impl ToolkitOriginalOwner {
+    /// Component-fixture binding of a real prior helper row after owner death.
+    /// This retains no Candidate or native admission. The test must separately
+    /// invoke the production native-backed Promoted restoration callback.
+    pub(crate) fn bind_cold_helper_for_recovery_test(self: &Arc<Self>, store: &dyn ToolkitStore,
+        scope: &StoreScope, saved: &StoredRecord,
+    ) -> Result<RetainedHelperSource, OriginalWriterError> {
+        self.check_canonical_source(store, scope)?;
+        let record = cold_helper_record(scope, saved)?;
+        let (_, association) = record.bound()?;
+        let contributors = {
+            let originals = self.originals.lock().map_err(|_| OriginalWriterError::Unavailable)?;
+            record.facts.contributors.iter().map(|association| originals.iter()
+                .filter_map(OriginalRecord::bound).find(|held| held.association() == association)
+                .map(|held| held.retained.clone()).ok_or(OriginalWriterError::Unavailable))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let contributor = contributors.iter().find(|source| record.facts.origin.matches(source.association()))
+            .ok_or(OriginalWriterError::Conflict)?;
+        self.check_helper_contributors(contributor, &contributors)?;
+        let c = association.candidate();
+        let custody = AuthenticatedOriginal {
+            original_work: c.original_work.clone(), occurrence_scope: c.ingress_namespace.occurrence_scope.clone(),
+            original_authentication: c.original_authentication.clone(), root_event: c.root_event.clone(),
+            contributing_work: c.contributing_work.clone(), target: c.target.clone(), authority_basis: c.authority_basis.clone(),
+        };
+        let original = self.publish_binding(association.clone(), custody, OriginalGrantBinding::Helper, None)?;
+        Ok(RetainedHelperSource {
+            original, source_record: Arc::new(saved.clone()),
+            event_key: IdempotencyKey::new(helper_identity(&record.facts.namespace, &record.facts.item)?.as_str().to_owned()),
+            authentication: c.original_authentication.clone(),
+        })
     }
 }
 
@@ -660,10 +824,7 @@ impl ToolkitOriginalOwner {
             .capabilities()
             .require_durable_contract()
             .map_err(|_| OriginalWriterError::Unavailable)?;
-        let _mutation = self
-            .mutation
-            .try_lock()
-            .map_err(|_| OriginalWriterError::Unavailable)?;
+        let _mutation = self.source_writer().await;
         let contributor = &admitted.contributor;
         let contributors = &admitted.contributors;
         self.check_helper_contributors(contributor, contributors)?;
@@ -794,9 +955,29 @@ impl ToolkitOriginalOwner {
         if input.header().idempotency_key.as_ref() != Some(&source.event_key) {
             return Err(OriginalWriterError::Conflict);
         }
-        let next = super::custody_attempt::CustodyAttempt::for_prepared(
+        let mut next = super::custody_attempt::CustodyAttempt::for_prepared(
             session, input, source.original.association())?;
-        self.helper_custody_transition(store, admitted, source, saved, next, true)
+        if let Some(existing) = HelperSourceRecord::decode(saved)?.custody_attempt {
+            if existing.decision() != super::custody_attempt::CustodyDecision::Pending
+                || existing.session() != session || existing.observation_entered() || !existing.matches_input(input)?
+            { return Err(OriginalWriterError::Conflict); }
+            next = existing;
+        }
+        let mut transition = self.helper_custody_transition(store, admitted, source, saved, next.clone(), true)?;
+        let mut record = HelperSourceRecord::decode(saved)?;
+        let retained = crate::private_originals::RetainedBoundInput::from_bound(input)
+            .map_err(|_| OriginalWriterError::Conflict)?;
+        if let Some(existing) = &record.bound_input {
+            if existing != &retained { return Err(OriginalWriterError::Conflict); }
+        } else if record.custody_attempt.is_some() {
+            // A legacy attempt is not a fresh first-CAS enrollment. Do not
+            // backfill evidence into an already staged historical invocation.
+            return Err(OriginalWriterError::Unavailable);
+        }
+        record.custody_attempt = Some(next);
+        record.bound_input = Some(retained);
+        transition.data = record.encode()?;
+        Ok(transition)
     }
 
     /// Persist under the actual tracked helper binder before Candidate. Native
@@ -806,11 +987,11 @@ impl ToolkitOriginalOwner {
         source: &RetainedHelperSource, session: &meerkat_core::SessionId, input: &Input,
     ) -> Result<(), OriginalWriterError> {
         self.check_canonical_source(store, &admitted.source_scope)?;
-        let _writer = self.try_source_writer()?;
+        let _writer = self.source_writer().await;
         let stored = store.get(&source.source_record.key).await
             .map_err(|_| OriginalWriterError::Unavailable)?.ok_or(OriginalWriterError::Unavailable)?;
         let record = HelperSourceRecord::decode(&stored)?;
-        if record.custody_attempt.is_none() && !source.original.first_binding_for(&stored.key) {
+        if !source.original.first_binding_for(&stored.key) {
             return Err(OriginalWriterError::Unavailable);
         }
         let transition = self.prepare_helper_custody_enrollment(
@@ -820,6 +1001,18 @@ impl ToolkitOriginalOwner {
         }
         self.check_admitted_helper(admitted)?;
         self.check_bound_source(&source.original)
+    }
+
+    pub(crate) fn helper_custody_attempt(
+        self: &Arc<Self>, store: &dyn ToolkitStore, admitted: &AdmittedHelperWork,
+        source: &RetainedHelperSource, saved: &StoredRecord,
+    ) -> Result<super::custody_attempt::CustodyAttempt, OriginalWriterError> {
+        let current = HelperSourceRecord::decode(saved)?.custody_attempt
+            .ok_or(OriginalWriterError::Unavailable)?;
+        // Reuse the exact store/key/Bound-facts validator, without enrolling
+        // or checking a new grant after native settlement.
+        self.helper_custody_transition(store, admitted, source, saved, current.clone(), false)?;
+        Ok(current)
     }
 
     /// Prepare data under the same selected helper store. This owns no write
@@ -1916,20 +2109,52 @@ mod tests {
         let enrolled = store.compare_and_swap(enrollment.clone()).await.unwrap();
         assert!(store.compare_and_swap(enrollment).await.is_err());
         assert_eq!(enrolled.revision, before.revision + 1);
-        assert_eq!(enrolled.data.version, CUSTODY_SOURCE_VERSION);
+        assert_eq!(enrolled.data.version, RETAINED_INPUT_SOURCE_VERSION);
         let mut unchanged = enrolled.data.body.clone();
         unchanged.as_object_mut().unwrap().remove("custody_attempt");
+        let exact_input = unchanged.as_object_mut().unwrap().remove("bound_input").unwrap();
+        assert_eq!(exact_input, serde_json::to_value(&input).unwrap());
         assert_eq!(unchanged, before.data.body);
         let attempt = HelperSourceRecord::decode(&enrolled).unwrap().custody_attempt.unwrap();
         assert!(attempt.matches_input(&input).unwrap());
+        assert_eq!(serde_json::to_value(cold_bound_input(&admitted.source_scope, &enrolled)
+            .unwrap().unwrap().decode().unwrap()).unwrap(), serde_json::to_value(&input).unwrap());
+        // Version and exact bytes are checked independently of the store's
+        // valid digest. A legacy row stays legacy and cannot be backfilled by
+        // replaying the enrollment API after its first attempt already exists.
+        let mut legacy = enrolled.clone();
+        legacy.data.version = CUSTODY_SOURCE_VERSION;
+        legacy.data.body.as_object_mut().unwrap().remove("bound_input");
+        legacy.content_digest = legacy.data.digest().unwrap();
+        assert!(HelperSourceRecord::decode(&legacy).is_ok());
+        assert!(cold_bound_input(&admitted.source_scope, &legacy).unwrap().is_none());
+        assert!(matches!(owner.prepare_helper_custody_enrollment(
+            store.as_ref(), &admitted, &source, &legacy, &session, &input),
+            Err(OriginalWriterError::Unavailable)));
+        let mut missing = legacy.clone();
+        missing.data.version = RETAINED_INPUT_SOURCE_VERSION;
+        missing.content_digest = missing.data.digest().unwrap();
+        assert!(HelperSourceRecord::decode(&missing).is_err());
+        let mut wrong_version = enrolled.clone();
+        wrong_version.data.version = CUSTODY_SOURCE_VERSION;
+        wrong_version.content_digest = wrong_version.data.digest().unwrap();
+        assert!(HelperSourceRecord::decode(&wrong_version).is_err());
+        let mut changed_input = input.clone();
+        let Input::Prompt(prompt) = &mut changed_input else { unreachable!() };
+        prompt.content = meerkat_core::ContentInput::Text("different helper payload".into());
+        let mut tampered = enrolled.clone();
+        tampered.data.body["bound_input"] = serde_json::to_value(changed_input).unwrap();
+        tampered.content_digest = tampered.data.digest().unwrap();
+        assert!(matches!(HelperSourceRecord::decode(&tampered), Err(OriginalWriterError::Conflict)));
+        assert_eq!(store.get(&enrolled.key).await.unwrap().as_ref(), Some(&enrolled));
         let entered = attempt.changed(CustodyChange::ChargeResolution).unwrap();
         let charged = store.compare_and_swap(owner.prepare_helper_custody_transition(
             store.as_ref(), &admitted, &source, &enrolled, entered.clone()).unwrap()).await.unwrap();
         assert_eq!(charged.revision, enrolled.revision + 1);
-        assert_eq!(charged.data.version, CUSTODY_SOURCE_VERSION);
+        assert_eq!(charged.data.version, RETAINED_INPUT_SOURCE_VERSION);
 
         // A retained v3 snapshot still selects these exact immutable facts;
-        // publication must return the current v4 condition, not the old one.
+        // publication must return the current v5 condition, not the old one.
         assert_eq!(source.source_record.as_ref(), &before);
         let publication = owner.helper_publication_source(
             store.as_ref(), &service, &admitted, &source).await.unwrap();

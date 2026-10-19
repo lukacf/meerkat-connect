@@ -298,3 +298,50 @@ fn helper_report_shape_cannot_assert_ready_or_smuggle_authority() {
         assert!(serde_json::from_value::<SetupHelperFailure>(value).is_err());
     }
 }
+
+
+#[tokio::test]
+async fn helper_result_uses_current_owner_condition_without_rewriting_publication() {
+    let f = Fixture::new().await;
+    let (preparation, child, source) = published_helper(&f).await;
+    let operation = operation_id(f.snapshot.request()).unwrap();
+    let authorization = native_fixture::current(child.association());
+    let context = helper_context(&child, &authorization, f.now);
+    let before = f.store.get(&source.source.key).await.unwrap().unwrap();
+    // This Toolkit-layer fixture has opaque source data. The installed source
+    // owner's real typed-input checks are covered by the native helper test.
+    let advanced = f.store.compare_and_swap(toolkit_store::Transition {
+        key: before.key.clone(), expected_revision: before.revision,
+        expected_digest: Some(before.content_digest.clone()), data: before.data,
+        claim: None, events: vec![], effects: vec![],
+    }).await.unwrap();
+    let mut current = source.clone();
+    current.source.revision = advanced.revision;
+    current.source.content_digest = advanced.content_digest.clone();
+    let (_, published) = f.bridge(&f.store).helper_result_snapshot(&operation,
+        &access(&current, preparation.input_reference(), &context), &f.backend).await.unwrap();
+    assert_eq!(published.helper_source().unwrap().source, source.source);
+    for kind in ["stale", "regressed", "ahead", "digest", "claim", "dispatch"] {
+        let mut changed = current.clone();
+        match kind {
+            "stale" => changed.source = source.source.clone(),
+            "regressed" => changed.source.revision = source.source.revision - 1,
+            "ahead" => changed.source.revision += 1,
+            "digest" => {
+                changed.source.revision = source.source.revision;
+                changed.source.content_digest = "changed-content".into();
+            }
+            "claim" => changed.source.claim = Some(toolkit_store::RecordLease {
+                store_id: "foreign".into(), key: changed.source.key.clone(),
+                worker: "foreign".into(), fence: 1, expires_at_ms: 1,
+            }),
+            "dispatch" => changed.source.dispatch_claim = Some(f.lease.clone()),
+            _ => unreachable!(),
+        }
+        assert!(f.bridge(&f.store).helper_result_snapshot(&operation,
+            &access(&changed, preparation.input_reference(), &context), &f.backend).await.is_err(), "{kind}");
+    }
+    let (_, again) = f.bridge(&f.store).helper_result_snapshot(&operation,
+        &access(&current, preparation.input_reference(), &context), &f.backend).await.unwrap();
+    assert_eq!(again.helper_source().unwrap().source, source.source);
+}

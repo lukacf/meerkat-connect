@@ -72,6 +72,14 @@ use meerkat_runtime::{
 
 #[path = "governed_submit_test_bridge.rs"]
 mod observed;
+#[path = "custody_recovery_tests.rs"]
+mod custody_recovery_tests;
+#[path = "custody_recovery_writer_tests.rs"]
+mod custody_recovery_writer_tests;
+#[path = "custody_recovery_budget_tests.rs"]
+mod custody_recovery_budget_tests;
+#[path = "custody_recovery_stopped_traversal_tests.rs"]
+mod custody_recovery_stopped_traversal_tests;
 #[path = "first_input_tests.rs"]
 pub(in crate::private_originals) mod first_input_tests;
 
@@ -568,8 +576,14 @@ struct Fixture {
     submission: PrivateOriginalSubmit,
 }
 
+type RecoverySourceStore = Box<dyn FnOnce(Arc<dyn toolkit_store::ToolkitStore>, Arc<DeliveryFault>)
+    -> Arc<dyn toolkit_store::ToolkitStore> + Send>;
 impl Fixture {
     async fn new(mode: DeliveryMode, wrong_destination: bool) -> Self {
+        Self::with_source_store(mode, wrong_destination, None).await
+    }
+    async fn with_source_store(mode: DeliveryMode, wrong_destination: bool,
+        source_store: Option<RecoverySourceStore>) -> Self {
         let directory = Arc::new(
             tempfile::Builder::new()
                 .permissions(std::fs::Permissions::from_mode(0o700))
@@ -582,7 +596,7 @@ impl Fixture {
         let mut opened = None;
         let constructed = std::panic::AssertUnwindSafe(tokio::time::timeout(
             WAIT,
-            Self::build(directory.clone(), mode, wrong_destination, &mut opened),
+            Self::build(directory.clone(), mode, wrong_destination, &mut opened, source_store),
         ))
         .catch_unwind()
         .await;
@@ -608,6 +622,7 @@ impl Fixture {
         mode: DeliveryMode,
         wrong_destination: bool,
         opened: &mut Option<UnifiedRuntime>,
+        source_store: Option<RecoverySourceStore>,
     ) -> Self {
         let owner = initialized(&directory.path().join("grants"));
         let grants = owner.grants();
@@ -750,16 +765,19 @@ impl Fixture {
         )));
         let runtime = native.identity_runtime().unwrap();
         let domain = owner.ingress_domain().clone();
+        let raw_source: Arc<dyn toolkit_store::ToolkitStore> = Arc::new(
+            toolkit_store::SqliteStore::open(directory.path().join("originals.sqlite3")).unwrap());
+        let selected_source = match source_store {
+            Some(select) => select(raw_source, fault.clone()),
+            None => raw_source,
+        };
         let source = Arc::new(
             PrivateOriginals::new(
                 StoreScope {
                     realm: "test-realm".into(),
                     owner: "originals".into(),
                 },
-                Arc::new(
-                    toolkit_store::SqliteStore::open(directory.path().join("originals.sqlite3"))
-                        .unwrap(),
-                ),
+                selected_source,
                 owner.clone(),
                 vec![PrivateOriginalRoute {
                     id: Id::new("route").unwrap(),

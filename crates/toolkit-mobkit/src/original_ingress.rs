@@ -258,6 +258,36 @@ impl PreparedToolkitOriginal {
             })?;
         Ok((self.input, pending))
     }
+
+    /// Rebind the same still-owned candidate after a proven native refusal.
+    /// The caller excludes recovery and validates the exact retained Input;
+    /// this method neither creates nor replaces a custody guard.
+    pub(crate) fn rebind_candidate(self, pending: &PendingToolkitOriginal) -> Result<Input, OriginalWriterError> {
+        if !pending.pending || !Arc::ptr_eq(&self.owner, &pending.owner)
+            || !Arc::ptr_eq(&self.original, &pending.original)
+        { return Err(OriginalWriterError::WrongOwner); }
+        self.owner.check_bound_source(&self.original)?;
+        let _publication = self.owner.publication.begin_owner_change()
+            .map_err(|_| OriginalWriterError::Unavailable)?;
+        let mut originals = self.owner.originals.lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let claims = self.original.association().candidate();
+        let namespace = &claims.ingress_namespace;
+        if claims.contributing_work.iter().any(|contributor| !originals.iter()
+            .filter_map(OriginalRecord::bound).any(|held|
+                held.source_custody == Some(SourceCustody::Admitted)
+                    && held.operation == OriginalOperationDisposition::Open
+                    && held.names(namespace, contributor)
+                    && held.association.candidate().requester == claims.requester)) {
+            return Err(OriginalWriterError::Conflict);
+        }
+        let held = originals.iter_mut().filter_map(OriginalRecord::bound_mut)
+            .find(|held| Arc::ptr_eq(&held.retained, &self.original)).ok_or(OriginalWriterError::WrongOwner)?;
+        if held.operation != OriginalOperationDisposition::Open
+            || held.source_custody != Some(SourceCustody::Candidate)
+        { return Err(OriginalWriterError::Conflict); }
+        held.controller = Some(self.controller);
+        Ok(self.input)
+    }
 }
 
 // One live adapter per source owner. The published store already owns this
@@ -265,6 +295,7 @@ impl PreparedToolkitOriginal {
 struct CanonicalSourceBinding {
     store: Weak<dyn toolkit_store::ToolkitStore>,
     scope: toolkit_store::StoreScope,
+    installed_pair: bool,
 }
 
 /// A candidate held alongside its exact bound input until native admission.
@@ -360,6 +391,8 @@ pub struct ToolkitOriginalOwner {
     clock: Arc<dyn LocalAuthorizationClock>,
     grants: Arc<LocalGrantAuthority>,
     mutation: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    source_writer_wait: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     originals: Mutex<Vec<OriginalRecord>>,
     canonical_source: Mutex<Option<CanonicalSourceBinding>>,
     // Ephemeral native-send to Controller-decision custody, never permission.
@@ -438,6 +471,8 @@ impl ToolkitOriginalOwner {
             clock,
             grants: Arc::new(grants),
             mutation: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            source_writer_wait: Mutex::new(None),
             originals: Mutex::new(Vec::new()),
             canonical_source: Mutex::new(None),
             shared_entries: Mutex::new(Vec::new()),
@@ -467,6 +502,7 @@ impl ToolkitOriginalOwner {
         *selected = Some(CanonicalSourceBinding {
             store: Arc::downgrade(store),
             scope: scope.clone(),
+            installed_pair: false,
         });
         Ok(())
     }
@@ -495,6 +531,40 @@ impl ToolkitOriginalOwner {
         } else {
             Err(OriginalWriterError::WrongOwner)
         }
+    }
+
+    // Only the actual installed openers call this after opening both selected
+    // nonsymlink stores under the exclusive native grant lease. It is not a
+    // general durable-store capability or a runtime-start side effect.
+    pub(crate) fn select_installed_pair_recovery(&self, store: &dyn toolkit_store::ToolkitStore,
+        scope: &toolkit_store::StoreScope,
+    ) -> Result<(), OriginalWriterError> {
+        self.check_canonical_source(store, scope)?;
+        let mut selected = self.canonical_source.lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let selected = selected.as_mut().ok_or(OriginalWriterError::WrongOwner)?;
+        selected.installed_pair = true;
+        Ok(())
+    }
+
+    pub(crate) fn has_installed_pair_recovery(&self) -> Result<bool, OriginalWriterError> {
+        let selected = self.canonical_source.lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let Some(selected) = selected.as_ref() else { return Ok(false); };
+        if selected.store.upgrade().is_none() { return Err(OriginalWriterError::Unavailable); }
+        Ok(selected.installed_pair)
+    }
+
+    // Foreground provenance is retained before the first binding write. A cold
+    // census must never steal an entry merely because Candidate is not staged
+    // yet, or its tracked binder is still in an entered store operation.
+    pub(crate) fn has_live_first_binding(&self, key: &toolkit_store::StoreKey)
+        -> Result<bool, OriginalWriterError>
+    {
+        let originals = self.originals.lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        Ok(originals.iter().any(|record| match record {
+            OriginalRecord::Bound(held) => held.retained.first_binding_for(key),
+            OriginalRecord::UnboundCancellation { source_record, first_binding, .. } =>
+                first_binding.is_some() && &source_record.key == key,
+        }))
     }
 
     pub fn grants(&self) -> Arc<LocalGrantAuthority> {
@@ -760,8 +830,7 @@ impl ToolkitOriginalOwner {
             Output = Result<Option<Arc<toolkit_store::StoredRecord>>, OriginalWriterError>,
         >,
     {
-        let _mutation = self.mutation.try_lock()
-            .map_err(|_| OriginalWriterError::Unavailable)?;
+        let _mutation = self.source_writer().await;
         self.check_source(
             &association, &source_custody,
             authenticated_requester, authenticated_ingress_actor,
@@ -803,10 +872,7 @@ impl ToolkitOriginalOwner {
                 Output = Result<Option<Arc<toolkit_store::StoredRecord>>, OriginalWriterError>,
             >,
     {
-        let _mutation = self
-            .mutation
-            .try_lock()
-            .map_err(|_| OriginalWriterError::Unavailable)?;
+        let _mutation = self.source_writer().await;
         self.check_source(
             &association,
             &source_custody,
@@ -886,7 +952,7 @@ impl ToolkitOriginalOwner {
             Output = Result<Option<Arc<toolkit_store::StoredRecord>>, OriginalWriterError>,
         >,
     {
-        let _mutation = self.mutation.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let _mutation = self.source_writer().await;
         self.check_source(&association, &source_custody, authenticated_requester, authenticated_ingress_actor)?;
         self.refuse_cancelled_binding(&association)?;
         let claims = association.candidate();

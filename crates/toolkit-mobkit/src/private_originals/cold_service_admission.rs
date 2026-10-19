@@ -12,10 +12,10 @@ use super::service_approved_input::ServiceInputAdmission;
 /// its typed roundtrip; no deserialization restores those handles.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(super) struct RetainedBoundInput(serde_json::Value);
+pub(crate) struct RetainedBoundInput(serde_json::Value);
 
 impl RetainedBoundInput {
-    fn from_bound(input: &Input) -> Result<Self, PrivateOriginalError> {
+    pub(crate) fn from_bound(input: &Input) -> Result<Self, PrivateOriginalError> {
         if input.header().ingress_context.is_none() || input.header().retained_resume.is_some() {
             return Err(PrivateOriginalError::Conflict);
         }
@@ -37,7 +37,7 @@ impl RetainedBoundInput {
         retained.decode().map(Some)
     }
 
-    pub(super) fn decode(&self) -> Result<Input, PrivateOriginalError> {
+    pub(crate) fn decode(&self) -> Result<Input, PrivateOriginalError> {
         let input: Input = serde_json::from_value(self.0.clone()).map_err(|_| PrivateOriginalError::Conflict)?;
         if !matches!(input, Input::Prompt(_))
             || input.header().authority_association.is_none()
@@ -106,7 +106,7 @@ impl PrivateOriginals {
     pub(super) async fn retain_bound_service_input(
         &self, reference: &PrivateOriginalRef, original: &Arc<RetainedToolkitOriginal>, input: &Input,
     ) -> Result<(), PrivateOriginalError> {
-        let _writer = self.owner.try_source_writer().map_err(writer_error)?;
+        let _writer = self.owner.source_writer().await;
         self.owner.check_bound_source(original).map_err(writer_error)?;
         let key = self.key(reference)?;
         let stored = self.store.get(&key).await.map_err(store_error)?.ok_or(PrivateOriginalError::Unavailable)?;

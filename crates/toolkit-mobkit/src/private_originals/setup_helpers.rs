@@ -57,8 +57,9 @@ pub(crate) enum SetupHelperSubmission {
 /// Kept by the existing source adapter when native cannot settle admission.
 /// Its guard owns only source custody. Native remains the input/turn owner.
 pub(crate) struct HeldSetupHelper {
-    source: RetainedHelperSource,
+    pub(super) source: RetainedHelperSource,
     first_input: OnceLock<cold_service_admission::RetainedBoundInput>,
+    pub(super) first_custody: Mutex<Option<Arc<PendingHelperAdmission>>>,
     unresolved: Mutex<Vec<UnresolvedHelperAdmission>>,
     // Bound once from the canonical live setup before input admission. Never
     // reconstructed from source history or refreshed by human approval.
@@ -80,6 +81,15 @@ impl HeldSetupHelper {
     }
     pub(crate) fn source_record(&self) -> &Arc<StoredRecord> {
         &self.source.source_record
+    }
+
+    pub(super) fn check_result_record(
+        &self, saved: &toolkit_store::StoredRecord, session: &SessionId,
+    ) -> Result<(), PrivateOriginalError> {
+        // First-input bytes are retained even without optional recovery
+        // enrollment. Native result lookup has already checked this session.
+        self.source.check_result_record(saved,
+            self.first_input.get().map(|input| (input, session))).map_err(helper_error)
     }
 
     #[cfg(test)]
@@ -164,7 +174,8 @@ impl PrivateOriginals {
         let operation_deadline_ms = OnceLock::new();
         if let Some(deadline) = deadline_ms { operation_deadline_ms.set(deadline).unwrap(); }
         self.helper_sources.lock().unwrap().push(Arc::new(HeldSetupHelper {
-            source, first_input: OnceLock::new(), unresolved: Mutex::new(Vec::new()), operation_deadline_ms,
+            source, first_input: OnceLock::new(), first_custody: Mutex::new(None),
+            unresolved: Mutex::new(Vec::new()), operation_deadline_ms,
         }));
     }
 
@@ -525,6 +536,7 @@ impl PrivateOriginals {
         let source = Arc::new(HeldSetupHelper {
             source,
             first_input: OnceLock::new(),
+            first_custody: Mutex::new(None),
             unresolved: Mutex::new(Vec::new()),
             operation_deadline_ms: OnceLock::new(),
         });
@@ -704,6 +716,9 @@ impl PrivateOriginals {
             if result.as_ref().err().is_some_and(|error| {
                 helper_admission_reprepare_required(error, &prepared.session_id)
             }) {
+                if let Some(pending) = binder.pending.lock().map_err(|_| PrivateOriginalError::Unavailable)?.upgrade() {
+                    pending.handoff.record_definite_refusal();
+                }
                 if reprepared {
                     return Ok(SetupHelperSubmission::ReprepareRequired);
                 }
@@ -743,7 +758,7 @@ impl PrivateOriginals {
 }
 
 // The selected Meta governed door propagates this native error only after
-// NotAdmitted withdraws its candidate. Uncertain/admitted/missing receipts are
+// NotAdmitted drops native retry custody; the source owner retains the exact candidate. Uncertain/admitted/missing receipts are
 // AdmissionUnresolved instead. A bare runtime readiness error is not sufficient.
 fn helper_admission_reprepare_required(
     error: &IdentityRuntimeError,
@@ -903,6 +918,14 @@ struct SubmitHelperBinder {
     pending: Mutex<Weak<PendingHelperAdmission>>,
 }
 
+impl Drop for SubmitHelperBinder {
+    fn drop(&mut self) {
+        if let Some(pending) = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade() {
+            pending.handoff.foreground_finished();
+        }
+    }
+}
+
 #[async_trait]
 impl GovernedInputBinder for SubmitHelperBinder {
     async fn bind(
@@ -935,6 +958,9 @@ impl GovernedInputBinder for SubmitHelperBinder {
                 crate::aa1_failure("helper.bind.selection", "Unavailable");
                 "Toolkit helper selection is unavailable"
             })?;
+        self.source.restore_promoted_custody(
+            &self.held.source.source_record.key, &self.held.source.original,
+        ).await.map_err(|_| "Toolkit historical helper custody is unavailable")?;
         let mut prepared = self
             .source
             .owner
@@ -974,19 +1000,42 @@ impl GovernedInputBinder for SubmitHelperBinder {
             .map_err(|_| "Toolkit helper source is unavailable")?;
         self.source.require_helper_selection(self.admitted.selection())
             .map_err(|_| "Toolkit helper selection is unavailable")?;
-        let (input, pending) = {
+        let (input, pending) = self.source.custody_recovery.enroll(|selected| {
             // Refuse overlap before staging: dropping a newly staged guard
             // must never withdraw the earlier invocation's Candidate.
-            let mut invocation = self.pending.lock()
-                .map_err(|_| "Toolkit helper custody is unavailable")?;
-            if invocation.upgrade().is_some() {
-                return Err("Toolkit helper still owns an earlier native invocation".into());
+            let mut invocation = self.pending.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            let mut retained = self.held.first_custody.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            let prior = retained.as_ref().filter(|_| selected);
+            if let Some(invoked) = invocation.upgrade() {
+                if !prior.is_some_and(|prior| Arc::ptr_eq(prior, &invoked)) {
+                    return Err(PrivateOriginalError::Unavailable);
+                }
             }
-            let (input, pending) = match admitted {
-                Some(admitted) => admitted,
-                None => prepared.stage().map_err(|_| "Toolkit helper candidate is unavailable")?,
+            let (input, pending, handoff) = match admitted {
+                Some((input, pending)) => {
+                    if invocation.upgrade().is_some() { return Err(PrivateOriginalError::Unavailable); }
+                    (input, pending, custody_recovery::CustodyHandoff::new(false, &self.source))
+                }
+                None => match prior {
+                    Some(prior) => {
+                        if prior.session != context.session_id { return Err(PrivateOriginalError::Conflict); }
+                        let ((input, pending), handoff) = prior.handoff.rebind(|| {
+                            prior.publication.lock().map_err(|_| PrivateOriginalError::Unavailable)?
+                                .source.rebind_candidate(prepared, &prior.input)
+                        })?;
+                        (input, pending, handoff)
+                    }
+                    None => {
+                        let (input, pending) = prepared.stage().map_err(|_| PrivateOriginalError::Unavailable)?;
+                        let handoff = custody_recovery::CustodyHandoff::new(selected && pending.is_first_candidate(), &self.source);
+                        (input, pending, handoff)
+                    }
+                },
             };
+            let enrolled = handoff.enrolled();
             let pending = Arc::new(PendingHelperAdmission {
+                handoff,
+                held: Arc::downgrade(&self.held), admitted: self.admitted.clone(),
                 session: context.session_id.clone(), input: input.clone(),
                 first_candidate: pending.is_first_candidate(),
                 publication: Mutex::new(HelperPublication {
@@ -995,8 +1044,9 @@ impl GovernedInputBinder for SubmitHelperBinder {
                 }),
             });
             *invocation = Arc::downgrade(&pending);
-            (input, pending)
-        };
+            if enrolled { *retained = Some(pending.clone()); }
+            Ok((input, pending))
+        }).map_err(|_| "Toolkit helper recovery enrollment is unavailable")?;
         let settlement = HelperSettlement {
             pending, held: Arc::downgrade(&self.held),
         };
@@ -1011,6 +1061,7 @@ impl GovernedInputBinder for SubmitHelperBinder {
         // Meta transfers this one Box only after its native operation has
         // stopped owning the decision. A reader/timer never manufactures it.
         let pending = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade();
+        if let Some(pending) = &pending { pending.handoff.release(); }
         self.held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(UnresolvedHelperAdmission { pending, settlement });
     }
@@ -1018,17 +1069,20 @@ impl GovernedInputBinder for SubmitHelperBinder {
 
 /// Exact per-invocation input, kept with the actual guard. The helper's first
 /// serialized Input cannot stand in for later admitted-only invocations.
-struct PendingHelperAdmission {
-    session: SessionId,
-    input: Input,
+pub(super) struct PendingHelperAdmission {
+    pub(super) handoff: Arc<custody_recovery::CustodyHandoff>,
+    pub(super) held: Weak<HeldSetupHelper>,
+    pub(super) admitted: Arc<AdmittedHelperWork>,
+    pub(super) session: SessionId,
+    pub(super) input: Input,
     first_candidate: bool,
-    publication: Mutex<HelperPublication>,
+    pub(super) publication: Mutex<HelperPublication>,
 }
 
-struct HelperPublication {
+pub(super) struct HelperPublication {
     // Only the actual matching fresh callback records this native receipt.
-    native_admission: Option<GovernedAdmission>,
-    source: governed_submit::SourcePublication,
+    pub(super) native_admission: Option<GovernedAdmission>,
+    pub(super) source: governed_submit::SourcePublication,
 }
 
 /// Actual handoff custody. Even a missing typed pointer retains the native Box
@@ -1043,12 +1097,16 @@ struct HelperSettlement {
     held: Weak<HeldSetupHelper>,
 }
 
+impl Drop for HelperSettlement {
+    fn drop(&mut self) { self.pending.handoff.native_box_finished(); }
+}
 impl GovernedSettlement for HelperSettlement {
     fn accepted(self: Box<Self>, admission: &GovernedAdmission) -> Result<(), String> {
         if admission.deduplicated
             || admission.session_id != self.pending.session
             || admission.input_id != *self.pending.input.id()
         {
+            self.pending.handoff.release();
             if let Some(held) = self.held.upgrade() {
                 let pending = Some(self.pending.clone());
                 held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1058,10 +1116,11 @@ impl GovernedSettlement for HelperSettlement {
         }
         use governed_submit::SourcePublication;
         let unavailable = || "Native helper was admitted but source publication failed".to_owned();
-        let result = {
+        self.pending.publication.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .native_admission = Some(admission.clone());
+        let result = self.pending.handoff.accepted(|| {
             let mut publication = self.pending.publication.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            publication.native_admission = Some(admission.clone());
             let prior = std::mem::replace(&mut publication.source, SourcePublication::Settled {
                 source_acknowledged: false, result: Err(unavailable()),
             });
@@ -1079,11 +1138,12 @@ impl GovernedSettlement for HelperSettlement {
                 }
             };
             result
-        };
+        });
         if result.is_err() {
             // Native acceptance is final even when this later source step
             // fails. Keep the same consumed Box and exact Input with its
             // existing owner; never call accepted again or dispatch a retry.
+            self.pending.handoff.release();
             if let Some(held) = self.held.upgrade() {
                 let pending = Some(self.pending.clone());
                 held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -46,6 +46,9 @@ impl SetupHelperFailure {
 /// The publication/source/backend fields are never taken from tool arguments.
 pub struct SetupHelperResultAccess<'a> {
     pub helper: &'a InputAuthorityAssociation,
+    /// Current canonical condition after the installed source owner has checked
+    /// immutable helper facts and exact native input correlation. Custody-only
+    /// writes may advance it beyond the historical publication condition.
     pub source: &'a RecordCondition,
     pub contributors: &'a [InputAuthorityAssociation],
     pub effect: &'a toolkit_store::EffectKey,
@@ -213,7 +216,12 @@ impl SetupStore<'_> {
             .await?;
         let source = published.helper_source().ok_or(SetupError::Denied)?;
         if &source.association != access.helper
-            || source.source != *access.source
+            || source.source.key != access.source.key
+            || access.source.revision < source.source.revision
+            || (access.source.revision == source.source.revision
+                && access.source.content_digest != source.source.content_digest)
+            || access.source.claim.is_some()
+            || access.source.dispatch_claim.is_some()
             || source.contributors != access.contributors
             || source.effect != *access.effect
             || &published.input_reference().content_digest != access.input_digest
@@ -223,13 +231,15 @@ impl SetupStore<'_> {
         {
             return Err(SetupError::Denied);
         }
+        // Publication remains historical. The installed source owner validated
+        // this current condition; re-read it so intervening changes still fail.
         let actual = self
             .store
-            .get(&source.source.key)
+            .get(&access.source.key)
             .await?
             .ok_or(StoreError::NotFound)?;
-        if actual.revision != source.source.revision
-            || actual.content_digest != source.source.content_digest
+        if actual.revision != access.source.revision
+            || actual.content_digest != access.source.content_digest
             || actual.content_digest != actual.data.digest()?
         {
             return Err(SetupError::InvalidRecord);

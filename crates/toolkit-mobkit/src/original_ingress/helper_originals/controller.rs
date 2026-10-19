@@ -171,7 +171,7 @@ impl ToolkitOriginalOwner {
         self.check_admitted_helper(admitted)?;
         controller.validate(admitted)?;
         let key = admitted.source_key()?;
-        let candidate = HelperSourceRecord { custody_attempt: None, facts: admitted.facts.clone(), controller,
+        let candidate = HelperSourceRecord { custody_attempt: None, bound_input: None, facts: admitted.facts.clone(), controller,
             state: HelperSourceState::ControllerPending };
         let saved = match store.get(&key).await.map_err(store_error)? {
             Some(saved) => saved,

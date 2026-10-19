@@ -111,12 +111,7 @@ impl PrivateOriginals {
             .await
             .map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
-        if saved.revision != held.source_record().revision
-            || saved.content_digest != held.source_record().content_digest
-            || saved.content_digest != saved.data.digest().map_err(store_error)?
-        {
-            return Err(PrivateOriginalError::Conflict);
-        }
+        held.check_result_record(&saved, session)?;
         // Match every canonical contributor through this actual source owner's
         // retained handles, then re-read that exact source. Native liveness is
         // checked again below; the typed snapshot is not an atomic permission.

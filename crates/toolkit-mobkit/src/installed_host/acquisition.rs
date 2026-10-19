@@ -224,6 +224,8 @@ impl InstalledAcquisition {
             inner: owners.admission,
             tenant: owners.tenant,
             deployment,
+            #[cfg(test)]
+            recheck_pause: std::sync::Mutex::new(None),
         });
         Ok(Self {
             helpers,
@@ -352,6 +354,39 @@ struct CanonicalSetupHost {
     inner: Arc<dyn SetupToolHost>,
     tenant: Id,
     deployment: Id,
+    #[cfg(test)]
+    recheck_pause: std::sync::Mutex<Option<Arc<AdmissionRecheckPause>>>,
+}
+
+// A one-shot test observation of this host's actual successful inner admission.
+// The real registered invocation retains its admission/context while paused;
+// no source or publication lock is held across the permit await.
+#[cfg(test)]
+pub(crate) struct AdmissionRecheckPause {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+    finished: tokio::sync::Notify,
+    result: std::sync::Mutex<Option<Result<(), ToolAdmissionError>>>,
+}
+#[cfg(test)]
+impl AdmissionRecheckPause {
+    pub(crate) async fn entered(&self) { self.entered.notified().await; }
+    pub(crate) fn release(&self) { self.release.add_permits(1); }
+    pub(crate) async fn outcome(&self) -> Result<(), ToolAdmissionError> {
+        self.finished.notified().await;
+        self.result.lock().unwrap().take().expect("actual admission returned")
+    }
+}
+#[cfg(test)]
+impl InstalledAcquisition {
+    pub(crate) fn hold_admission_recheck_for_test(&self) -> Arc<AdmissionRecheckPause> {
+        let pause = Arc::new(AdmissionRecheckPause {
+            entered: tokio::sync::Notify::new(), release: tokio::sync::Semaphore::new(0),
+            finished: tokio::sync::Notify::new(), result: std::sync::Mutex::new(None),
+        });
+        assert!(self.host.recheck_pause.lock().unwrap().replace(pause.clone()).is_none());
+        pause
+    }
 }
 
 #[async_trait]
@@ -367,6 +402,34 @@ impl SetupToolHost for CanonicalSetupHost {
             .await
             .map_err(source_admission_error)?;
         let admission = self.inner.admit_invocation(call_id, context).await?;
+        #[cfg(test)]
+        let pause = self.recheck_pause.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = &pause {
+            pause.entered.notify_one();
+            pause.release.acquire().await.unwrap().forget();
+        }
+        let result = self.recheck_admission(context, &original, admission).await;
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            *pause.result.lock().unwrap() = Some(match &result {
+                Ok(_) => Ok(()),
+                Err(ToolAdmissionError::Denied) => Err(ToolAdmissionError::Denied),
+                Err(ToolAdmissionError::Unavailable) => Err(ToolAdmissionError::Unavailable),
+            });
+            pause.finished.notify_one();
+        }
+        result
+    }
+}
+
+impl CanonicalSetupHost {
+    async fn recheck_admission(
+        &self,
+        context: &ToolDispatchContext,
+        original: &crate::private_originals::acquisition::AcquisitionOriginal,
+        admission: HostToolAdmission,
+    ) -> Result<HostToolAdmission, ToolAdmissionError> {
         let claims = original.original.association().candidate();
         if admission.evidence.association() != original.original.association()
             || admission.context.tenant != self.tenant
@@ -385,9 +448,9 @@ impl SetupToolHost for CanonicalSetupHost {
             .await
             .map_err(source_admission_error)?;
         if !Arc::ptr_eq(&current.original, &original.original)
-            || current.source_record.key != original.source_record.key
-            || current.source_record.revision != original.source_record.revision
-            || current.source_record.content_digest != original.source_record.content_digest
+            || !self.originals.same_acquisition_source(
+                &original.reference, &original.source_record, &current.source_record,
+            ).map_err(source_admission_error)?
             || current.contributors.len() != original.contributors.len()
             || current
                 .contributors

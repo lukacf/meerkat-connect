@@ -85,6 +85,18 @@ impl CustodyAttempt {
         Ok(input.id() == &self.input_id && Self::fingerprint(input)? == self.prepared_input_sha256)
     }
 
+    pub(crate) fn same_attempt(&self, other: &Self) -> bool {
+        self.session_id == other.session_id && self.input_id == other.input_id
+            && self.prepared_input_sha256 == other.prepared_input_sha256
+            && self.recovery_policy == other.recovery_policy
+    }
+
+    pub(crate) fn session(&self) -> &SessionId { &self.session_id }
+    pub(crate) fn input_id(&self) -> &InputId { &self.input_id }
+    pub(crate) fn decision(&self) -> CustodyDecision { self.decision }
+    pub(crate) fn observation_entered(&self) -> bool { self.resolution_entered }
+    pub(crate) fn can_observe(&self) -> bool { self.decision == CustodyDecision::Pending && self.spent_steps < STEPS }
+
     pub(crate) fn changed(&self, change: CustodyChange) -> Result<Self, OriginalWriterError> {
         self.validate()?;
         if self.decision != CustodyDecision::Pending { return Err(OriginalWriterError::Conflict); }

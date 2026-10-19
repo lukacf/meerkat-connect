@@ -743,6 +743,8 @@ impl GatewayHostComposition for ToolkitGatewayHost {
                     PrivateOriginalError::Unavailable => GatewayHostError::Unavailable,
                     _ => GatewayHostError::Denied,
                 })?;
+            originals.start_custody_recovery(runtime.mob_runtime().continuation_source_announcer())
+                .map_err(|_| GatewayHostError::Unavailable)?;
             if let Some(pins) = runtime.mob_runtime().controller_pin_source() {
                 originals.bind_controller_pin_source(pins).map_err(|_| GatewayHostError::Denied)?;
             }
@@ -796,6 +798,7 @@ impl GatewayHostComposition for ToolkitGatewayHost {
 
     fn begin_close(&self, reason: GatewayHostCloseReason) -> Result<(), GatewayHostError> {
         self.acquisition_recovery.stop();
+        if let Some(source) = &self.private_originals { source.stop_custody_recovery(); }
         match reason {
             GatewayHostCloseReason::HostDisconnected | GatewayHostCloseReason::CallerCancelled => {
                 self.owner.host_lost()
@@ -813,20 +816,34 @@ impl GatewayHostComposition for ToolkitGatewayHost {
         // initialization-failure path. An entered step retains its own owner
         // and may settle; no task abort turns uncertainty into no effect.
         self.acquisition_recovery.stop();
+        if let Some(source) = &self.private_originals { source.stop_custody_recovery(); }
         let closing = self.owner.begin_close_activation(HostCloseReason::Shutdown);
         let native_close = async {
             let closing = closing?;
             self.owner.join_close(&closing.handle).await
         };
         let recovery_close = async {
-            let recovered = self.acquisition_recovery.join().await;
             // Stop above excludes new transfer registration before this census,
             // even when initialization never started the recovery worker.
-            if let Some(originals) = &self.private_originals {
-                originals.join_workflow_context_transfers(false).await
-                    .map_err(|_| HostLifetimeError::NotSettled)?;
-            }
-            recovered
+            let custody_close = async {
+                match &self.private_originals {
+                    Some(originals) => originals.join_custody_recovery().await
+                        .map_err(|_| HostLifetimeError::NotSettled),
+                    None => Ok(()),
+                }
+            };
+            let transfer_close = async {
+                match &self.private_originals {
+                    Some(originals) => originals.join_workflow_context_transfers(false).await
+                        .map_err(|_| HostLifetimeError::NotSettled),
+                    None => Ok(()),
+                }
+            };
+            // These independently retained owners must all enter their joins,
+            // including when another owner fails or does not settle promptly.
+            let (recovered, custody, transfers) = tokio::join!(
+                self.acquisition_recovery.join(), custody_close, transfer_close);
+            recovered.and(custody).and(transfers)
         };
         let (recovery, native) = tokio::join!(
             tokio::time::timeout(std::time::Duration::from_secs(30), recovery_close),
@@ -849,5 +866,6 @@ impl GatewayHostComposition for ToolkitGatewayHost {
             _ = self.private_closed.wait_closed() => {},
         }
         self.acquisition_recovery.stop();
+        if let Some(source) = &self.private_originals { source.stop_custody_recovery(); }
     }
 }

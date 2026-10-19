@@ -1841,6 +1841,79 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
             self.assertFalse(v.InstalledAcquisitionProvider.controller_reprepare)
             self.original_catalog_response_control(provider, controller_recovery=True)
 
+    def test_controller_reprepare_completed_boundaries_preserve_single_catalog_sequence(self):
+        v = VERIFIER
+        request, operation = v.ACQUISITION_REQUEST, v.ACQUISITION_OPERATION
+        rows = [{"role": "user", "content": request},
+                {"role": "assistant", "tool_calls": [{"id": "original-catalog-search"}]},
+                {"role": "tool", "tool_call_id": "original-catalog-search", "content": "{}"},
+                {"role": "user", "content": v.ORIGINAL_CONTROLLER_FEEDBACK}]
+        self.assertEqual(v.original_catalog_history(rows, request, operation, 0,
+            allow_controller_recovery=True), 3)
+        completed = rows[:-1]
+        boundaries = [copy.deepcopy(rows)]
+        for call_id in ("original-catalog-load", v.ORIGINAL_STORY_CALL):
+            completed += [{"role": "assistant", "tool_calls": [{"id": call_id}]},
+                          {"role": "tool", "tool_call_id": call_id, "content": "{}"}]
+            history = completed + [rows[-1]]
+            self.assertEqual(v.original_catalog_history(history, request, operation, 0,
+                allow_controller_recovery=True), len(history) - 1)
+            boundaries.append(copy.deepcopy(history))
+        for wrong in (rows + [rows[-1]], rows[:2] + [rows[-1]],
+                      rows[:3] + [rows[1], rows[2], rows[-1]],
+                      rows[:3] + [{"role": "tool", "tool_call_id": "original-catalog-load"}, rows[-1]]):
+            with self.assertRaises(AssertionError):
+                v.original_catalog_history(wrong, request, operation, 0, allow_controller_recovery=True)
+        notice = {"role": "user", "content": (
+            "Tool configuration changed at turn boundary: boundary_applied(base_changed=true,visible_changed=true,revision=1)"
+            "\nTool configuration changed: boundary_applied(base_changed=true,visible_changed=true,revision=1)")}
+        with_notice = boundaries[1][:-1] + [notice, rows[-1]]
+        self.assertEqual(v.original_catalog_history(with_notice, request, operation, 0,
+            allow_controller_recovery=True), len(with_notice) - 1)
+        boundaries.append(with_notice)
+        with self.assertRaises(AssertionError):
+            v.original_catalog_history(rows, request, operation, 0)
+        state = self.controller_reprepare_state()
+        prior = copy.deepcopy(state["authorization_audit"][2:])
+        for row in prior: row["observation"]["operation_id"] = "earlier-model"
+        state["authorization_audit"] = prior + state["authorization_audit"]
+        projected = v.original_reprepare_projection(state, "session", "B", "run-B")
+        self.assertEqual(projected["refusal_count"], 2)
+        with tempfile.TemporaryDirectory(prefix="inert-post-search-audit-") as scratch:
+            directory = Path(scratch)
+            projected["row_sha256"] = "a" * 64
+            path = directory / "original-b-controller-recovery.json"
+            path.write_bytes(v.canonical(projected))
+            acquisition = {"controller_recovery_audit": v.artifact_pin(path)}
+            business = {"original_catalog": {}, "controller_recovery_history_index": 3}
+            receipt = {"input_id": "B", "run_id": "run-B", "outcome": {"session_id": "session"}}
+            for history in boundaries:
+                business["controller_recovery_history_index"] = len(history) - 1
+                ASSEMBLER.gateway_controller_recovery(acquisition, business, history, 0, directory, receipt)
+            business["controller_recovery_history_index"] = 3
+            for wrong in (rows + [rows[-1]], rows[:2] + [rows[-1]]):
+                with self.assertRaises(ValueError):
+                    ASSEMBLER.gateway_controller_recovery(acquisition, business, wrong, 0, directory, receipt)
+        for mutate in (
+            lambda x: x["authorization_audit"][0]["observation"].update(operation_id="refused"),
+            lambda x: x["authorization_audit"][0]["observation"].update(observation={"kind": "authorization_unavailable"}),
+            lambda x: x["authorization_audit"][3]["observation"]["observation"].update(reason="denied"),
+            lambda x: x["authorization_audit"].append(copy.deepcopy(x["authorization_audit"][3])),
+        ):
+            wrong = copy.deepcopy(state); mutate(wrong)
+            with self.assertRaises(AssertionError):
+                v.original_reprepare_projection(wrong, "session", "B", "run-B")
+
+    def test_controlled_provider_preserves_explicit_tool_refusals(self):
+        v = VERIFIER
+        provider = object.__new__(v.InstalledAcquisitionProvider)
+        for identifier in ("original-catalog-search", "original-catalog-load", "helper-catalog-load-1", "install"):
+            body = {"model": "fixture-original-model", "tools": [], "messages": [
+                {"role": "tool", "tool_call_id": identifier, "content": json.dumps({
+                    "error": "operation_refused", "message": "operation unavailable under current authorization"})}]}
+            with self.assertRaisesRegex(AssertionError, "actual tool result " + identifier + " refused: operation_refused"):
+                provider.response(body)
+
     def controller_reprepare_state(self):
         target = {"kind": "model", "model": "fixture-original-model", "provider": "self_hosted",
                   "usage": "controller_inference", "hosted_capabilities": [], "endpoint": "inert-only"}

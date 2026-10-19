@@ -10,6 +10,9 @@ use toolkit_store::ToolkitStore;
 
 type Fixture = FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>>;
 
+#[path = "custody_recovery_helper_tests.rs"]
+mod custody_recovery_helper_tests;
+
 pub(super) fn enrolled_login() -> (
     tokio::sync::watch::Sender<bool>,
     ConsoleLogins,
@@ -109,14 +112,14 @@ async fn issued_helper(
         .unwrap();
     assert_eq!(facts.contributors, vec![original.clone()]);
     // The actual binder has persisted its first attempt before this native gate.
-    // The retained Bound snapshot remains unchanged; only custody was added.
+    // The retained Bound snapshot remains unchanged; only custody and its exact prepared input were added.
     let retained = held.source_record();
     let current = fixture.store.get(&retained.key).await.unwrap().unwrap();
     assert_eq!(retained.data.version, 3);
     assert!(retained.data.body.get("custody_attempt").is_none());
     assert_eq!(current.key, retained.key);
     assert_eq!(current.data.schema, retained.data.schema);
-    assert_eq!(current.data.version, 4);
+    assert_eq!(current.data.version, 5);
     assert_eq!(current.revision, retained.revision + 1);
     assert_eq!(current.content_digest, current.data.digest().unwrap());
     let mut unchanged = current.data.body.clone();
@@ -128,6 +131,10 @@ async fn issued_helper(
     let attempt: crate::original_ingress::custody_attempt::CustodyAttempt =
         serde_json::from_value(actual_attempt).unwrap();
     attempt.validate_binding(binding).unwrap();
+    let retained_input: meerkat_runtime::Input = serde_json::from_value(
+        unchanged.as_object_mut().unwrap().remove("bound_input").unwrap()).unwrap();
+    assert!(attempt.matches_input(&retained_input).unwrap());
+    assert_eq!(retained_input.header().authority_association.as_ref(), Some(binding));
     if let Some(actual) = fault.helper_inputs.lock().unwrap().first() {
         let input: meerkat_runtime::Input = serde_json::from_value(actual.clone()).unwrap();
         assert!(attempt.matches_input(&input).unwrap());

@@ -42,6 +42,56 @@ impl AcquisitionOriginal {
 }
 
 impl PrivateOriginals {
+    /// Compare two validated observations around an application admission.
+    /// Only source-owned accounting for the same already-recorded attempt may
+    /// advance. Every other typed source field remains exact; this comparison
+    /// supplies neither native admission nor contributor currentness.
+    pub(crate) fn same_acquisition_source(
+        &self,
+        reference: &PrivateOriginalRef,
+        prior: &StoredRecord,
+        current: &StoredRecord,
+    ) -> Result<bool, PrivateOriginalError> {
+        let mut before = self.decode_record(prior, reference)?;
+        let mut after = self.decode_record(current, reference)?;
+        if current.key != prior.key || current.data.schema != prior.data.schema
+            || current.data.version != prior.data.version
+        { return Ok(false); }
+        if current.revision == prior.revision {
+            return Ok(current.content_digest == prior.content_digest && before == after);
+        }
+        if current.revision < prior.revision { return Ok(false); }
+        let (Some(first), Some(last)) =
+            (before.custody_attempt.take(), after.custody_attempt.take())
+        else { return Ok(false); };
+        if before != after || first == last || !first.same_attempt(&last) {
+            return Ok(false);
+        }
+        use crate::original_ingress::custody_attempt::{CustodyChange, CustodyDecision};
+        // A newly withdrawn source preserves the previous changed-row refusal.
+        // This is not evidence of native cancellation or nonadmission.
+        if last.decision() == CustodyDecision::Withdrawn { return Ok(false); }
+        let mut reachable = first;
+        let mut revisions_left = current.revision - prior.revision;
+        loop {
+            if reachable == last { return Ok(true); }
+            if revisions_left == 0 { return Ok(false); }
+            if reachable.changed(CustodyChange::Promote).ok().as_ref() == Some(&last) {
+                return Ok(true);
+            }
+            // Walk only the existing policy's bounded charge/settle chain.
+            // An inner await can span several steps, not just one CAS. Each
+            // step still requires an observed canonical revision increment.
+            let change = if reachable.observation_entered() {
+                CustodyChange::ResolutionSettled
+            } else { CustodyChange::ChargeResolution };
+            match reachable.changed(change) {
+                Ok(next) => { reachable = next; revisions_left -= 1; }
+                Err(_) => return Ok(false),
+            }
+        }
+    }
+
     pub(crate) async fn acquisition_original(
         &self,
         context: &ToolDispatchContext,

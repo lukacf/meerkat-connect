@@ -509,4 +509,5 @@ async fn native_late_ready_guard_is_cancelled_and_returned_without_rearming() {
     .await;
 }
 
+mod gateway_cleanup;
 mod initial_cancel;

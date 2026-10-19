@@ -5,6 +5,8 @@
 //! until the actual final lifetime and installed registration are adopted.
 
 use super::*;
+#[cfg(test)]
+use super::controller_first_input_fixture::PrepareOriginalSource;
 use meerkat_toolkit::host_lifetime::policy::PreparedLocalPolicy;
 
 /// The actual canonical stores used by this preparation, not a snapshot of
@@ -107,21 +109,31 @@ impl PreparedInstallationOwner {
     pub async fn prepare(self, tool_policy: PreparedInstalledToolPolicy)
         -> Result<PreparedInstalledHost, HostLifetimeError>
     {
-        self.prepare_selected(tool_policy, None).await
+        self.prepare_selected(tool_policy, None, #[cfg(test)] None).await
     }
 
     pub async fn prepare_with_application_service_policy(self, tool_policy: PreparedInstalledToolPolicy,
         participant: Arc<dyn crate::private_originals::ApplicationServicePolicy>,
     ) -> Result<PreparedInstalledHost, HostLifetimeError> {
-        self.prepare_selected(tool_policy, Some(participant)).await
+        self.prepare_selected(tool_policy, Some(participant), #[cfg(test)] None).await
     }
 
     async fn prepare_selected(self, tool_policy: PreparedInstalledToolPolicy,
         participant: Option<Arc<dyn crate::private_originals::ApplicationServicePolicy>>,
+        #[cfg(test)] prepare_source: Option<PrepareOriginalSource>,
     ) -> Result<PreparedInstalledHost, HostLifetimeError> {
+        let source_store: Arc<dyn toolkit_store::ToolkitStore> = self.store.clone();
+        #[cfg(test)]
+        let source_store = match prepare_source {
+            Some(decorate) => decorate(source_store), None => source_store,
+        };
         let originals = Arc::new(PrivateOriginals::prepare(
-            self.source_scope.clone(), self.store.clone(), self.source.clone(),
+            self.source_scope.clone(), source_store, self.source.clone(),
         ).await.map_err(|_| HostLifetimeError::InvalidSelection)?);
+        // PreparedInstallationOwner::open owns the intact leased pair. This
+        // fact survives adoption with this exact source; generic new/prepare
+        // never receives it merely by attaching a runtime.
+        originals.select_installed_pair_recovery()?;
         let service_policy = tool_policy.bind_service_owner(self.store.clone(), self.source_scope.clone(),
             self.selected.native_host.grant_administrator.clone(), participant).await?;
         originals.bind_service_tool_policy(service_policy)?;
@@ -133,6 +145,15 @@ impl PreparedInstallationOwner {
             source_scope: self.source_scope.clone(), tool_policy, policy, configuration,
             authorities: PreparedAuthorityState::Pending(self),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn complete_with_source_store(self, tool_policy: PreparedInstalledToolPolicy,
+        prepare_source: PrepareOriginalSource,
+    ) -> Result<PreparedInstalledHost, HostLifetimeError> {
+        let mut prepared = self.prepare_selected(tool_policy, None, Some(prepare_source)).await?;
+        prepared.finalize_selection()?;
+        Ok(prepared)
     }
 
     /// Existing callers with already resolved authority selections retain the

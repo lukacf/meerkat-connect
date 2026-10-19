@@ -8,6 +8,9 @@ use meerkat_core::{AgentToolDispatcher, ToolCallView, ToolDispatchContext, ToolR
 use std::sync::{Mutex, atomic::AtomicBool};
 use toolkit_store::ToolkitStore;
 
+#[path = "acquisition_custody_progress_tests.rs"]
+mod custody_progress;
+
 #[async_trait]
 trait FindDispatchProbe: Send + Sync {
     async fn inspect(&self, call: ToolCallView<'_>, context: &ToolDispatchContext);
@@ -87,6 +90,12 @@ impl Script {
     pub(super) fn retain_owner(&self, owner: Arc<InstalledAcquisition>) {
         assert!(Arc::ptr_eq(&owner.tool(), &self.tools.acquisition_tool()));
         assert!(self.owner.lock().unwrap().replace(owner).is_none());
+    }
+    // Durable fixture teardown calls this only after its actual close joins.
+    // Drop our retained acquisition owner, never native or source-owned state.
+    pub(super) fn release_owner_after_close(&self) {
+        let owner = self.owner.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        drop(owner);
     }
     pub(super) fn provider(self: &Arc<Self>, inner: Arc<dyn LlmClient>) -> Arc<dyn LlmClient> {
         Arc::new(AcquisitionResponse {

@@ -16,7 +16,35 @@ impl ToolkitOriginalOwner {
     /// Ordinary async membership changes use this same source writer. Native
     /// callbacks use the nonwaiting variant above and never wait for this guard.
     pub(crate) async fn source_writer(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.mutation.lock().await
+        // The actual async caller retains this wait. It checks source/grant
+        // currentness after acquisition, and never enters a native callback
+        // while waiting for recovery's entered canonical write.
+        #[cfg(not(test))]
+        { self.mutation.lock().await }
+        #[cfg(test)]
+        {
+            use std::future::Future;
+            let acquiring = self.mutation.lock();
+            tokio::pin!(acquiring);
+            std::future::poll_fn(|cx| {
+                let polled = acquiring.as_mut().poll(cx);
+                if polled.is_pending() {
+                    if let Some(entered) = self.source_writer_wait.lock().unwrap().take() {
+                        let _ = entered.send(());
+                    }
+                }
+                polled
+            }).await
+        }
+    }
+
+    /// Observe one real queued writer in a fixture. This neither holds nor
+    /// releases the writer, and it cannot change the acquisition result.
+    #[cfg(test)]
+    pub(crate) fn observe_source_writer_wait_for_test(&self) -> tokio::sync::oneshot::Receiver<()> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        assert!(self.source_writer_wait.lock().unwrap().replace(sender).is_none());
+        receiver
     }
 
     /// Warm custody remains the existing native resume path, including source
@@ -109,6 +137,18 @@ impl ToolkitOriginalOwner {
         sources: &[OriginalCancellationSource], admitted: &AdmittedOriginal<'_>,
         class: OriginalGrantBinding,
     ) -> Result<Arc<RetainedToolkitOriginal>, OriginalWriterError> {
+        for source in sources {
+            if let Some(attempt) = crate::private_originals::historical_custody_attempt(&source.record)? {
+                if !self.has_installed_pair_recovery()? {
+                    return Err(OriginalWriterError::Unavailable);
+                }
+                match attempt.decision() {
+                    super::custody_attempt::CustodyDecision::Promoted => (),
+                    super::custody_attempt::CustodyDecision::Pending => return Err(OriginalWriterError::Unavailable),
+                    super::custody_attempt::CustodyDecision::Withdrawn => return Err(OriginalWriterError::Conflict),
+                }
+            }
+        }
         self.check_source(association, &custody,
             &association.candidate().requester, &association.candidate().ingress_actor)?;
         let route = Self::admitted_controller_route(association, admitted)?;
@@ -167,6 +207,37 @@ impl ToolkitOriginalOwner {
             controller: Some(admitted.controller().clone()), service_set_admission: None, operation: OriginalOperationDisposition::Open,
         }));
         Ok(retained)
+    }
+
+    /// Re-publish this still-retained owner after a native-accepted source
+    /// publication failed. The caller has durably promoted the exact attempt,
+    /// rechecked that row's publication stamp and reacquired the source writer
+    /// inside the real native admitted-original callback. No new binding or
+    /// grant is issued, and cancellation/current identity remain authoritative.
+    pub(crate) fn recover_retained_custody(
+        &self, original: &Arc<RetainedToolkitOriginal>, admitted: &AdmittedOriginal<'_>,
+    ) -> Result<(), OriginalWriterError> {
+        let _route = Self::admitted_controller_route(original.association(), admitted)?;
+        let _publication = self.publication.try_begin_owner_change()
+            .map_err(|_| OriginalWriterError::Unavailable)?;
+        let mut originals = self.originals.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
+        let claims = original.association().candidate();
+        if claims.contributing_work.iter().any(|contributor| !originals.iter()
+            .filter_map(OriginalRecord::bound).any(|held|
+                held.source_custody == Some(SourceCustody::Admitted)
+                    && held.operation == OriginalOperationDisposition::Open
+                    && held.names(&claims.ingress_namespace, contributor)
+                    && held.association.candidate().requester == claims.requester)) {
+            return Err(OriginalWriterError::Conflict);
+        }
+        let held = originals.iter_mut().filter_map(OriginalRecord::bound_mut)
+            .find(|held| Arc::ptr_eq(&held.retained, original)).ok_or(OriginalWriterError::WrongOwner)?;
+        if !matches!(held.operation, OriginalOperationDisposition::Open) {
+            return Err(OriginalWriterError::OperationCancelled);
+        }
+        held.controller = Some(admitted.controller().clone());
+        held.source_custody = Some(SourceCustody::Admitted);
+        Ok(())
     }
 
     /// Shared exact validation for publication-free replay and mutation passes.

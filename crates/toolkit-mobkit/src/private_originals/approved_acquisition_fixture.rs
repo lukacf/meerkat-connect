@@ -3,6 +3,21 @@
 //! constructs a replacement ContinuationOwnerService or borrows a prior turn.
 use super::*;
 
+// Only selected files, canonical request and native roster coordinates survive
+// close. This carrier retains no source, machine, actor, controller or grant owner.
+pub(super) struct DurableHelperFixture {
+    directory: Arc<tempfile::TempDir>,
+    selection: meerkat_toolkit::host_lifetime::control::HostBootstrapSelection,
+    helper_selection: crate::installed_host::acquisition::InstalledSetupSelection,
+    definition: MobDefinition,
+    roster: Vec<DurableAgentSpec>,
+    sessions: Vec<SessionId>,
+    submission: PrivateOriginalSubmit,
+}
+
+#[path = "custody_recovery_helper_cold_tests.rs"]
+mod custody_recovery_helper_cold_tests;
+
 impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
     pub(super) async fn for_approved_acquisition(
         script: Arc<acquisition_denial::Script>,
@@ -74,6 +89,33 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         warm_report: Option<crate::installed_host::controller_first_input_fixture::WarmHelperProfile>,
         warm_provider: Option<Arc<dyn Fn(Arc<dyn LlmClient>) -> Arc<dyn LlmClient> + Send + Sync>>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
+        let (fixture, store, _) = Self::acquisition_mode_with_persistence(script, report,
+            configured_report, fault, catalog, warm_report, warm_provider, false, None, None).await;
+        (fixture, store)
+    }
+
+    pub(super) async fn for_durable_helper_recovery(
+        script: Arc<acquisition_denial::Script>, fault: Option<Arc<DeliveryFault>>,
+        retained: Option<DurableHelperFixture>,
+        source_store: Option<crate::installed_host::controller_first_input_fixture::PrepareOriginalSource>,
+    ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>, DurableHelperFixture) {
+        let (fixture, store, retained) = Self::acquisition_mode_with_persistence(
+            script, None, false, fault, None, None, None, true, retained, source_store).await;
+        (fixture, store, retained.unwrap())
+    }
+
+    async fn acquisition_mode_with_persistence(
+        script: Arc<acquisition_denial::Script>, report: Option<Arc<helper_report::Report>>,
+        configured_report: bool, fault: Option<Arc<DeliveryFault>>,
+        catalog: Option<Arc<helper_entry_native::CatalogProbe>>,
+        warm_report: Option<crate::installed_host::controller_first_input_fixture::WarmHelperProfile>,
+        warm_provider: Option<Arc<dyn Fn(Arc<dyn LlmClient>) -> Arc<dyn LlmClient> + Send + Sync>>,
+        durable: bool, retained: Option<DurableHelperFixture>,
+        source_store: Option<crate::installed_host::controller_first_input_fixture::PrepareOriginalSource>,
+    ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>, Option<DurableHelperFixture>) {
+        // Keep only the explicit durable fixture's script available to release
+        // its backedge if construction fails after installing the acquisition.
+        let failed_durable_owner = durable.then(|| script.clone());
         let mut opened = None;
         let mut owners = None;
         let built = std::panic::AssertUnwindSafe(tokio::time::timeout(
@@ -88,6 +130,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
                 warm_provider,
                 &mut opened,
                 &mut owners,
+                durable, retained, source_store,
             )),
         ))
         .catch_unwind()
@@ -100,6 +143,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
                     None => Ok(()),
                 };
                 drop(owners);
+                if let Some(script) = failed_durable_owner { script.release_owner_after_close(); }
                 assert!(cleanup.is_ok(), "{cleanup:?}");
                 match failed {
                     Err(payload) => std::panic::resume_unwind(payload),
@@ -119,17 +163,27 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         warm_provider: Option<Arc<dyn Fn(Arc<dyn LlmClient>) -> Arc<dyn LlmClient> + Send + Sync>>,
         opened: &mut Option<UnifiedRuntime>,
         owners: &mut Option<(Arc<tempfile::TempDir>, Arc<NativeHostLifetime>)>,
-    ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
+        durable: bool, retained: Option<DurableHelperFixture>,
+        source_store: Option<crate::installed_host::controller_first_input_fixture::PrepareOriginalSource>,
+    ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>, Option<DurableHelperFixture>) {
         let facts =
             meerkat_core::ControllerModelFacts::new(selection(), ENDPOINT.into(), MODEL.into());
         use crate::installed_host::controller_first_input_fixture as installed;
         assert!(!configured_report || report.is_some());
-        let private_helper_entry = fault.is_some() || catalog.is_some();
+        let private_helper_entry = durable || fault.is_some() || catalog.is_some();
+        assert!(!durable || (report.is_none() && !configured_report && catalog.is_none()
+            && warm_report.is_none() && warm_provider.is_none()));
+        assert!(durable || (retained.is_none() && source_store.is_none()));
         assert!(catalog.is_none() || fault.is_none());
         assert!(!private_helper_entry || (report.is_none() && !configured_report));
         assert!(warm_report.is_none() || (configured_report && report.is_some()));
         assert!(warm_provider.is_none() || warm_report.is_some());
-        let mut host = match &report {
+        let mut host = if let Some(retained) = &retained {
+            installed::reopen_for_helper_recovery(retained.directory.clone(),
+                retained.selection.clone(), retained.helper_selection.clone(), source_store).await
+        } else if durable {
+            installed::open_for_helper_recovery(&facts, script.dispatcher(), source_store).await
+        } else { match &report {
             Some(report) if warm_report.is_some() => installed::open_for_warm_helper_profile(
                 &facts, script.dispatcher(), report.dispatcher(), warm_report.unwrap(),
             ).await,
@@ -140,7 +194,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
                 &facts, script.dispatcher(), report.dispatcher(),
             ).await,
             None => installed::open_for_acquisition(&facts, script.dispatcher(), private_helper_entry, catalog.is_some()).await,
-        };
+        }};
         *owners = Some((host.directory.clone(), host.lifetime.clone()));
         // Only the original direct-grant report mode waits until spawn. The
         // configured-parent mode binds the actual installed owner now, before
@@ -173,8 +227,10 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             Some(decorate) => decorate(client),
             None => client,
         });
-        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> = if durable {
+            Arc::new(meerkat_runtime::store::SqliteRuntimeStore::new(
+                host.directory.path().join("native-sessions.sqlite3")).unwrap())
+        } else { Arc::new(meerkat_runtime::InMemoryRuntimeStore::new()) };
         let mob_tools = builder.default_mob_tools.clone();
         *builder.default_agent_llm_client_decorator.write().unwrap() =
             Some(fixture_controller_decorator());
@@ -235,13 +291,23 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             };
             definition.profiles.insert(ProfileName::from(helper_profile), ProfileBinding::Inline(helper));
         }
-        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service.clone())
+        if let Some(retained) = &retained { definition = retained.definition.clone(); }
+        let (mob_store, provenance) = if durable {
+            let (store, provenance) = meerkat_mobkit::mob_composition_manifest::persistent_mob_storage(
+                host.directory.path().join("native-mob.sqlite3")).unwrap();
+            (store, Some(provenance))
+        } else { (MobStorage::in_memory(), None) };
+        let mut spec = MobBootstrapSpec::new(definition, mob_store, service.clone())
             .with_session_runtime_adapter(machine.clone())
             .unwrap()
             .with_member_runtime_registration_hook(host.registration)
-            .with_tool_consequence_policy_registry(host.tool_policy_registry)
-            .with_declared_ephemeral_mob_storage()
-            .with_workgraph_service(Some(workgraph))
+            .with_tool_consequence_policy_registry(host.tool_policy_registry);
+        spec = match provenance {
+            Some(provenance) => spec.with_mob_storage_provenance(provenance)
+                .with_child_mob_storage(meerkat_mobkit::ChildMobStorage::ProcessBound),
+            None => spec.with_declared_ephemeral_mob_storage(),
+        };
+        spec = spec.with_workgraph_service(Some(workgraph))
             .with_runtime_delivery(meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery::new(
                 runtime_store.clone(),
                 jobs,
@@ -266,6 +332,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         let handle = native.mob_handle();
         let member = MemberIdentity::from(MEMBER);
         let identity = AgentIdentity::parse(MEMBER).unwrap();
+        let live_session = if durable { None } else {
         // Match Meta's normal bridge labels so the identity completion monitor
         // can attribute events from these manually materialized members.
         handle
@@ -304,6 +371,8 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         )
         .await
         .expect("selected fixture credential publishes within its setup deadline");
+            Some(session)
+        };
         let helper_member =
             MemberIdentity::from(crate::installed_host::controller_first_input_fixture::HELPER);
         let helper =
@@ -311,7 +380,7 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
                 .unwrap();
         let helper_profile = if report.is_some() { installed::REPORT_PROFILE }
             else if private_helper_entry { installed::PRIVATE_HELPER_PROFILE } else { "worker" };
-        let helper_session = if configured_report {
+        let helper_session = if durable { None } else if configured_report {
             assert!(handle.get_member(&helper_member).await.unwrap().is_none());
             None
         } else {
@@ -386,20 +455,25 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         }
         let lease_provider = Arc::new(LocalLeaseProvider::new());
         let runtime_instance = "toolkit-first-input";
-        let bridge =
-            MobSessionBridge::new(handle.observer()).with_controller_pin_source(service.clone());
-        let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = match fault {
+        let bridge = if durable {
+            MobSessionBridge::with_session_service(handle.clone(),
+                native.mob_runtime().session_service().cloned().unwrap())
+        } else { MobSessionBridge::new(handle.observer()) }
+            .with_controller_pin_source(service.clone());
+        let bridge: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = match &fault {
             Some(fault) => {
-                assert!(fault.helper_session.set(helper_session.clone().unwrap()).is_ok());
+                if !durable { assert!(fault.helper_session.set(helper_session.clone().unwrap()).is_ok()); }
                 Arc::new(observed::ObservedBridge {
-                    inner: bridge, fault, publication: host.originals.owner.publication(),
+                    inner: bridge, fault: fault.clone(), publication: host.originals.owner.publication(),
                 })
             }
             None => Arc::new(bridge),
         };
         let runtime = Arc::new(
             IdentityRuntime::new(IdentityRuntimeConfig {
-                continuity_store: Arc::new(LocalContinuityStore::in_memory().unwrap()),
+                continuity_store: Arc::new(if durable {
+                    LocalContinuityStore::open(host.directory.path().join("native-continuity.sqlite3")).unwrap()
+                } else { LocalContinuityStore::in_memory().unwrap() }),
                 lease_provider: lease_provider.clone(),
                 runtime_instance_id: runtime_instance.into(),
                 has_runtime_store: true,
@@ -428,11 +502,13 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         let mut helper_spec = member_spec.clone();
         helper_spec.identity = helper.clone();
         helper_spec.profile = ProfileName::from(helper_profile);
-        let roster = vec![member_spec.clone(), helper_spec.clone()];
-        let mut materialized = vec![(member_spec, identity.clone(), session.clone())];
+        let roster = retained.as_ref().map(|retained| retained.roster.clone())
+            .unwrap_or_else(|| vec![member_spec.clone(), helper_spec.clone()]);
+        let mut materialized = live_session.as_ref().map(|session|
+            vec![(member_spec, identity.clone(), session.clone())]).unwrap_or_default();
         if let Some(helper_session) = helper_session {
             materialized.push((helper_spec, helper, helper_session));
-        } else {
+        } else if !durable {
             assert!(configured_report);
             // Match Meta's lazy roster registration: the helper identity is
             // owned but has no embodiment, session or lease yet. The actual
@@ -469,25 +545,52 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
                 )
                 .await;
         }
-        native.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
-            runtime,
-            Arc::new(MutableRosterProvider::new(roster)),
-            None,
-            None,
-            Some(handle.definition().clone()),
-        )));
+        let context = Arc::new(IdentityFirstRuntimeContext::new(
+            runtime, Arc::new(MutableRosterProvider::new(roster.clone())),
+            None, None, Some(handle.definition().clone()),
+        ));
+        let (session, sessions) = if durable {
+            let restored = native.install_and_bootstrap_identity_first_context(context, &roster).await.unwrap();
+            let mut sessions = vec![];
+            for member in &roster {
+                let outcome = restored.outcomes.get(&member.identity).unwrap();
+                assert!(if retained.is_some() {
+                    matches!(outcome, meerkat_mobkit::identity_first::RestoreOutcome::Resumed { .. })
+                } else {
+                    matches!(outcome, meerkat_mobkit::identity_first::RestoreOutcome::Created { .. })
+                }, "actual durable helper roster outcome: {outcome:?}");
+                sessions.push(native.identity_runtime().unwrap().status(&member.identity).await.unwrap()
+                    .session_id.unwrap());
+            }
+            if let Some(retained) = &retained { assert_eq!(sessions, retained.sessions); }
+            if let Some(fault) = &fault { assert!(fault.helper_session.set(sessions[1].clone()).is_ok()); }
+            Self::publish_fixture_controller(&service, &machine, &sessions[0]).await;
+            (sessions[0].clone(), sessions)
+        } else {
+            native.attach_identity_first_context(context);
+            (live_session.unwrap(), vec![])
+        };
         let runtime = native.identity_runtime().unwrap();
         let source = host.originals;
         source.bind_machine(machine.clone()).unwrap();
         source.bind_identity_runtime(&runtime).unwrap();
+        if durable { source.bind_controller_pin_source(service.clone()).unwrap(); }
+        let submission = if let Some(retained) = &retained { retained.submission.clone() } else {
         let mut event = private_event("first-conversation");
         event.route = Id::new("console").unwrap();
         event.content_sha256 = digest(PROMPT.as_bytes());
         let authentication = event.original_authentication.clone();
         let original = source.retain_event(event).await.unwrap();
+        PrivateOriginalSubmit { original, content: PROMPT.into(), transport_authentication: authentication }
+        };
+        let retained = durable.then(|| DurableHelperFixture {
+            directory: host.directory.clone(), selection: host.selection.clone(),
+            helper_selection: host.acquisition_helper.clone().unwrap(),
+            definition: handle.definition().clone(), roster, sessions, submission: submission.clone(),
+        });
         // The caller observes the same native input store used by both the
         // facade and delivery owner, including terminal rows archived out of
-        // the live driver. This fixture still uses in-memory runtime storage.
+        // the live driver. Durable mode reopens the same native stores.
         (
             Self {
                 store: host.store,
@@ -504,13 +607,10 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
                 identity,
                 session,
                 provider,
-                submission: PrivateOriginalSubmit {
-                    original,
-                    content: PROMPT.into(),
-                    transport_authentication: authentication,
-                },
+                submission,
             },
             runtime_store,
+            retained,
         )
     }
 }
