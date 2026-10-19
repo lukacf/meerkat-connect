@@ -23,9 +23,18 @@ safely downgraded to r8.
 The reviewed r9 source and exact graph are adopted locally as work in progress,
 with 51 selected paths per checkout and intentional private evidence variants
 preserved. The nine passing controls do not qualify a complete shared journey.
-The included static Console 503 diagnostics still await their ordinary gateway
-build; the separate Bind/AA1 diagnostic overlays are not included. Installed
-Hacker News and independent approval consumers remain pending on r9.
+The ordinary Linux development gateway build now passes, including the static
+Console 503 diagnostics. Independent review verifies compiler/version success,
+the exact graph, source preservation and joined cleanup, with no test-support
+features in production artifacts. The separate Bind/AA1 diagnostic overlays are
+not included. The reviewed [installed r9 SDK case](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-r9-product-fj8toe75/FINAL.json)
+passes (record SHA-256
+`daf4ec908bd4c7808eb7cea346d8e26a6fdcaf467f81cd13c4e9465b954de696`):
+a controlled model acquires Hacker News and reads one story in the same original
+session. Resource corruption is refused before setup/model work, and both cases
+join physical owners without forced cleanup. CLI setup -> exit -> fresh ordinary
+rkat in the same realm -> three stories remains unverified. Console approval and
+both shared cases remain open. This is not 0.9.4 release qualification.
 
 The latest executed r8 compatibility and Console custody changes
 compile. Five of seven affected controls pass: both Console custody checks, both
@@ -39,7 +48,7 @@ The reviewed r8 source and resolved graph are checkpointed locally as `12c4d2ff`
 adding 117 lines and removing 48, without introducing another lifecycle or
 framework. Both shared-case failures remain recorded in the checkpoint.
 
-The latest installed Hacker News case remains blocked by native pre-entry
+The earlier installed Hacker News case remains recorded as blocked by native pre-entry
 ReprepareRequired on catalog search. It performs no HN read; the corruption case
 is unentered. The verifier now exposes actual refusal envelopes instead of
 masking them with success-field indexing. The reviewed 49-path recovery and
