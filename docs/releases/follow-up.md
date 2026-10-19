@@ -111,37 +111,49 @@ bounded same-input reprepare and never infers a new admission from a source row.
 The six reviewed paths are committed locally as private `717de80b` and
 public-follow-up `54a30ebc`; all recorded owners joined and source was restored.
 
-The corrected recovery batch has an actual [46-control result](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-corrected-forty-six-h2t_q8o5/FINAL.json)
-(`49b05a21`): 41 pass and five fail. Compilation and exact listing pass;
-all 46 tests start and complete. Cases 1-40 and the new late-enrollment control
-pass. Three cold-recovery cases stop at missing-payload assertions, the helper
-case reports a native admission refusal and then an internal body timeout, and
-the 33-entry traversal case cannot establish native acceptance. No recovery
-source is adopted.
+The latest [focused recovery run](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-retired-affected-six-laqknsj1/FINAL.json)
+(`ff8468cd`) completes all six selected checks: three pass and three fail.
+Compilation and exact listing pass. The stopped helper publication, 33-entry
+stopped traversal and cold failed-write controls pass. The two positive cold
+restore controls fail on custody-state assertions; the tamper control reaches
+native replay refusal and restore Conflict, then fails its no-custody assertion.
+The [independent contract review](/private/tmp/connect-cold-custody-contract-tyqtj95i/REVIEW.json)
+(`faefb4a3`) confirms incorrect fixture expectations. The real issued-access bind
+starts at `(false, false)`; restoration preserves its issuer and changes custody
+to `(true, false)`. Tamper refusal must preserve the preexisting binding. The
+[fixture correction](/private/tmp/connect-cold-tuple-independent-272j4exe/REVIEW.json)
+(`280d528e`) has source approval and still requires a rerun. This remains a failed
+batch, with no source adoption.
 
-The [outcome review](/private/tmp/connect-c1-recovery46-root-outcome-b_cah0ji/REVIEW.json)
-(`8f1f0f18`) verifies every result and all five failure logs. All 48 runner groups
-and 46 test child groups are absent; all 797 selected source records and the
-unchanged lock are restored, and the cache and outer transport join. All failures
-return ordinary test exit 101, without runner timeout termination. These cleanup
-observations do not establish the assertions skipped after a test-body failure.
+The [independent outcome review](/private/tmp/connect-affected6-root-outcome-r3ti_pbi/REVIEW.json)
+(`77c08279`) verifies all six raw results, eight absent runner groups, six absent
+child groups, 797 restored source records, unchanged native lock, and joined
+cache and outer transport. External cleanup does not establish assertions skipped
+after a test-body failure. The first-round gates used by the two stopped-worker
+controls do not explain the earlier live `Denied` and `Bind` observations.
 
-Diagnosis has found a production assumption in cold recovery: Core retires a
-consumed input's payload while retaining its replay and authority record, but
-Connect still requires the optional payload. The correction must verify exact
-retained native evidence without resubmission. The helper and 33-entry failures
-remain under investigation. The [earlier 43-control failure](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-recovery-wake-forty-three-g_7hiq35/FINAL.json)
-(`757f9db8`, 26 pass, 16 fail, one timeout) and three compiler failures remain
-recorded; the newer run does not erase them.
+The preceding [46-control run](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-corrected-forty-six-h2t_q8o5/FINAL.json)
+(`49b05a21`) remains 41 pass and five fail. The [earlier 43-control run](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-recovery-wake-forty-three-g_7hiq35/FINAL.json)
+(`757f9db8`) remains 26 pass, 16 fail and one timeout; three compiler failures
+also remain recorded. These results are separate runs, not one all-pass suite.
 
-The [reviewed correction source](/private/tmp/connect-c1-actual43-corrections-qffn_yeu/MANIFEST.json)
-(`c2405ee5`) fixes fixture ownership and source-close traversal, retains completed
-failed operations after stop, and adds three regression controls. Its conditional
-29-path adoption map remains held pending the remaining corrections and affected
-runtime checks. The direct Connect application driver separately needs two
-cleanup controls, a fresh installed-gateway build and the public Hacker News
-success/resource-corruption pair. Neither source review nor a narrower component
-pass closes admission recovery.
+Two concrete Connect recovery gaps are now being fixed. An asynchronous ordinary
+binder can return Unavailable merely because the recovery worker holds the source
+writer during a store CAS. The correction will wait on that existing writer and
+recheck current authority. Separately, helper records retain only an input
+fingerprint, so cold recovery cannot verify a consumed helper after Core retires
+its payload. The proposed versioned correction retains the exact prepared input
+in the same canonical helper row before Candidate. It reuses the existing codec
+and native replay checks. Legacy rows with no recoverable bytes stay unavailable;
+no input is reconstructed from IDs or resubmitted. Both fixes need focused native
+qualification and independent source review.
+
+The conditional recovery adoption map remains held. The direct Connect
+application driver separately needs its two cleanup controls, a fresh production
+gateway and the installed public Hacker News success/resource-corruption pair.
+The protected approval process-loss consumer now has reviewed cleanup and
+approval-ordering source, but has not run. Source review or a component pass does
+not qualify these installed consumers.
 
 An earlier full SDK diagnostic gets through both helpers' catalog/check calls,
 independent approvals, cancellation of A while B installs. Preparation completes
