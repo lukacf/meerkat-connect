@@ -85,14 +85,28 @@ Entered native operations remain separately owned until actual settlement or
 close. The exact Core 0.9.4 API revision and Connect's durable-ordering
 implementation remain pending; r7 startup alone does not close this gap.
 
-The first preparation/store-binding build failed on two test fixture errors,
-before any of its 28 controls ran. The narrow corrections, attempt schema and
-foreground persistence now have independent source review and are combined for
-one 52-control run. The existing tracked binder persists the exact first input
-before Candidate staging; exact retries rebuild current native authentication.
-Legacy rows do not acquire invented first-write evidence. Source adoption still
-requires the run to pass. Bounded settlement, withdrawal, restart, wake and
-stop/join behavior remain subsequent work.
+Core has now offered owner-scoped resource domains on `fix/094-domain-owned-by`
+at `366b8311`. Connect's parent grants and child recovery checks are being ported
+in isolation; the matching Meta/SDK tuple has been requested. Isolation will be
+tested with distinct application authorities and exact per-session children.
+Instances sharing one authority are one owner. This offer has not changed the
+selected development graph or qualified cross-application isolation.
+
+Connect's preparation/store-binding, attempt schema and foreground persistence
+remain unadopted. After fixture corrections, the 52-control composition compiled.
+A selector-listing error prevented the first attempt from entering tests; the
+corrected listing reused that exact binary. Five controls passed, then a helper
+binding control failed with `WrongOwner`; 46 controls did not run. The failure
+exposed a production key check that rejected the helper's canonical namespace.
+The independently reviewed correction compares the caller's exact full source
+key while retaining store, scope and realm checks. The corrected 49-control run
+will cover the failed case, 46 unentered cases and two affected earlier passes.
+
+The first input remains recorded before Candidate staging, and exact retry
+rebuilds current native authentication. A further reviewed slice retains the
+exact native receipt through callback errors without resubmitting; its 15 controls
+are pending. Bounded settlement, permanent withdrawal, restart, wake and stop/join
+remain in implementation. None of these source reviews closes admission recovery.
 
 An earlier full SDK diagnostic gets through both helpers' catalog/check calls,
 independent approvals, cancellation of A while B installs. Preparation completes
