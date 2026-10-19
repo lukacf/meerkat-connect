@@ -5,41 +5,33 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
-The latest affected recovery run passes three helper restart controls and both
-gateway cleanup controls on the r6 development graph. The correction removes
-references retained by test fixtures; exact saved-input replay, altered-input
-refusal and all old-owner release assertions remain. The original run's 20 passes
-and three failures are preserved separately. All recorded command owners join,
-and source and dependency-lock checks pass. The fresh production gateway build
-also passes. Its installed positive case then fails before the public read because
-`setup_install` returns `access_denied`; the controlled model subsequently assumes
-a successful job response. The saved state exposes a concrete blocker: the helper
-advances its stored revision while persisting restart data, but software
-preparation still requires the old revision. A narrow correction is in progress,
-retaining exact input and authority checks. The corrupted-resource case remains
-unentered and source adoption stays held. The revised custody-progress regression
-passes, including refusal and cancellation checks. The downstream historical-condition
-comparison is now corrected, and all three affected preparation/store/refusal
-controls pass. The corrected production build passes. Its installed rerun reaches
-fresh input and catalog search, then fails because the controlled provider rejects
-valid native reprepare feedback at that point. Five focused Python controls pass
-for the verifier correction. The next same-binary run then receives an actual
-catalog search refusal: native ReprepareRequired before tool entry. No HN call
-completes and corruption remains unentered; cleanup passes. Expose that refusal
-instead of the verifier's misleading KeyError. Approval process-loss can run
-independently because it invokes neither catalog search nor the HN service.
-This is development evidence, not a 0.9.4 release claim.
-The reviewed 49-path recovery/helper-result/verifier slice is checkpointed locally
-as `be5fad83` (private counterpart `addf77b4`). Six inert diagnostic/controller
-checks pass. The commit explicitly retains the actual installed-product failure;
-nothing is pushed or released.
-The independent approval consumer builds but fails before approval publication:
-Console accepts its send, then reports inability to persist the first original
-attempt. Its verifier misses the terminal interaction failure and waits the full
-900-second deadline. Correct that narrow verifier behavior and diagnose the
-persistence failure; no recovery or successor execution is qualified. Physical
-shutdown completes normally, while native login retirement remains uncertain.
+Current development status: the r8 compatibility and Console custody changes
+compile. Five of seven affected controls pass: both Console custody checks, both
+configured-parent isolation/restore checks, and same-conversation finalization.
+Two shared-setup Driver cases fail on Find/install refusals and remain open.
+All recorded command/process/cache owners join. These are development results,
+not complete shared-setup or 0.9.4 release qualification.
 
+The reviewed r8 source and resolved graph are checkpointed locally as `12c4d2ff`
+(private `91a1ec6a`). The production changes adapt existing owner contracts,
+adding 117 lines and removing 48, without introducing another lifecycle or
+framework. Both shared-case failures remain recorded in the checkpoint.
+
+The latest installed Hacker News case remains blocked by native pre-entry
+ReprepareRequired on catalog search. It performs no HN read; the corruption case
+is unentered. The verifier now exposes actual refusal envelopes instead of
+masking them with success-field indexing. The reviewed 49-path recovery and
+verifier slice is checkpointed locally as `be5fad83` (private `addf77b4`).
+
+The independent approval consumer previously failed before approval because
+Console enrollment incorrectly demanded the toolkit-origin input contract.
+That owner-specific validation is corrected and its two focused controls pass.
+The next acceptance run uses the ordinary/development gateways and a verifier
+that stops on matching terminal interaction failures. Process-loss recovery and
+semantic login retirement remain unqualified. Neither depends on a successful
+HN read. No changes have been pushed or released.
+
+### Earlier development evidence
 
 An earlier shared-preparation checkpoint used
 [Core 95343786](https://github.com/lukacf/meerkat/commit/953437864bbb21b135661a0e61a09b5aa1f6ba01)
