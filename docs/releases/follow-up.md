@@ -15,6 +15,11 @@ The shared cancellation case first fails during Original binding. The planning
 case passes native tool-policy entry before an inner access_denied. Their retained
 audits do not yet identify the exact failing Connect branches. Physical owners
 join, but the first case also reports unsettled semantic cleanup.
+A later diagnostic-only run identifies SourceBinding at the first Original's
+admission in the cancellation case. The planning case passes without a behavior
+change, so it remains open as an intermittent failure. The rerun enters both
+cases, joins physical owners and restores source and lock; it compiles but does
+not execute the three-story CLI fixture.
 These are development refs; the
 host refusal observer and initialized Console-reset correction remain outside
 this offer. Fresh stores are required because r9 event/audit writes cannot be
