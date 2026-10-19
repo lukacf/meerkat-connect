@@ -220,6 +220,8 @@ async fn exercise(mode: DeliveryMode) {
             fault.entered.notified().await;
             // This is after actual issuance, source publication and helper binding.
             let held = issued_helper(&fixture, &helper_session, &binding, &fault).await;
+            assert!(held.handoffs_for_test().is_empty(),
+                "the actual native foreground still owns the helper settlement Box");
             let helper_input = fault.helper_input.lock().unwrap().clone().unwrap();
             assert_ne!(helper_input.to_string(), *original_input);
             let saved_helper = fixture.store.get(&held.source_record().key).await.unwrap().unwrap();
@@ -332,6 +334,8 @@ async fn exercise(mode: DeliveryMode) {
                 deadline,
             )
             .await;
+            assert!(held.handoffs_for_test().is_empty(),
+                "definite nonadmission or successful callback leaves no transferred Box");
             assert_eq!(fixture.binding().await.unwrap(), Some(binding));
             assert_eq!(
                 fixture.store.get(&saved_helper.key).await.unwrap().unwrap(),
@@ -419,6 +423,8 @@ async fn exercise_helper_reprepare(mode: DeliveryMode) {
                 "the actual policy callback consumed the exact helper fault");
             assert!(acquisition_approved::native_history(history.as_ref(), &helper_session).await.is_empty());
             let held = issued_helper(&fixture, &helper_session, &binding, &fault).await;
+            assert!(held.handoffs_for_test().is_empty(),
+                "the actual native foreground still owns the helper settlement Box");
             let saved_helper = fixture.store.get(&held.source_record().key).await.unwrap().unwrap();
             let helper_input = fault.helper_input.lock().unwrap().clone().unwrap();
             assert_ne!(helper_input.to_string(), *original_input);
@@ -521,6 +527,18 @@ async fn exercise_helper_reprepare(mode: DeliveryMode) {
                     Some(&helper_input.to_string()), deadline,
                 ).await;
                 assert_eq!(consumed.state.input_id, helper_input);
+            }
+            let handoffs = held.handoffs_for_test();
+            if matches!(mode, DeliveryMode::HelperPolicyChangesThenUnresolved) {
+                assert_eq!(handoffs.len(), 1, "one actual Meta handoff after lost acceptance reply");
+                let handed = handoffs[0].as_ref().expect("typed custody retained beside the same Box");
+                assert_eq!(handed.session, helper_session);
+                assert_eq!(handed.input, input_before[0]);
+                assert!(handed.first_candidate);
+                assert!(handed.native_admission.is_none(), "no callback receipt was delivered");
+                assert_eq!(handed.source_acknowledged, None);
+            } else {
+                assert!(handoffs.is_empty(), "definite refusal or successful acceptance consumes its Box");
             }
             assert_eq!(fixture.source.helper_operation_deadline(held.original().association()).unwrap(), Some(operation_deadline));
             assert_eq!(fixture.store.get(&saved_helper.key).await.unwrap().unwrap(), saved_helper);
@@ -776,5 +794,64 @@ async fn fresh_helper_reset_catalog_calls_require_explicit_successor_parent() {
             Ok(Err(_)) => panic!("actual catalog reset control timed out"),
             Err(payload) => std::panic::resume_unwind(payload),
         }
+    }
+}
+
+/// Native acceptance is observed before poisoning the source publication.
+/// The helper callback must retain that actual receipt and Input on failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn helper_native_acceptance_publication_failure_retains_exact_handoff() {
+    let script = acquisition_denial::Script::paused_for_helper_entry();
+    let fault = Arc::new(DeliveryFault::new(DeliveryMode::PoisonPublicationAfterSecondAcceptance));
+    let (fixture, history) = Fixture::for_helper_entry(script.clone(), fault.clone()).await;
+    let checked = std::panic::AssertUnwindSafe(tokio::time::timeout(WAIT, async {
+        acquisition_approved::select_reviewed_setup(&fixture).await;
+        let first = fixture.submit().await;
+        assert!(matches!(first, Ok(PrivateOriginalSubmission::Admitted {
+            deduplicated: false, source_settlement: PrivateSourceSettlement::FreshAcceptancePromoted, ..
+        })), "{}", submission_context(&first));
+        script.first_response_waiting().await;
+        script.release_first_response();
+        let (held, handed) = loop {
+            let held = {
+                let helpers = fixture.source.helper_sources.lock().unwrap();
+                assert!(helpers.len() <= 1);
+                helpers.first().cloned()
+            };
+            if let Some(held) = held {
+                let mut handoffs = held.handoffs_for_test();
+                if !handoffs.is_empty() {
+                    assert_eq!(handoffs.len(), 1);
+                    let handed = handoffs.pop().unwrap().expect("actual callback kept typed custody");
+                    break (held, handed);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(fault.accepted.load(Ordering::SeqCst), 2,
+            "one actual Original and one actual helper fresh admission");
+        assert!(handed.first_candidate);
+        assert_eq!(handed.source_acknowledged, Some(false));
+        let actual = handed.native_admission.as_ref().expect("matching native callback receipt retained");
+        assert!(!actual.deduplicated);
+        assert_eq!(actual.session_id, handed.session);
+        let input: meerkat_runtime::Input = serde_json::from_value(handed.input).unwrap();
+        assert_eq!(&actual.input_id, input.id());
+        assert_eq!(input.header().authority_association.as_ref(), Some(held.original().association()));
+        let rows = acquisition_approved::native_history(history.as_ref(), &handed.session).await;
+        assert_eq!(rows.len(), 1, "source publication failure cannot resubmit native work");
+        assert_eq!(rows[0].state.input_id, actual.input_id);
+        assert_eq!(rows[0].state.authority_contributors.len(), 1);
+        assert_eq!(rows[0].state.authority_contributors[0].association(), held.original().association());
+        // This poisoned-source control proves admission retention, not a
+        // successful helper turn or recovered source publication.
+    })).catch_unwind().await;
+    script.release_first_response();
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "actual owner cleanup failed: {cleanup:?}");
+    match checked {
+        Ok(Ok(())) => {},
+        Ok(Err(_)) => panic!("actual helper publication failure handoff timed out"),
+        Err(payload) => std::panic::resume_unwind(payload),
     }
 }

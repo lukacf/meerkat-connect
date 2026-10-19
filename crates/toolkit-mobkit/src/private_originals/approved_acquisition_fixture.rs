@@ -52,7 +52,8 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         fault: Arc<DeliveryFault>,
     ) -> (Self, Arc<dyn meerkat_runtime::RuntimeStore>) {
         assert!(matches!(fault.mode,
-            DeliveryMode::HoldHelperBeforeLookup | DeliveryMode::HoldHelperAcceptedReply)
+            DeliveryMode::HoldHelperBeforeLookup | DeliveryMode::HoldHelperAcceptedReply
+                | DeliveryMode::PoisonPublicationAfterSecondAcceptance)
             || fault.mode.helper_reprepare());
         Self::for_acquisition_mode(script, None, false, Some(fault), None, None, None).await
     }

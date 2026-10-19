@@ -389,7 +389,7 @@ impl PrivateOriginals {
             || admission.input_id != pending.input.id().to_string()
         { return Err(PrivateOriginalError::Conflict); }
         if !matches!(&*pending.pending.lock().map_err(|_| PrivateOriginalError::Unavailable)?,
-            SourcePublication::Settled(Ok(())))
+            SourcePublication::Settled { result: Ok(()), .. })
         { return Err(PrivateOriginalError::Unavailable); }
         held.unresolved.lock().map_err(|_| PrivateOriginalError::Unavailable)?
             .retain(|retained| !Arc::ptr_eq(retained, &pending));
@@ -666,6 +666,7 @@ impl OriginalBinder {
             // in this source's canonical row after source promotion succeeds.
             service_grant: self.grant.clone(),
             service_batch: self.batch.clone(),
+            first_candidate: pending.is_first_candidate(),
             pending: Mutex::new(SourcePublication::Pending(pending)),
             held: Arc::downgrade(&held),
             workflow,
@@ -700,6 +701,7 @@ pub(super) struct PendingOriginalAdmission {
     input: Input,
     service_grant: Option<PrivateServiceGrantRef>,
     service_batch: Option<service_approved_input::ApprovedTaskLink>,
+    first_candidate: bool,
     pending: Mutex<SourcePublication>,
     held: Weak<HeldPrivateOriginal>,
     workflow: Option<Arc<setup_workflow::HeldSetupWorkflow>>,
@@ -707,9 +709,33 @@ pub(super) struct PendingOriginalAdmission {
 
 /// The result of consuming this one guard stays with that guard's custody.
 /// It is process-local settlement, not a native admission or permission cache.
-enum SourcePublication {
+pub(super) enum SourcePublication {
     Pending(PendingToolkitOriginal),
-    Settled(Result<(), String>),
+    // This is the actual guard's acknowledgement, separate from a later
+    // workflow publication error. It is not a native receipt or durable CAS.
+    Settled { source_acknowledged: bool, result: Result<(), String> },
+}
+
+impl SourcePublication {
+    /// Consume this guard once and retain its acknowledgement before the
+    /// subsequent synchronous publication callback. No native outcome is made.
+    pub(super) fn admit_then(
+        &mut self, after: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        if let Self::Settled { result, .. } = self { return result.clone(); }
+        let unavailable = || "Native work was admitted but Toolkit source publication failed".to_owned();
+        let prior = std::mem::replace(self, Self::Settled {
+            source_acknowledged: false, result: Err(unavailable()),
+        });
+        let Self::Pending(pending) = prior else { return Err(unavailable()); };
+        let result = pending.admit().map_err(|_| unavailable()).and_then(|_| {
+            *self = Self::Settled { source_acknowledged: true, result: Err(unavailable()) };
+            after()
+        });
+        let acknowledged = matches!(self, Self::Settled { source_acknowledged: true, .. });
+        *self = Self::Settled { source_acknowledged: acknowledged, result: result.clone() };
+        result
+    }
 }
 
 impl PendingOriginalAdmission {
@@ -743,8 +769,8 @@ impl PendingOriginalAdmission {
         let state = self.pending.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
         Ok(match &*state {
             SourcePublication::Pending(_) => SourcePublicationStatus::Pending,
-            SourcePublication::Settled(Ok(())) => SourcePublicationStatus::Published,
-            SourcePublication::Settled(Err(_)) => SourcePublicationStatus::PublicationFailed,
+            SourcePublication::Settled { result: Ok(()), .. } => SourcePublicationStatus::Published,
+            SourcePublication::Settled { result: Err(_), .. } => SourcePublicationStatus::PublicationFailed,
         })
     }
 
@@ -761,21 +787,15 @@ impl PendingOriginalAdmission {
     fn admit(&self) -> Result<(), String> {
         let mut publication = self.pending.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let SourcePublication::Settled(result) = &*publication { return result.clone(); }
-        let unavailable = || "Native work was admitted but Toolkit source publication failed".to_owned();
-        let prior = std::mem::replace(&mut *publication, SourcePublication::Settled(Err(unavailable())));
-        let SourcePublication::Pending(pending) = prior else { return Err(unavailable()); };
-        // The source promotion releases its publication reservation first.
-        // Attachment then publishes under that same owner, without nesting a
-        // writer or awaiting a durable read in accepted settlement.
-        let result = pending.admit().map_err(|_| unavailable()).and_then(|_| {
+        // The source guard releases its publication reservation before this
+        // callback takes the same owner's writer. Neither step awaits.
+        publication.admit_then(|| {
             if let Some(workflow) = &self.workflow {
-                workflow.accepted().map_err(|_| unavailable())?;
+                workflow.accepted().map_err(|_|
+                    "Native work was admitted but Toolkit source publication failed".to_owned())?;
             }
             Ok(())
-        });
-        *publication = SourcePublication::Settled(result.clone());
-        result
+        })
     }
 }
 

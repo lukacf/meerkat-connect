@@ -386,3 +386,78 @@ async fn admitted_only_observation_cannot_restage_after_actual_source_release() 
     f.assert_no_candidate();
     assert!(decode_source_record(&f.row().await).unwrap().custody_attempt.is_none());
 }
+
+#[tokio::test]
+async fn source_guard_acknowledgement_survives_later_callback_error_and_panic() {
+    use super::governed_submit::SourcePublication;
+    use std::cell::Cell;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    for panic_after_acknowledgement in [false, true] {
+        let mut f = Fixture::new().await;
+        f.adapter.persist_first_custody_attempt(&f.held(), &f.session, &f.input)
+            .await.unwrap();
+        let canonical = f.row().await;
+        let (_, guard) = f.prepared.take().unwrap().stage().unwrap();
+        assert!(guard.is_first_candidate());
+        let publication = Mutex::new(SourcePublication::Pending(guard));
+        let callbacks = Cell::new(0);
+
+        // This consumes the actual source guard only. The callback is a
+        // controlled publication failure, not native admission or a model turn.
+        let observed = catch_unwind(AssertUnwindSafe(|| {
+            publication.lock().unwrap().admit_then(|| {
+                callbacks.set(callbacks.get() + 1);
+                if panic_after_acknowledgement {
+                    panic!("controlled failure after source acknowledgement");
+                }
+                Err("controlled later publication refusal".to_owned())
+            })
+        }));
+        if panic_after_acknowledgement {
+            assert!(observed.is_err());
+        } else {
+            assert_eq!(observed.unwrap(), Err("controlled later publication refusal".to_owned()));
+        }
+        assert_eq!(publication.is_poisoned(), panic_after_acknowledgement);
+        assert_eq!(callbacks.get(), 1);
+        {
+            // Production also recovers this same poisoned owner lock. Its
+            // actual source acknowledgement must survive the outer panic.
+            let mut state = publication.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let retained_result = match &*state {
+                SourcePublication::Settled { source_acknowledged: true, result } => {
+                    assert!(result.is_err());
+                    result.clone()
+                }
+                _ => panic!("the actual source acknowledgement was lost"),
+            };
+            let repeat = state.admit_then(|| {
+                callbacks.set(callbacks.get() + 1);
+                Ok(())
+            });
+            assert_eq!(repeat, retained_result);
+            assert_eq!(callbacks.get(), 1, "settlement must not invoke the callback twice");
+            assert!(matches!(&*state, SourcePublication::Settled {
+                source_acknowledged: true, result: Err(_),
+            }));
+        }
+
+        // The successful source primitive remains admitted even though the
+        // later callback failed. A new native-bound preparation gets only an
+        // admitted guard, never a second first-Candidate guard.
+        let record = decode_source_record(&canonical).unwrap();
+        let rebound = f.adapter.owner.prepare_authenticated_input(&f.original, &f.session,
+            Input::Prompt(PromptInput::new(CONTENT, None)),
+            cold_service_admission::source_event_key(&record).unwrap(),
+            f.original.association().candidate().original_authentication.clone(),
+            ControllerModelClient::new(selection(), Arc::new(UnusedClient))).unwrap();
+        let (_, admitted_only) = rebound.admitted().unwrap().unwrap();
+        assert!(!admitted_only.is_first_candidate());
+        drop(admitted_only);
+        drop(rebound);
+        assert!(f.row().await == canonical,
+            "source guard settlement must not invent a durable terminal write");
+    }
+}

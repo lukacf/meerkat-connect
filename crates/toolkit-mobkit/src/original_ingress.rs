@@ -281,6 +281,10 @@ pub struct PendingToolkitOriginal {
 }
 
 impl PendingToolkitOriginal {
+    /// Intrinsic state of this actual guard, not a native admission observation.
+    /// A later input may carry an admitted-only guard without staging Candidate.
+    pub(crate) fn is_first_candidate(&self) -> bool { self.pending }
+
     /// Settle this source candidate after exact native admission. An error is
     /// a post-admission source-publication failure, never evidence that the
     /// accepted native work was refused. Its completion/ticket stays native.

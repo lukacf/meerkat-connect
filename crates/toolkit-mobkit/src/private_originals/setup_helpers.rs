@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use meerkat_authorization_contracts::{
     constraints::ExecutionRestrictions, grant::GrantLineageRef, work_association::{NativeWorkTarget, WorkAuthorityBasis},
 };
-use meerkat_core::{ControllerModelClient, SessionId, ToolDispatchContext, lifecycle::InputId, types::ToolCallView};
+use meerkat_core::{ControllerModelClient, SessionId, ToolDispatchContext, types::ToolCallView};
 use meerkat_mobkit::identity_first::{
     BoundGovernedInput, GovernedAdmission, GovernedBindContext, GovernedInputBinder,
     GovernedInputError, GovernedSettlement, IdentityRuntimeError, TurnTracking,
@@ -59,10 +59,19 @@ pub(crate) enum SetupHelperSubmission {
 pub(crate) struct HeldSetupHelper {
     source: RetainedHelperSource,
     first_input: OnceLock<cold_service_admission::RetainedBoundInput>,
-    unresolved: Mutex<Vec<Box<dyn GovernedSettlement>>>,
+    unresolved: Mutex<Vec<UnresolvedHelperAdmission>>,
     // Bound once from the canonical live setup before input admission. Never
     // reconstructed from source history or refreshed by human approval.
     operation_deadline_ms: OnceLock<u64>,
+}
+
+#[cfg(test)]
+pub(crate) struct HelperHandoffObservation {
+    pub session: SessionId,
+    pub input: serde_json::Value,
+    pub first_candidate: bool,
+    pub native_admission: Option<GovernedAdmission>,
+    pub source_acknowledged: Option<bool>,
 }
 
 impl HeldSetupHelper {
@@ -71,6 +80,24 @@ impl HeldSetupHelper {
     }
     pub(crate) fn source_record(&self) -> &Arc<StoredRecord> {
         &self.source.source_record
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handoffs_for_test(&self) -> Vec<Option<HelperHandoffObservation>> {
+        self.unresolved.lock().unwrap().iter().map(|retained| {
+            let pending = retained.pending.as_ref()?;
+            let publication = pending.publication.lock().unwrap();
+            Some(HelperHandoffObservation {
+                session: pending.session.clone(), input: serde_json::to_value(&pending.input).unwrap(),
+                first_candidate: pending.first_candidate,
+                native_admission: publication.native_admission.clone(),
+                source_acknowledged: match &publication.source {
+                    governed_submit::SourcePublication::Pending(_) => None,
+                    governed_submit::SourcePublication::Settled { source_acknowledged, .. } =>
+                        Some(*source_acknowledged),
+                },
+            })
+        }).collect()
     }
 
     fn bind_setup_deadline(
@@ -654,6 +681,7 @@ impl PrivateOriginals {
             controller: prepared.controller.clone(),
             entry_fence,
             source_deadline,
+            pending: Mutex::new(Weak::new()),
         });
         // Keep one raw input identity and event content. A definite policy
         // change may rebuild its current binding once, never its source/key.
@@ -869,6 +897,10 @@ struct SubmitHelperBinder {
     controller: ControllerModelClient,
     entry_fence: Option<Arc<dyn meerkat_mobkit::identity_first::GovernedEntryFence>>,
     source_deadline: tokio::time::Instant,
+    // One invocation per binder. Only the actual Box keeps it alive; the
+    // bounded definite-refusal retry can bind a new invocation afterwards.
+    // Shared source-owner locks separately exclude competing Candidates.
+    pending: Mutex<Weak<PendingHelperAdmission>>,
 }
 
 #[async_trait]
@@ -942,15 +974,31 @@ impl GovernedInputBinder for SubmitHelperBinder {
             .map_err(|_| "Toolkit helper source is unavailable")?;
         self.source.require_helper_selection(self.admitted.selection())
             .map_err(|_| "Toolkit helper selection is unavailable")?;
-        let (input, pending) = match admitted {
-            Some(admitted) => admitted,
-            None => prepared.stage().map_err(|_| "Toolkit helper candidate is unavailable")?,
+        let (input, pending) = {
+            // Refuse overlap before staging: dropping a newly staged guard
+            // must never withdraw the earlier invocation's Candidate.
+            let mut invocation = self.pending.lock()
+                .map_err(|_| "Toolkit helper custody is unavailable")?;
+            if invocation.upgrade().is_some() {
+                return Err("Toolkit helper still owns an earlier native invocation".into());
+            }
+            let (input, pending) = match admitted {
+                Some(admitted) => admitted,
+                None => prepared.stage().map_err(|_| "Toolkit helper candidate is unavailable")?,
+            };
+            let pending = Arc::new(PendingHelperAdmission {
+                session: context.session_id.clone(), input: input.clone(),
+                first_candidate: pending.is_first_candidate(),
+                publication: Mutex::new(HelperPublication {
+                    native_admission: None,
+                    source: governed_submit::SourcePublication::Pending(pending),
+                }),
+            });
+            *invocation = Arc::downgrade(&pending);
+            (input, pending)
         };
         let settlement = HelperSettlement {
-            expected_session: context.session_id.clone(),
-            expected_input: input.id().clone(),
-            pending: Some(pending),
-            held: Arc::downgrade(&self.held),
+            pending, held: Arc::downgrade(&self.held),
         };
         Ok(BoundGovernedInput {
             input,
@@ -960,41 +1008,89 @@ impl GovernedInputBinder for SubmitHelperBinder {
     }
 
     fn retain_unresolved(&self, settlement: Box<dyn GovernedSettlement>, _detail: &str) {
-        self.held
-            .unresolved
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(settlement);
+        // Meta transfers this one Box only after its native operation has
+        // stopped owning the decision. A reader/timer never manufactures it.
+        let pending = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade();
+        self.held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(UnresolvedHelperAdmission { pending, settlement });
     }
 }
 
+/// Exact per-invocation input, kept with the actual guard. The helper's first
+/// serialized Input cannot stand in for later admitted-only invocations.
+struct PendingHelperAdmission {
+    session: SessionId,
+    input: Input,
+    first_candidate: bool,
+    publication: Mutex<HelperPublication>,
+}
+
+struct HelperPublication {
+    // Only the actual matching fresh callback records this native receipt.
+    native_admission: Option<GovernedAdmission>,
+    source: governed_submit::SourcePublication,
+}
+
+/// Actual handoff custody. Even a missing typed pointer retains the native Box
+/// as unavailable evidence; it cannot be dropped as proof of nonadmission.
+struct UnresolvedHelperAdmission {
+    pending: Option<Arc<PendingHelperAdmission>>,
+    settlement: Box<dyn GovernedSettlement>,
+}
+
 struct HelperSettlement {
-    expected_session: SessionId,
-    expected_input: InputId,
-    pending: Option<PendingToolkitOriginal>,
+    pending: Arc<PendingHelperAdmission>,
     held: Weak<HeldSetupHelper>,
 }
 
 impl GovernedSettlement for HelperSettlement {
-    fn accepted(mut self: Box<Self>, admission: &GovernedAdmission) -> Result<(), String> {
+    fn accepted(self: Box<Self>, admission: &GovernedAdmission) -> Result<(), String> {
         if admission.deduplicated
-            || admission.session_id != self.expected_session
-            || admission.input_id != self.expected_input
+            || admission.session_id != self.pending.session
+            || admission.input_id != *self.pending.input.id()
         {
             if let Some(held) = self.held.upgrade() {
-                held.unresolved
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(self);
+                let pending = Some(self.pending.clone());
+                held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(UnresolvedHelperAdmission { pending, settlement: self });
             }
             return Err("Toolkit helper source acknowledgement did not match".into());
         }
-        self.pending
-            .take()
-            .ok_or_else(|| "Toolkit helper source settlement was already consumed".to_owned())?
-            .admit()
-            .map(|_| ())
-            .map_err(|_| "Native helper was admitted but source publication failed".into())
+        use governed_submit::SourcePublication;
+        let unavailable = || "Native helper was admitted but source publication failed".to_owned();
+        let result = {
+            let mut publication = self.pending.publication.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            publication.native_admission = Some(admission.clone());
+            let prior = std::mem::replace(&mut publication.source, SourcePublication::Settled {
+                source_acknowledged: false, result: Err(unavailable()),
+            });
+            let result = match prior {
+                SourcePublication::Pending(pending) => {
+                    let result = pending.admit().map(|_| ()).map_err(|_| unavailable());
+                    publication.source = SourcePublication::Settled {
+                        source_acknowledged: result.is_ok(), result: result.clone(),
+                    };
+                    result
+                }
+                settled @ SourcePublication::Settled { .. } => {
+                    publication.source = settled;
+                    Err("Toolkit helper source settlement was already consumed".into())
+                }
+            };
+            result
+        };
+        if result.is_err() {
+            // Native acceptance is final even when this later source step
+            // fails. Keep the same consumed Box and exact Input with its
+            // existing owner; never call accepted again or dispatch a retry.
+            if let Some(held) = self.held.upgrade() {
+                let pending = Some(self.pending.clone());
+                held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(UnresolvedHelperAdmission { pending, settlement: self });
+            }
+        }
+        result
     }
 }
 
