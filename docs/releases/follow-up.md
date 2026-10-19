@@ -42,7 +42,11 @@ rkat in the same realm -> three stories remains unverified. Console approval and
 both shared cases remain open. This is not 0.9.4 release qualification.
 The ordinary meerkat-connect CLI binary now also builds on the exact r9 graph
 and passes independent artifact review without test-support features. It reports
-version 0.9.0; the matching stock rkat build and actual CLI journey remain pending.
+version 0.9.0. The matching stock rkat build now passes at exact Core `9281f3b0`,
+with stock default features and its unchanged lock. Receipt-only recovery joins
+the installed binary to the retained compiled executable after correcting two
+Cargo packaging assumptions; no rebuild or source change is involved. The
+binary reports 0.9.3. The actual CLI journey is running and remains unqualified.
 
 The r9 approval development gateway build also passes. Its affected consumer
 fails at setup-data HTTP 403 before intentional process loss or successor
