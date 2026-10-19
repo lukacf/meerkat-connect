@@ -5,6 +5,19 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
+The latest affected recovery run passes three helper restart controls and both
+gateway cleanup controls on the r6 development graph. The correction removes
+references retained by test fixtures; exact saved-input replay, altered-input
+refusal and all old-owner release assertions remain. The original run's 20 passes
+and three failures are preserved separately. All recorded command owners join,
+and source and dependency-lock checks pass. The fresh production gateway build
+also passes. Its installed positive case then fails before the public read because
+`setup_install` returns `access_denied`; the controlled model subsequently assumes
+a successful job response. The underlying refusal is under investigation. The
+corrupted-resource case remains unentered and source adoption stays held. This
+is development evidence, not a 0.9.4 release claim.
+
+
 An earlier shared-preparation checkpoint used
 [Core 95343786](https://github.com/lukacf/meerkat/commit/953437864bbb21b135661a0e61a09b5aa1f6ba01)
 and [Meta f04125c4](https://github.com/lukacf/meerkat-meta/commit/f04125c45e732b3ef05aab2ac2a0f642fc1b08a1).
@@ -111,7 +124,7 @@ bounded same-input reprepare and never infers a new admission from a source row.
 The six reviewed paths are committed locally as private `717de80b` and
 public-follow-up `54a30ebc`; all recorded owners joined and source was restored.
 
-The latest [combined helper and admission execution](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-helper-currentness-twenty-five-mpd2m19p/FINAL.json)
+The earlier [combined helper and admission execution](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-helper-currentness-twenty-five-mpd2m19p/FINAL.json)
 (`c2d6fb3d`) compiles successfully and runs all 23 selected Toolkit controls:
 20 pass and three fail. The failures are the three new helper cold-recovery
 controls, all at the check that the old source, runtime, service, lifetime and
