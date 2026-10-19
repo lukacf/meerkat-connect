@@ -93,26 +93,22 @@ a matching r8 Core/Meta/SDK tuple; it has not been offered. Instances sharing on
 authority are one owner. The selected development graph remains unchanged.
 
 Connect's preparation/store-binding, attempt schema and foreground persistence
-remain unadopted. After fixture corrections, the 52-control composition compiled.
-A selector-listing error prevented the first attempt from entering tests; the
-corrected listing reused that exact binary. Five controls passed, then a helper
-binding control failed with `WrongOwner`; 46 controls did not run. The failure
-exposed a production key check that rejected the helper's canonical namespace.
-The independently reviewed correction compares the caller's exact full source
-key while retaining store, scope and realm checks. The corrected 49-control run
-compiled and entered every case: 47 passed, including the helper binding control,
-and two failed. Both failures are fixture assumptions: a task-only removal helper
-is used on an ordinary standing grant, and the other test rejects a legitimate
-setup-selection write that precedes the failed association write. Reviewed fixture corrections
-preserve the production behavior and strict assertions; only those two cases are
-selected for rerun. The original failed runs remain recorded, and source adoption
-still awaits the affected passes.
+are now committed locally as private `6ec07fc5` and public-follow-up `4abe7fcc`.
+The production correction accepts the helper's exact canonical source key while
+retaining store, scope and realm checks. The 49-case run recorded 47 passes and
+two fixture failures; both affected cases now pass after corrections that retain
+the child-identity, row-delta, replay, delivery and cleanup assertions. Together
+with three unaffected adapter-construction passes, this qualifies 52 distinct
+controls across the recorded runs, not one combined passing run. The original
+failures remain recorded. The scoped 23-path commits include only this qualified
+slice; nothing was pushed or released.
 
 The first input remains recorded before Candidate staging, and exact retry
 rebuilds current native authentication. A further reviewed slice retains the
-exact native receipt through callback errors without resubmitting; its 15 controls
-are pending. Bounded settlement, permanent withdrawal, restart, wake and stop/join
-remain in implementation. None of these source reviews closes admission recovery.
+exact native receipt through callback errors without resubmitting; its 15-control
+run is compiling on the same r6 graph. Bounded settlement, permanent withdrawal,
+restart, wake and stop/join remain in implementation. None of these source reviews
+closes admission recovery.
 
 An earlier full SDK diagnostic gets through both helpers' catalog/check calls,
 independent approvals, cancellation of A while B installs. Preparation completes
