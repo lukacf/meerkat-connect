@@ -29,6 +29,16 @@ completes and corruption remains unentered; cleanup passes. Expose that refusal
 instead of the verifier's misleading KeyError. Approval process-loss can run
 independently because it invokes neither catalog search nor the HN service.
 This is development evidence, not a 0.9.4 release claim.
+The reviewed 49-path recovery/helper-result/verifier slice is checkpointed locally
+as `be5fad83` (private counterpart `addf77b4`). Six inert diagnostic/controller
+checks pass. The commit explicitly retains the actual installed-product failure;
+nothing is pushed or released.
+The independent approval consumer builds but fails before approval publication:
+Console accepts its send, then reports inability to persist the first original
+attempt. Its verifier misses the terminal interaction failure and waits the full
+900-second deadline. Correct that narrow verifier behavior and diagnose the
+persistence failure; no recovery or successor execution is qualified. Physical
+shutdown completes normally, while native login retirement remains uncertain.
 
 
 An earlier shared-preparation checkpoint used
