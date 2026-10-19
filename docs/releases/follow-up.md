@@ -85,10 +85,14 @@ Entered native operations remain separately owned until actual settlement or
 close. The exact Core 0.9.4 API revision and Connect's durable-ordering
 implementation remain pending; r7 startup alone does not close this gap.
 
-The first preparation/store-binding slice has an actual compile failure in two
-test fixtures, before any of its 28 selected controls run. The separate attempt
-schema is source-reviewed with ten unexecuted controls. Neither slice is adopted
-or qualifies bounded foreground recovery.
+The first preparation/store-binding build failed on two test fixture errors,
+before any of its 28 controls ran. The narrow corrections, attempt schema and
+foreground persistence now have independent source review and are combined for
+one 52-control run. The existing tracked binder persists the exact first input
+before Candidate staging; exact retries rebuild current native authentication.
+Legacy rows do not acquire invented first-write evidence. Source adoption still
+requires the run to pass. Bounded settlement, withdrawal, restart, wake and
+stop/join behavior remain subsequent work.
 
 An earlier full SDK diagnostic gets through both helpers' catalog/check calls,
 independent approvals, cancellation of A while B installs. Preparation completes
@@ -249,11 +253,21 @@ protocol-rejection wording also covers channel closure after an SDK timeout;
 it does not prove a malformed request. The reviewed two-file repair uses the
 existing 900-second installed startup bound, retains a 960-second first-phase
 observer and preserves typed primary/cleanup causes. Later phases and cleanup
-assertions are unchanged. Its affected CLI test must be rebuilt and rerun.
-Outer owners join, but the fixture does not prove normal SDK/native cleanup. The
-recovered CLI includes Core test-support features and is labelled a development
-integration artifact; the earlier build-wrapper failure is retained. Native
-Reading acceptance, source adoption and live-provider delivery remain pending.
+assertions are unchanged. The affected test rebuild passes; the CLI bytes remain
+unchanged. A staging-only failure then occurs before native test entry. The
+reviewed rerun reuses the previously successful CLI/resource stage while keeping
+current test evidence separate from historical staging provenance. The actual
+management case now passes in 230.381 seconds: setup exits while the same host
+survives, pause/resume delivers queued input once, disable stops queued work and
+a pending reply, and removal preserves the same nonempty service state. Three
+native admissions occur. Native shutdown is acknowledged; SDK readers and all
+application, provider and outer process owners join without escalation. The CLI
+includes Core test-support features, and model/provider responses are controlled
+loopback fixtures. Independent outcome review accepts the exact pass and cleanup;
+the ten-path source composition is checkpointed locally at `58522d73`. This is
+development integration evidence. Live provider delivery, native service-tool
+authorization and Browser interaction remain unqualified. Earlier build, staging
+and startup failures remain recorded. No push, CI or release change occurred.
 
 The installer target is published Core/Meta 0.9.4, with Linux x86_64 qualification
 first and macOS arm64 separately. The manual-only
