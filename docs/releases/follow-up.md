@@ -26,10 +26,13 @@ verifier slice is checkpointed locally as `be5fad83` (private `addf77b4`).
 The independent approval consumer previously failed before approval because
 Console enrollment incorrectly demanded the toolkit-origin input contract.
 That owner-specific validation is corrected and its two focused controls pass.
-The next acceptance run uses the ordinary/development gateways and a verifier
-that stops on matching terminal interaction failures. Process-loss recovery and
-semantic login retirement remain unqualified. Neither depends on a successful
-HN read. No changes have been pushed or released.
+The ordinary and development gateway builds and stage-only packaging pass. The
+actual approval run then fails after 105 seconds on setup/data HTTP 503 at the
+final status currentness check, before model work or approval. The subsequent
+original-retention failure may be cleanup-induced; the exact failing check is
+not established. Process-loss recovery and semantic login retirement remain
+unqualified. Neither depends on a successful HN read. No changes have been
+pushed or released.
 
 ### Earlier development evidence
 
