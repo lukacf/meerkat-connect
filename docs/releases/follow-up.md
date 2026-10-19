@@ -13,9 +13,15 @@ and three failures are preserved separately. All recorded command owners join,
 and source and dependency-lock checks pass. The fresh production gateway build
 also passes. Its installed positive case then fails before the public read because
 `setup_install` returns `access_denied`; the controlled model subsequently assumes
-a successful job response. The underlying refusal is under investigation. The
-corrupted-resource case remains unentered and source adoption stays held. This
-is development evidence, not a 0.9.4 release claim.
+a successful job response. The saved state exposes a concrete blocker: the helper
+advances its stored revision while persisting restart data, but software
+preparation still requires the old revision. A narrow correction is in progress,
+retaining exact input and authority checks. The corrupted-resource case remains
+unentered and source adoption stays held. The revised custody-progress regression
+passes, including refusal and cancellation checks. Ordinary preparation advances
+past the original conflict but encounters another stale historical-condition
+comparison downstream. That seam is being repaired before the production rerun.
+This is development evidence, not a 0.9.4 release claim.
 
 
 An earlier shared-preparation checkpoint used
