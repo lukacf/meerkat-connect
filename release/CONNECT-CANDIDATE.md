@@ -192,7 +192,9 @@ an input path cannot substitute unaccepted bytes at the public write.
 
 The writer checks actual public repository visibility and exact release/tag
 identity before upload and on subsequent release observations. Existing equal
-assets require unauthenticated public readback without reupload. Newly uploaded
+assets require unauthenticated public readback without reupload. All selected
+assets already present are checked before the first upload, so a conflict
+visible at that point is detected before any write. Newly uploaded
 assets require the same size/digest readback. A final state check must preserve
 all original and newly verified asset identities. These are observations at
 the time of publication; they do not promise that another owner will never
@@ -212,9 +214,10 @@ Actions artifact alone is not that handoff.
 
 The candidate workflow was checked by source reading, Python AST parsing,
 JSON parsing, YAML parsing and exact patch roundtrip. The publication commands
-also passed 50 offline controls using controlled verifier results, a controlled
+also passed 52 offline controls using controlled verifier results, a controlled
 reader and transport responses. Those controls include input substitution,
-conflicting assets, partial writes and repository visibility changes. They do
+conflicting assets at each position, partial writes and repository visibility
+changes. They do
 not establish actual signature verification, published Meta-reader acceptance,
 public upload or Forge inclusion. No Cargo, packager, native verifier, native
 binary, GitHub job or remote host was executed for this draft. Actual attested

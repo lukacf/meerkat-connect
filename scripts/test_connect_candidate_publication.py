@@ -305,6 +305,18 @@ def test_conflicting_existing_asset_is_not_overwritten(fixture,monkeypatch):
     assert p.read_json(c.root/'publication/publication.json')['status']=='refused_or_partial'
 
 
+@pytest.mark.parametrize('conflict', p.PUBLICATION_FILES[1:])
+def test_later_existing_conflict_refuses_before_any_missing_asset_upload(fixture, monkeypatch, conflict):
+    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+    raw=(c.candidate/conflict).read_bytes()
+    t.record(conflict,b'!'*len(raw))
+    with pytest.raises(AssertionError,match='bytes differ'):
+        publish()
+    assert not t.uploads
+    assert set(t.files)=={conflict}
+    assert p.read_json(c.root/'publication/publication.json')['write_attempted']==[]
+
+
 def test_failed_second_upload_preserves_partial_evidence_without_final_inventory(fixture,monkeypatch):
     c=fixture;t,publish=prepare_publish(c,monkeypatch);t.fail_upload=p.SUBJECTS[1]
     with pytest.raises(OSError):publish()

@@ -1035,6 +1035,13 @@ def publish_accepted(directory, expected_sha256, output):
         # Drafts remain draft under their release owner's control. This command
         # neither creates nor publishes a release/tag, nor invents public URLs.
         require(not release["draft"], "release owner has not published this selected release")
+        # Detect an existing conflict anywhere in the selected set before the
+        # first write. Otherwise a later conflicting manifest or bundle would
+        # leave newly uploaded assets on a release we already cannot complete.
+        for expected in accepted["assets"]:
+            name = expected["name"]
+            if name in original:
+                readback_asset(original[name], expected, request, output / name)
         for expected in accepted["assets"]:
             name = expected["name"]
             current_release, current = release_state(request)
@@ -1057,7 +1064,8 @@ def publish_accepted(directory, expected_sha256, output):
                 current_release, current = release_state(request)
                 require(not current_release["draft"], "release became private during upload")
             require(name in current, "uploaded asset was not observed")
-            readback_asset(current[name], expected, request, output / name)
+            if name not in original:
+                readback_asset(current[name], expected, request, output / name)
             report["verified_assets"].append(name)
             verified_rows[name] = current[name]
         final_release, final = release_state(request)
