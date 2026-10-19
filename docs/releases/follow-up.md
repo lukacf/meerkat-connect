@@ -85,12 +85,12 @@ Entered native operations remain separately owned until actual settlement or
 close. The exact Core 0.9.4 API revision and Connect's durable-ordering
 implementation remain pending; r7 startup alone does not close this gap.
 
-Core has now offered owner-scoped resource domains on `fix/094-domain-owned-by`
-at `366b8311`. Connect's parent grants and child recovery checks are being ported
-in isolation; the matching Meta/SDK tuple has been requested. Isolation will be
-tested with distinct application authorities and exact per-session children.
-Instances sharing one authority are one owner. This offer has not changed the
-selected development graph or qualified cross-application isolation.
+Core has offered owner-scoped resource domains on `fix/094-domain-owned-by`
+at `366b8311`. Connect's 23-path consumer patch now has independent source approval,
+including two new controls for distinct application authorities, exact session
+children, restart and legacy parent IDs. The controls have not run. The lead plans
+a matching r8 Core/Meta/SDK tuple; it has not been offered. Instances sharing one
+authority are one owner. The selected development graph remains unchanged.
 
 Connect's preparation/store-binding, attempt schema and foreground persistence
 remain unadopted. After fixture corrections, the 52-control composition compiled.
@@ -100,7 +100,13 @@ binding control failed with `WrongOwner`; 46 controls did not run. The failure
 exposed a production key check that rejected the helper's canonical namespace.
 The independently reviewed correction compares the caller's exact full source
 key while retaining store, scope and realm checks. The corrected 49-control run
-will cover the failed case, 46 unentered cases and two affected earlier passes.
+compiled and entered every case: 47 passed, including the helper binding control,
+and two failed. Both failures are fixture assumptions: a task-only removal helper
+is used on an ordinary standing grant, and the other test rejects a legitimate
+setup-selection write that precedes the failed association write. Reviewed fixture corrections
+preserve the production behavior and strict assertions; only those two cases are
+selected for rerun. The original failed runs remain recorded, and source adoption
+still awaits the affected passes.
 
 The first input remains recorded before Candidate staging, and exact retry
 rebuilds current native authentication. A further reviewed slice retains the
@@ -169,9 +175,9 @@ isolation test; no new Core allocator or global registry is required. Two
 application instances assigned the same authority are not distinct security
 principals. The audit is complete, but the native isolation test has not run.
 The cross-application control must exercise two distinct application authorities
-in the same native grant domain, including an otherwise valid foreign child
-refused as OutsideBounds. New issuance IDs and an explicitly selected preparation
-are required; old unrestricted grants and historical children cannot be silently
+in the same native grant domain, including refused foreign application/session
+access and the native empty-domain result of foreign-child narrowing. New issuance
+IDs and an explicitly selected preparation are required; old unrestricted grants and historical children cannot be silently
 relabeled or reparented. Python/TypeScript readers preserve native bound objects;
 Rust constructor and recovery expectations must migrate together. The actual
 Core API, identity contract and migration remain to be qualified.
