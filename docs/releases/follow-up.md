@@ -226,12 +226,16 @@ The earlier failed diagnostic remains recorded. No new native API was required;
 full shared SDK delivery and process-restart completion remain open. The separate
 narrow r6 execution above does not extend these r5 interest-restoration results.
 
-The configured Reading frontend now has a source-reviewed sender migration and
+The configured Reading frontend has a source-reviewed sender migration and
 SQLite connection cleanup. Nine Reading Python tests pass; the separate egress
 and sender run passes 299 tests, including real retained-connection closure,
-rollback and receipt-preservation assertions. These are controlled Python tests,
-not native or live-provider delivery. The actual native CLI consumer and source
-adoption remain pending.
+rollback and receipt-preservation assertions. Its actual CLI consumer now stages
+successfully but fails native startup: the gateway rejects the private host
+protocol before admission. The cause of that protocol rejection is under investigation.
+Outer owners join, but the fixture does not prove normal SDK/native cleanup. The
+recovered CLI includes Core test-support features and is labelled a development
+integration artifact; the earlier build-wrapper failure is retained. Native
+Reading acceptance, source adoption and live-provider delivery remain pending.
 
 The installer target is published Core/Meta 0.9.4, with Linux x86_64 qualification
 first and macOS arm64 separately. The manual-only
