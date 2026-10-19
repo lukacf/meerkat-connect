@@ -5,7 +5,17 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
-Current development status: the r8 compatibility and Console custody changes
+Current development work consumes the r9 offer:
+[Core `9281f3b0`](https://github.com/lukacf/meerkat/commit/9281f3b05b846ff31f9d74a146b8020c507aa818)
+and [Meta `2ea41584`](https://github.com/lukacf/meerkat-meta/commit/2ea415849867ad2cfddee4090a9685c9ec11457e).
+Connect is adapting its existing bounded recovery owner to retained-custody #14
+and preparing affected adversarial checks in the existing native lane. No r9
+native compile or runtime pass is claimed yet. These are development refs; the
+host refusal observer and initialized Console-reset correction remain outside
+this offer. Fresh stores are required because r9 event/audit writes cannot be
+safely downgraded to r8.
+
+The latest executed r8 compatibility and Console custody changes
 compile. Five of seven affected controls pass: both Console custody checks, both
 configured-parent isolation/restore checks, and same-conversation finalization.
 Two shared-setup Driver cases fail on Find/install refusals and remain open.
@@ -114,13 +124,15 @@ claims no native nonadmission, cancellation or settlement. Unreadable canonical
 storage returns Unavailable, never guessed NotRetained or indefinite Pending.
 Entered native operations remain separately owned until actual settlement or
 close. The exact Core 0.9.4 API revision and Connect's durable-ordering
-implementation remain pending; r7 startup alone does not close this gap.
+implementation remained pending at this earlier r7 checkpoint; the r9 adaptation
+is described above. R7 startup alone did not close this gap.
 
-The matched r8 development offer is now available:
+The earlier matched r8 development offer was:
 [Core `60509a43`](https://github.com/lukacf/meerkat/commit/60509a43e4fb42a0ccccdeca34218190e34db6e1)
 and [Meta `c63e643e`](https://github.com/lukacf/meerkat-meta/commit/c63e643ee1bed5e64a33f375e57b85a21b64c8ed).
 Its owner-domain API is identical to the reviewed offer, so reuse Connect's
-23-path patch and two focused isolation/restore controls. They have not run.
+23-path patch and two focused isolation/restore controls. Both controls now pass
+in the r8 result described above.
 Instances sharing one authority are one owner. Python and TypeScript SDK trees
 are unchanged from r7. The only additional identified source adjustment routes
 finalization ExternalEvent inputs through native `bind_host_outcome`; ordinary
@@ -130,7 +142,8 @@ r8 state with r6: r8 writes state version 7.
 The offer includes bootstrap completion and the r6 refusal trace. It explicitly
 excludes admission-recovery #14, the host refusal observer, the additional
 authorization-audit work and initialized Console-reset fixes. Those remain
-upstream follow-up work for r9. An offered revision is not a passing Connect
+upstream follow-up work at that checkpoint; r9 includes #14 and audit changes,
+but still excludes the observer and initialized reset. An offered revision is not a passing Connect
 consumer or release qualification.
 
 Connect's preparation/store-binding, attempt schema and foreground persistence
