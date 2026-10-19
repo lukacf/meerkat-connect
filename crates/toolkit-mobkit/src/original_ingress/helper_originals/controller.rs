@@ -164,21 +164,21 @@ impl ToolkitOriginalOwner {
         self: &Arc<Self>, store: &dyn ToolkitStore, admitted: &AdmittedHelperWork,
         controller: HelperControllerIntent,
     ) -> Result<(ChildGrantIntent, Option<ChildGrantIntent>, Option<ChildGrantIntent>, Option<ChildGrantIntent>, Option<ChildGrantIntent>), OriginalWriterError> {
+        self.check_canonical_source(store, &admitted.source_scope)?;
         store.capabilities().require_durable_contract()
             .map_err(|_| OriginalWriterError::Unavailable)?;
         let _mutation = self.mutation.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
         self.check_admitted_helper(admitted)?;
         controller.validate(admitted)?;
         let key = admitted.source_key()?;
-        let candidate = HelperSourceRecord { facts: admitted.facts.clone(), controller,
+        let candidate = HelperSourceRecord { custody_attempt: None, facts: admitted.facts.clone(), controller,
             state: HelperSourceState::ControllerPending };
         let saved = match store.get(&key).await.map_err(store_error)? {
             Some(saved) => saved,
             None => store.admit(AdmissionRequest {
                 key: key.clone(), admission_key: source_admission_key(
                     &admitted.facts.realm, &admitted.facts.namespace, &admitted.facts.admission.key,
-                )?, data: RecordData { schema: SCHEMA.into(), version: SOURCE_VERSION,
-                    body: serde_json::to_value(&candidate).map_err(|_| OriginalWriterError::Conflict)? },
+                )?, data: candidate.encode()?,
                 events: vec![], effects: vec![],
             }).await.map_err(store_error)?.record().clone(),
         };

@@ -182,7 +182,7 @@ impl InstalledToolkitHost {
         selection: HostBootstrapSelection,
         startup: NativeOwnerStartup,
     ) -> Result<(NativeHostLifetime, Self), HostLifetimeError> {
-        Self::open_selected(selection, startup, None, None).await
+        Self::open_selected(selection, startup, None, None, #[cfg(test)] None).await
     }
 
     /// Adopt the policy used by this process's completed native preparations.
@@ -195,7 +195,7 @@ impl InstalledToolkitHost {
         startup: NativeOwnerStartup,
         prepared_tool_policy: PreparedInstalledToolPolicy,
     ) -> Result<(NativeHostLifetime, Self), HostLifetimeError> {
-        Self::open_selected(selection, startup, Some(prepared_tool_policy), None).await
+        Self::open_selected(selection, startup, Some(prepared_tool_policy), None, #[cfg(test)] None).await
     }
 
     pub async fn open_with_application_service_policy(
@@ -203,7 +203,19 @@ impl InstalledToolkitHost {
         prepared_tool_policy: Option<PreparedInstalledToolPolicy>,
         participant: Arc<dyn crate::private_originals::ApplicationServicePolicy>,
     ) -> Result<(NativeHostLifetime, Self), HostLifetimeError> {
-        Self::open_selected(selection, startup, prepared_tool_policy, Some(participant)).await
+        Self::open_selected(selection, startup, prepared_tool_policy, Some(participant), #[cfg(test)] None).await
+    }
+
+    /// Test fixtures select a storage observation wrapper before the first
+    /// source adapter claims its canonical store. No live binding is replaced.
+    #[cfg(test)]
+    async fn open_with_source_store(
+        selection: HostBootstrapSelection,
+        startup: NativeOwnerStartup,
+        participant: Option<Arc<dyn crate::private_originals::ApplicationServicePolicy>>,
+        prepare_source: controller_first_input_fixture::PrepareOriginalSource,
+    ) -> Result<(NativeHostLifetime, Self), HostLifetimeError> {
+        Self::open_selected(selection, startup, None, participant, Some(prepare_source)).await
     }
 
     async fn open_selected(
@@ -211,6 +223,7 @@ impl InstalledToolkitHost {
         startup: NativeOwnerStartup,
         prepared_tool_policy: Option<PreparedInstalledToolPolicy>,
         participant: Option<Arc<dyn crate::private_originals::ApplicationServicePolicy>>,
+        #[cfg(test)] prepare_source: Option<controller_first_input_fixture::PrepareOriginalSource>,
     ) -> Result<(NativeHostLifetime, Self), HostLifetimeError> {
         if startup != NativeOwnerStartup::Restore {
             // Ordinary application bootstrap cannot initialize an operator root.
@@ -297,8 +310,14 @@ impl InstalledToolkitHost {
             realm: native.realm.to_string(),
             owner: owner.selected_policy().deployment.to_string(),
         };
+        let source_store: Arc<dyn toolkit_store::ToolkitStore> = store.clone();
+        #[cfg(test)]
+        let source_store = match prepare_source {
+            Some(prepare_source) => prepare_source(source_store),
+            None => source_store,
+        };
         let originals = Arc::new(
-            PrivateOriginals::new(source_scope.clone(), store.clone(), source.clone(), routes)
+            PrivateOriginals::new(source_scope.clone(), source_store, source.clone(), routes)
                 .await
                 .map_err(|_| HostLifetimeError::InvalidSelection)?,
         );

@@ -33,6 +33,13 @@ pub(crate) async fn open_for_service_input(facts: &ControllerModelFacts) -> Host
     open_selected(facts, true, true, true).await
 }
 
+pub(crate) async fn open_for_service_input_with_source(
+    facts: &ControllerModelFacts, prepare_source: PrepareOriginalSource,
+) -> Host {
+    open_selected_subject_with_source(facts, true, true, true, false, None, false, None,
+        false, false, Some(prepare_source)).await
+}
+
 /// Select the ordinary human-reviewed member-policy recovery owner before the
 /// provider or native configuration is shared. Service access still needs its
 /// actual human decision; this selects no standing service authority.
@@ -60,9 +67,10 @@ async fn open_selected_subject(facts: &ControllerModelFacts, select_controller: 
         acquisition, helper, report, configured_setup, configured_report, None).await
 }
 
-// Test-only storage decoration runs before the source is shared with native
-// configuration or application policy, and before any event is retained.
-pub(crate) type PrepareOriginalSource = Box<dyn FnOnce(&mut PrivateOriginals) + Send>;
+// Test-only storage decoration selects the actual source store before its
+// first adapter is constructed, claimed, or shared with native configuration.
+pub(crate) type PrepareOriginalSource = Box<dyn FnOnce(Arc<dyn toolkit_store::ToolkitStore>)
+    -> Arc<dyn toolkit_store::ToolkitStore> + Send>;
 
 async fn open_selected_subject_with_source(facts: &ControllerModelFacts, select_controller: bool, probe: bool, local_operator: bool, source_subject: bool,
     acquisition: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, helper: bool,
@@ -699,10 +707,14 @@ async fn restore_selected(directory: Arc<tempfile::TempDir>, selection: HostBoot
     acquisition_helper: Option<acquisition::InstalledSetupSelection>, prepare_source: Option<PrepareOriginalSource>,
     human_policy: bool) -> Host {
     let participant = human_policy.then(|| human_policy_recovery::selected(&selection));
-    let (lifetime, installed) = match &participant {
-        Some(participant) => InstalledToolkitHost::open_with_application_service_policy(
-            selection.clone(), NativeOwnerStartup::Restore, None, participant.clone()).await,
-        None => InstalledToolkitHost::open(selection.clone(), NativeOwnerStartup::Restore).await,
+    let (lifetime, installed) = match prepare_source {
+        Some(prepare_source) => InstalledToolkitHost::open_with_source_store(
+            selection.clone(), NativeOwnerStartup::Restore, participant.clone(), prepare_source).await,
+        None => match &participant {
+            Some(participant) => InstalledToolkitHost::open_with_application_service_policy(
+                selection.clone(), NativeOwnerStartup::Restore, None, participant.clone()).await,
+            None => InstalledToolkitHost::open(selection.clone(), NativeOwnerStartup::Restore).await,
+        },
     }.unwrap();
     if let Some(participant) = &participant {
         assert!(installed.originals.service_tool_policy.get().unwrap().same_participant(participant),
@@ -711,10 +723,7 @@ async fn restore_selected(directory: Arc<tempfile::TempDir>, selection: HostBoot
     let lifetime = Arc::new(lifetime);
     let store = installed.store.clone();
     let source_scope = installed.source_scope.clone();
-    let mut originals = installed.originals;
-    if let Some(prepare_source) = prepare_source {
-        prepare_source(Arc::get_mut(&mut originals).expect("source is unshared before policy composition"));
-    }
+    let originals = installed.originals;
     originals.bind_host_lifetime(&lifetime).unwrap();
     let tool_policy_registry = installed.tool_policy.registry();
     let registration = Arc::new(InstalledMemberRegistration {

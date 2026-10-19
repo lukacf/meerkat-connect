@@ -592,7 +592,7 @@ pub(crate) fn private_event(label: &str) -> crate::private_originals::PrivateAut
     }
 }
 
-fn private_route(route: &str) -> crate::private_originals::PrivateOriginalRoute {
+pub(crate) fn private_route(route: &str) -> crate::private_originals::PrivateOriginalRoute {
     use crate::private_originals::PrivateOriginalRoute;
     PrivateOriginalRoute {
         id: toolkit_package::Id::new(route).unwrap(),
@@ -676,6 +676,10 @@ async fn private_source_store_conflicts_on_changed_event_and_restores_only_evide
             .is_none()
     );
     drop(adapter);
+    drop(owner);
+    // A real cold reopen restores a fresh native owner over the same intact
+    // canonical pair; dropping an adapter does not release its live binding.
+    let owner = restored(&dir.path().join("grants"));
     let adapter = private_originals(owner, &path).await;
     assert!(adapter.event(&reference).await.unwrap() == event);
     assert!(
@@ -784,6 +788,8 @@ async fn private_binding_cas_precedes_native_handle_and_cancel_is_original_speci
             .hold_binding(reference.clone(), original.clone())
             .await
             .unwrap();
+        assert_eq!(adapter.bound_input_capture_for_test(&reference), (false, Some(false)),
+            "custom source custody does not request installed-host input capture");
         assert_eq!(
             adapter.route_for_binding(original.association()).unwrap(),
             reference.route
@@ -2728,5 +2734,178 @@ mod admitted_rebind {
             collection_poisoned.owner.record_candidate(&collection_poisoned.original),
             Err(OriginalWriterError::Unavailable),
         ));
+    }
+
+    #[tokio::test]
+    async fn native_preparation_preserves_custody_until_consumed_staging() {
+        let fixture = Fixture::new().await;
+        let input = Input::Prompt(PromptInput::new("prepared first input", None));
+        let input_id = input.id().clone();
+        let (_, before) = fixture.owner.publication.observe(|| ()).unwrap();
+        let prepared = fixture.owner.prepare_authenticated_input(
+            &fixture.original, &fixture.session, input, IdempotencyKey::new("prepared"),
+            fixture.original.association().candidate().original_authentication.clone(),
+            ControllerModelClient::new(selection(), Arc::new(UnusedClient)),
+        ).unwrap();
+        assert_eq!(prepared.input().id(), &input_id);
+        assert!(prepared.input().header().authority_association.as_ref()
+            == Some(fixture.original.association()));
+        assert!(prepared.input().header().ingress_context.is_some());
+        let claims = fixture.original.association().candidate();
+        let ingress = prepared.input().header().ingress_context.as_ref().unwrap().clone();
+        assert!(fixture.owner.authenticated_original(&ingress, &claims.ingress_namespace,
+            &claims.original_work).unwrap().is_none());
+        assert!(fixture.owner.retained_original(&claims.ingress_namespace, &claims.original_work)
+            .unwrap().is_none());
+        before.check_current().unwrap();
+        drop(prepared);
+        before.check_current().unwrap();
+        assert!(fixture.owner.authenticated_original(&ingress, &claims.ingress_namespace, &claims.original_work).unwrap().is_none());
+
+        let input = Input::Prompt(PromptInput::new("actual staged input", None));
+        let input_id = input.id().clone();
+        let prepared = fixture.owner.prepare_authenticated_input(
+            &fixture.original, &fixture.session, input, IdempotencyKey::new("staged"),
+            claims.original_authentication.clone(),
+            ControllerModelClient::new(selection(), Arc::new(UnusedClient)),
+        ).unwrap();
+        let (bound, pending) = prepared.stage().unwrap();
+        assert_eq!(bound.id(), &input_id);
+        assert!(pending.pending);
+        assert!(matches!(before.check_current(), Err(PublicationError::Changed)));
+        assert!(fixture.owner.authenticated_original(&ingress, &claims.ingress_namespace, &claims.original_work).unwrap().is_some());
+        assert!(fixture.owner.retained_original(&claims.ingress_namespace, &claims.original_work)
+            .unwrap().is_none());
+        pending.admit().unwrap();
+        assert!(fixture.owner.retained_original(&claims.ingress_namespace, &claims.original_work)
+            .unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn prepared_input_cannot_stage_after_actual_source_cancellation() {
+        let fixture = Fixture::new().await;
+        let prepared = fixture.owner.prepare_authenticated_input(
+            &fixture.original, &fixture.session,
+            Input::Prompt(PromptInput::new("cancel before stage", None)),
+            IdempotencyKey::new("cancel-before-stage"),
+            fixture.original.association().candidate().original_authentication.clone(),
+            ControllerModelClient::new(selection(), Arc::new(UnusedClient)),
+        ).unwrap();
+        fixture.adapter.record_operation_cancelled(&fixture.reference).await.unwrap();
+        assert!(prepared.stage().is_err());
+        let claims = fixture.original.association().candidate();
+        assert!(fixture.owner.retained_original(&claims.ingress_namespace, &claims.original_work)
+            .unwrap().is_none());
+        // Refused staging does not turn cancellation into retained custody.
+        assert!(matches!(fixture.owner.original_disposition(
+            &claims.ingress_namespace, &claims.original_work),
+            Ok(OriginalDisposition::OperationCancelled { .. })));
+    }
+}
+
+// Real store/owner construction controls. They establish live adapter custody,
+// not a durable C1 budget or native admission.
+mod canonical_adapter {
+    use super::*;
+    use crate::private_originals::{PrivateOriginalError, PrivateOriginals};
+    use toolkit_store::{AdmissionRequest, RecordData, SqliteStore, StoreKey, StoreScope,
+        ToolkitStore, Transition};
+
+    fn scope() -> StoreScope {
+        StoreScope { realm: "test-realm".into(), owner: "originals".into() }
+    }
+
+    #[tokio::test]
+    async fn one_live_adapter_binds_exact_store_scope_and_cannot_be_replaced() {
+        let directory = tempfile::Builder::new().permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir().unwrap();
+        let owner = initialized(&directory.path().join("grants"));
+        let sqlite: Arc<dyn ToolkitStore> = Arc::new(SqliteStore::open(directory.path().join("source")).unwrap());
+        let other: Arc<dyn ToolkitStore> = Arc::new(SqliteStore::open(directory.path().join("other")).unwrap());
+        let before = std::fs::read(directory.path().join("grants")).unwrap();
+        let (_, stamp) = owner.publication.observe(|| ()).unwrap();
+        let adapter = Arc::new(PrivateOriginals::new(scope(), sqlite.clone(), owner.clone(),
+            vec![private_route("route")]).await.unwrap());
+        let clone = adapter.clone();
+        assert!(Arc::ptr_eq(&adapter, &clone));
+        assert!(matches!(PrivateOriginals::new(scope(), sqlite.clone(), owner.clone(),
+            vec![private_route("route")]).await, Err(PrivateOriginalError::Denied)));
+        assert!(matches!(PrivateOriginals::new(scope(), other.clone(), owner.clone(),
+            vec![private_route("route")]).await, Err(PrivateOriginalError::Denied)));
+        let changed = StoreScope { owner: "changed-scope".into(), ..scope() };
+        assert!(matches!(PrivateOriginals::new(changed.clone(), sqlite.clone(), owner.clone(),
+            vec![private_route("route")]).await, Err(PrivateOriginalError::Denied)));
+        assert!(owner.check_canonical_source(sqlite.as_ref(), &scope()).is_ok());
+        assert!(matches!(owner.check_canonical_source(other.as_ref(), &scope()),
+            Err(OriginalWriterError::WrongOwner)));
+        assert!(matches!(owner.check_canonical_source(sqlite.as_ref(), &changed),
+            Err(OriginalWriterError::WrongOwner)));
+        drop(adapter);
+        assert!(clone.retain_event(private_event("live-clone")).await.is_ok());
+        let weak = Arc::downgrade(&sqlite);
+        drop(clone);
+        drop(sqlite);
+        assert!(weak.upgrade().is_none(), "the source binding must not retain its store");
+        assert!(matches!(PrivateOriginals::new(scope(), other, owner.clone(),
+            vec![private_route("route")]).await, Err(PrivateOriginalError::Unavailable)));
+        stamp.check_current().unwrap();
+        assert_eq!(std::fs::read(directory.path().join("grants")).unwrap(), before);
+
+        // The installed-style store owns its publication source Arc. The
+        // adapter's reverse weak selection must not turn that into a cycle.
+        let published_owner = initialized(&directory.path().join("published-grants"));
+        let weak_owner = Arc::downgrade(&published_owner);
+        let published: Arc<dyn ToolkitStore> = Arc::new(SqliteStore::open_published(
+            directory.path().join("published-source"), published_owner.clone()).unwrap());
+        let weak_store = Arc::downgrade(&published);
+        let adapter = PrivateOriginals::new(scope(), published.clone(), published_owner.clone(),
+            vec![private_route("route")]).await.unwrap();
+        drop(published_owner);
+        drop(published);
+        drop(adapter);
+        assert!(weak_store.upgrade().is_none());
+        assert!(weak_owner.upgrade().is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_unpublished_constructor_does_not_consume_live_binding() {
+        let directory = tempfile::Builder::new().permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir().unwrap();
+        let owner = initialized(&directory.path().join("grants"));
+        let sqlite: Arc<dyn ToolkitStore> = Arc::new(SqliteStore::open(directory.path().join("source")).unwrap());
+        assert!(matches!(PrivateOriginals::new(scope(), sqlite.clone(), owner.clone(),
+            vec![private_route("route"), private_route("route")]).await,
+            Err(PrivateOriginalError::Denied)));
+        assert!(owner.canonical_source.lock().unwrap().is_none());
+        let key = StoreKey { realm: scope().realm, owner: scope().owner, id: "bad-format".into() };
+        let saved = sqlite.admit(AdmissionRequest { key: key.clone(), admission_key: "bad-format".into(),
+            data: RecordData { schema: "toolkit.authenticated-source-event".into(), version: 2,
+                body: serde_json::json!({}) }, events: vec![], effects: vec![] }).await.unwrap();
+        assert!(PrivateOriginals::new(scope(), sqlite.clone(), owner.clone(),
+            vec![private_route("route")]).await.is_err());
+        assert!(owner.canonical_source.lock().unwrap().is_none());
+        // The fixture owner repairs its never-published malformed test row.
+        sqlite.compare_and_swap(Transition { key, expected_revision: saved.record().revision,
+            expected_digest: Some(saved.record().content_digest.clone()), claim: None,
+            data: RecordData { schema: "test.unrelated".into(), version: 1, body: serde_json::json!({}) },
+            events: vec![], effects: vec![] }).await.unwrap();
+        let adapter = PrivateOriginals::new(scope(), sqlite, owner,
+            vec![private_route("route")]).await.unwrap();
+        assert!(adapter.retain_event(private_event("after-repair")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn concurrent_constructors_cannot_publish_two_live_adapters() {
+        let directory = tempfile::Builder::new().permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir().unwrap();
+        let owner = initialized(&directory.path().join("grants"));
+        let sqlite: Arc<dyn ToolkitStore> = Arc::new(SqliteStore::open(directory.path().join("source")).unwrap());
+        let (left, right) = tokio::join!(
+            PrivateOriginals::new(scope(), sqlite.clone(), owner.clone(), vec![private_route("route")]),
+            PrivateOriginals::new(scope(), sqlite, owner, vec![private_route("route")]),
+        );
+        assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
+        let refused = if left.is_err() { left } else { right };
+        assert!(matches!(refused, Err(PrivateOriginalError::Denied)));
     }
 }

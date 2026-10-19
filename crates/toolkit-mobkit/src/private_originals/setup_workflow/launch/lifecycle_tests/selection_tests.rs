@@ -150,17 +150,22 @@ async fn settled_nonshared_candidates_skip_canonical_reads_with_or_without_retai
         let effects = f.store.list_effects(terminal.key(), None, 16).await.unwrap();
         let reads = CanonicalReads::new(f.store.clone(), terminal.key().clone());
         reads.unavailable.store(true, Ordering::SeqCst);
-        // A separate source adapter with no retained inputs models absence of
-        // process-local choices. It owns no native input and does not recover
-        // any workflow or grant from the projected page identity.
-        let absent = PrivateOriginals::prepare(f.scope.clone(), reads.clone(), f.source.owner.clone()).await.unwrap();
-        assert!(absent.host_lifetime.set(Arc::downgrade(f.lifetime())).is_ok());
-        for _ in 0..3 {
-            let page = f.source.workflow_store().unwrap().continuation_recovery_page(None, 32).await.unwrap();
-            assert!(!page.operations.contains(&operation), "result was already acknowledged");
-            let candidate = page.terminal_operations.iter().find(|candidate| candidate.operation() == &operation).unwrap();
-            for source in [f.source.as_ref(), &absent] {
-                let outcome = source.terminal_workflow_with_read_probe(candidate, reads.as_ref()).await;
+        for retained in [true, false] {
+            if !retained {
+                // Lose only this adapter's exact retained handle. The actual
+                // ordinary source owner and its durable/native custody remain.
+                let mut retained = f.source.retained.lock().unwrap();
+                let before = retained.len();
+                retained.retain(|held| held.original.association() != c.a.original.association());
+                assert_eq!(retained.len() + 1, before, "remove exactly the ordinary source handle");
+                assert!(!retained.iter().any(|held|
+                    held.original.association() == c.a.original.association()));
+            }
+            for _ in 0..3 {
+                let page = f.source.workflow_store().unwrap().continuation_recovery_page(None, 32).await.unwrap();
+                assert!(!page.operations.contains(&operation), "result was already acknowledged");
+                let candidate = page.terminal_operations.iter().find(|candidate| candidate.operation() == &operation).unwrap();
+                let outcome = f.source.terminal_workflow_with_read_probe(candidate, reads.as_ref()).await;
                 assert!(matches!(outcome, Ok(WorkflowTerminalRecovery::NotSelected)),
                     "ordinary missing handles must not engage unavailable backoff");
             }

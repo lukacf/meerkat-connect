@@ -607,10 +607,10 @@ impl OriginalBinder {
                 return Err("Toolkit original custody changed".to_owned());
             }
         }
-        let (input, pending) = self
+        let mut prepared = self
             .source
             .owner
-            .bind_authenticated_input(
+            .prepare_authenticated_input(
                 &held.original,
                 &context.session_id,
                 input,
@@ -623,20 +623,42 @@ impl OriginalBinder {
                 PrivateOriginals::synthetic_admission_diagnostic("original.input_binding.refused", _error);
                 "Toolkit could not bind this authenticated original".to_owned()
             })?;
-        // The actual binder owns both this Input and its pending guard. The
-        // source retains only approved B, selected stock setup A or explicitly
-        // selected planning-source evidence.
-        // Refused/uncertain persistence drops the guard before native entry.
+        let admitted = prepared.admitted()
+            .map_err(|_| "Toolkit admitted original is unavailable".to_owned())?;
+        if admitted.is_none() {
+            if let Some(exact) = cold_service_admission::RetainedBoundInput::retain_for_attempt(
+                &held.first_input, prepared.input(),
+            ).map_err(|_| "Toolkit first original input changed")? {
+                prepared = self.source.owner.prepare_authenticated_input(
+                    &held.original, &context.session_id, exact, self.event_key.clone(),
+                    self.authentication.clone(), context.controller.clone(),
+                ).map_err(|_| "Toolkit could not rebind the exact first original input")?;
+            }
+        }
+        // Native's tracked foreground retains this prepared Input and every
+        // entered write. The planning holder is not Candidate publication.
         let workflow = planning.map(|planning| planning.stage(&held, context))
             .transpose().map_err(|_| "The planning workflow could not retain pending source custody".to_owned())?;
         if self.grant.is_some() || self.batch.is_some() || held.retain_bound_input || workflow.is_some() {
-            self.source.retain_bound_service_input(&self.original, &held.original, &input)
+            self.source.retain_bound_service_input(&self.original, &held.original, prepared.input())
                 .await.map_err(|_error| {
                     #[cfg(test)]
                     PrivateOriginals::synthetic_admission_diagnostic("original.bound_input.refused", _error);
                     "Toolkit could not retain the bound original input".to_owned()
                 })?;
         }
+        if admitted.is_none() {
+            self.source.persist_first_custody_attempt(&held, &context.session_id, prepared.input())
+                .await.map_err(|_| "Toolkit could not persist the first original attempt".to_owned())?;
+        }
+        if let Some(entry) = &self.console { entry.check()?; }
+        if let Some(login) = &self.approved_login {
+            login.check().map_err(|_| "The approved Console login is unavailable")?;
+        }
+        let (input, pending) = match admitted {
+            Some(admitted) => admitted,
+            None => prepared.stage().map_err(|_| "Toolkit original candidate is unavailable".to_owned())?,
+        };
         let pending = Arc::new(PendingOriginalAdmission {
             session: context.session_id.clone(),
             input: input.clone(),

@@ -87,6 +87,12 @@ impl FirstFixture {
     pub(crate) async fn for_service_input() -> Self {
         Box::pin(Self::new_selected(true, true, true)).await
     }
+    pub(crate) async fn for_service_input_with_source(
+        prepare_source: crate::installed_host::controller_first_input_fixture::PrepareOriginalSource,
+    ) -> Self {
+        Box::pin(Self::new_selected_source(true, true, true, None, None, false,
+            Some(prepare_source), None, false)).await
+    }
     pub(crate) async fn for_console_input(human: PrincipalRef) -> Self {
         Box::pin(Self::new_selected_source(true, true, true, None, None, false, None, Some(human), false)).await
     }
@@ -131,7 +137,7 @@ impl FirstFixture {
         prepare_source: Option<crate::installed_host::controller_first_input_fixture::PrepareOriginalSource>,
         console_human: Option<PrincipalRef>, task_parent_administration: bool) -> Self
     {
-        assert!(prepare_source.is_none() || configured_setup);
+        assert!(prepare_source.is_none() || local_operator);
         assert!(!(console_human.is_some() && task_parent_administration));
         let mut opened = None;
         let mut owners = None;
@@ -195,7 +201,11 @@ impl FirstFixture {
         } else if status_fault.is_some() {
             crate::installed_host::controller_first_input_fixture::open_for_source_status(&facts).await
         } else if local_operator {
-            crate::installed_host::controller_first_input_fixture::open_for_service_input(&facts).await
+            match prepare_source {
+                Some(prepare_source) => crate::installed_host::controller_first_input_fixture::open_for_service_input_with_source(
+                    &facts, prepare_source).await,
+                None => crate::installed_host::controller_first_input_fixture::open_for_service_input(&facts).await,
+            }
         } else {
             crate::installed_host::controller_first_input_fixture::open_with_probe(&facts, select_controller, probe).await
         };

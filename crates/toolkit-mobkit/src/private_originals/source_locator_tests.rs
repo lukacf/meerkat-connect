@@ -1,18 +1,16 @@
 use super::*;
-use crate::original_ingress::tests::{initialized, private_event, private_originals_with_store};
+use crate::original_ingress::tests::{initialized, private_event, private_route};
 use std::os::unix::fs::PermissionsExt;
 use toolkit_store::{SqliteStore, StoredEffect, StoredEvent};
 
 async fn source(directory: &std::path::Path) -> Arc<PrivateOriginals> {
     let owner = initialized(&directory.join("grants"));
     let store = Arc::new(SqliteStore::open(directory.join("source.sqlite")).unwrap());
-    let initial = private_originals_with_store(owner.clone(), store.clone()).await;
-    let scope = initial.scope.clone();
-    let mut routes = initial.routes().unwrap().to_vec();
+    let scope = StoreScope { realm: "test-realm".into(), owner: "originals".into() };
+    let mut routes = vec![private_route("route")];
     let mut alias = routes[0].clone();
     alias.id = Id::new("alias").unwrap();
     routes.push(alias);
-    drop(initial);
     Arc::new(PrivateOriginals::new(scope, store, owner, routes).await.unwrap())
 }
 
@@ -51,9 +49,12 @@ async fn source_record_locator_preserves_exact_alias_and_scope_without_writes() 
     unknown_route.route = Id::new("unknown-route").unwrap();
     assert_eq!(source.source_record_key(&unknown_route).await, Err(PrivateOriginalError::Denied));
 
+    // This other owner retains historical events only. Separate owners here
+    // test locator scope, not cross-application authority or native admission.
+    let foreign_owner = initialized(&directory.path().join("foreign-grants"));
     let foreign = PrivateOriginals::new(
         StoreScope { realm: source.scope.realm.clone(), owner: "other-originals".into() },
-        source.store.clone(), source.owner.clone(), source.routes().unwrap().to_vec(),
+        source.store.clone(), foreign_owner, source.routes().unwrap().to_vec(),
     ).await.unwrap();
     assert_eq!(foreign.source_record_key(&reference).await, Err(PrivateOriginalError::Unavailable));
     // References carry no owner identity. Independently retaining the same

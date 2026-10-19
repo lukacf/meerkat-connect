@@ -827,7 +827,7 @@ impl InstalledServiceTask {
             let reference = PrivateOriginalRef { route: event.route.clone(), original: event.original.clone(),
                 event_sha256: digest(&canonical_json(&event).map_err(|_| E::from(PrivateOriginalError::Conflict))?) };
             let key = source.key(&reference).map_err(|_| E::from(PrivateOriginalError::Denied))?;
-            let data = encode(SourceRecord {
+            let data = encode(SourceRecord { custody_attempt: None,
                 shared_preparations: Vec::new(),
                 setup_request: None, configured_setup: None, service_setup_children: vec![],
                 source: parent_record.source,

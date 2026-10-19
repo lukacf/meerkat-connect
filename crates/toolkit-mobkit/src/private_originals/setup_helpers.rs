@@ -58,6 +58,7 @@ pub(crate) enum SetupHelperSubmission {
 /// Its guard owns only source custody. Native remains the input/turn owner.
 pub(crate) struct HeldSetupHelper {
     source: RetainedHelperSource,
+    first_input: OnceLock<cold_service_admission::RetainedBoundInput>,
     unresolved: Mutex<Vec<Box<dyn GovernedSettlement>>>,
     // Bound once from the canonical live setup before input admission. Never
     // reconstructed from source history or refreshed by human approval.
@@ -136,7 +137,7 @@ impl PrivateOriginals {
         let operation_deadline_ms = OnceLock::new();
         if let Some(deadline) = deadline_ms { operation_deadline_ms.set(deadline).unwrap(); }
         self.helper_sources.lock().unwrap().push(Arc::new(HeldSetupHelper {
-            source, unresolved: Mutex::new(Vec::new()), operation_deadline_ms,
+            source, first_input: OnceLock::new(), unresolved: Mutex::new(Vec::new()), operation_deadline_ms,
         }));
     }
 
@@ -489,15 +490,14 @@ impl PrivateOriginals {
             .iter()
             .find(|prior| prior.source.source_record.key == source.source_record.key)
         {
-            if prior.source.source_record != source.source_record
-                || !Arc::ptr_eq(&prior.source.original, &source.original)
-            {
+            if !prior.source.same_bound_source(&source).map_err(helper_error)? {
                 return Err(PrivateOriginalError::Conflict);
             }
             return Ok(prior.clone());
         }
         let source = Arc::new(HeldSetupHelper {
             source,
+            first_input: OnceLock::new(),
             unresolved: Mutex::new(Vec::new()),
             operation_deadline_ms: OnceLock::new(),
         });
@@ -903,10 +903,10 @@ impl GovernedInputBinder for SubmitHelperBinder {
                 crate::aa1_failure("helper.bind.selection", "Unavailable");
                 "Toolkit helper selection is unavailable"
             })?;
-        let (input, pending) = self
+        let mut prepared = self
             .source
             .owner
-            .bind_authenticated_input(
+            .prepare_authenticated_input(
                 &self.held.source.original,
                 &context.session_id,
                 input,
@@ -919,6 +919,33 @@ impl GovernedInputBinder for SubmitHelperBinder {
                 crate::aa1_failure("helper.bind.input", aa1_helper_runtime_variant(&_error));
                 "Toolkit helper input binding is unavailable"
             })?;
+        let admitted = prepared.admitted().map_err(|_| "Toolkit admitted helper is unavailable")?;
+        if admitted.is_none() {
+            if let Some(exact) = cold_service_admission::RetainedBoundInput::retain_for_attempt(
+                &self.held.first_input, prepared.input(),
+            ).map_err(|_| "Toolkit first helper input changed")? {
+                prepared = self.source.owner.prepare_authenticated_input(
+                    &self.held.source.original, &context.session_id, exact,
+                    self.held.source.event_key.clone(), self.held.source.authentication.clone(),
+                    context.controller.clone(),
+                ).map_err(|_| "Toolkit could not rebind the exact first helper input")?;
+            }
+            self.source.owner.persist_helper_custody_attempt(
+                self.source.store.as_ref(), &self.admitted, &self.held.source,
+                &context.session_id, prepared.input(),
+            ).await.map_err(|_| "Toolkit could not persist the first helper attempt")?;
+        }
+        if tokio::time::Instant::now() >= self.source_deadline {
+            return Err("Toolkit helper submission deadline elapsed".into());
+        }
+        self.source.owner.check_admitted_helper(&self.admitted)
+            .map_err(|_| "Toolkit helper source is unavailable")?;
+        self.source.require_helper_selection(self.admitted.selection())
+            .map_err(|_| "Toolkit helper selection is unavailable")?;
+        let (input, pending) = match admitted {
+            Some(admitted) => admitted,
+            None => prepared.stage().map_err(|_| "Toolkit helper candidate is unavailable")?,
+        };
         let settlement = HelperSettlement {
             expected_session: context.session_id.clone(),
             expected_input: input.id().clone(),

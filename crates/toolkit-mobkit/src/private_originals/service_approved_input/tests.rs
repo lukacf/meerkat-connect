@@ -48,7 +48,7 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
             // grant, and these coordinates cannot admit or authorize B.
             PrivateServiceGrantRef { route: parent.route.clone(), decision: Id::new("unissued-b").unwrap(),
                 decision_sha256: "0".repeat(64) });
-        let record = SourceRecord { shared_preparations: Vec::new(), bound_service_input: None, planning_source_evidence: None, setup_request: None, configured_setup: None, service_setup_children: vec![], source: parent_record.source.clone(), event,
+        let record = SourceRecord { custody_attempt: None, shared_preparations: Vec::new(), bound_service_input: None, planning_source_evidence: None, setup_request: None, configured_setup: None, service_setup_children: vec![], source: parent_record.source.clone(), event,
             final_association: None, operation_cancelled: false, service_attachment_failure: None, service_attachment_observation: None,
             service_attachment_member: None, approved_task: Some(link),
             // This exercises the actual canonical admitted-field branch. It
@@ -217,11 +217,11 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
             assert!(matches!(late, Err(OriginalWriterError::OperationCancelled)));
             assert!(!entered.load(Ordering::SeqCst), "cancelled A refuses before B publication callback");
         }
-        // Use a fresh source projection over the same canonical store; it has
-        // no local retained B handle. The actual binder must reopen A's row.
-        let reopened = PrivateOriginals::new(source.scope.clone(), source.store.clone(),
-            source.owner.clone(), source.routes().unwrap().to_vec()).await.unwrap();
-        let outcome = reopened.persist_or_observe_binding(&reference, &b, true).await;
+        // B has no local retained handle. The actual binder rereads canonical
+        // B and its cancelled parent A through this same source owner.
+        assert!(!source.retained.lock().unwrap().iter()
+            .any(|held| held.reference == reference));
+        let outcome = source.persist_or_observe_binding(&reference, &b, true).await;
         assert!(matches!(outcome, Err(OriginalWriterError::OperationCancelled)));
         let stored_b = source.store.get(&key).await.unwrap().unwrap();
         let b_after = source.decode_record(&stored_b, &reference).unwrap();
@@ -240,7 +240,7 @@ async fn service_instruction_cancellation_fences_existing_and_future_linked_sour
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_instruction_parent_only_commit_refuses_reopened_unbound_b() {
+async fn service_instruction_parent_only_commit_refuses_unbound_b_after_canonical_reread() {
     cancellation_case(true, false, None).await;
 }
 

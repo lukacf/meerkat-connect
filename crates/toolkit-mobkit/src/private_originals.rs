@@ -42,6 +42,8 @@ pub use setup_request::PrivateSetupRequestSelection;
 mod first_input;
 #[cfg(test)]
 mod source_locator_tests;
+#[cfg(test)]
+mod custody_attempt_tests;
 mod service_approved_input;
 mod service_input_receipt;
 pub use service_input_receipt::{PrivateServiceInputObservation, PrivateServiceInputReceipt,
@@ -79,11 +81,11 @@ pub use service_grants::{
 
 const SOURCE_SCHEMA: &str = "toolkit.authenticated-source-event";
 const SOURCE_VERSION: u32 = 3;
+const CUSTODY_SOURCE_VERSION: u32 = 4;
 
 pub(crate) fn same_source_origin(left: &StoredRecord, right: &StoredRecord) -> bool {
     let decode = |record: &StoredRecord| -> Option<SourceRecord> {
-        if record.data.schema != SOURCE_SCHEMA || record.data.version != SOURCE_VERSION { return None; }
-        serde_json::from_value(record.data.body.clone()).ok()
+        decode_source_record(record).ok()
     };
     match (decode(left), decode(right)) {
         (Some(left), Some(right)) => left.source == right.source && left.event == right.event
@@ -242,6 +244,10 @@ impl SourceFacts {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceRecord {
+    /// First native-bound attempt and source-owned recovery accounting only.
+    /// Absence is legacy/unenrolled, never proof of native non-entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custody_attempt: Option<crate::original_ingress::custody_attempt::CustodyAttempt>,
     /// Cleanup custody for exact shared preparations admitted by this source.
     /// The SetupStore P record owns membership and delivery. These locators
     /// are retained before join and never authorize an effect or disclosure.
@@ -306,6 +312,9 @@ struct HeldPrivateOriginal {
     // The actual Console binder installs this process owner once. A later
     // setup request inherits custody by its exact original association.
     console_login: OnceLock<crate::private_host::ConsoleLoginHandle>,
+    // Historical exact first-input bytes, with no process controller/ingress
+    // backpointer. The tracked binder rebuilds those through native on retry.
+    first_input: OnceLock<cold_service_admission::RetainedBoundInput>,
     unresolved: Mutex<Vec<Arc<governed_submit::PendingOriginalAdmission>>>,
     service_attachments: Mutex<Vec<Arc<service_approved_input::attachment::HeldServiceAttachment>>>,
     shared_preparations: Mutex<Vec<service_approved_input::shared_preparation::HeldSharedPreparation>>,
@@ -504,6 +513,7 @@ impl PrivateOriginals {
         owner: Arc<ToolkitOriginalOwner>,
         routes: Vec<PrivateOriginalRoute>,
     ) -> Result<Self, PrivateOriginalError> {
+        Self::validate_routes(&scope, &routes)?;
         let value = Self::prepare(scope, store, owner).await?;
         value.finalize_routes(routes)?;
         Ok(value)
@@ -538,6 +548,11 @@ impl PrivateOriginals {
         // The host holds its existing store/lifetime exclusion while opening.
         // Audit once before exposing this adapter; no per-event scope scan.
         value.validate_source_format().await?;
+        value.owner.bind_canonical_source(&value.store, &value.scope)
+            .map_err(|error| match error {
+                OriginalWriterError::Unavailable => PrivateOriginalError::Unavailable,
+                _ => PrivateOriginalError::Denied,
+            })?;
         Ok(value)
     }
 
@@ -545,6 +560,13 @@ impl PrivateOriginals {
     /// Validation precedes publication; neither a retry nor another owner may
     /// replace routes already used by this source adapter.
     pub(crate) fn finalize_routes(&self, routes: Vec<PrivateOriginalRoute>)
+        -> Result<(), PrivateOriginalError>
+    {
+        Self::validate_routes(&self.scope, &routes)?;
+        self.routes.set(routes).map_err(|_| PrivateOriginalError::Denied)
+    }
+
+    fn validate_routes(scope: &StoreScope, routes: &[PrivateOriginalRoute])
         -> Result<(), PrivateOriginalError>
     {
         for (index, route) in routes.iter().enumerate() {
@@ -563,13 +585,21 @@ impl PrivateOriginals {
                     .represented_subject
                     .as_ref()
                     .is_some_and(|principal| principal.validate_qualified().is_err())
-                || route.realm.to_string() != self.scope.realm
+                || route.realm.to_string() != scope.realm
                 || routes[..index].iter().any(|other| other.id == route.id)
             {
                 return Err(PrivateOriginalError::Denied);
             }
         }
-        self.routes.set(routes).map_err(|_| PrivateOriginalError::Denied)
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bound_input_capture_for_test(&self, reference: &PrivateOriginalRef)
+        -> (bool, Option<bool>)
+    {
+        (self.host_lifetime.get().is_some(), self.retained.lock().unwrap().iter()
+            .find(|held| &held.reference == reference).map(|held| held.retain_bound_input))
     }
 
     pub(crate) fn routes(&self) -> Result<&[PrivateOriginalRoute], PrivateOriginalError> {
@@ -691,6 +721,7 @@ impl PrivateOriginals {
         };
         let key = self.key(&reference)?;
         let data = encode(SourceRecord {
+            custody_attempt: None,
             shared_preparations: Vec::new(),
             setup_request: None,
             configured_setup: None,
@@ -774,6 +805,78 @@ impl PrivateOriginals {
                 .map_err(|_| PrivateOriginalError::Conflict)?;
         }
         Ok(value)
+    }
+
+    /// Prepare a first-attempt CAS from this exact current row. The caller
+    /// must retain the foreground write and recheck before Candidate staging.
+    /// This method does not persist, enroll or publish source custody.
+    pub(crate) fn prepare_custody_enrollment(
+        &self, stored: &StoredRecord, reference: &PrivateOriginalRef,
+        original: &Arc<RetainedToolkitOriginal>, session: &meerkat_core::SessionId,
+        input: &meerkat_runtime::Input,
+    ) -> Result<Transition, PrivateOriginalError> {
+        self.owner.check_canonical_source(self.store.as_ref(), &self.scope)
+            .map_err(cold_service_admission::writer_error)?;
+        self.owner.check_bound_source(original).map_err(cold_service_admission::writer_error)?;
+        let record = self.decode_record(stored, reference)?;
+        if record.operation_cancelled || record.final_association.as_ref() != Some(original.association())
+            || input.header().idempotency_key.as_ref() != Some(&cold_service_admission::source_event_key(&record)?)
+            || !matches!(input, meerkat_runtime::Input::Prompt(prompt)
+                if matches!(&prompt.content, meerkat_core::ContentInput::Text(text)
+                    if digest(text.as_bytes()) == record.event.content_sha256))
+        { return Err(PrivateOriginalError::Conflict); }
+        let next = crate::original_ingress::custody_attempt::CustodyAttempt::for_prepared(
+            session, input, original.association()).map_err(cold_service_admission::writer_error)?;
+        if let Some(existing) = &record.custody_attempt {
+            if existing != &next { return Err(PrivateOriginalError::Conflict); }
+        }
+        Self::custody_transition(stored, record, next)
+    }
+
+    /// The native tracked binder owns this entire future, including an entered
+    /// SQLite write after caller loss. No Candidate exists until it returns.
+    async fn persist_first_custody_attempt(
+        &self, held: &Arc<HeldPrivateOriginal>, session: &meerkat_core::SessionId,
+        input: &meerkat_runtime::Input,
+    ) -> Result<(), PrivateOriginalError> {
+        let _writer = self.owner.try_source_writer().map_err(cold_service_admission::writer_error)?;
+        let stored = self.store.get(&self.key(&held.reference)?).await.map_err(store_error)?
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        let record = self.decode_record(&stored, &held.reference)?;
+        if record.custody_attempt.is_none() && !held.original.first_binding_for(&stored.key) {
+            // Legacy absence cannot prove that native never saw an input.
+            return Err(PrivateOriginalError::Unavailable);
+        }
+        let transition = self.prepare_custody_enrollment(
+            &stored, &held.reference, &held.original, session, input)?;
+        if transition.data != stored.data {
+            self.store.compare_and_swap(transition).await.map_err(store_error)?;
+        }
+        self.owner.check_bound_source(&held.original).map_err(cold_service_admission::writer_error)
+    }
+
+    /// Canonical data transition only. Native evidence, decision arbitration,
+    /// entered-write ownership and terminal publication belong to the caller.
+    pub(crate) fn prepare_custody_transition(
+        &self, stored: &StoredRecord, reference: &PrivateOriginalRef,
+        next: crate::original_ingress::custody_attempt::CustodyAttempt,
+    ) -> Result<Transition, PrivateOriginalError> {
+        self.owner.check_canonical_source(self.store.as_ref(), &self.scope)
+            .map_err(cold_service_admission::writer_error)?;
+        let record = self.decode_record(stored, reference)?;
+        if record.custody_attempt.is_none() { return Err(PrivateOriginalError::Conflict); }
+        Self::custody_transition(stored, record, next)
+    }
+
+    fn custody_transition(stored: &StoredRecord, mut record: SourceRecord,
+        next: crate::original_ingress::custody_attempt::CustodyAttempt,
+    ) -> Result<Transition, PrivateOriginalError> {
+        crate::original_ingress::custody_attempt::CustodyAttempt::validate_transition(
+            record.custody_attempt.as_ref(), &next).map_err(cold_service_admission::writer_error)?;
+        record.custody_attempt = Some(next);
+        Ok(Transition { key: stored.key.clone(), expected_revision: stored.revision,
+            expected_digest: Some(stored.content_digest.clone()), claim: None,
+            data: encode(record)?, events: vec![], effects: vec![] })
     }
 
     /// Read immutable source facts for the native binder. This observation is
@@ -930,6 +1033,10 @@ impl PrivateOriginals {
             // association or task authority on its later replay.
             return Err(OriginalWriterError::OperationCancelled);
         }
+        // The same source owner retains the exact entered binding operation
+        // before I/O, including when commit succeeds but its reply is lost.
+        self.owner.retain_first_binding_write(self.store.as_ref(), &self.scope, &key,
+            Arc::new(stored.clone()), association)?;
         record.final_association = Some(association.clone());
         let data = encode(record).map_err(|_| OriginalWriterError::Conflict)?;
         self.store
@@ -1128,6 +1235,7 @@ impl PrivateOriginals {
             service_mcp,
             retain_bound_input,
             console_login: OnceLock::new(),
+            first_input: OnceLock::new(),
             unresolved: Mutex::new(Vec::new()),
             service_attachments: Mutex::new(Vec::new()),
             shared_preparations: Mutex::new(Vec::new()),
@@ -1263,7 +1371,7 @@ fn decode_source_record(stored: &StoredRecord) -> Result<SourceRecord, PrivateOr
     if stored.key.validate().is_err()
         || stored.revision == 0
         || stored.data.schema != SOURCE_SCHEMA
-        || stored.data.version != SOURCE_VERSION
+        || !matches!(stored.data.version, SOURCE_VERSION | CUSTODY_SOURCE_VERSION)
         || stored.data.digest().ok().as_deref() != Some(stored.content_digest.as_str())
         || !valid_digest(&stored.content_digest)
     {
@@ -1271,6 +1379,10 @@ fn decode_source_record(stored: &StoredRecord) -> Result<SourceRecord, PrivateOr
     }
     let value: SourceRecord = serde_json::from_value(stored.data.body.clone())
         .map_err(|_| PrivateOriginalError::Conflict)?;
+    validate_custody_record(&value)?;
+    if (stored.data.version == CUSTODY_SOURCE_VERSION) != value.custody_attempt.is_some() {
+        return Err(PrivateOriginalError::Conflict);
+    }
     value.source.validate()?;
     if stored.key.realm != value.source.realm.to_string()
         || stored.key.id
@@ -1311,10 +1423,24 @@ fn decode_source_record(stored: &StoredRecord) -> Result<SourceRecord, PrivateOr
     Ok(value)
 }
 
+fn validate_custody_record(record: &SourceRecord) -> Result<(), PrivateOriginalError> {
+    if let Some(attempt) = &record.custody_attempt {
+        let association = record.final_association.as_ref().ok_or(PrivateOriginalError::Conflict)?;
+        attempt.validate_binding(association).map_err(|_| PrivateOriginalError::Conflict)?;
+        if let Some(input) = &record.bound_service_input {
+            if !attempt.matches_input(&input.decode()?).map_err(|_| PrivateOriginalError::Conflict)? {
+                return Err(PrivateOriginalError::Conflict);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn encode(record: SourceRecord) -> Result<RecordData, PrivateOriginalError> {
+    validate_custody_record(&record)?;
     Ok(RecordData {
         schema: SOURCE_SCHEMA.into(),
-        version: SOURCE_VERSION,
+        version: if record.custody_attempt.is_some() { CUSTODY_SOURCE_VERSION } else { SOURCE_VERSION },
         body: serde_json::to_value(record).map_err(|_| PrivateOriginalError::Conflict)?,
     })
 }

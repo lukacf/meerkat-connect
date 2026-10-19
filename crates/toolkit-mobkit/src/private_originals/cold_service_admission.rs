@@ -24,6 +24,19 @@ impl RetainedBoundInput {
         Ok(value)
     }
 
+    /// Retain first-input bytes under the existing live source. Retry matching
+    /// uses native replay equivalence, but returns the original exact ID/time.
+    /// The caller must rebind current process ingress/controller before use.
+    pub(super) fn retain_for_attempt(
+        slot: &OnceLock<Self>, input: &Input,
+    ) -> Result<Option<Input>, PrivateOriginalError> {
+        let candidate = Self::from_bound(input)?;
+        if slot.set(candidate).is_ok() { return Ok(None); }
+        let retained = slot.get().ok_or(PrivateOriginalError::Unavailable)?;
+        if !retained.same_binding(input)? { return Err(PrivateOriginalError::Conflict); }
+        retained.decode().map(Some)
+    }
+
     pub(super) fn decode(&self) -> Result<Input, PrivateOriginalError> {
         let input: Input = serde_json::from_value(self.0.clone()).map_err(|_| PrivateOriginalError::Conflict)?;
         if !matches!(input, Input::Prompt(_))

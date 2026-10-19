@@ -160,6 +160,7 @@ impl ToolkitOriginalOwner {
             // Historical admission preserves the selected class and cannot
             // recover a task-revoke issuer.
             grant_binding: class,
+            first_binding: None,
         });
         originals.push(OriginalRecord::Bound(HeldOriginal {
             retained: retained.clone(), source_custody: Some(SourceCustody::Admitted),

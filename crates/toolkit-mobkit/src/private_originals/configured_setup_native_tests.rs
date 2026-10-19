@@ -235,7 +235,19 @@ async fn issued_child_survives_source_write_failure_without_new_id_or_session() 
             fixture.submit().await,
             Ok(PrivateOriginalSubmission::NativeOutcomeUnavailable)
         ));
-        assert_eq!(fixture.store.get(&key).await.unwrap().unwrap(), before);
+        let selected = fixture.store.get(&key).await.unwrap().unwrap();
+        let mut expected = fixture.source.decode_record(&before, &fixture.submission.original).unwrap();
+        assert!(expected.configured_setup.is_none());
+        // First binding retains this exact host choice before child issuance.
+        // The trigger refuses the later association write, not that selection.
+        expected.configured_setup = Some(configured_setup::ConfiguredSetupSelection {
+            capability: fixture.lifetime().selected_policy().native_host.as_ref().unwrap()
+                .members[0].setup_capability.as_ref().unwrap().clone(),
+            session_id: fixture.session.clone(),
+        });
+        assert_eq!(selected.key, before.key);
+        assert_eq!(selected.revision, before.revision + 1);
+        assert_eq!(selected.data, encode(expected).unwrap());
         assert_eq!(fixture.model_requests(), 0);
         let child_id = EvidenceId::new(format!("original-configured-setup-{}", key.id)).unwrap();
         let issued = fixture
@@ -247,7 +259,7 @@ async fn issued_child_survives_source_write_failure_without_new_id_or_session() 
             .expect("native child issued before failed source CAS");
         let record = fixture
             .source
-            .decode_record(&before, &fixture.submission.original)
+            .decode_record(&selected, &fixture.submission.original)
             .unwrap();
         assert!(
             fixture
@@ -271,6 +283,7 @@ async fn issued_child_survives_source_write_failure_without_new_id_or_session() 
                 .unwrap(),
             Some(issued.clone())
         );
+        assert_eq!(fixture.store.get(&key).await.unwrap().unwrap(), selected);
         sql.execute_batch("DROP TRIGGER refuse_configured_bind;")
             .unwrap();
         let first = fixture.submit().await;
@@ -373,10 +386,10 @@ async fn committed_binding_and_lost_read_recover_exact_native_child() {
     let capture = captured_fault.clone();
     let fixture = Box::pin(FirstFixture::new_selected_configuration_with_source(
         true, false, true, None, None, true,
-        Some(Box::new(move |source| {
-            let fault = store_fault::LostReplyStore::new(source.store.clone());
-            source.store = fault.clone();
-            *capture.lock().unwrap() = Some(fault);
+        Some(Box::new(move |store| {
+            let fault = store_fault::LostReplyStore::new(store);
+            *capture.lock().unwrap() = Some(fault.clone());
+            fault
         })),
     )).await;
     let fault = captured_fault.lock().unwrap().take().expect("fault installed before source sharing");

@@ -60,6 +60,7 @@ async fn issued_helper(
     fixture: &Fixture,
     helper_session: &SessionId,
     original: &InputAuthorityAssociation,
+    fault: &DeliveryFault,
 ) -> Arc<setup_helpers::HeldSetupHelper> {
     let held = {
         let helpers = fixture.source.helper_sources.lock().unwrap();
@@ -107,15 +108,31 @@ async fn issued_helper(
         .unwrap()
         .unwrap();
     assert_eq!(facts.contributors, vec![original.clone()]);
-    assert_eq!(
-        fixture
-            .store
-            .get(&held.source_record().key)
-            .await
-            .unwrap()
-            .unwrap(),
-        *held.source_record().as_ref()
-    );
+    // The actual binder has persisted its first attempt before this native gate.
+    // The retained Bound snapshot remains unchanged; only custody was added.
+    let retained = held.source_record();
+    let current = fixture.store.get(&retained.key).await.unwrap().unwrap();
+    assert_eq!(retained.data.version, 3);
+    assert!(retained.data.body.get("custody_attempt").is_none());
+    assert_eq!(current.key, retained.key);
+    assert_eq!(current.data.schema, retained.data.schema);
+    assert_eq!(current.data.version, 4);
+    assert_eq!(current.revision, retained.revision + 1);
+    assert_eq!(current.content_digest, current.data.digest().unwrap());
+    let mut unchanged = current.data.body.clone();
+    let actual_attempt = unchanged.as_object_mut().unwrap()
+        .remove("custody_attempt").unwrap();
+    assert_eq!(actual_attempt["session_id"], serde_json::to_value(helper_session).unwrap());
+    assert_eq!(actual_attempt["input_id"],
+        serde_json::to_value(fault.helper_input.lock().unwrap().as_ref().unwrap()).unwrap());
+    let attempt: crate::original_ingress::custody_attempt::CustodyAttempt =
+        serde_json::from_value(actual_attempt).unwrap();
+    attempt.validate_binding(binding).unwrap();
+    if let Some(actual) = fault.helper_inputs.lock().unwrap().first() {
+        let input: meerkat_runtime::Input = serde_json::from_value(actual.clone()).unwrap();
+        assert!(attempt.matches_input(&input).unwrap());
+    }
+    assert_eq!(unchanged, retained.data.body);
     held
 }
 
@@ -202,10 +219,10 @@ async fn exercise(mode: DeliveryMode) {
             script.release_first_response();
             fault.entered.notified().await;
             // This is after actual issuance, source publication and helper binding.
-            let held = issued_helper(&fixture, &helper_session, &binding).await;
+            let held = issued_helper(&fixture, &helper_session, &binding, &fault).await;
             let helper_input = fault.helper_input.lock().unwrap().clone().unwrap();
             assert_ne!(helper_input.to_string(), *original_input);
-            let saved_helper = held.source_record().as_ref().clone();
+            let saved_helper = fixture.store.get(&held.source_record().key).await.unwrap().unwrap();
             let mut retirement = logins.fixture_retire(1).unwrap();
             assert!(
                 login.check().is_err(),
@@ -327,6 +344,7 @@ async fn exercise(mode: DeliveryMode) {
                 &fixture,
                 &helper_session,
                 &fixture.binding().await.unwrap().unwrap(),
+                &fault,
             )
             .await;
         }),
@@ -400,8 +418,8 @@ async fn exercise_helper_reprepare(mode: DeliveryMode) {
             assert!(fault.helper_admission_change.lock().unwrap().is_none(),
                 "the actual policy callback consumed the exact helper fault");
             assert!(acquisition_approved::native_history(history.as_ref(), &helper_session).await.is_empty());
-            let held = issued_helper(&fixture, &helper_session, &binding).await;
-            let saved_helper = held.source_record().as_ref().clone();
+            let held = issued_helper(&fixture, &helper_session, &binding, &fault).await;
+            let saved_helper = fixture.store.get(&held.source_record().key).await.unwrap().unwrap();
             let helper_input = fault.helper_input.lock().unwrap().clone().unwrap();
             assert_ne!(helper_input.to_string(), *original_input);
             let input_before = fault.helper_inputs.lock().unwrap().clone();
