@@ -63,6 +63,11 @@ Rust retains the typed cause, but the ordinary model-facing error loses the
 refusal kind. The Core lead confirms the gap and owns a native feedback correction
 for 0.9.4; its reviewed revision is pending. Private audit remains diagnostic
 evidence, not a model input or permission to retry an installation.
+The Core owner now locates the latest refusal at prepared dispatch after two
+successive publication changes, before policy-wrapped staging. The saved trace
+cannot tell whether the final change was still in progress. The proposed wait
+only applies in that case; it is not yet proof that the next revision fixes this
+failure. The next native run must retain the new typed refusal evidence.
 
 A separate admission-recovery gap remains: retaining an uncertain Original does
 not schedule recovery. The [reviewed #14 contract](/private/tmp/connect-lead-healthy-watch-pusq5c_i/20261018T225357.132122-claude-gcp-lead-f82ce4.json.txt)
@@ -79,6 +84,11 @@ storage returns Unavailable, never guessed NotRetained or indefinite Pending.
 Entered native operations remain separately owned until actual settlement or
 close. The exact Core 0.9.4 API revision and Connect's durable-ordering
 implementation remain pending; r7 startup alone does not close this gap.
+
+The first preparation/store-binding slice has an actual compile failure in two
+test fixtures, before any of its 28 selected controls run. The separate attempt
+schema is source-reviewed with ten unexecuted controls. Neither slice is adopted
+or qualifies bounded foreground recovery.
 
 An earlier full SDK diagnostic gets through both helpers' catalog/check calls,
 independent approvals, cancellation of A while B installs. Preparation completes
@@ -136,6 +146,10 @@ Current Connect accepts a supplied application principal but does not establish
 that distinct applications receive distinct principals. That contract belongs at
 the authenticated installer/activation admission boundary; paths or deployment
 labels cannot establish identity. Copies of one application may retain its identity.
+A trusted preparation owner may select two distinct authorities for the native
+isolation test; no new Core allocator or global registry is required. Two
+application instances assigned the same authority are not distinct security
+principals. The audit is complete, but the native isolation test has not run.
 The cross-application control must exercise two distinct application authorities
 in the same native grant domain, including an otherwise valid foreign child
 refused as OutsideBounds. New issuance IDs and an explicitly selected preparation
@@ -230,8 +244,12 @@ The configured Reading frontend has a source-reviewed sender migration and
 SQLite connection cleanup. Nine Reading Python tests pass; the separate egress
 and sender run passes 299 tests, including real retained-connection closure,
 rollback and receipt-preservation assertions. Its actual CLI consumer now stages
-successfully but fails native startup: the gateway rejects the private host
-protocol before admission. The cause of that protocol rejection is under investigation.
+successfully but fails native startup with a cleanup wrapper. The gateway's
+protocol-rejection wording also covers channel closure after an SDK timeout;
+it does not prove a malformed request. The reviewed two-file repair uses the
+existing 900-second installed startup bound, retains a 960-second first-phase
+observer and preserves typed primary/cleanup causes. Later phases and cleanup
+assertions are unchanged. Its affected CLI test must be rebuilt and rerun.
 Outer owners join, but the fixture does not prove normal SDK/native cleanup. The
 recovered CLI includes Core test-support features and is labelled a development
 integration artifact; the earlier build-wrapper failure is retained. Native
