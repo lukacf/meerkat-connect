@@ -46,7 +46,11 @@ version 0.9.0. The matching stock rkat build now passes at exact Core `9281f3b0`
 with stock default features and its unchanged lock. Receipt-only recovery joins
 the installed binary to the retained compiled executable after correcting two
 Cargo packaging assumptions; no rebuild or source change is involved. The
-binary reports 0.9.3. The actual CLI journey is running and remains unqualified.
+binary reports 0.9.3. The actual CLI journey reaches setup but Connect's worker
+overflows its stack before installation review; fresh rkat is not reached.
+Connect still uses default Tokio startup instead of Core's existing measured
+host-stack runner. A minimal entrypoint correction passes source review, with the
+fixture environment unchanged. The journey remains unqualified pending rerun.
 
 The r9 approval development gateway build also passes. Its affected consumer
 fails at setup-data HTTP 403 before intentional process loss or successor
