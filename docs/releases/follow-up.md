@@ -111,13 +111,21 @@ bounded same-input reprepare and never infers a new admission from a source row.
 The six reviewed paths are committed locally as private `717de80b` and
 public-follow-up `54a30ebc`; all recorded owners joined and source was restored.
 
-The recovery batch failed compilation twice before any of its 40 tests ran.
-The first failure was a missing parenthesis; the second exposed missing trait
-imports and a helper-fixture initializer. Both failures remain recorded in the
-shared-workflow report. The reviewed [43-test successor](/private/tmp/connect-c1-recovery-forty-three-4g6g95s3/MANIFEST-R1.json)
-includes those corrections and three additional controls: restoring an actual
-installed native input, waking its existing pending completion, and preserving
-a helper's accepted receipt after publication fails. Runtime qualification is pending.
+The recovery batch now has an actual [43-control result](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-recovery-wake-forty-three-g_7hiq35/FINAL.json)
+(`757f9db8`): 26 pass, 16 fail and one times out. Compilation and exact test
+listing pass. Three earlier compiler failures remain recorded. Six failures
+report native fixture shutdown errors; others stop at preparation, row-count or
+live-custody assertions. The helper-publication control reaches its injected
+failure, then exceeds the unchanged 300-second limit. Its forced termination
+does not establish a clean native shutdown. Diagnosis and corrections are in
+progress; no recovery source is adopted.
+
+The [reviewed successor source](/private/tmp/connect-c1-recovery-forty-three-4g6g95s3/MANIFEST-R1.json)
+includes three additional controls for restoring an actual installed native input,
+waking its existing pending completion and preserving a helper's accepted receipt
+after publication fails. All three remain unqualified. The finite [outcome review](/private/tmp/connect-c1-recovery43-root-outcome-z4df91ad/REVIEW.json)
+(`b539387c`) verifies all raw results, source restoration and external process
+cleanup, while retaining the distinct internal cleanup failures.
 
 Review also found a shutdown bug: a completed unreadable-row error could trigger
 another census indefinitely after stop. The correction waits for entered work,
