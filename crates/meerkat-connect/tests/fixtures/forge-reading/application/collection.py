@@ -1,4 +1,5 @@
 """Local guarded event ledger; native agents own conversation and recommendations."""
+from contextlib import closing
 import json
 import os
 import secrets
@@ -24,9 +25,10 @@ class Store:
     def connect(self):
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         db = sqlite3.connect(self.path, timeout=10)
-        os.chmod(self.path, 0o600)
-        db.row_factory = sqlite3.Row
-        db.executescript('''
+        try:
+            os.chmod(self.path, 0o600)
+            db.row_factory = sqlite3.Row
+            db.executescript('''
         CREATE TABLE IF NOT EXISTS books(id TEXT PRIMARY KEY,title TEXT,author TEXT,nt TEXT,na TEXT,status TEXT,revision INTEGER, UNIQUE(nt,na));
         CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,book_id TEXT,request_id TEXT,payload TEXT);
         CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,payload TEXT,result TEXT);
@@ -34,10 +36,17 @@ class Store:
         CREATE TRIGGER IF NOT EXISTS no_event_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT,'append only'); END;
         CREATE TRIGGER IF NOT EXISTS no_event_delete BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT,'append only'); END;
         ''')
+        except BaseException:
+            # Initialization failed before the caller could own the connection.
+            try:
+                db.close()
+            except BaseException:
+                pass  # Preserve the original initialization failure.
+            raise
         return db
 
     def snapshot(self):
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             books = []
             for row in db.execute('SELECT * FROM books ORDER BY rowid'):
                 b = dict(row)
@@ -50,7 +59,7 @@ class Store:
 
     def apply(self, p):
         encoded = json.dumps(p, sort_keys=True)
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
             prior = db.execute('SELECT * FROM requests WHERE id=?', (p['request_id'],)).fetchone()
             if prior:
@@ -130,14 +139,14 @@ class Integration:
             if any(args.get(k) and norm(args[k])!=norm(book[k]) for k in ('title','author')):
                 return {'status':'identity-conflict'}
         token = secrets.token_hex(12)
-        with self.store.connect() as db:
+        with closing(self.store.connect()) as db, db:
             db.execute('INSERT INTO pending VALUES(?,?,NULL)',(token,json.dumps(args)))
         confirmation = 'confirm '+token
         return {'status':'awaiting-human-confirmation','proposal':args,'confirmation':confirmation,
                 'instructions':'This is a valid staged proposal, not a write receipt. Librarian: return proposal and exact confirmation to lead. Lead: show all values/evidence and include '+confirmation+' in FINAL VISIBLE PROSE so the reader can copy it into authenticated Console. Do not hide it in tools or peer messages. Nothing saved yet.'}
 
     def receipt(self, args):
-        with self.store.connect() as db:
+        with closing(self.store.connect()) as db, db:
             row = db.execute('SELECT result FROM pending WHERE token=?',(args.get('token'),)).fetchone()
         return {'status':'not-confirmed'} if not row or not row[0] else json.loads(row[0])
 

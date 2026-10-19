@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from dataclasses import dataclass, field
 import inspect
 import os
@@ -142,7 +143,7 @@ class SenderAuthority:
         # Only that sender's borrowed selections and lifecycle are affected.
         self._lifecycles: dict[str, _SenderLifecycle] = defaultdict(_SenderLifecycle)
         created = not self.path.exists()
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sender_authority (
@@ -158,7 +159,15 @@ class SenderAuthority:
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
-        connection.execute("PRAGMA synchronous = FULL")
+        try:
+            connection.execute("PRAGMA synchronous = FULL")
+        except BaseException:
+            # Setup failed before the caller could acquire this connection.
+            try:
+                connection.close()
+            except BaseException:
+                pass  # Preserve the original setup failure.
+            raise
         return connection
 
     @staticmethod
@@ -180,7 +189,7 @@ class SenderAuthority:
             raise TypeError("sender has no dispatch implementation")
         if self._lifecycles[sender_id].deactivating is sender:
             raise ValueError("sender implementation is still deactivating")
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             existing = connection.execute(
                 "SELECT owner_id FROM sender_authority WHERE sender_id = ?",
                 (sender_id,),
@@ -208,7 +217,7 @@ class SenderAuthority:
         self._attachments[sender_id] = attachment
 
     def active_owner(self, sender_id: str) -> str | None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT owner_id FROM sender_authority WHERE sender_id = ?",
                 (sender_id,),
@@ -216,7 +225,7 @@ class SenderAuthority:
         return str(row[0]) if row is not None else None
 
     def owner_count(self, sender_id: str) -> int:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT COUNT(*) FROM sender_authority WHERE sender_id = ?",
                 (sender_id,),
@@ -279,7 +288,7 @@ class SenderAuthority:
             # attach_active is synchronous and can run while activate awaits.
             # Its new attachment supersedes this handle even for the same owner.
             self._candidate(activation)
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 connection.execute("BEGIN IMMEDIATE")
                 if expected_owner is None:
                     cursor = connection.execute(

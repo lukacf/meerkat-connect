@@ -19,6 +19,8 @@ use tokio::time::{sleep, timeout};
 
 pub const PASSWORD: &str = "  fixture läsbar 密码 +&= password  ";
 const BOUND: Duration = Duration::from_secs(15);
+// Existing 900-second installed startup budget plus bounded pre-connect fixture work.
+const NATIVE_STARTUP_BOUND: Duration = Duration::from_secs(900 + 60);
 
 pub struct Owner {
     pub origin: String,
@@ -174,7 +176,7 @@ fn verify_application_sources(fixture: &Path) {
     for (name, digest) in [
         (
             "__init__.py",
-            "fdae952c4c0cf921eee70ae5bc894eab1630e9a60428f78f6a823eab43338d4c",
+            "3892d46c790ac41a3aaa96e56b0f553b608246f5a890d69a1b490994a67cc9c9",
         ),
         (
             "frontends.py",
@@ -182,11 +184,11 @@ fn verify_application_sources(fixture: &Path) {
         ),
         (
             "collection.py",
-            "f62f0bb7301afc466af5cbf7ae551fdc6599249134cb68627f4f847b0e85475c",
+            "04992f703791704c51cc56415b9d35c7942188e1f78f507de345beddc424bbd7",
         ),
         (
             "telegram_runtime.py",
-            "8b9030b499df39800bdd72db486443fc48d3a88f75150749c536929b45d8bc04",
+            "8a9ad9d005cceab26a492812ce9487b7571ccc934811dcdc8e345bb275fd57c8",
         ),
     ] {
         assert_eq!(
@@ -232,7 +234,7 @@ impl NativeOwner {
         assert_eq!(format!("{:x}", Sha256::digest(fs::read(fixture.join("native_console_auth.py")).unwrap())),
                    "15c66c4097aa0e1ffcf5569cf46d40295e80c49ed3741ad2dffef3ee0786e317");
         assert_eq!(format!("{:x}", Sha256::digest(fs::read(fixture.join("native_owner.py")).unwrap())),
-                   "11b15358dd699bf51f46b0d38061a2f7e5f5b11d2cdc73fd2d6f15d240aab485");
+                   "f86fd6c424eac640ee75f71fbf7b90bb0151582bb83b5a36f7b3b1dcd8046524");
         let root = tempfile::Builder::new().prefix("connect-reading-native-cli-").tempdir().unwrap().keep();
         fs::create_dir(root.join("tmp")).unwrap();
         fs::write(root.join("selected-input.json"), input_bytes).unwrap();
@@ -256,14 +258,18 @@ impl NativeOwner {
         let mut owner = Self { origin: String::new(), root, child: Some(child), stdout, evidence: Vec::new() };
         let flags = OFlag::from_bits_retain(fcntl(&owner.stdout, FcntlArg::F_GETFL).unwrap());
         fcntl(&owner.stdout, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
-        let ready = owner.phase("setup-client-exited").await;
+        let ready = owner.phase_with_bound("setup-client-exited", NATIVE_STARTUP_BOUND).await;
         owner.origin = ready["observation"]["origin"].as_str().unwrap().to_owned();
         assert!(owner.origin.starts_with("http://127.0.0.1:"));
         owner
     }
 
     pub async fn phase(&mut self, expected: &str) -> Value {
-        let line = timeout(Duration::from_secs(180), async {
+        self.phase_with_bound(expected, Duration::from_secs(180)).await
+    }
+
+    async fn phase_with_bound(&mut self, expected: &str, bound: Duration) -> Value {
+        let line = timeout(bound, async {
             let mut line = Vec::new();
             loop {
                 let mut byte = [0];

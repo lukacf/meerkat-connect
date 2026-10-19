@@ -326,6 +326,7 @@ async def run(args, v):
     from meerkat_meta.builder import MetaBuilderConfig
     from meerkat_meta.identity_first_models import DurableAgentSpec
     from meerkat_toolkit.application_runtime import ToolkitApplicationRuntime
+    from meerkat_meta.errors import GatewayStartupCleanupError
     from meerkat_toolkit.frontend.telegram import TelegramBotApiTransport
     from application import build
     from application.telegram_runtime import join_task
@@ -433,7 +434,7 @@ async def run(args, v):
 
         providers = Providers()
         config = MetaBuilderConfig(gateway_bin=str(args.toolkit_gateway), init_deadline=v.INSTALLED_LIMIT,
-            gateway_init_timeout=60.0, roster_provider=providers, topology_provider=providers,
+            gateway_init_timeout=v.INSTALLED_LIMIT, roster_provider=providers, topology_provider=providers,
             persistent_state=plan["application"]["realm"]["state_root"], meerkat_config_path=str(config_path),
             http_listen="127.0.0.1:0", console_read_only=True, console_require_app_auth=False)
         runtime = Application(config, SDK.ApplicationPreparation(SDK.SelectedHostArtifact(**plan_pin), timeout=v.INSTALLED_LIMIT), finalizer)
@@ -888,6 +889,16 @@ async def run(args, v):
         report.update(status="passed", phase="completed", activation=integration.telegram.observation())
     except BaseException as error:
         report.update(status="failed", failure=failure(error, report["phase"]))
+        if report["phase"] == "native_connect":
+            # Preserve typed startup causes without formatting errors or payloads.
+            if isinstance(error, GatewayStartupCleanupError):
+                report["failure"]["startup_error_type"] = type(error.startup_error).__name__[:128]
+                report["failure"]["cleanup_error_type"] = type(error.cleanup_error).__name__[:128]
+            attempt = runtime.preparation_attempt if runtime is not None else None
+            if attempt is not None and attempt.settlement is not None:
+                native_result = attempt.settlement.native
+                if isinstance(native_result, BaseException):
+                    report["failure"]["preparation_native_error_type"] = type(native_result).__name__[:128]
     finally:
         # A failed assertion must not strand the actor behind the fixture barrier.
         release_reply.set()

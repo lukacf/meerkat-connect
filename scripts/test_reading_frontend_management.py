@@ -1,17 +1,22 @@
-"""Component checks of Reading's SQLite/actor disable recovery, without a runtime.
+"""Component checks of Reading's SQLite/actor disable recovery and sender lifecycle.
 
 Native observation endpoints are controlled fakes. The application methods and
-Toolkit close value types are real source; these checks make no native journey,
-provider delivery, CLI or Console acceptance claim.
+Toolkit close value types are real source. Reply checks use the real Toolkit
+sender, presenter and HTTP transport with an isolated loopback endpoint. These
+checks make no native journey, live provider, CLI or Console acceptance claim.
 """
 import argparse
 import asyncio
+from contextlib import closing
 import importlib.util
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import types
 import unittest
 from unittest.mock import patch
@@ -310,6 +315,361 @@ class ReadingManagementRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.close_state()["state"], "uncertain")
         with self.assertRaises(ValueError):
             self.commit({"component_id": "reading-telegram", "action": "remove"})
+
+
+class LoopbackTelegram:
+    """Real Toolkit HTTP transport, with an isolated local provider endpoint."""
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.sends = []
+        self.missing_receipt = False
+        owner = self
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                method = self.path.rsplit("/", 1)[-1]
+                if method == "getMe":
+                    result = {"id": 987654321, "is_bot": True, "first_name": "Loopback"}
+                elif method == "getWebhookInfo":
+                    result = {"url": "", "has_custom_certificate": False, "pending_update_count": 0}
+                elif method == "getUpdates":
+                    result = []
+                elif method == "sendMessage":
+                    owner.sends.append(payload)
+                    owner.entered.set()
+                    if not owner.release.wait(5):
+                        self.close_connection = True
+                        return
+                    result = {} if owner.missing_receipt else {
+                        "message_id": 900 + len(owner.sends), "chat": {"id": int(payload["chat_id"])}}
+                else:
+                    raise AssertionError("unexpected loopback method")
+                body = json.dumps({"ok": True, "result": result}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever)
+        self.thread.start()
+
+    def transport(self, token):
+        from meerkat_toolkit.frontend.telegram import TelegramBotApiTransport
+        value = TelegramBotApiTransport(token)
+        value._api_base = "http://127.0.0.1:" + str(self.server.server_port) + "/bot/"
+        return value
+
+    async def close(self):
+        self.release.set()
+        await asyncio.to_thread(self.server.shutdown)
+        await asyncio.to_thread(self.server.server_close)
+        await asyncio.to_thread(self.thread.join)
+        assert not self.thread.is_alive()
+
+
+class ReadingSenderLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    """Configured example only: native completion rows are controlled inputs."""
+    @classmethod
+    def setUpClass(cls):
+        cls.modules = patch.dict(sys.modules, component_imports())
+        cls.modules.start()
+        cls.addClassCleanup(cls.modules.stop)
+        cls.sdk = module_at("meerkat_toolkit.host_control",
+                            TOOLKIT_PYTHON / "meerkat_toolkit/host_control.py")
+        toolkit = types.ModuleType("meerkat_toolkit")
+        toolkit.__path__ = [str(TOOLKIT_PYTHON / "meerkat_toolkit")]
+        toolkit.host_control = cls.sdk
+        sys.modules["meerkat_toolkit"] = toolkit
+        cls.application = module_at("_reading_sender_component", APPLICATION / "__init__.py", package=True)
+
+    async def asyncSetUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="reading-sender-component-")
+        self.addCleanup(self.temporary.cleanup)
+        self.environment = patch.dict(os.environ, {"CONSOLE_USER_ID": "component-owner",
+            "READING_TELEGRAM_BOT_TOKEN": "987654321:loopback-fixture-only"}, clear=True)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.host = {"protocol": 1, "host_id": "forge:" + "1" * 64,
+                     "application_id": "reading-component", "source_digest": "2" * 64}
+        self.close = ControlledClose(self.sdk)
+        self.runtime = ControlledRuntime(self.close)
+        self.provider = LoopbackTelegram()
+        self.transports = []
+        def transport(token):
+            value = self.provider.transport(token)
+            self.transports.append(value)
+            return value
+        self.context = types.SimpleNamespace(root=self.temporary.name,
+            deployment={"slug": "reading-component"}, frontend_host=lambda: dict(self.host),
+            runtime=self.runtime, submit_frontend_input=self.runtime.submit,
+            telegram_transport_factory=transport)
+        self.app = self.application.Integration(self.context)
+        self.app.frontends.start()
+        self.configuration = {"component_id": "reading-telegram", "profile": "private-text-dm",
+            "participant_id": "reading-owner", "route_id": "reading-lead-dm",
+            "telegram_user_id": 42, "telegram_dm_chat_id": 42, "native_identity": "lead:main",
+            "bot_token": {"private_field": "READING_TELEGRAM_BOT_TOKEN"},
+            "exclusive_polling_acknowledged": True}
+        self.commit(self.configuration)
+        self.actor = self.app.telegram
+        self.actor.poll_interval = .01
+        self.tasks = []
+        self.service_store = self.app.store
+        proposal = self.app.propose({"operation": "add", "request_id": "component-book-1",
+            "title": "Controlled Book", "author": "Component Author", "evidence": "loopback fixture"})
+        self.assertEqual(proposal["status"], "awaiting-human-confirmation")
+        await self.app.on_console_input(types.SimpleNamespace(channel="host-authenticated-console",
+            identity="lead:main", content=proposal["confirmation"], principal="component-owner",
+            input_frame_id="component-confirmation-1"))
+        self.service_snapshot = self.app.store.snapshot()
+        self.assertEqual(len(self.service_snapshot["books"]), 1)
+        self.assertEqual(len(self.service_snapshot["books"][0]["events"]), 1)
+
+    def commit(self, configuration):
+        with self.app.frontends.connection(readonly=True) as db:
+            revision = self.app.frontends.state(db)["revision"]
+        request = lambda operation, payload, approved=False: types.SimpleNamespace(
+            operation=operation, payload=payload, approved=approved,
+            host=dict(self.host), principal="component-owner")
+        proposal = self.app.frontends.manage(request("prepare", {
+            "configuration": configuration, "expected_revision": revision}))["proposal"]
+        return self.app.frontends.manage(request("submit", {"proposal": proposal,
+            "approval": {"principal": "component-owner", "expires_at": proposal["expires_at"]}}, True))
+
+    def completed(self, update_id):
+        # Fixture input to the application, not a fabricated native acceptance claim.
+        ticket = "controlled-ticket-" + str(update_id)
+        completion = {"identity": "lead:main", "ticket": ticket, "state": "completed",
+            "output_status": "text", "output": "controlled result " + str(update_id), "output_truncated": False}
+        selection = self.actor.selected()
+        with self.app.frontends.connection(readonly=False) as db, db:
+            db.execute("INSERT INTO reading_telegram_inbox(bot_id,update_id,payload,binding,status,admission,completion) VALUES(?,?,?,?,?,?,?)",
+                ("987654321", update_id, "{}", json.dumps(selection, sort_keys=True, separators=(",", ":")),
+                 "native-completed", json.dumps({"identity": "lead:main", "turn_ticket": ticket}), json.dumps(completion)))
+
+    def outbound(self):
+        with self.app.frontends.connection(readonly=True) as db:
+            return [dict(row) for row in db.execute("SELECT * FROM reading_telegram_outbound ORDER BY update_id")]
+
+    async def wait_for(self, predicate):
+        async def wait():
+            while not predicate():
+                if self.actor.task is not None and self.actor.task.done():
+                    self.actor.task.result()
+                    self.fail("Reading supervisor ended before the condition")
+                await asyncio.sleep(.005)
+        await asyncio.wait_for(wait(), 2)
+
+    async def start_completed(self, *, second=False):
+        await self.actor.start()
+        self.completed(1)  # start() has not yielded to the supervisor.
+        if second:
+            self.completed(2)  # Same pending batch, before the first read.
+        await self.wait_for(self.provider.entered.is_set)
+        self.assertEqual(len(self.transports), 1)
+        self.assertEqual(self.outbound()[0]["state"], "entered")
+        self.assertEqual(len(self.transports[0]._operations), 1)
+        return self.actor.sender_authority, self.actor.sender_activation
+
+    async def asyncTearDown(self):
+        self.provider.release.set()
+        try:
+            await self.actor.stop()
+            for task in self.tasks:
+                await asyncio.gather(task, return_exceptions=True)
+            self.assertTrue(all(task.done() for task in self.tasks))
+            self.assertTrue(all(not transport._operations for transport in self.transports))
+            self.assertIs(self.app.store, self.service_store)
+            self.assertEqual(self.app.store.snapshot(), self.service_snapshot)
+            self.assertEqual((self.runtime.dispatches, self.runtime.replies), (0, 0))
+        finally:
+            self.app.frontends.stop()
+            await self.provider.close()
+
+    async def test_entered_reply_survives_sender_retirement_and_later_reply_is_stopped(self):
+        authority, activation = await self.start_completed(second=True)
+        borrowed = await authority.select_dispatch(sender_id=activation.sender_id)
+        disabled = self.commit({"component_id": "reading-telegram", "action": "disable"})
+        await self.actor.configuration_committed(disabled["revision"])
+        await self.wait_for(lambda: not authority.is_attached(activation.sender_id))
+        self.assertFalse(authority.is_current_dispatch(borrowed))
+        self.assertFalse(self.actor.session.done())
+        self.assertEqual(len(self.transports[0]._operations), 1)
+        self.assertEqual(len(self.provider.sends), 1)
+        self.assertEqual(self.outbound()[0]["state"], "entered")
+        self.provider.release.set()
+        await self.wait_for(lambda: self.actor.state == "disabled")
+        rows = self.outbound()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["state"], "provider_accepted")
+        self.assertEqual(json.loads(rows[0]["receipt"])["provider_message_id"], "901")
+        with self.app.frontends.connection(readonly=True) as db:
+            self.assertEqual(db.execute("SELECT status FROM reading_telegram_inbox WHERE update_id=2").fetchone()[0], "disabled-reply-stopped")
+        self.assertEqual(len(self.provider.sends), 1)
+        self.assertIsNone(self.actor.sender_activation)
+        with self.assertRaisesRegex(ValueError, "separately selected new activation"):
+            self.commit(self.configuration)
+        self.assertFalse(authority.is_current_dispatch(borrowed))
+        self.assertEqual(self.outbound(), rows)
+
+    async def test_cancelled_stop_joins_entered_http_and_unknown_is_not_resent_on_reopen(self):
+        authority, activation = await self.start_completed()
+        stopping = asyncio.create_task(self.actor.stop())
+        self.tasks.append(stopping)
+        await self.wait_for(lambda: not authority.is_attached(activation.sender_id))
+        stopping.cancel()
+        await asyncio.sleep(.02)
+        self.assertFalse(stopping.done())
+        self.assertEqual(len(self.transports[0]._operations), 1)
+        self.provider.release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await stopping
+        rows = self.outbound()
+        self.assertEqual(rows[0]["state"], "unknown")
+        self.assertEqual(len(self.provider.sends), 1)
+        self.assertFalse(self.transports[0]._operations)
+        # Ordinary application reopen uses the same durable records and no new input.
+        self.app.frontends.stop()
+        reopened = self.application.Integration(self.context)
+        self.app = reopened
+        self.actor = reopened.telegram
+        self.actor.poll_interval = .01
+        await reopened.start()
+        await self.wait_for(lambda: len(self.transports) == 2 and self.actor.sender_activation is not None)
+        await asyncio.sleep(.03)
+        self.assertEqual(self.outbound(), rows)
+        self.assertEqual(len(self.provider.sends), 1)
+        # The Store wrapper is new, but the same canonical database/data survives.
+        self.service_store = reopened.store
+
+    async def test_missing_provider_receipt_stays_unknown_across_exact_configuration_reopen(self):
+        self.provider.missing_receipt = True
+        self.provider.release.set()
+        await self.actor.start()
+        self.completed(1)
+        await self.wait_for(lambda: self.outbound() and self.outbound()[0]["state"] == "unknown")
+        rows = self.outbound()
+        authority = self.actor.sender_authority
+        activation = self.actor.sender_activation
+        borrowed = await authority.select_dispatch(sender_id=activation.sender_id)
+        before = authority.active_owner(activation.sender_id)
+        await self.actor.stop()
+        self.assertFalse(authority.is_current_dispatch(borrowed))
+        self.assertFalse(authority.is_attached(activation.sender_id))
+        with self.assertRaises(ValueError):
+            await authority.select_dispatch(sender_id=activation.sender_id)
+        await self.actor.start()
+        await self.wait_for(lambda: self.actor.sender_activation is not None)
+        await asyncio.sleep(.03)
+        self.assertEqual(authority.active_owner(activation.sender_id), before)
+        self.assertEqual(authority.owner_count(activation.sender_id), 1)
+        current = await authority.select_dispatch(sender_id=activation.sender_id)
+        self.assertTrue(authority.is_current_dispatch(current))
+        self.assertFalse(authority.is_current_dispatch(borrowed))
+        self.assertIsNot(current.sender, borrowed.sender)
+        with self.assertRaises(ValueError):
+            await authority.close_activation(activation)
+        self.assertTrue(authority.is_current_dispatch(current))
+        self.assertEqual(self.outbound(), rows)
+        self.assertEqual(len(self.provider.sends), 1)
+        self.provider.missing_receipt = False
+        self.completed(2)
+        await self.wait_for(lambda: len(self.outbound()) == 2 and self.outbound()[1]["state"] == "provider_accepted")
+        self.assertEqual(self.outbound()[0], rows[0])
+        self.assertEqual(len(self.provider.sends), 2)
+
+
+class ReadingSQLiteLifetimeTests(unittest.TestCase):
+    def test_collection_connections_close_after_commit_replay_and_rollback(self):
+        collection = module_at("_reading_sqlite_collection", APPLICATION / "collection.py")
+        original_connect = sqlite3.connect
+        opened = []
+
+        def connect(*args, **kwargs):
+            connection = original_connect(*args, **kwargs)
+            opened.append(connection)
+            return connection
+
+        def assert_closed():
+            self.assertTrue(opened)
+            for connection in opened:
+                with self.assertRaisesRegex(sqlite3.ProgrammingError, "closed database"):
+                    connection.execute("SELECT 1")
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="reading-sqlite-") as directory:
+                integration = collection.Integration(types.SimpleNamespace(root=directory))
+                store = integration.store
+                with patch.object(collection.sqlite3, "connect", connect):
+                    self.assertEqual(store.snapshot()["books"], [])
+                    assert_closed()
+                    request = dict(operation="add", request_id="connection-closure", title="Book",
+                                   author="Author", evidence="controlled ledger test")
+                    proposed = integration.propose(request)
+                    self.assertEqual(proposed["status"], "awaiting-human-confirmation")
+                    self.assertEqual(integration.receipt({"token": proposed["confirmation"][8:]}),
+                                     {"status": "not-confirmed"})
+                    assert_closed()
+                    saved = store.apply(request)
+                    self.assertEqual(saved["status"], "saved")
+                    self.assertEqual(store.apply(request), saved)
+                    before = store.snapshot()
+                    assert_closed()
+                    with closing(original_connect(store.path)) as connection, connection:
+                        connection.execute("CREATE TRIGGER reject_request BEFORE INSERT ON requests "
+                            "BEGIN SELECT RAISE(ABORT, 'blocked request'); END")
+                    with self.assertRaisesRegex(sqlite3.IntegrityError, "blocked request"):
+                        store.apply(dict(operation="finished", request_id="rollback-closure",
+                                         book_id=saved["book_id"], expected_revision=1))
+                    self.assertEqual(store.snapshot(), before)
+                    assert_closed()
+        finally:
+            for connection in opened:
+                connection.close()
+
+    def test_schema_failure_closes_connection_and_preserves_original_error(self):
+        collection = module_at("_reading_sqlite_failure", APPLICATION / "collection.py")
+        original_connect = sqlite3.connect
+        for close_fails in (False, True):
+            with self.subTest(close_fails=close_fails):
+                opened, errors = [], []
+
+                class Connection(sqlite3.Connection):
+                    def executescript(self, *args, **kwargs):
+                        try:
+                            return super().executescript(*args, **kwargs)
+                        except sqlite3.DatabaseError as error:
+                            errors.append(error)
+                            raise
+
+                    def close(self):
+                        super().close()
+                        if close_fails:
+                            raise OSError("controlled close failure after actual closure")
+
+                def connect(*args, **kwargs):
+                    connection = original_connect(*args, **kwargs, factory=Connection)
+                    opened.append(connection)
+                    connection.set_authorizer(lambda action, *_:
+                        sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_CREATE_TABLE else sqlite3.SQLITE_OK)
+                    return connection
+
+                try:
+                    with tempfile.TemporaryDirectory(prefix="reading-sqlite-failure-") as directory:
+                        with patch.object(collection.sqlite3, "connect", connect):
+                            with self.assertRaises(sqlite3.DatabaseError) as caught:
+                                collection.Store(Path(directory) / "collection.sqlite").connect()
+                        self.assertEqual(len(opened), 1)
+                        self.assertIs(caught.exception, errors[0])
+                        with self.assertRaisesRegex(sqlite3.ProgrammingError, "closed database"):
+                            opened[0].execute("SELECT 1")
+                finally:
+                    for connection in opened:
+                        sqlite3.Connection.close(connection)
 
 
 if __name__ == "__main__":

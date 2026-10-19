@@ -55,6 +55,113 @@ class Candidate:
         return {"outcome": "sent", "provider_message_id": "fixture-result"}
 
 
+@pytest.mark.asyncio
+async def test_connections_close_after_selection_reads_commits_and_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = original_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    def assert_closed() -> None:
+        assert opened
+        for connection in opened:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                connection.execute("SELECT 1")
+
+    monkeypatch.setattr(sender_module.sqlite3, "connect", connect)
+    path = tmp_path / "sender-authority.sqlite3"
+    try:
+        authority = SenderAuthority(path=path)
+        assert_closed()
+        authority.attach_active(sender_id=SENDER, owner_id="old", sender=Candidate())
+        assert_closed()
+        assert authority.active_owner(SENDER) == "old"
+        assert authority.owner_count(SENDER) == 1
+        assert_closed()
+        activation = authority.stage_activation(
+            sender_id=SENDER, to_owner_id="new", sender=Candidate(),
+        )
+        await authority.commit_activation(activation)
+        assert rows(path)[0][:2] == (SENDER, "new")
+        assert_closed()
+        await authority.close_activation(activation)
+
+        with closing(original_connect(path)) as connection, connection:
+            connection.execute(
+                "CREATE TRIGGER reject_blocked BEFORE UPDATE ON sender_authority "
+                "WHEN NEW.owner_id = 'blocked' BEGIN SELECT RAISE(ABORT, 'blocked'); END"
+            )
+        before = rows(path)
+        failed = authority.stage_activation(
+            sender_id=SENDER, to_owner_id="blocked", sender=Candidate(),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="blocked"):
+            await authority.commit_activation(failed)
+        assert rows(path) == before
+        assert_closed()
+        await authority.close_activation(failed)
+    finally:
+        for connection in opened:
+            connection.close()
+
+
+@pytest.mark.parametrize("phase,close_fails", [
+    ("pragma", False), ("pragma", True), ("schema", False), ("schema", True),
+])
+def test_initialization_failure_closes_real_connection_with_expected_error_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, close_fails: bool,
+) -> None:
+    original_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+    errors: list[sqlite3.DatabaseError] = []
+
+    class Connection(sqlite3.Connection):
+        def execute(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            try:
+                return super().execute(*args, **kwargs)
+            except sqlite3.DatabaseError as error:
+                errors.append(error)
+                raise
+
+        def close(self) -> None:
+            super().close()
+            if close_fails:
+                raise OSError("controlled close failure after actual closure")
+
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = original_connect(*args, **kwargs, factory=Connection)
+        opened.append(connection)
+        denied = sqlite3.SQLITE_PRAGMA if phase == "pragma" else sqlite3.SQLITE_CREATE_TABLE
+        connection.set_authorizer(
+            lambda action, *_: sqlite3.SQLITE_DENY if action == denied else sqlite3.SQLITE_OK
+        )
+        return connection
+
+    monkeypatch.setattr(sender_module.sqlite3, "connect", connect)
+    try:
+        # Raw PRAGMA setup preserves its original failure. The constructor's
+        # outer closing scope keeps normal Python exception chaining instead.
+        constructor_close_failure = phase == "schema" and close_fails
+        expected = OSError if constructor_close_failure else sqlite3.DatabaseError
+        with pytest.raises(expected) as caught:
+            SenderAuthority(path=tmp_path / "sender-authority.sqlite3")
+        assert len(opened) == 1
+        if constructor_close_failure:
+            assert caught.value.__context__ is errors[0]
+        else:
+            assert caught.value is errors[0]
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            opened[0].execute("SELECT 1")
+    finally:
+        for connection in opened:
+            sqlite3.Connection.close(connection)
+
+
 def rows(path: Path) -> list[tuple[str, str, int]]:
     with closing(sqlite3.connect(path)) as connection:
         return connection.execute(

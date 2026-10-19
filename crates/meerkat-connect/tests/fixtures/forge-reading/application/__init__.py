@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 from .collection import Integration as BaseIntegration
 from .frontends import ReadingFrontend
@@ -86,7 +87,7 @@ class Integration(BaseIntegration):
         if not text.startswith('confirm '):
             return
         token = text[8:]
-        with self.store.connect() as db:
+        with closing(self.store.connect()) as db, db:
             db.execute('CREATE TABLE IF NOT EXISTS approvals(token TEXT PRIMARY KEY,payload TEXT NOT NULL)')
             db.execute('BEGIN IMMEDIATE')
             pending = db.execute('SELECT * FROM pending WHERE token=?', (token,)).fetchone()
@@ -111,7 +112,7 @@ class Integration(BaseIntegration):
                 db.execute('INSERT INTO approvals VALUES(?,?)', (token, json.dumps(payload)))
         # Persist first admission before apply, preserving crash/retry provenance.
         result = self.store.apply(payload)
-        with self.store.connect() as db:
+        with closing(self.store.connect()) as db, db:
             db.execute('UPDATE pending SET result=? WHERE token=?', (json.dumps(result), token))
 
 
