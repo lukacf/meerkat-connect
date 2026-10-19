@@ -60,9 +60,9 @@ is fixed. Three actual runs then failed at different runtime boundaries:
 All three preserve their failures and pass strict command cleanup. The latest
 refusal does not explain the earlier failures, and r7 remains unadopted. Native
 Rust retains the typed cause, but the ordinary model-facing error loses the
-refusal kind. The Core lead has been asked for the supported feedback contract
-before Connect changes the agent's behavior. Private audit is diagnostic evidence,
-not a model input or permission to retry an installation.
+refusal kind. The Core lead confirms the gap and owns a native feedback correction
+for 0.9.4; its reviewed revision is pending. Private audit remains diagnostic
+evidence, not a model input or permission to retry an installation.
 
 A separate admission-recovery gap remains: retaining an uncertain Original does
 not schedule recovery. The [reviewed #14 contract](/private/tmp/connect-lead-healthy-watch-pusq5c_i/20261018T225357.132122-claude-gcp-lead-f82ce4.json.txt)
@@ -117,11 +117,12 @@ helper. The original agent's identity is unchanged. The strict identity assertio
 is retained. [Independent outcome review](/private/tmp/connect-healthy-initialized-outcome-tqm912mx/REVIEW.json)
 (`9ccdd210`) separates the observed transport success from the skipped final
 historical-source and reader/listener checks. The gateway exits normally, its
-provider joins and all outer command owners settle. Source tracing identifies a Meta-owned projection split:
-`/console/experience` uses the old roster while `/console/identities` uses the
-current identity runtime. The Core/Meta lead confirms this as a Meta defect and
-owns its 0.9.4 correction and regression. An exact reviewed development pair is
-still pending; Connect retains the strict assertion and existing response path.
+provider joins and all outer command owners settle. The Meta lead's real-router
+probe narrows the cause: the identity runtime and roster already contain the
+successor, but the first `/console/experience` read serves a stale cached snapshot.
+The planned 0.9.4 fix joins the current identity binding at request time while
+preserving visibility and native liveness ownership. The reviewed development
+pair is still pending; Connect retains the strict first-read assertion.
 
 The two healthy runtime files are checkpointed locally as private `78721061` and
 public `d54c71c9`, after independent review of the six controls and actual native
