@@ -118,8 +118,18 @@ fn interaction_error<T>(primary: ConnectError, cancellation: Result<T, ConnectEr
     }
 }
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
+fn main() -> std::process::ExitCode {
+    // Use Core's measured worker and main-future budget, as ordinary rkat does.
+    match meerkat_runtime::host_stack::run_host("meerkat-connect", cli_main) {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("{}", display_text(&error.to_string()));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn cli_main() -> std::process::ExitCode {
     match run(Cli::parse()).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
