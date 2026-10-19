@@ -13,7 +13,7 @@ const SECOND_DONE: &str = "The second exact public service access was reviewed. 
 const SETUP_PROMPT: &str = "Install the supplied Agno Hacker News integration for get_top_hackernews_stories, then install the supplied Agno Wikipedia integration for search_wikipedia with language en. Ask for access for rkat-agent until revoked for each service, and finish both setups without calling either service.";
 const SETUP_DONE: &str = "The exact public service access was reviewed. Setup is closing for finalization; no service operation has run yet.";
 const CONTINUED: &str = "Both retained native results confirm configuration and selected access. The second service was acquired in the same continued setup invocation, and both exact jobs were read back without replaying installation; no service operation has run.";
-const RUN_PROMPT: &str = "Use the installed get_top_hackernews_stories tool with num_stories set to 1, then report that returned story's id and title.";
+const RUN_PROMPT: &str = "Use the installed get_top_hackernews_stories tool with num_stories set to 3, then report all three returned stories with their ids and titles.";
 const ACCESS_CALL: &str = "review-public-access";
 const STORY_CALL: &str = "fresh-rkat-public-story";
 const SEARCH_CALL: &str = "fresh-rkat-public-search";
@@ -69,7 +69,7 @@ fn public_access_scoped(request: &Request, job_id: &str, raw: &str,
     completed(done)
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct Story {
     id: u64,
     title: String,
@@ -78,7 +78,7 @@ struct Story {
 // The retained MCP projection preserves both Agno's text JSON array and its
 // distinct structured {value: <the same JSON string>} block. Parse those exact
 // values, not a substring that could turn an error envelope into success.
-fn public_story(content: &str) -> Result<Story, String> {
+fn public_stories(content: &str) -> Result<Vec<Story>, String> {
     let values: Vec<Value> = serde_json::Deserializer::from_str(content).into_iter()
         .collect::<Result<_, _>>().map_err(|error| error.to_string())?;
     if values.len() != 2 || !values[0].is_array()
@@ -87,15 +87,20 @@ fn public_story(content: &str) -> Result<Story, String> {
     let mirrored: Value = serde_json::from_str(values[1]["value"].as_str()
         .ok_or("missing Agno structured value")?).map_err(|error| error.to_string())?;
     if mirrored != values[0] { return Err("MCP text and structured values disagree".into()); }
-    let mut stories: Vec<Story> = serde_json::from_value(mirrored).map_err(|error| error.to_string())?;
-    if stories.len() != 1 { return Err("the live operation must return one story".into()); }
-    let story = stories.pop().unwrap();
-    if story.id == 0 || story.title.trim().is_empty() { return Err("empty public story".into()); }
-    Ok(story)
+    let stories: Vec<Story> = serde_json::from_value(mirrored).map_err(|error| error.to_string())?;
+    if stories.len() != 3 { return Err("the live operation must return three stories".into()); }
+    if stories.iter().any(|story| story.id == 0 || story.title.trim().is_empty()) {
+        return Err("empty public story".into());
+    }
+    if stories.iter().map(|story| story.id).collect::<BTreeSet<_>>().len() != 3 {
+        return Err("the live operation must return three distinct stories".into());
+    }
+    Ok(stories)
 }
 
-fn story_answer(story: &Story) -> String {
-    format!("Hacker News story {}: {}", story.id, story.title)
+fn story_answer(stories: &[Story]) -> String {
+    stories.iter().map(|story| format!("Hacker News story {}: {}", story.id, story.title))
+        .collect::<Vec<_>>().join("\n")
 }
 
 // Decode observed display data only. This is the finalizer's known no-media
@@ -336,7 +341,7 @@ fn fresh_call(index: usize) -> (&'static str, &'static str, Value) {
     match index {
         0 => (SEARCH_CALL, "tool_catalog_search", json!({"query":OPERATION,"limit":50})),
         1 => (LOAD_CALL, "tool_catalog_load", json!({"names":[OPERATION]})),
-        2 => (STORY_CALL, OPERATION, json!({"num_stories":1})),
+        2 => (STORY_CALL, OPERATION, json!({"num_stories":3})),
         _ => panic!("no further fresh calls are permitted"),
     }
 }
@@ -465,9 +470,9 @@ fn response(request: &Request, phase: usize) -> String {
             "the exact next catalog or service operation is not offered");
         return deferred_call_response(id, name, arguments);
     }
-    let story = public_story(results[2]["content"].as_str().unwrap())
-        .expect("the actual public service must return a typed nonempty story");
-    completed(&story_answer(&story))
+    let stories = public_stories(results[2]["content"].as_str().unwrap())
+        .expect("the actual public service must return three typed distinct stories");
+    completed(&story_answer(&stories))
 }
 
 /// This is the same test-owned PTY/process cleanup owner, reusing its roots and
@@ -578,6 +583,12 @@ async fn assert_observed_helpers_gone(observed: &[ObservedProcess]) {
 }
 
 pub(super) async fn run() {
+    // The same settled realm may be kept for a separate live-model consumer.
+    // This never changes the controlled result's evidence scope.
+    let keep_realm = std::env::var_os("CONNECT_KEEP_FRESH_REALM").map(|value| {
+        assert_eq!(value, "1", "CONNECT_KEEP_FRESH_REALM must be exactly 1");
+        true
+    }).unwrap_or(false);
     // These are mandatory when this ignored live test is explicitly selected.
     // The delivery owner supplies the hash from the accepted native tuple; this
     // fixture checks bytes and must not infer tuple provenance from a filename.
@@ -688,7 +699,7 @@ pub(super) async fn run() {
     let final_body = &requests.last().unwrap().body;
     let service_result = final_body["messages"].as_array().unwrap().iter()
         .find(|message| message["role"] == "tool" && message["tool_call_id"] == STORY_CALL).unwrap();
-    let story = public_story(service_result["content"].as_str().unwrap()).unwrap();
+    let stories = public_stories(service_result["content"].as_str().unwrap()).unwrap();
     #[derive(serde::Deserialize)]
     struct RunResult {
         session_id: meerkat_core::SessionId,
@@ -701,21 +712,39 @@ pub(super) async fn run() {
     assert_ne!(result.session_id, setup_session);
     assert_eq!(result.session_ref, format!("{REALM}:{}", result.session_id));
     assert_eq!(result.tool_calls, 3, "two catalog operations and exactly one service call");
-    assert_eq!(result.text, story_answer(&story));
+    assert_eq!(result.text, story_answer(&stories));
+    let retained_root = keep_realm.then(|| cli._root.take().unwrap().keep());
+    println!("{}", json!({
+        "event":"connect_cli_fresh_rkat_three_stories",
+        "scope":"scripted_loopback_model_actual_cli_and_fresh_ordinary_rkat_real_public_https",
+        "realm":REALM, "retained_root":retained_root, "setup_session_id":setup_session,
+        "fresh_session_id":result.session_id, "session_ref":result.session_ref,
+        "cli_sha256":file_digest(&prefix.join("bin/meerkat-connect")),
+        "rkat_sha256":expected_sha256, "stories":stories, "answer":result.text,
+        "business_tool_calls":result.tool_calls, "setup_exited_before_fresh_rkat":true,
+        "fresh_rkat_exited_successfully":true, "realm_configuration_unchanged":true,
+        "observed_setup_helpers_absent":true, "setup_services":["hackernews","wikipedia"],
+    }));
 }
 
 #[test]
 fn public_story_oracle_rejects_error_empty_and_disagreeing_results() {
-    let value = json!([{"id":1,"title":"Typed control"}]).to_string();
+    let value = json!([{"id":1,"title":"First control"},
+        {"id":2,"title":"Second control"},{"id":3,"title":"Third control"}]).to_string();
     let content = format!("{value}\n{}", json!({"value":value}));
-    assert_eq!(public_story(&content).unwrap().id, 1);
+    assert_eq!(public_stories(&content).unwrap().iter().map(|story| story.id).collect::<Vec<_>>(), vec![1,2,3]);
+    for invalid in [json!([{"id":1,"title":"Only one"}]),
+        json!([{"id":1,"title":"First"},{"id":1,"title":"Repeated"},{"id":3,"title":"Third"}])] {
+        let text = invalid.to_string();
+        assert!(public_stories(&format!("{text}\n{}", json!({"value":text}))).is_err());
+    }
     for content in [
         "Upstream operation failed\n{\"error\":{\"entered\":true}}".to_owned(),
         format!("[]\n{}", json!({"value":"[]"})),
         format!("{value}\n{}", json!({"value":"[]"})),
         format!("{value}\n{}", json!({"value":value,"error":{"entered":true}})),
         format!("{value}\n{}\n{{}}", json!({"value":value})),
-    ] { assert!(public_story(&content).is_err()); }
+    ] { assert!(public_stories(&content).is_err()); }
 }
 
 
@@ -807,7 +836,8 @@ fn fresh_public_request_accepts_only_one_business_input_and_canonical_boundary_n
             "visibility_status":"deferred"}]});
     let loaded = json!({"catalog_exact":true,"accepted_names":[OPERATION],"noop_names":[],
         "resolutions":[{"name":OPERATION,"accepted":true}]});
-    let value = json!([{"id":1,"title":"Typed control"}]).to_string();
+    let value = json!([{"id":1,"title":"First control"},
+        {"id":2,"title":"Second control"},{"id":3,"title":"Third control"}]).to_string();
     let story = format!("{value}\n{}", json!({"value":value}));
     for (fields, addition) in [(None, false), (None, true), (Some((true, false, 0)), true),
         (Some((false, true, 1)), true), (Some((true, true, u64::MAX)), true)] {
@@ -826,7 +856,7 @@ fn fresh_public_request_accepts_only_one_business_input_and_canonical_boundary_n
                 messages.push(user(&deferred_catalog_projection(&[vec![], vec![OPERATION], vec![]])));
             }
         }
-        assert_eq!(response(&request(messages, true), 3), completed("Hacker News story 1: Typed control"));
+        assert_eq!(response(&request(messages, true), 3), completed("Hacker News story 1: First control\nHacker News story 2: Second control\nHacker News story 3: Third control"));
     }
     let mut noop = loaded.clone();
     noop["accepted_names"] = json!([]);
@@ -839,7 +869,7 @@ fn fresh_public_request_accepts_only_one_business_input_and_canonical_boundary_n
     append(&mut messages, 0, already_loaded.to_string());
     append(&mut messages, 1, noop.to_string());
     assert_eq!(response(&request(messages, true), 2),
-        deferred_call_response(STORY_CALL, OPERATION, json!({"num_stories":1})));
+        deferred_call_response(STORY_CALL, OPERATION, json!({"num_stories":3})));
 
     let finalization = finalization_projection(&json!({"kind":"connect_finalization_observation",
         "facts":{"persistence":"saved","grant":{"state":"selected"}}}));
