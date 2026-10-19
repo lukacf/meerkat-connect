@@ -45,19 +45,24 @@ The selected development consumer uses the same Core with
 [Meta r7](https://github.com/lukacf/meerkat-meta/commit/d66f444ef4c4bc50af6a18ac727791aaf21a4541).
 It consumes actual SDK/stdio bootstrap completion under the existing host close
 boundary and starts the retained recovery owner. Its audit-fixture compile error
-is fixed. Two actual runs then failed at different runtime boundaries:
+is fixed. Three actual runs then failed at different runtime boundaries:
 
 - In one, A's helper reaches installation, but B has no helper tool event. An
   unlabelled ControllerReadinessUnavailable lacks the session and reason needed
   to attribute the failure.
 - In the next, both helpers load their catalog, but B's selected check returns
-  operation_authorization_unavailable. A's check succeeds. The earlier readiness
-  refusal does not recur and remains unexplained.
+  operation_authorization_unavailable. A's check succeeds.
+- In the latest, both checks pass. A's Install returns generic operation_refused
+  before the requested cancellation. Native audit and the exact tool sequence
+  correlate this with a pre-entry ReprepareRequired refusal. The scripted agent
+  rejects the error; the other eight selected cases remain unentered.
 
-Both runs preserve their failures and pass strict command cleanup. Neither permits
-r7 adoption. The next one-case diagnostic adds exact operation-stage observations
-without changing authorization, timing or retries. Only if it passes will the same
-compiled artifacts run the remaining eight selected cases.
+All three preserve their failures and pass strict command cleanup. The latest
+refusal does not explain the earlier failures, and r7 remains unadopted. Native
+Rust retains the typed cause, but the ordinary model-facing error loses the
+refusal kind. The Core lead has been asked for the supported feedback contract
+before Connect changes the agent's behavior. Private audit is diagnostic evidence,
+not a model input or permission to retry an installation.
 
 A separate admission-recovery gap remains: retaining an uncertain Original does
 not schedule recovery. The [reviewed #14 contract](/private/tmp/connect-lead-healthy-watch-pusq5c_i/20261018T225357.132122-claude-gcp-lead-f82ce4.json.txt)
@@ -114,8 +119,9 @@ is retained. [Independent outcome review](/private/tmp/connect-healthy-initializ
 historical-source and reader/listener checks. The gateway exits normally, its
 provider joins and all outer command owners settle. Source tracing identifies a Meta-owned projection split:
 `/console/experience` uses the old roster while `/console/identities` uses the
-current identity runtime. The exact finding is sent to the Core/Meta lead; no
-Connect response rewrite or relaxed assertion is selected.
+current identity runtime. The Core/Meta lead confirms this as a Meta defect and
+owns its 0.9.4 correction and regression. An exact reviewed development pair is
+still pending; Connect retains the strict assertion and existing response path.
 
 The two healthy runtime files are checkpointed locally as private `78721061` and
 public `d54c71c9`, after independent review of the six controls and actual native
