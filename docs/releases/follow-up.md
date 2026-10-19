@@ -111,15 +111,21 @@ bounded same-input reprepare and never infers a new admission from a source row.
 The six reviewed paths are committed locally as private `717de80b` and
 public-follow-up `54a30ebc`; all recorded owners joined and source was restored.
 
-The [20-path recovery batch](/private/tmp/connect-c1-recovery-tjet3qmk/MANIFEST.json)
-(`2c3dc6be`) has independent source approval. Its 40-control runtime composition
-is in preparation, with no execution outcome yet. It adds one retained source
-owner, bounded canonical settlement, permanent withdrawal and joined shutdown.
-Restart restoration against an actual installed native input, pending-completion
-delivery after the recovery announcement and helper recovery acceptance remain
-separate required tests. The direct Connect application-driver close changes also
-need their installed-gateway build and affected runtime qualification. Neither
-this source review nor the narrower handoff pass closes admission recovery.
+The recovery batch failed compilation twice before any of its 40 tests ran.
+The first failure was a missing parenthesis; the second exposed missing trait
+imports and a helper-fixture initializer. Both failures remain recorded in the
+shared-workflow report. The reviewed [43-test successor](/private/tmp/connect-c1-recovery-forty-three-4g6g95s3/MANIFEST-R1.json)
+includes those corrections and three additional controls: restoring an actual
+installed native input, waking its existing pending completion, and preserving
+a helper's accepted receipt after publication fails. Runtime qualification is pending.
+
+Review also found a shutdown bug: a completed unreadable-row error could trigger
+another census indefinitely after stop. The correction waits for entered work,
+then retains the error and finishes close when no live or cold operation remains.
+The source is not yet adopted. The direct Connect application-driver changes
+separately require two cleanup controls, a fresh installed-gateway build and the
+public Hacker News success/resource-corruption pair. Neither source approval nor
+the narrower handoff pass closes admission recovery.
 
 An earlier full SDK diagnostic gets through both helpers' catalog/check calls,
 independent approvals, cancellation of A while B installs. Preparation completes
