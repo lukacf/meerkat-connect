@@ -111,29 +111,37 @@ bounded same-input reprepare and never infers a new admission from a source row.
 The six reviewed paths are committed locally as private `717de80b` and
 public-follow-up `54a30ebc`; all recorded owners joined and source was restored.
 
-The recovery batch now has an actual [43-control result](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-recovery-wake-forty-three-g_7hiq35/FINAL.json)
-(`757f9db8`): 26 pass, 16 fail and one times out. Compilation and exact test
-listing pass. Three earlier compiler failures remain recorded. Six failures
-report native fixture shutdown errors; others stop at preparation, row-count or
-live-custody assertions. The helper-publication control reaches its injected
-failure, then exceeds the unchanged 300-second limit. Its forced termination
-does not establish a clean native shutdown. Diagnosis and corrections are in
-progress; no recovery source is adopted.
+The corrected recovery batch has an actual [46-control result](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-corrected-forty-six-h2t_q8o5/FINAL.json)
+(`49b05a21`): 41 pass and five fail. Compilation and exact listing pass;
+all 46 tests start and complete. Cases 1-40 and the new late-enrollment control
+pass. Three cold-recovery cases stop at missing-payload assertions, the helper
+case reports a native admission refusal and then an internal body timeout, and
+the 33-entry traversal case cannot establish native acceptance. No recovery
+source is adopted.
 
-The [reviewed successor source](/private/tmp/connect-c1-recovery-forty-three-4g6g95s3/MANIFEST-R1.json)
-includes three additional controls for restoring an actual installed native input,
-waking its existing pending completion and preserving a helper's accepted receipt
-after publication fails. All three remain unqualified. The finite [outcome review](/private/tmp/connect-c1-recovery43-root-outcome-z4df91ad/REVIEW.json)
-(`b539387c`) verifies all raw results, source restoration and external process
-cleanup, while retaining the distinct internal cleanup failures.
+The [outcome review](/private/tmp/connect-c1-recovery46-root-outcome-b_cah0ji/REVIEW.json)
+(`8f1f0f18`) verifies every result and all five failure logs. All 48 runner groups
+and 46 test child groups are absent; all 797 selected source records and the
+unchanged lock are restored, and the cache and outer transport join. All failures
+return ordinary test exit 101, without runner timeout termination. These cleanup
+observations do not establish the assertions skipped after a test-body failure.
 
-Review also found a shutdown bug: a completed unreadable-row error could trigger
-another census indefinitely after stop. The correction waits for entered work,
-then retains the error and finishes close when no live or cold operation remains.
-The source is not yet adopted. The direct Connect application-driver changes
-separately require two cleanup controls, a fresh installed-gateway build and the
-public Hacker News success/resource-corruption pair. Neither source approval nor
-the narrower handoff pass closes admission recovery.
+Diagnosis has found a production assumption in cold recovery: Core retires a
+consumed input's payload while retaining its replay and authority record, but
+Connect still requires the optional payload. The correction must verify exact
+retained native evidence without resubmission. The helper and 33-entry failures
+remain under investigation. The [earlier 43-control failure](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-c1-recovery-wake-forty-three-g_7hiq35/FINAL.json)
+(`757f9db8`, 26 pass, 16 fail, one timeout) and three compiler failures remain
+recorded; the newer run does not erase them.
+
+The [reviewed correction source](/private/tmp/connect-c1-actual43-corrections-qffn_yeu/MANIFEST.json)
+(`c2405ee5`) fixes fixture ownership and source-close traversal, retains completed
+failed operations after stop, and adds three regression controls. Its conditional
+29-path adoption map remains held pending the remaining corrections and affected
+runtime checks. The direct Connect application driver separately needs two
+cleanup controls, a fresh installed-gateway build and the public Hacker News
+success/resource-corruption pair. Neither source review nor a narrower component
+pass closes admission recovery.
 
 An earlier full SDK diagnostic gets through both helpers' catalog/check calls,
 independent approvals, cancellation of A while B installs. Preparation completes
