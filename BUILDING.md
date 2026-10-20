@@ -172,7 +172,9 @@ Run the Rust source tests separately:
 
 ```sh
 ./scripts/repo-cargo +1.97.0 test --manifest-path Cargo.toml --locked \
-  -p toolkit-package -p toolkit-store
+  -p toolkit-package
+./scripts/repo-cargo +1.97.0 test --manifest-path native-candidate/Cargo.toml --locked \
+  -p toolkit-store
 python3 scripts/check-docs.py
 ```
 
