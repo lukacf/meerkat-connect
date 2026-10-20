@@ -2028,7 +2028,8 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
         scenario = self.console.ConsoleScenario(VERIFIER, "http://127.0.0.1:18444")
         with mock.patch.object(VERIFIER.InstalledAcquisitionProvider, "__init__", return_value=None):
             provider = scenario.provider(Path("unused"), None)
-        self.original_catalog_response_control(provider)
+        self.original_catalog_response_control(provider, expected_tool_policy={"tools": [
+            {"name": VERIFIER.ACQUISITION_OPERATION, "consequence": "r2"}], "catalog": "r2"})
 
     def test_installed_original_requests_reviewed_catalog_and_reads_only_after_exact_load(self):
         with mock.patch.object(VERIFIER.InstalledAcquisitionProvider, "__init__", return_value=None):
@@ -2039,7 +2040,7 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
         self.assertTrue(provider.original_catalog)
         self.original_catalog_response_control(provider)
 
-    def original_catalog_response_control(self, provider, *, controller_recovery=False):
+    def original_catalog_response_control(self, provider, *, controller_recovery=False, expected_tool_policy=None):
         import threading
         v = VERIFIER
         provider.results, provider.issued, provider.requests = {}, set(), []
@@ -2118,7 +2119,8 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
         if controller_recovery:
             self.assertEqual(provider.business_observation["controller_recovery_history_index"], 7)
         self.assertEqual(provider.business_observation["original_catalog"]["load_result"], loaded)
-        self.assertEqual(provider.access_arguments("job", [operation])["tool_policy"], {"tools": [], "catalog": "r2"})
+        self.assertEqual(provider.access_arguments("job", [operation])["tool_policy"],
+                         {"tools": [], "catalog": "r2"} if expected_tool_policy is None else expected_tool_policy)
         self.assertNotIn("tool_policy", v.InstalledAcquisitionProvider.access_arguments(provider, "job", [operation]))
         with self.assertRaises(AssertionError): provider.response(body)
 

@@ -421,7 +421,9 @@ class ConsoleScenario:
         answer, context = public_review(review, accepted, results, self.v.ACQUISITION_OPERATION,
             self.v.installed_fixture_principal("original-agent"), self.v.ACQUISITION_ROUTE,
             self.task_scope, self.source_authority,
-            prior_tool_policy=self.application_tool_policy, verifier=self.v, principal=self.human())
+            prior_tool_policy=self.application_tool_policy, verifier=self.v, principal=self.human(),
+            expected_tool_policy={"tools": [{"name": self.v.ACQUISITION_OPERATION, "consequence": "r2"}],
+                                  "catalog": "r2"})
         require(context["proposed_fresh_instruction"] == self.v.ACQUISITION_REQUEST,
                 "human review changed the controlled original request")
         return answer, context
@@ -482,7 +484,8 @@ class ConsoleScenario:
 
             def access_arguments(self, job_id, raw):
                 return {**super().access_arguments(job_id, raw),
-                        "tool_policy": {"tools": [], "catalog": "r2"}}
+                        "tool_policy": {"tools": [{"name": name, "consequence": "r2"} for name in raw],
+                                        "catalog": "r2"}}
 
             def public_reply(self):
                 return {"state": "reviewed", "access_reviewed": True, "grant_issued": True,
