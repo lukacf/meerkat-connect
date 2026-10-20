@@ -258,7 +258,7 @@ def native_original_pair(frames, live, accepted, original_request, fresh_request
     return a, b, a_run, b_run, positions
 
 
-def completed_journey(frames, accepted, context, business, verifier):
+def completed_journey(frames, accepted, context, business, verifier, *, fresh_context=None):
     """Return only a complete native A -> reviewed fresh B -> real result join.
 
     Native tool events inherit active-run lineage but have no session field.
@@ -275,7 +275,7 @@ def completed_journey(frames, accepted, context, business, verifier):
     if context is None or business is None:
         return None
     pair = native_original_pair(frames, live, accepted, verifier.ACQUISITION_REQUEST,
-                                context["proposed_fresh_instruction"])
+                                context["proposed_fresh_instruction"], fresh_context=fresh_context)
     if pair is None:
         return None
     a, b, a_run, b_run, positions = pair
@@ -417,20 +417,43 @@ class ConsoleScenario:
     def software_answer(self, review, checked):
         return software_review(review, checked, self.v.ACQUISITION_OPERATION)
 
-    async def access_answer(self, http, review, accepted, results, report):
+    def checked_access_review(self, review, accepted, results):
         answer, context = public_review(review, accepted, results, self.v.ACQUISITION_OPERATION,
             self.v.installed_fixture_principal("original-agent"), self.v.ACQUISITION_ROUTE,
             self.task_scope, self.source_authority,
             prior_tool_policy=self.application_tool_policy, verifier=self.v, principal=self.human())
         require(context["proposed_fresh_instruction"] == self.v.ACQUISITION_REQUEST,
                 "human review changed the controlled original request")
+        return answer, context
+
+    def bind_access_context(self, review, accepted, results, provider):
+        # Bind only from the independently checked public review, before its
+        # answer can enter native. This is an oracle expectation, not authority.
+        _, context = self.checked_access_review(review, accepted, results)
+        expected = self.v.installed_approved_service_context({
+            "decision": review["prompt"]["body"]["service_access"],
+            "acquisition": context["business_task"]})
+        encoded = self.v.canonical(expected).decode()
+        with provider.lock:
+            require(provider.expected_service_context in (None, expected)
+                    and getattr(self, "_approved_service_context", None) in (None, encoded),
+                    "approved service context changed after selection")
+            provider.expected_service_context = expected
+            self._approved_service_context = encoded
+
+    async def access_answer(self, http, review, accepted, results, report):
+        answer, context = self.checked_access_review(review, accepted, results)
         return answer, context, PANEL + "/answer", "public_access"
 
     def completed(self, frames, accepted, context, business):
         if business is not None:
             require(business.get("original_catalog", {}).get("operation") == self.v.ACQUISITION_OPERATION,
                     "original public completion lacks its own catalog receipts")
-        return completed_journey(frames, accepted, context, business, self.v)
+        fresh_context = getattr(self, "_approved_service_context", None)
+        require(context is None or fresh_context is not None,
+                "approved service context was not selected before submission")
+        return completed_journey(frames, accepted, context, business, self.v,
+                                 fresh_context=fresh_context)
 
     def finish_report(self, report, results, provider, completion):
         require(len(report["decisions"]) == 2 and len(report["starts"]) == 1
@@ -598,6 +621,8 @@ class ConsoleScenario:
                                         "unexpected additional human review")
                                 answer, context, answer_path, kind = await self.access_answer(
                                     http, review, accepted, results, report)
+                                if kind == "public_access":
+                                    self.bind_access_context(review, accepted, results, provider)
                             if not report["decisions"]:
                                 await http("POST", PANEL + "/answer", answer,
                                     origin="https://wrong-origin.invalid", expected=403)
@@ -765,7 +790,17 @@ class BrowserConsoleScenario(ConsoleScenario):
             return owner
 
         def admitted(event):
-            inputs.append(dataclasses.asdict(event))
+            nonlocal accepted
+            event = dataclasses.asdict(event)
+            require(not inputs and event["channel"] == "host-authenticated-console"
+                    and event["principal"] == EMAIL and event["identity"] == "original"
+                    and event["content"] == self.original_request(),
+                    "Browser Send changed the selected public input or human")
+            inputs.append(event)
+            accepted = {key: event[key] for key in
+                        ("identity", "interaction_id", "session_id", "input_frame_id",
+                         "cursor", "conversation_id")}
+            report["accepted"] = accepted
 
         async def observed_response(response):
             # Observe bounded, public fixture JSON only. Never retain headers,
@@ -790,8 +825,21 @@ class BrowserConsoleScenario(ConsoleScenario):
                 require(len(observations) < 2000, "public Browser observation bound")
                 observations.append({"method": method, "path": path, "request": body,
                                      "status": response.status_code, "response": value})
+                if path == PANEL + "/data" and response.status_code == 200:
+                    review = value["review"]
+                    prompt = review.get("prompt") if review is not None else None
+                    if (prompt is not None and prompt.get("body", {}).get("access_request", {})
+                            .get("phase") == "installed_public_service_access"):
+                        require(accepted is not None, "access review preceded accepted Browser Send")
+                        with provider.lock:
+                            results = dict(provider.results)
+                        # httpx awaits this hook before the front releases the
+                        # review to the browser. An answer-response hook is too
+                        # late: B can run before that response is observed.
+                        self.bind_access_context(review, accepted, results, provider)
             except Exception as error:
                 observer_errors.append({"method": method, "path": path, "error_type": type(error).__name__})
+                raise
 
         async def consume_observations(results):
             nonlocal frames, context, status_pending
@@ -894,14 +942,6 @@ class BrowserConsoleScenario(ConsoleScenario):
                 require(process.poll() is None and not front.task.done(), "Browser owner exited during observation")
                 require(not observer_errors and not front.failures, "shipping front or public observation failed")
                 require(len(inputs) <= 1, "Browser admitted an additional original input")
-                if inputs and accepted is None:
-                    event = inputs[0]
-                    require(event["channel"] == "host-authenticated-console" and event["principal"] == EMAIL
-                            and event["identity"] == "original" and event["content"] == self.original_request(),
-                            "Browser Send changed the selected public input or human")
-                    accepted = {key: event[key] for key in
-                        ("identity", "interaction_id", "session_id", "input_frame_id", "cursor", "conversation_id")}
-                    report["accepted"] = accepted
                 with provider.lock:
                     require(not provider.errors, "controlled model rejected actual Browser native request")
                     results, business = dict(provider.results), provider.business_observation
