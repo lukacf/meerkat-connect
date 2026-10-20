@@ -103,12 +103,10 @@ impl PrivateOriginals {
     pub(crate) async fn restore_promoted_custody(&self, key: &StoreKey,
         original: &Arc<RetainedToolkitOriginal>,
     ) -> Result<(), PrivateOriginalError> {
-        // Closed labels locate refusal without exposing source or input data.
-        // Test stderr mirrors the same labels without requiring a global subscriber.
-        let diagnostic = |stage: &'static str| {
-            tracing::debug!(stage, "cold original custody restoration refused");
+        // Closed test labels locate refusal without exposing source or input data.
+        let diagnostic = |_stage: &'static str| {
             #[cfg(test)]
-            eprintln!("cold_original_restore_refused stage={stage}");
+            eprintln!("cold_original_restore_refused stage={_stage}");
         };
         if original.first_binding_for(key)
             || self.owner.has_admitted_source(original.association())
