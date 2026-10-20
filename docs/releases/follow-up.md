@@ -16,16 +16,17 @@ artifact and execution references with their narrower qualifications and failure
 | --- | --- |
 | Standalone CLI setup followed by normal agent use | Pass: setup installs Hacker News and Wikipedia, exits and joins its helpers; fresh ordinary stock rkat in the same realm returns three real HTTPS Hacker News stories with exact IDs/titles. The model schedule is scripted. |
 | Installed SDK acquisition/use | Pass: the same Original acquires Hacker News and reads one story. Corrupted resources are refused before setup. |
-| Shared setup | Nine custody/recovery controls pass. The latest shared pair has one `ConfiguredSelection: Unavailable` binding failure and one pass with earlier intermittent failures. The complete shared journey remains unqualified. |
+| Shared setup | Nine custody/recovery controls and all three new writer controls pass. The latest shared pair passes planning admission but times out at B's readback/continuation after passing the former binding failure point. Earlier failures remain recorded; the complete shared journey is unqualified. |
 | Console approval/recovery | The latest run returns setup-data HTTP 403 before approval. Login retirement and physical cleanup settle in that run; earlier uncertain retirement remains separate. Second-run completion and deliberate process-loss recovery are unqualified. |
 | Ordinary live-model read | Admission fails with `CredentialUnusable` before a model request. The Core lead independently reproduced `LeaseAbsent` at 01:16 UTC on 2026-10-20; a reviewed fixed SHA is pending. No credential or grant workaround is used. |
 
-Adopted source corrections are awaiting affected native execution:
+Adopted source corrections have these affected results:
 
 - Console status handling (`6cff5eb`) preserves unavailable reads as 503 and
   explicit denials as 403. The panel clears stale actions, retains page position
   and uses its existing scheduled refresh after 503; it does not retry protected
-  actions. All 55 JavaScript controls pass; Rust/runtime acceptance is pending.
+  actions. All 55 JavaScript controls and three affected Rust controls pass. The
+  corrected development gateway builds; installed approval/recovery is pending.
 - The verifier (`3a41ea7`) permits only the exact 503 status-read response to remain
   pending within its existing deadline. Protected writes are never retried, and
   stateful readiness observations remain single-entry. All 33 offline controls
@@ -38,10 +39,11 @@ Adopted source corrections are awaiting affected native execution:
 
 The selection-writer-v2 correction is adopted after independent source review
 (`9743bde`), using the existing async writer and preserving source/cancellation
-checks. Its combined affected native batch is authorized but has no runtime result.
-The next necessary build carries the focused corrections and closed diagnostic
-labels; unaffected passes are retained. A source checkpoint does not qualify an installed
-journey. The next live-model read consumes the exact reviewed Core fix when offered.
+checks. All three native writer controls pass. The combined batch has seven of
+eight passing: the remaining shared case reaches B's readback/continuation and
+times out. The earlier binding failure's cause is not retrospectively proven.
+Source restoration and physical process joins pass; the failed journey remains
+unqualified. The next live-model read consumes the exact reviewed Core fix when offered.
 
 Release selection still needs exact Core/Meta/Toolkit 0.9.4 artifacts, matching
 SDKs, the native graph and the actual selected Meta reader. Linux x86_64 and macOS
