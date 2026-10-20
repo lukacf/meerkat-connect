@@ -227,6 +227,13 @@ impl Script {
             .iter()
             .any(|tool| tool.name == meerkat_toolkit::setup::SETUP_REPORT);
         let prefix = format!("{tag}-{}", if helper { "helper" } else { "original" });
+        let detail_present = body.contains(DETAIL);
+        if tag == "b" {
+            eprintln!("{}", json!({
+                "event":"sdk_shared_model_request", "tag":tag,
+                "helper":helper, "detail_present":detail_present,
+            }));
+        }
         if helper && self.find_only {
             return done("The focused Find control performs no helper tools.");
         }
@@ -324,7 +331,13 @@ impl Script {
             // The follow-up is a distinct native input in the same Original.
             // Its actual injected setup result, not a tool being attached, is
             // what makes this controlled response terminal.
-            if body.contains(DETAIL) {
+            if detail_present {
+                if tag == "b" {
+                    eprintln!("{}", json!({
+                        "event":"sdk_shared_original_response", "tag":tag,
+                        "branch":"setup_result",
+                    }));
+                }
                 self.finished.fetch_add(1, Ordering::SeqCst);
                 return done(
                     "The shared physical preparation completed, but no service was activated.",
@@ -343,6 +356,12 @@ impl Script {
                 }
                 find_feedback::FindChoice::Exhausted => panic!(
                     "{prefix}: both bounded Find proposals were refused before entry"),
+            }
+            if tag == "b" {
+                eprintln!("{}", json!({
+                    "event":"sdk_shared_original_response", "tag":tag,
+                    "branch":"awaiting_setup_result",
+                }));
             }
             return done(
                 "The setup helper is running; its existing owner will deliver the result.",
@@ -1659,20 +1678,35 @@ impl Case {
             b"B remains current after A cancellation acknowledgement\n",
         )
         .unwrap();
+        let mut last_readback = None;
         let completed = tokio::time::timeout(BOUND, async {
             loop {
                 let row = self.preparation().await.unwrap();
-                if !row["completion"].is_null()
-                    && !row_for(&row, "b")["delivered"].is_null()
-                    && self.script.finished.load(Ordering::SeqCst) > 0
-                {
+                let completion_present = !row["completion"].is_null();
+                let b_delivered_present = !row_for(&row, "b")["delivered"].is_null();
+                let finished = self.script.finished.load(Ordering::SeqCst);
+                last_readback = Some((completion_present, b_delivered_present, finished));
+                if completion_present && b_delivered_present && finished > 0 {
                     break row;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
-        .await
-        .expect("current B readback and honest native continuation must settle");
+        .await;
+        if completed.is_err() {
+            // Preserve the last real canonical read; do not replace the
+            // original timeout with an additional read or inferred result.
+            let observed = last_readback.map(|(completion, delivered, finished)| json!({
+                "completion_present":completion, "b_delivered_present":delivered,
+                "finished":finished,
+            }));
+            eprintln!("{}", json!({
+                "event":"sdk_shared_completion_timeout", "last_readback":observed,
+                "finished_at_timeout":self.script.finished.load(Ordering::SeqCst),
+            }));
+        }
+        let completed = completed
+            .expect("current B readback and honest native continuation must settle");
         assert_eq!(row_for(&completed, "a")["left"], true);
         assert!(row_for(&completed, "a")["delivered"].is_null());
         let current = row_for(&completed, "b");

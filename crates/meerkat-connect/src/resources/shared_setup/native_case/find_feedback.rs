@@ -255,11 +255,21 @@ impl Case {
                     )
                     .unwrap();
                     assert!(records.len() <= 512);
+                    use meerkat_runtime::InputTerminalOutcome;
+                    let terminal_class = match &row.seed.terminal_outcome {
+                        None => "pending",
+                        Some(InputTerminalOutcome::Consumed) => "consumed",
+                        Some(InputTerminalOutcome::Superseded { .. }) => "superseded",
+                        Some(InputTerminalOutcome::Coalesced { .. }) => "coalesced",
+                        Some(InputTerminalOutcome::Abandoned { .. }) => "abandoned",
+                        Some(_) => "unknown",
+                    };
                     eprintln!(
                         "{}",
                         json!({"event":"sdk_find_native_audit", "member":tag,
                         "session":session.to_string(), "input_id":row.state.input_id.to_string(),
-                        "terminal":row.seed.terminal_outcome.is_some(), "records":records})
+                        "terminal":row.seed.terminal_outcome.is_some(),
+                        "terminal_class":terminal_class, "records":records})
                     );
                     audit.extend(records);
                     assert!(audit.len() <= 512, "bounded complete session audit");
