@@ -37,16 +37,19 @@ pair is selected. Shared execution and broader frontend/deployment coverage
 do not gate that merge. The lightweight CI checks packaging, panel behavior and
 documentation; its success does not establish native or installed acceptance.
 
-Build the final library, resource inventory and Python SDK wheel from this
-separated source. The installed preparer loads its setup code from the selected
+Build the final library, resource inventory and SDK distributions from the
+ordinary 0.9.4 branch. The installed preparer loads its setup code from the selected
 library archive, so a new gateway combined with an older mixed archive would
 still contain the deferred entry points. Preserve the existing source, artifact
 and resource checks when selecting the ordinary release inputs.
 
 Connect 0.9.4 is not yet qualified. The checked-in development workspace selects
-[Core `56df4b7a`](https://github.com/lukacf/meerkat/commit/56df4b7a6f6474e9598764549624af3cefeaa048)
-and [Meta `ff4d271e`](https://github.com/lukacf/meerkat-meta/commit/ff4d271ecfb01653d6cf27e2b5fa87799e9f6a1b).
-Final dependency and artifact selection is still pending.
+[Core `07e976ab`](https://github.com/lukacf/meerkat/commit/07e976abbf0f2bbf77283988bee913e59a7d8fb0)
+and [Meta `86afecf6`](https://github.com/lukacf/meerkat-meta/commit/86afecf691947e306f363643e1c5ca346df2a90c).
+Both dependency locks resolve and replay with locked, offline Cargo metadata.
+The selected Meta revision includes the Console identity priming correction;
+the Forge installer update remains pending. Final release selection, native
+validation and installed artifact qualification remain separate.
 
 ### Retained development evidence
 

@@ -4,7 +4,7 @@ exclude = ["native-candidate", "crates/meerkat-connect", "crates/toolkit-catalog
 resolver = "2"
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.4"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
