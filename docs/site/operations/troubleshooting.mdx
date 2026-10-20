@@ -74,12 +74,30 @@ selected request or substitute a newer library to bypass the refusal.
 
 ## The connector installed but no tools appear
 
-Installation emits a launch; the host still needs to approve and register it.
-For Meerkat, follow the [native MCP mapping and attachment guide](/guides/native-mcp).
-A `staged` result can precede a missing-executable or connection failure.
-Check native catalog search/load and an actual operation, keeping the setup
-server's name and process stable. Two accounts can expose colliding tool names;
-use the host's explicit naming map instead of assuming server-name prefixes.
+For the standalone CLI, check that Connect reported successful finalization,
+including the intended agent's access. After it returns to `You:`, enter `/quit`
+and wait for normal exit. Start a fresh ordinary `rkat` session from the same
+project directory and realm, using the command in the
+[quickstart](/quickstart#standalone-cli). If you chose custom roots or a different
+model binding, repeat the [matching settings](/guides/request-an-integration).
+An already open session can retain its earlier configuration or access.
+
+If access is missing or expired, return to `meerkat-connect` in that realm and
+[ask to finish or change the agent's access](/guides/request-an-integration#finish-or-change-an-agents-access).
+Read the configuration, credential and grant outcomes separately. Preserve any
+uncertain result; do not repeat an action whose effect is unresolved.
+
+In an integrated Console, read the setup result and the original agent's
+continuation. If setup reports unavailable or incomplete, keep that result for
+the application maintainer. Installation alone does not prove the original
+agent can use the service.
+
+For advanced library and custom-host integrations, an emitted launch still
+requires host approval and registration through the
+[native MCP mapping and attachment guide](/guides/native-mcp). A `staged` result
+can precede a missing executable or connection failure. Inspect catalog loading
+and an actual operation; use the host's explicit naming map for colliding tool
+names.
 
 ## Report a setup problem
 
@@ -96,7 +114,17 @@ content and whole saved-request files out of public reports. Use your applicatio
 
 ## find_and_install returns unavailable
 
-Check that the application enrolled its native setup owner, that the owner is active, and that the invocation carries the required authenticated context. Constructing a dispatcher alone does not bind that owner. See [host composition](/guides/host-composition).
+In a Connect-enabled application, keep the reported request identifier and
+setup outcome for the application maintainer. `Unavailable` alone does not
+identify the cause or prove that no work started. If an effect is uncertain,
+use the existing request's status instead of repeating that effect.
+
+For host authors, check that the application has bound its installed setup
+owner and that the native runtime is active. The call also needs the original
+session and current work authorization; missing authority is an access denial,
+not a reason to bypass these checks. Constructing the dispatcher alone does not
+enable setup execution. Store failures or an admission timeout can also return
+unavailable. See [host composition](/guides/host-composition).
 
 ## A recipe exists but discovery cannot find it
 
