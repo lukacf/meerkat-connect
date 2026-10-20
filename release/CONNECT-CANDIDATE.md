@@ -63,7 +63,15 @@ system package set are observed, not claimed reproducible from this draft.
 ## Standalone CLI from the retained producer
 
 The gateway workflow above does not constitute the standalone Connect release.
-Two commands reuse its exact prepared source, native graph and resource closure:
+For 0.9.4, the standalone CLI may use the existing retained native producer,
+independent shutdown review and assembler route, retaining checksums, the review
+record and the assembler input inventory. It does not require a new CI pipeline.
+Clean GitHub-hosted production and attestation remain required for every Forge
+input, including the CLI if Forge consumes it.
+
+The optional CI wrapper below reuses the gateway producer's exact prepared source,
+native graph and resource closure. `stage-cli` still requires its CI preflight;
+use the existing direct producer and assembler for the retained-host route.
 
 ```sh
 python3 scripts/connect-candidate.py stage-cli \
@@ -106,14 +114,14 @@ references, then invokes the existing assembler. The result is the existing
 `cli_tty_qualified: false`. It is neither a Forge gateway selection nor a public
 release, and it retains the assembler's existing exclusions.
 
-This path currently requires the same retained producer directory through
+These CI wrapper commands require the same retained producer directory through
 independent review and assembly. The existing records name absolute executable
 and evidence paths; these commands do not relocate them or rewrite historical
 execution argv. The current ephemeral GitHub workflow does not yet keep that
-producer alive across review. The smallest remaining workflow work is to run
-staging, the existing independent review and final assembly in one retained
-producer lifetime, or restore that producer's exact owned evidence paths before
-assembly. This patch does not claim that CI retention or publication is solved.
+producer alive across review. Standalone CLI CI migration is a 0.9.5 item; it does
+not block the permitted retained-host route. Cross-job restoration is an optional
+implementation choice. Actual production, independent review, consumer acceptance
+and assembly remain required on the selected route.
 
 The actual standalone release still needs the existing
 `cli_homecore::actual_cli_public_service_survives_setup_exit_and_fresh_rkat_in_exact_realm`
