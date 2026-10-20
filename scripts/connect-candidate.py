@@ -275,35 +275,8 @@ def download(path, row):
     path.chmod(0o644)
 
 
-def checked_producer_roots(value):
-    require(isinstance(value, list) and 0 < len(value) <= 16
-            and all(isinstance(item, str) for item in value), "bounded producer roots required")
-    roots = tuple(PurePosixPath(item) for item in value)
-    require(all(root.is_absolute() and ".." not in root.parts
-                and (len(root.parts) >= 4 or str(root) == "/opt/homebrew") for root in roots),
-            "invalid current producer provenance root")
-    return roots
-
-
-def provenance(value, *, current_roots=()):
-    """Refuse historical private locators; do not rewrite producer bytes."""
-    if isinstance(value, dict):
-        for item in value.values():
-            provenance(item, current_roots=current_roots)
-    elif isinstance(value, list):
-        for item in value:
-            provenance(item, current_roots=current_roots)
-    elif isinstance(value, str):
-        roots = checked_producer_roots([str(root) for root in current_roots]) if current_roots else ()
-        for item in re.findall(r"/(?:Users|private|var/folders|home/(?!runner(?:/|$))[^/]+|tmp|var/tmp|srv|opt)/[^\s\"']*", value):
-            path = PurePosixPath(item)
-            # Component containment excludes sibling-prefix and traversal escapes.
-            current = ".." not in path.parts and any(path.is_relative_to(root) for root in roots)
-            public_tool = ".." not in path.parts and path.is_relative_to("/opt/hostedtoolcache")
-            require(current or public_tool, "foreign/private provenance requires fresh owner-produced CI artifacts")
-
-
 def inspect_prebuilt(path):
+    """Parse bounded retained metadata; producer paths remain unchanged data."""
     if path.name.endswith((".tar.gz", ".tar.zst")):
         # Only gzip libraries carry nested Connect provenance; zstd Python
         # runtime archives are verified by the existing resource packager.
@@ -322,19 +295,22 @@ def inspect_prebuilt(path):
                     require(member.size <= 32 * 1024**2, "embedded provenance exceeds bound")
                     raw = archive.extractfile(member).read()
                     if member.name.endswith(".json"):
-                        provenance(json.loads(raw, object_pairs_hook=unique))
+                        json.loads(raw, object_pairs_hook=unique)
                     else:
-                        provenance(raw.decode("utf-8"))
+                        raw.decode("utf-8")
     elif path.suffix == ".json":
-        provenance(read_json(path))
+        require(path.stat().st_size <= 32 * 1024**2, "metadata exceeds bound")
+        read_json(path)
     elif path.suffix == ".whl":
         with zipfile.ZipFile(path) as archive:
             for item in archive.infolist():
                 if not item.is_dir() and ".dist-info/" in item.filename:
                     require(item.file_size <= 32 * 1024**2, "wheel provenance exceeds bound")
                     raw = archive.read(item)
-                    provenance(json.loads(raw, object_pairs_hook=unique) if item.filename.endswith(".json")
-                               else raw.decode("utf-8"))
+                    if item.filename.endswith(".json"):
+                        json.loads(raw, object_pairs_hook=unique)
+                    else:
+                        raw.decode("utf-8")
 
 
 def wheel_expectation(path, selected, source):
@@ -489,18 +465,10 @@ def build():
     else:
         record.run("system-packages", ["brew", "list", "--versions"])
         record.run("system-sdk", ["xcrun", "--show-sdk-path"])
-    _, sysroot_log = record.run("rust-sysroot", ["rustc", "+1.97.0", "--print", "sysroot"])
-    _, cargo_paths_log = record.run("cargo-paths", [ROOT / "scripts/repo-cargo", "--print-env"])
-    cargo_paths = dict(line.split("=", 1) for line in cargo_paths_log.read_text().splitlines())
-    current_roots = [ROOT, Path(os.environ["RUNNER_TEMP"]), Path(sysroot_log.read_text().strip()),
-                     Path(cargo_paths["CARGO_HOME"]), Path(cargo_paths["CARGO_TARGET_DIR"]), Path(sys.prefix)]
+    record.run("rust-sysroot", ["rustc", "+1.97.0", "--print", "sysroot"])
+    record.run("cargo-paths", [ROOT / "scripts/repo-cargo", "--print-env"])
     if target == "macos-arm64":
-        _, brew_log = record.run("system-prefix", ["brew", "--prefix"])
-        current_roots.append(Path(brew_log.read_text().strip()))
-    # Retain only observed roots from this producer. The attested manifest lets
-    # acceptance recheck our own records without relaxing predecessor inputs.
-    current_roots = sorted({str(path) for root in current_roots for path in (root, root.resolve(strict=True))})
-    checked_producer_roots(current_roots)
+        record.run("system-prefix", ["brew", "--prefix"])
     record.run("system", ["uname", "-a"])
     resource = value["resources"]
     upstream = work / "upstream"
@@ -532,7 +500,6 @@ def build():
     record.run("resources", args, seconds=900)
     resource_record = work / "resources/build.json"
     resource_value = read_json(resource_record)
-    provenance(resource_value, current_roots=current_roots)
     wrapper = ROOT / "scripts/repo-cargo"
     manifest = ROOT / "native-candidate/Cargo.toml"
     _, metadata_log = record.run("metadata", [wrapper, "+1.97.0", "metadata", "--locked", "--format-version", "1",
@@ -705,9 +672,9 @@ def build():
                          "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
         elif path.is_file() and not path.is_symlink():
             if path.suffix == ".json":
-                provenance(read_json(path), current_roots=current_roots)
+                read_json(path)
             elif path.suffix in {".log", ".txt", ".sha256"} or path.name == "gateway.stderr":
-                provenance(path.read_text(encoding="utf-8", errors="strict"), current_roots=current_roots)
+                path.read_text(encoding="utf-8", errors="strict")
             rows.append({"path": path.relative_to(closure).as_posix(), "size": path.stat().st_size, "sha256": digest(path)})
     write_new(closure / "CONTENTS.json", {"schema_version": 1, "files": rows})
     dist = ROOT / "dist"
@@ -720,7 +687,6 @@ def build():
         "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
         "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "target": target, "scope": SCOPE,
         "connect_version": value["connect_version"], "native_release": value["native_release"],
-        "producer_roots": current_roots,
         "inputs_sha256": digest(inputs_path), "archive": {"name": archive.name, "size": archive.stat().st_size, "sha256": digest(archive)},
         "runtime_selection_sha256": digest(artifacts / "RUNTIME-SELECTION.json"), "publication": "not_performed"})
 
@@ -878,7 +844,7 @@ def checked_publication_candidate(directory, request):
     return manifest, rows
 
 
-def unpack_publication_candidate(archive_path, destination, *, current_roots=()):
+def unpack_publication_candidate(archive_path, destination):
     """Data-only bounded extraction; retained links are checked but not created."""
     import posixpath
     destination.mkdir()
@@ -918,10 +884,10 @@ def unpack_publication_candidate(archive_path, destination, *, current_roots=())
             require(path.stat().st_size == member.size, "truncated candidate member")
             if path.suffix == ".json":
                 require(member.size <= MAX_METADATA, "candidate metadata exceeds bound")
-                provenance(read_json(path), current_roots=current_roots)
+                read_json(path)
             elif path.suffix in {".log", ".txt", ".sha256"} or path.name == "gateway.stderr":
                 require(member.size <= MAX_METADATA, "candidate text exceeds bound")
-                provenance(path.read_text(), current_roots=current_roots)
+                path.read_text()
             if rel != "CONTENTS.json":
                 inventory.append({"path": rel, "size": member.size, "sha256": digest(path)})
     contents = read_json(destination / "CONTENTS.json")
@@ -1006,9 +972,7 @@ def accept_publication(request_path, candidate, meta, output):
         verified = verify_publication_subject(assets / name, assets / files[2], request, env=env)
         write_new(output / (name + ".verification.json"), verified)
     root = output / "unpacked"
-    # These roots are trusted only after both original subjects are verified.
-    current_roots = checked_producer_roots(manifest["producer_roots"])
-    inventory = unpack_publication_candidate(assets / subjects[0], root, current_roots=current_roots)
+    inventory = unpack_publication_candidate(assets / subjects[0], root)
     selection, paths, evidence = read_publication_product(root, meta, manifest, request, output, env)
     require(0 < len(evidence) <= 512 and len({r["path"] for r in evidence}) == len(evidence),
             "bounded distinct owner evidence required")

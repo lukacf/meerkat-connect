@@ -128,7 +128,6 @@ def selected_runtime_artifacts(target):
             "source_sha": c.request["source_sha"], "source_tree": c.request["source_tree"], "workflow_sha": c.request["source_sha"],
             "run_id": str(c.request["run_id"]), "run_attempt": str(c.request["run_attempt"]), "inputs_sha256": c.request["inputs_sha256"],
             "target": c.target, "scope": p.SCOPE, "connect_version": "1.2.3", "native_release": c.native,
-            "producer_roots": [c.producer_root],
             "archive": {"name": archive.name, "size": archive.stat().st_size, "sha256": p.digest(archive)},
             "runtime_selection_sha256": p.digest(c.artifacts / "RUNTIME-SELECTION.json"), "publication": "not_performed"}
         dump(c.candidate / c.subjects[1], manifest)
@@ -700,45 +699,50 @@ def test_data_only_preflight_does_not_require_target_host(tmp_path, monkeypatch)
         p.preflight()
 
 
-@pytest.mark.parametrize('path', [
-    '/Users/runner/work/project/source/records/build.json',
-    '/private/var/folders/ci/run/tmp/records/build.log',
-    '/Users/runner/Library/Caches/rust-workspaces/project/targets/release/toolkit_gateway',
-    '/Users/runner/hostedtoolcache/Python/3.12/arm64/bin/python3',
-    '/opt/homebrew/opt/openssl@3/lib/libssl.dylib'])
-def test_observed_current_producer_paths_require_explicit_roots(path):
-    roots = ['/Users/runner/work/project/source', '/private/var/folders/ci/run/tmp',
-        '/Users/runner/Library/Caches/rust-workspaces/project',
-        '/Users/runner/hostedtoolcache/Python/3.12/arm64', '/opt/homebrew']
-    p.provenance({'argv': [path]}, current_roots=roots)
-    with pytest.raises(ValueError, match='foreign/private provenance'):
-        p.provenance({'argv': [path]})
+@pytest.mark.parametrize('kind', ['json', 'tar.gz', 'whl'])
+def test_retained_metadata_paths_are_preserved_without_opening_them(tmp_path, monkeypatch, kind):
+    import zipfile
+    referenced = tmp_path / 'historical-source-file'
+    referenced.write_bytes(b'not an input or JSON document')
+    raw = json.dumps({'source': '/Users/original-owner/source/build.rs',
+        'argv': ['/var/tmp/original-build/tool', str(referenced)],
+        'example': 'unix:///tmp/example-docker.sock'}).encode()
+    artifact = tmp_path / ('original.' + kind)
+    if kind == 'tar.gz':
+        with tarfile.open(artifact, 'w:gz') as archive:
+            member = tarfile.TarInfo('selected/provenance/build.json')
+            member.size = len(raw); archive.addfile(member, io.BytesIO(raw))
+    elif kind == 'whl':
+        with zipfile.ZipFile(artifact, 'w') as archive:
+            archive.writestr('original.dist-info/direct_url.json', raw)
+    else:
+        artifact.write_bytes(raw)
+    before = artifact.read_bytes()
+    original_open = Path.open
+    def guarded_open(path, *args, **kwargs):
+        assert path != referenced, 'descriptive producer path became an input locator'
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', guarded_open)
+    p.inspect_prebuilt(artifact)
+    assert artifact.read_bytes() == before
 
 
-@pytest.mark.parametrize('path', [
-    '/Users/runner/work/project/source-other/file',
-    '/Users/runner/work/project/source/../old/file',
-    '/Users/luka/src/old/file', '/private/var/tmp/another-owner/file',
-    '/srv/old/file', '/opt/private-owner/file'])
-def test_current_root_allowance_does_not_accept_foreign_or_traversal_paths(path):
-    with pytest.raises(ValueError, match='foreign/private provenance'):
-        p.provenance(path, current_roots=['/Users/runner/work/project/source'])
-
-
-@pytest.mark.parametrize('root', ['/', '/Users', '/Users/runner', '/private', '/opt', '/tmp',
-    '/Users/runner/work/../old', 'relative/path'])
-def test_broad_or_ambiguous_producer_roots_refuse(root):
-    with pytest.raises(ValueError, match='producer provenance root'):
-        p.checked_producer_roots([root])
-
-
-def test_predecessor_metadata_gets_no_current_producer_allowance(tmp_path, monkeypatch):
-    monkeypatch.setattr(p, 'ROOT', Path('/Users/runner/work/project/source'))
-    monkeypatch.setenv('RUNNER_TEMP', '/Users/runner/work/_temp')
-    path = tmp_path / 'predecessor.json'
-    dump(path, {'source': '/Users/runner/work/project/source/old-input'})
-    with pytest.raises(ValueError, match='foreign/private provenance'):
-        p.inspect_prebuilt(path)
+@pytest.mark.parametrize('kind', ['json', 'tar.gz', 'whl'])
+@pytest.mark.parametrize('raw', [b'{invalid', b'{"source":"first","source":"second"}'])
+def test_retained_metadata_still_requires_valid_unambiguous_json(tmp_path, kind, raw):
+    import zipfile
+    artifact = tmp_path / ('original.' + kind)
+    if kind == 'tar.gz':
+        with tarfile.open(artifact, 'w:gz') as archive:
+            member = tarfile.TarInfo('selected/provenance/build.json')
+            member.size = len(raw); archive.addfile(member, io.BytesIO(raw))
+    elif kind == 'whl':
+        with zipfile.ZipFile(artifact, 'w') as archive:
+            archive.writestr('original.dist-info/direct_url.json', raw)
+    else:
+        artifact.write_bytes(raw)
+    with pytest.raises(ValueError):
+        p.inspect_prebuilt(artifact)
 
 
 def test_target_asset_names_cannot_collide():
@@ -780,13 +784,17 @@ def test_foreign_target_binding_refuses_before_owner_reader(fixture, part):
     assert not c.reader_calls and not (c.root / 'accepted/acceptance.json').exists()
 
 
-def test_foreign_private_path_inside_attested_closure_still_refuses(fixture):
+def test_historical_paths_in_attested_closure_are_preserved_for_owner_reader(fixture):
     c = fixture
-    dump(c.artifacts / 'build-record.json', {'source': '/Users/foreign-owner/source/build.rs'})
+    record = c.artifacts / 'build-record.json'
+    dump(record, {'source': '/Users/original-owner/source/build.rs',
+                  'output': '/private/var/tmp/original-owner/toolkit_gateway'})
+    before = record.read_bytes()
     c.pack()
-    with pytest.raises(ValueError, match='foreign/private provenance'):
-        c.accept()
-    assert len(c.commands) == 2 and not c.reader_calls
+    accepted = c.accept()
+    assert accepted['publication'] == 'not_performed'
+    assert (c.root / 'accepted/unpacked/artifacts/build-record.json').read_bytes() == before
+    assert len(c.commands) == 2 and len(c.reader_calls) == 1
 
 
 @pytest.mark.parametrize("url", [
