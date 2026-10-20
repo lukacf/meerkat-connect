@@ -2037,6 +2037,14 @@ def pending_setup_search(value):
             and value["empty_result_status"] == "pending_source")
 
 
+def helper_search_not_dispatched(value):
+    """Core 0.9.4's closed model-visible proof, never inferred from display text."""
+    data = value.get("data")
+    return (value.get("error") == "operation_refused" and isinstance(data, dict)
+            and set(data) == {"kind", "tool_invoked"}
+            and data["kind"] == "reprepare_required" and data["tool_invoked"] is False)
+
+
 class InstalledAcquisitionProvider:
     """Controlled model responses; every tool result comes from the real child."""
     request_text = ACQUISITION_REQUEST
@@ -2047,6 +2055,8 @@ class InstalledAcquisitionProvider:
     access_call_id = "public-task-access"
     original_catalog = False
     controller_reprepare = False
+    allow_fresh_helper_search = False
+    helper_search_refusal = None
 
     def checked_original_catalog_history(self, messages, fresh):
         return original_catalog_history(messages, self.request_text, self.operation, fresh,
@@ -2137,6 +2147,7 @@ class InstalledAcquisitionProvider:
         require(lane in ("fixture-original-model", "fixture-helper-model"), "unknown model owner")
         names = {row["function"]["name"] for row in body["tools"]}
         results = {}
+        refused_searches = []
         for message in body["messages"]:
             if message["role"] == "tool":
                 identifier = message["tool_call_id"]
@@ -2146,7 +2157,12 @@ class InstalledAcquisitionProvider:
                 else:
                     value = unique_json(message["content"].encode())
                     if isinstance(value, dict) and "error" in value:
-                        raise AssertionError("actual tool result " + identifier + " refused: " + str(value["error"]))
+                        if not (self.allow_fresh_helper_search and lane == "fixture-helper-model"
+                                and identifier in self.issued
+                                and identifier.startswith("helper-catalog-search-")
+                                and helper_search_not_dispatched(value)):
+                            raise AssertionError("actual tool result " + identifier + " refused: " + str(value["error"]))
+                        refused_searches.append(identifier)
                 require(identifier not in results, "duplicate tool result in actual model history")
                 results[identifier] = value
                 if identifier in self.results:
@@ -2269,14 +2285,39 @@ class InstalledAcquisitionProvider:
             return finished(answer)
 
         require(self.request_text in canonical(body["messages"]).decode(), "helper did not receive original setup request")
+        if self.allow_fresh_helper_search:
+            prior_refusal = self.helper_search_refusal
+            require(len(refused_searches) <= 1
+                    and (prior_refusal is None or refused_searches == [prior_refusal]),
+                    "fresh helper search exceeded its one-decision bound or lost its refusal")
+            if refused_searches:
+                refused = refused_searches[0]
+                fresh = refused + "-fresh"
+                if fresh not in results:
+                    # This controlled model proposes a new tool call. Core owns
+                    # fresh admission; no same-operation replay or audit oracle.
+                    reply = call(fresh, "tool_catalog_search", {"query": "setup", "limit": 50})
+                    self.helper_search_refusal = refused
+                    self.events.add("controlled_model_fresh_helper_search",
+                        refused_call_id=refused, fresh_call_id=fresh,
+                        proof=results[refused]["data"], bound=1)
+                    return reply
+                require(fresh in self.issued
+                        and list(results).index(fresh) > list(results).index(refused),
+                        "fresh helper search result is unissued or precedes its refusal")
         selected = {"family": "agno", "profile": self.profile,
                     "operations": [self.operation], "values": self.selection_values}
         phase = len(self.requests)
-        if any(name not in names for name in ACQUISITION_MCP_TOOLS):
-            searches = [value for identifier, value in results.items()
-                        if identifier.startswith("helper-catalog-search-")]
-            loads = [value for identifier, value in results.items()
-                     if identifier.startswith("helper-catalog-load-")]
+        searches = [value for identifier, value in results.items()
+                    if identifier.startswith("helper-catalog-search-") and identifier not in refused_searches]
+        loads = [value for identifier, value in results.items()
+                 if identifier.startswith("helper-catalog-load-")]
+        needs_fresh_load = False
+        if refused_searches:
+            following = list(results)[list(results).index(fresh) + 1:]
+            needs_fresh_load = not any(identifier.startswith("helper-catalog-load-")
+                                       for identifier in following)
+        if any(name not in names for name in ACQUISITION_MCP_TOOLS) or needs_fresh_load:
             require(len(loads) < 10, "native catalog did not expose selected setup tools")
             require(all(pending_setup_search(value) for value in searches[:-1]),
                     "another Search followed a result other than the exact pending setup source")
@@ -2327,8 +2368,7 @@ class InstalledAcquisitionProvider:
                 "installed helper did not return exact supplied-schema evidence and limits")
 
         if "prepare-family" not in results:
-            require(any(identifier.startswith("helper-catalog-search-") for identifier in results)
-                    and any(identifier.startswith("helper-catalog-load-") for identifier in results),
+            require(searches and loads,
                     "fixture did not observe actual deferred catalog search and load")
             return call("prepare-family", "setup_prepare", {"family": "agno"})
         _, pending = pending_job(results["prepare-family"], "prepare")

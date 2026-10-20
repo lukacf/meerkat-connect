@@ -478,6 +478,7 @@ class ConsoleScenario:
     def provider(self, directory, events):
         class HumanProvider(self.v.InstalledAcquisitionProvider):
             original_catalog = True
+            allow_fresh_helper_search = True
 
             def access_arguments(self, job_id, raw):
                 return {**super().access_arguments(job_id, raw),
