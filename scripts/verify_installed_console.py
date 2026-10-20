@@ -1035,7 +1035,7 @@ TRELLO_FINISH = ("The reviewed Trello setup is attached to this original task. "
     "No Trello operation was called and no provider account was verified.")
 
 
-def completed_credential_setup(frames, accepted, context, business, verifier):
+def completed_credential_setup(frames, accepted, context, business, verifier, *, fresh_context=None):
     """Join native setup-only A/fresh B runs without a provider operation."""
     live = [frame for frame in frames if frame.get("source", {}).get("kind") == "console_event"
             and frame.get("identity") == accepted["identity"]]
@@ -1050,7 +1050,7 @@ def completed_credential_setup(frames, accepted, context, business, verifier):
     if context is None or business is None:
         return None
     pair = native_original_pair(frames, live, accepted, TRELLO_REQUEST,
-                                context["proposed_fresh_instruction"])
+                                context["proposed_fresh_instruction"], fresh_context=fresh_context)
     if pair is None:
         return None
     first, fresh, a_run, b_run, positions = pair
@@ -1105,12 +1105,17 @@ class TrelloConsoleScenario(ConsoleScenario):
         self._credential_values = {slot: "controlled-canary-" + uuid.uuid4().hex
                                    for slot in TRELLO_SLOTS}
         self._persistence_proposal = None
+        self._credential_service_context = None
 
     def original_request(self):
         return TRELLO_REQUEST
 
     def completed(self, frames, accepted, context, business):
-        return completed_credential_setup(frames, accepted, context, business, self.v)
+        require(context is None or self._credential_service_context is not None,
+                "credential service context was not selected before submission")
+        return completed_credential_setup(frames, accepted, context, business, self.v,
+            fresh_context=(self.v.canonical(self._credential_service_context).decode()
+                           if self._credential_service_context is not None else None))
 
     def report_value(self, value):
         if isinstance(value, str):
@@ -1285,6 +1290,11 @@ class TrelloConsoleScenario(ConsoleScenario):
         require(self._persistence_proposal is None, "credential persistence review was repeated")
         self._persistence_proposal = {"defining_realm": defining_realm, "server_name": server,
             "reviewed_configuration_generation": expected_generation}
+        # The credential-specific checks above bind configuration, slots,
+        # original, audience and lifetime before any protected submission.
+        # Project only the same nonsecret facts used by native attachment.
+        self._credential_service_context = self.v.installed_approved_service_context({
+            "decision": decision, "acquisition": context["business_task"]})
         # This body goes only to POST /host/toolkit/setup/credentials. The
         # shared HTTP reporter redacts both canaries before retaining requests.
         return {**answer, "credentials": [
@@ -1410,7 +1420,10 @@ class TrelloConsoleScenario(ConsoleScenario):
                                 and any(row["role"] == "assistant" and row.get("content") == scenario.v.ORIGINAL_A_FINISH
                                     for row in messages[first + 1:fresh]),
                                 "credential fresh input lacks the actual original setup and completed history")
-                        scenario.v.original_catalog_history(messages, self.request_text, TRELLO_OPERATION, fresh)
+                        require(scenario._credential_service_context is not None,
+                                "credential continuation lacks its reviewed service context")
+                        scenario.v.original_catalog_history(messages, self.request_text, TRELLO_OPERATION, fresh,
+                            service_context=scenario._credential_service_context)
                         tool_results = [row for row in messages if row["role"] == "tool"]
                         require(len(tool_results) == 1 and tool_results[0]["tool_call_id"] == "original-request"
                                 and scenario.v.unique_json(tool_results[0]["content"].encode())

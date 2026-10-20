@@ -2371,6 +2371,9 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
             # This is only an inert oracle control. Native review/persistence and
             # native A/B completion remain independently required by the scenario.
             scenario._persistence_proposal = {"inert_review": True}
+            scenario._credential_service_context = {"inert_review": "selected-context"}
+            messages.insert(4, {"role": "user",
+                "content": v.canonical(scenario._credential_service_context).decode()})
             return scenario, provider, body
 
         for inline in (False, True):
@@ -2388,7 +2391,7 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
 
         changes = [
             ("missing_original", lambda s, p, b: b["messages"].pop(0)),
-            ("missing_fresh", lambda s, p, b: b["messages"].pop(4)),
+            ("missing_fresh", lambda s, p, b: b["messages"].pop(5)),
             ("missing_a_completion", lambda s, p, b: b["messages"].pop(3)),
             ("duplicate_input", lambda s, p, b: b["messages"].append({"role": "user", "content": c.TRELLO_REQUEST})),
             ("unrelated_input", lambda s, p, b: b["messages"].insert(4, {"role": "user", "content": "another input"})),
