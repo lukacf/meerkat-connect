@@ -7,10 +7,10 @@ and Python SDK artifacts, a synthetic issuer and `TOKIO_WORKER_THREADS=2`. The
 original startup failure remains retained. That result does not qualify the later
 registered-HTTPS additions or repin Toolkit dependencies. Real provider login,
 protected browser and authenticated requester admission remain unverified.
-These are the qualification limits of this callback adapter. Connect's broader
-acquisition and original-task continuation have their own
-[current results and remaining work](../../docs/PRODUCT-PLAN.md); a completed
-service-acquisition case does not qualify this MCP OAuth transport.
+These are the qualification limits of this callback adapter. See
+[ordinary CLI and Console setup](../../docs/site/guides/manage-connections.mdx#ordinary-cli-and-console-setup)
+for Connect's broader acquisition and original-task continuation journey. A
+completed service-acquisition case does not qualify this MCP OAuth transport.
 
 For generic service connector OAuth, see [CONNECTOR-AUTH.md](CONNECTOR-AUTH.md).
 That adapter has separate slot/account target and result types, including
@@ -55,9 +55,8 @@ setup or bootstrap an unknown account identity.
 The host supplies an admitted human presenter and keeps privileged SDK objects,
 auth-page content, callback data and secrets out of model/tool transcripts and
 diagnostics. The presenter can use the ordinary host and its supported browser
-or system ceremony, including a host administered by agents. Under the
-[release scope correction](../../docs/coordination/20261006-homecore-presenter/ordinary-host-release-scope.md),
-an agent-unreachable machine or separately inaccessible presenter is not a
+or system ceremony, including a host administered by agents. An
+agent-unreachable machine or separately inaccessible presenter is not a
 prerequisite. The host still validates the person, exact action and destination;
 a browser launch, cookie or boolean flag proves neither authentication nor
 permission. This package supplies callback transport, not a browser opener or

@@ -18,9 +18,9 @@ integration. The baseline inspected on that date, Meerkat `0.8.51` / MobKit
 Do not enable this path on that historical baseline. See the
 [dated source map](../../docs/verification/20261008-connect-service-account/OWNER-MAP.md)
 and the preserved [earlier consumer review](../../docs/coordination/20261005-connector-oauth-consumer/REVIEW.md).
-Use the [current product plan](../../docs/PRODUCT-PLAN.md) for Connect's selected
-revisions and acquisition results. Those results do not establish a native OAuth
-provider composition for this adapter.
+See [ordinary CLI and Console setup](../../docs/site/guides/manage-connections.mdx#ordinary-cli-and-console-setup)
+for Connect's broader acquisition journey. A completed service-acquisition case
+does not establish a native OAuth provider composition for this adapter.
 
 ## Attach once to the host's existing step
 
@@ -68,8 +68,7 @@ the projection. The host authenticates the person, revalidates the exact offer
 and destination, and keeps auth-page content, credentials, state and callback
 material out of model/tool observations and diagnostics. A supplied function,
 new window or successful browser launch does not prove those properties.
-The [ordinary-host scope](../../docs/coordination/20261006-homecore-presenter/ordinary-host-release-scope.md)
-permits a host administered by agents; it requires no separate inaccessible
+Connect permits a host administered by agents; it requires no separate inaccessible
 machine or protected-service placement. The presenter uses that host's supported
 browser or system ceremony.
 
