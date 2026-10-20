@@ -38,8 +38,41 @@ pub(crate) enum SetupWorkerObservation {
         deduplicated: bool,
         source_settlement: PrivateSourceSettlement,
     },
+    /// Shared planning launch, durable transfer and native context admission
+    /// are separate observations. None is an individual setup decision or
+    /// completion; pending context delivery remains owned by host recovery.
+    WorkflowLead {
+        observation: crate::private_originals::WorkflowLaunchObservation,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_transfer: Option<crate::private_originals::setup_workflow::WorkflowTransferObservation>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_delivery: Option<WorkflowContextDeliveryStep>,
+    },
     AdmissionUnresolved,
     NativeOutcomeUnavailable,
+}
+
+/// Delivery failures do not erase an already completed disclosure or G launch.
+/// The caller sees the typed boundary; host recovery retains its entered owner.
+#[derive(serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub(crate) enum WorkflowContextDeliveryStep {
+    Observed { observation: crate::private_originals::WorkflowDeliveryObservation },
+    Denied,
+    Conflict,
+    Unavailable,
+}
+impl From<Result<crate::private_originals::WorkflowDeliveryObservation, PrivateOriginalError>>
+    for WorkflowContextDeliveryStep
+{
+    fn from(result: Result<crate::private_originals::WorkflowDeliveryObservation, PrivateOriginalError>) -> Self {
+        match result {
+            Ok(observation) => Self::Observed { observation },
+            Err(PrivateOriginalError::Denied) => Self::Denied,
+            Err(PrivateOriginalError::Conflict) => Self::Conflict,
+            Err(PrivateOriginalError::Unavailable) => Self::Unavailable,
+        }
+    }
 }
 
 impl InstalledAcquisition {
@@ -87,6 +120,43 @@ impl InstalledAcquisition {
             .ok_or(SetupError::Rejected)?;
         let content = String::from_utf8(canonical_json(snapshot.request().request())?)
             .map_err(|_| SetupError::InvalidRecord)?;
+        let originals = &self.host.originals;
+        let original = originals.acquisition_original(context).await.map_err(source_error)?;
+        if let Some(planning) = originals.retained_workflow_selection(
+            &original.original, &snapshot.request().host().correlation,
+        ).map_err(source_error)? {
+            // Durable membership is independent for every A/B/C request. The
+            // existing single launch outbox arbitrates G, without creating a
+            // per-waiter helper or interpreting a workflow receipt as consent.
+            let membership = store.workflow_waiter(
+                planning.terms(), &snapshot, original.source_record.key.clone(),
+            )?;
+            let joined = planning.join_waiter_conditionally(
+                &self.store, &membership, &original,
+                SetupAccess { evidence: &admission.evidence, context: &current, references: self.references.as_ref() },
+                &self.work_backend,
+            ).await.map_err(source_error)??;
+            planning.retain_launch_interest(&joined.snapshot, &membership, &original).await.map_err(source_error)?;
+            let transfer = originals.retained_workflow_context_transfer(
+                &original.original, &snapshot.request().host().correlation,
+            ).map_err(source_error)?;
+            let context_transfer = if let Some(transfer) = &transfer {
+                let control = self.transfer_recovery.lock().map_err(|_| SetupError::NativeExecutionUnavailable)?
+                    .as_ref().and_then(std::sync::Weak::upgrade)
+                    .ok_or(SetupError::NativeExecutionUnavailable)?;
+                Some(transfer.commit(&snapshot, &membership, call, context, &self.work_backend, &control)
+                    .await.map_err(source_error)?)
+            } else { None };
+            let observation = planning.launch(&joined.snapshot).await.map_err(source_error)?;
+            // This bounded poll may admit the exact completed context after G
+            // becomes available. Caller loss or a slow native/store step leaves
+            // the registered delivery owner for the existing recovery worker.
+            let context_delivery = match transfer {
+                Some(transfer) => Some(self.poll_workflow_context_delivery(&transfer).await.into()),
+                None => None,
+            };
+            return Ok(SetupWorkerObservation::WorkflowLead { observation, context_transfer, context_delivery });
+        }
         let preparation = self
             .prepare_bound_work(
                 &store,

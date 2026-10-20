@@ -580,3 +580,9 @@ mod helper_report;
 
 #[path = "configured_setup_native_tests.rs"]
 mod configured_setup_native;
+
+#[path = "dedicated_workflow_fixture.rs"]
+pub(in crate::private_originals) mod dedicated;
+
+#[path = "planning_source_evidence_tests.rs"]
+mod planning_source_evidence_tests;

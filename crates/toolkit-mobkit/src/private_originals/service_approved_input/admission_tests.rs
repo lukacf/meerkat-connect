@@ -81,7 +81,7 @@ async fn acquisition_for_association<S>(fixture: &ContinuationFixture<S>, dispat
     let request = validate_request(FindAndInstallRequest {
         request: INSTRUCTION.into(), user_context: vec![], caller_observations: vec![],
     }, HostSetupRequest {
-        setup_helper: None,
+        setup_helper: None, work_context: None,
         target: id("agent"), correlation: id("service-admission-ack"), parent_operation: None,
         continuation: TaskContinuation {
             owner: id("service-admission-test"), task: id(&retained.run_id().to_string()),

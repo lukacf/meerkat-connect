@@ -3829,7 +3829,7 @@ class Controller:
                                 "artifact": copy.deepcopy({k: index["components"][route["family"]][k] for k in ("path", "sha256")})})
         return options
 
-    def catalog_route(self, value):
+    def catalog_route(self, value, *, observed_preparations=None):
         keys(value, ("publisher", "name", "version", "strategy_id", "routes_sha256"))
         if any(not isinstance(v, str) or not 1 <= len(v) <= 256 for v in value.values()):
             raise SetupError("invalid_request")
@@ -3851,6 +3851,8 @@ class Controller:
                           "artifact": {k: index["components"][route["family"]][k] for k in ("path", "sha256")}}
                 if state["status"] == "unprepared":
                     return {**result, "status": "preparation_required"}
+                if observed_preparations is not None and state.get("preparation_job_id") not in observed_preparations:
+                    raise SetupError("shared_preparation_unavailable", 409)
                 if state["status"] != "prepared":
                     raise SetupError("catalog_route_preparation_unconfirmed", 409)
                 return {**result, "status": "prepared", "help": self.help_locked(route["family"], route["profile"])}

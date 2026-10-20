@@ -49,6 +49,32 @@ pub trait InstalledOriginalTaskOwner: SetupContinuationDelivery {
     async fn original_task(&self, invocation: InstalledOriginalInvocation<'_>)
         -> Result<TaskContinuation, ToolAdmissionError>;
 
+    /// One producer returns continuation and optional fan-out context together.
+    /// Existing owners remain ungrouped. An override must recover the actual
+    /// child launched for this exact invocation, not search by labels or run ID.
+    async fn original_binding(&self, invocation: InstalledOriginalInvocation<'_>)
+        -> Result<InstalledOriginalTaskBinding, ToolAdmissionError>
+    {
+        Ok(InstalledOriginalTaskBinding {
+            continuation: self.original_task(invocation).await?, work_context: None, planning: None,
+            context_transfer: None,
+        })
+    }
+}
+
+/// Produced by the same invocation owner in one lookup. WorkGraph validation
+/// below checks persisted group facts; the producer owns their association with
+/// this native input. The optional group supplies no native permission.
+pub struct InstalledOriginalTaskBinding {
+    pub continuation: TaskContinuation,
+    pub work_context: Option<meerkat_toolkit::setup::SetupWorkContext>,
+    /// Optional actual host-owned planning source. Explicit None preserves the
+    /// singleton path; unavailable or conflicting Some is never downgraded.
+    pub planning: Option<Arc<crate::private_originals::InstalledWorkflowPlanning>>,
+    /// Explicit host permission for this exact invocation's inline request to
+    /// its fixed G/P recipient. Planning selection alone never permits copying.
+    /// Native current Find authority remains required at the durable commit.
+    pub context_transfer: Option<Arc<crate::private_originals::InstalledWorkflowContextTransfer>>,
 }
 
 /// Trusted optional application configuration, not model input. These are
@@ -222,10 +248,31 @@ impl SetupToolHost for InstalledSetupAdmission {
             target: claims.target.clone(), policy_revision: policy_revision.clone(), now_ms: facts.now_ms,
         };
         let authorization = context.work_authorization().ok_or(ToolAdmissionError::Denied)?;
-        let continuation = self.continuation.original_task(InstalledOriginalInvocation {
+        let binding = self.continuation.original_binding(InstalledOriginalInvocation {
             reference: &original.reference, association: original.original.association(), context, correlation: &correlation,
         }).await?;
+        let InstalledOriginalTaskBinding { continuation, work_context, planning, context_transfer } = binding;
+        if let Some(transfer) = &context_transfer {
+            transfer.check_invocation(&self.originals, &original, &correlation,
+                planning.as_ref().ok_or(ToolAdmissionError::Denied)?, &self.backend, &self.ceiling)
+                .map_err(source_admission_error)?;
+        }
+        let environment_revision = match &planning {
+            Some(planning) => revision(&(environment_revision, planning.binding_digest().map_err(source_admission_error)?))?,
+            None => environment_revision,
+        };
+        let environment_revision = match &context_transfer {
+            Some(transfer) => revision(&(environment_revision, transfer.binding_digest().map_err(source_admission_error)?))?,
+            None => environment_revision,
+        };
         if continuation.native_original.is_none() { return Err(ToolAdmissionError::Denied); }
+        if let Some(work) = &work_context {
+            let native = continuation.native_original.as_ref().ok_or(ToolAdmissionError::Denied)?;
+            if Some(&native.retained_work) != context.retained_work()
+                || Some(&native.origin_session_id) != context.origin_session_id()
+            { return Err(ToolAdmissionError::Denied); }
+            work.check_current(&self.backend).await.map_err(admission_setup_error)?;
+        }
         let store = SetupStore::new_conditional(self.store.as_ref(), self.scope.clone()).map_err(|_| ToolAdmissionError::Unavailable)?;
         let outcome = store.invocation_terms(original.original.association(), &correlation, &current.borrowed(authorization)).await;
         // Keep every private result behind the same installed owner, including
@@ -238,6 +285,7 @@ impl SetupToolHost for InstalledSetupAdmission {
             Some(terms) => {
                 if terms.host.continuation != continuation || terms.host.environment_revision != environment_revision
                     || terms.host.setup_helper != facts.helper
+                    || terms.host.work_context != work_context
                     || terms.host.target != facts.target || terms.evidence.constraints().ceiling != self.ceiling
                 { return Err(ToolAdmissionError::Denied); }
                 (terms.host, terms.evidence)
@@ -249,12 +297,15 @@ impl SetupToolHost for InstalledSetupAdmission {
                     issued_at_ms: current.now_ms, expires_at_ms, ceiling: self.ceiling.clone(),
                 }).map_err(|_| ToolAdmissionError::Unavailable)?;
                 let host = HostSetupRequest { target: facts.target, correlation, parent_operation: None,
-                    setup_helper: facts.helper, continuation,
+                    setup_helper: facts.helper, work_context: work_context.clone(), continuation,
                     environment_revision, limits: SetupLimits { deadline_ms: expires_at_ms,
                         max_workers: self.limits.max_workers, max_effect_attempts: self.limits.max_effect_attempts } };
                 (host, evidence)
             }
         };
+        self.originals.retain_workflow_binding(
+            &original, &host.correlation, planning.as_ref(), context_transfer.as_ref(), work_context.as_ref(),
+        ).map_err(source_admission_error)?;
         Ok(HostToolAdmission { host, evidence, context: HostAdmissionContext { now_ms: after.now_ms, ..current } })
     }
 }

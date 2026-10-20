@@ -478,6 +478,12 @@ fn prepare_gateway_acquisition_selected(
     let installed = installed.with_service_installation_readback(Arc::new(
         crate::resources::installation_readback::ProductInstallationReadback { storage },
     ))?;
+    // Authenticated host assembly selects private historical reads. This does
+    // not turn the singleton continuation owner into a grouped workflow owner.
+    let context_selector = toolkit_mobkit::installed_host::acquisition::installed_workflow_context_selector(
+        native.realm.clone(), config.backend_generation.clone(),
+        native.members.iter().map(|row| row.member.clone()).collect(), config.output_audience.clone(),
+    );
     let (continuation, tools) = match retained {
         Some((tools, continuation)) => (continuation, Some(tools)),
         None => (installed.native_continuation(config.output_audience)?, None),
@@ -498,6 +504,7 @@ fn prepare_gateway_acquisition_selected(
         Some(tools) => installed.with_enrolled_bootstrap_acquisition(defaults, tools)?,
         None => installed.with_bootstrap_acquisition(defaults)?,
     };
+    let installed = installed.with_workflow_context_recovery(context_selector)?;
     Ok((installed, Some(PreparedGatewayAcquisition { continuation, projection, application, helper_member, helper_tools: prepared.helper_tools, standing_policy: config.standing_policy, selected_policy: None, acquisition_reference: native.setup.clone().ok_or(HostLifetimeError::InvalidSelection)?, realm, console_setup: config.console_setup, local_operator_recovery: config.local_operator_recovery, resource })))
 }
 

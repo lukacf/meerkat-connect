@@ -13,6 +13,8 @@ pub use task_approval::InstalledServiceTaskSource;
 mod results;
 pub(crate) mod recovery;
 pub use results::setup_report_definition;
+pub(crate) mod context_recovery;
+pub use context_recovery::{installed_workflow_context_selector, InstalledWorkflowContextRead, InstalledWorkflowContextSelector};
 mod bootstrap;
 pub use bootstrap::{AcquisitionBootstrapStatus, AcquisitionDisabledReason, InstalledSetupBootstrap};
 pub(crate) use bootstrap::AcquisitionBootstrap;
@@ -22,7 +24,7 @@ mod continuation;
 pub use continuation::InstalledNativeContinuation;
 #[cfg(test)]
 pub(crate) use continuation::owner_tests::{ContextProbe, ProbeProvider};
-pub use admission::{InstalledOriginalInvocation, InstalledOriginalTaskOwner, InstalledSetupDefaults, InstalledSetupLimits, InstalledSetupPreparer};
+pub use admission::{InstalledOriginalInvocation, InstalledOriginalTaskBinding, InstalledOriginalTaskOwner, InstalledSetupDefaults, InstalledSetupLimits, InstalledSetupPreparer};
 pub(crate) use coordinator::SetupWorkerObservation;
 
 use crate::{
@@ -174,6 +176,10 @@ pub(crate) struct InstalledAcquisition {
     continuation: Arc<dyn SetupContinuationDelivery>,
     work_step: WorkAdmissionStepOptions,
     tools: InstalledAcquisitionTools,
+    // Same stop boundary as the existing joined worker. No worker means no
+    // context-transfer attempt can enter through this acquisition.
+    transfer_recovery: std::sync::Mutex<Option<std::sync::Weak<recovery::RecoveryControl>>>,
+    context_recovery: std::sync::OnceLock<InstalledWorkflowContextSelector>,
 }
 
 impl InstalledAcquisition {
@@ -233,6 +239,8 @@ impl InstalledAcquisition {
             continuation: owners.continuation,
             work_step: owners.work_step,
             tools,
+            transfer_recovery: std::sync::Mutex::new(None),
+            context_recovery: std::sync::OnceLock::new(),
         })
     }
 

@@ -125,7 +125,6 @@ async fn open_selected_source(facts: &ControllerModelFacts, select_controller: b
 #[derive(Clone, Copy)]
 pub(crate) enum WarmHelperProfile { Standard, SameExecutor, CrossAudience }
 
-
 async fn open_selected_source_with_profile(facts: &ControllerModelFacts, select_controller: bool, probe: bool,
     local_operator: bool, source_subject: bool,
     acquisition: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, helper: bool,
@@ -133,22 +132,90 @@ async fn open_selected_source_with_profile(facts: &ControllerModelFacts, select_
     prepare_source: Option<PrepareOriginalSource>, console_human: Option<meerkat_core::PrincipalRef>,
     task_parent_administration: bool, private_helper_entry: bool, human_policy: bool, catalog_probe: bool,
     warm_profile: Option<WarmHelperProfile>) -> Host {
-    let (directory, selection, acquisition_helper, prepare_source) = provision_selected_source(
-        facts, select_controller, probe, local_operator, source_subject, acquisition, helper,
-        report, configured_setup, configured_report, prepare_source, console_human,
-        task_parent_administration, private_helper_entry, human_policy, catalog_probe,
-        warm_profile,
-    );
-    restore_selected(directory, selection, acquisition_helper, prepare_source, human_policy).await
+    open_selected_source_with_workflow_members(facts, select_controller, probe, local_operator, source_subject, acquisition, helper, report, configured_setup, configured_report, prepare_source, console_human, task_parent_administration, private_helper_entry, human_policy, catalog_probe, warm_profile, false).await
 }
 
-fn provision_selected_source(facts: &ControllerModelFacts, select_controller: bool, probe: bool,
+/// The dedicated path retains the actual public installed composition until
+/// its caller has reserved the selected member. No lifetime is prebound here.
+pub(crate) struct DedicatedHost {
+    pub selection: HostBootstrapSelection,
+    pub store: Arc<SqliteStore>,
+    pub source_path: PathBuf,
+    pub source_scope: StoreScope,
+    pub directory: Arc<tempfile::TempDir>,
+    pub lifetime: Arc<NativeHostLifetime>,
+    pub originals: Arc<PrivateOriginals>,
+    pub installed: Option<InstalledToolkitHost>,
+}
+
+impl DedicatedHost {
+    /// Adversarial composition over the same real source and selected artifacts.
+    /// Only this losing host uses the fixture's private artifact access. The
+    /// accepted host below exercises public open/compose without prebinding.
+    pub fn competing_gateway(&self, lifetime: Arc<NativeHostLifetime>, closed: PrivateHostClosed) -> ToolkitGatewayHost {
+        let installed = self.installed.as_ref().unwrap();
+        let policy = Arc::new(installed.final_policy(lifetime.clone()));
+        let registration = Arc::new(InstalledMemberRegistration {
+            owner: lifetime.clone(), native: installed.native.clone(),
+            surfaces: installed.surfaces.clone(), tool_policy: installed.tool_policy.clone(),
+            update_associations: installed.update_associations.clone(),
+        });
+        ToolkitGatewayHost::with_private_originals(lifetime, closed, self.originals.clone(), policy, registration)
+            .with_installed_tool_policy(installed.tool_policy.registry())
+    }
+}
+
+pub(crate) async fn open_for_dedicated_workflow(facts: &ControllerModelFacts) -> DedicatedHost {
+    let (directory, selection, helper, prepare) = provision_selected_source_with_workflow_members(
+        facts, true, true, true, false, None, false, None, false, false, None, None,
+        false, false, false, false, None, true,
+    );
+    assert!(helper.is_none() && prepare.is_none());
+    reopen_for_dedicated_workflow(directory, selection).await
+}
+
+pub(crate) async fn open_for_configured_dedicated_workflow(facts: &ControllerModelFacts) -> DedicatedHost {
+    let (directory, selection, helper, prepare) = provision_selected_source_with_workflow_members(
+        facts, true, true, true, false, None, false, None, true, false, None,
+        Some(super::tests::principal("workflow-human")), false, false, false, false, None, true,
+    );
+    assert!(helper.is_some() && prepare.is_none());
+    reopen_for_dedicated_workflow(directory, selection).await
+}
+
+pub(crate) async fn reopen_for_dedicated_workflow(directory: Arc<tempfile::TempDir>, selection: HostBootstrapSelection) -> DedicatedHost {
+    let (lifetime, installed) = InstalledToolkitHost::open(selection.clone(), NativeOwnerStartup::Restore).await.unwrap();
+    let lifetime = Arc::new(lifetime);
+    let source_path = state_directory(&selection, lifetime.selected_policy().native_host.as_ref().unwrap(),
+        NativeOwnerStartup::Restore).unwrap().join("originals.sqlite3");
+    DedicatedHost { selection, store: installed.store.clone(), source_path,
+        source_scope: installed.source_scope.clone(), directory, lifetime,
+        originals: installed.originals(), installed: Some(installed) }
+}
+
+async fn open_selected_source_with_workflow_members(facts: &ControllerModelFacts, select_controller: bool, probe: bool,
     local_operator: bool, source_subject: bool,
     acquisition: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, helper: bool,
     report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool,
     prepare_source: Option<PrepareOriginalSource>, console_human: Option<meerkat_core::PrincipalRef>,
     task_parent_administration: bool, private_helper_entry: bool, human_policy: bool, catalog_probe: bool,
-    warm_profile: Option<WarmHelperProfile>) -> (Arc<tempfile::TempDir>, HostBootstrapSelection,
+    warm_profile: Option<WarmHelperProfile>, workflow_members: bool) -> Host {
+    let (directory, selection, acquisition_helper, prepare_source) = provision_selected_source_with_workflow_members(
+        facts, select_controller, probe, local_operator, source_subject, acquisition, helper,
+        report, configured_setup, configured_report, prepare_source, console_human,
+        task_parent_administration, private_helper_entry, human_policy, catalog_probe,
+        warm_profile, workflow_members,
+    );
+    restore_selected(directory, selection, acquisition_helper, prepare_source, human_policy).await
+}
+
+fn provision_selected_source_with_workflow_members(facts: &ControllerModelFacts, select_controller: bool, probe: bool,
+    local_operator: bool, source_subject: bool,
+    acquisition: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, helper: bool,
+    report: Option<Arc<dyn meerkat_core::AgentToolDispatcher>>, configured_setup: bool, configured_report: bool,
+    prepare_source: Option<PrepareOriginalSource>, console_human: Option<meerkat_core::PrincipalRef>,
+    task_parent_administration: bool, private_helper_entry: bool, human_policy: bool, catalog_probe: bool,
+    warm_profile: Option<WarmHelperProfile>, workflow_members: bool) -> (Arc<tempfile::TempDir>, HostBootstrapSelection,
     Option<acquisition::InstalledSetupSelection>, Option<PrepareOriginalSource>) {
     assert!(!private_helper_entry || (helper && report.is_none() && !configured_setup && !configured_report));
     let (directory, mut selection) = super::tests::fixture();
@@ -269,6 +336,23 @@ fn provision_selected_source(facts: &ControllerModelFacts, select_controller: bo
         if row["path"] == surface_artifact.name { row["sha256"] = surface_artifact.sha256.clone().into(); }
     }
     fs::write(&selection.policy_manifest.path, canonical_json(&manifest).unwrap()).unwrap();
+    if workflow_members {
+        assert!(!helper && !human_policy && !configured_report);
+        for name in ["planning_parent", "planning_lead"] {
+            let mut member = native.members[0].clone();
+            member.member.member = name.into();
+            member.logical_owner = super::tests::principal(name);
+            let mut route = native.routes[0].clone();
+            route.id = Id::new(name).unwrap();
+            route.logical_executor = member.logical_owner.clone();
+            let meerkat_toolkit::host_lifetime::policy::CompiledNativeSourceOrigin::LocalConsole {
+                member: target, ..
+            } = &mut route.origin else { panic!("local fixture") };
+            *target = member.member.clone();
+            native.members.push(member);
+            native.routes.push(route);
+        }
+    }
     if helper {
         let mut selected = native.members[0].clone();
         selected.member.member = HELPER.into();
@@ -287,7 +371,7 @@ fn provision_selected_source(facts: &ControllerModelFacts, select_controller: bo
         }
         native.members.push(selected);
     }
-    if helper || human_policy {
+    if helper || human_policy || workflow_members {
         // Only A may invoke the installed acquisition leaf at the application
         // policy layer. Its separate native setup authority is still required;
         // ordinary AA retains an independent controller-only helper. The separate
@@ -391,6 +475,34 @@ fn provision_selected_source(facts: &ControllerModelFacts, select_controller: bo
             ).unwrap();
             native.routes[0].controller_parent = Some(vec![parent]);
         }
+        if workflow_members {
+            for index in 1..native.routes.len() {
+                let route = &mut native.routes[index];
+                let member = &native.members[index];
+                let parent = source.grants().issue_root(&root,
+                    EvidenceId::new(format!("workflow-controller-parent-{index}")).unwrap(),
+                    native.grant_administrator.clone(), route.represented_subject.clone(),
+                    application_operations::parent_restrictions(application_operations::controller(
+                        &native.grant_administrator, &route.logical_executor, &member.audience,
+                        &facts.route_key(), application_operations::ControllerAction::Inference,
+                    )),
+                ).unwrap();
+                route.controller_parent = Some(vec![parent]);
+            }
+            if configured_setup {
+                let member = &native.members[2];
+                let route = &native.routes[2];
+                acquisition_helper = Some(acquisition::InstalledSetupSelection {
+                    catalog_capability: None, report_capability: None,
+                    member: member.member.clone(), ingress_actor: native.grant_administrator.clone(),
+                    logical_executor: route.logical_executor.clone(), represented_subject: route.represented_subject.clone(),
+                    controller_parent: route.controller_parent.clone().unwrap(),
+                    operation_basis: meerkat_authorization_contracts::work_association::WorkAuthorityBasis::TargetedGrantLineages {
+                        base: None, targets: vec![],
+                    },
+                });
+            }
+        }
         if helper {
             let member = &native.members[1];
             let parent = source
@@ -474,6 +586,7 @@ fn provision_selected_source(facts: &ControllerModelFacts, select_controller: bo
                     issuance_id: EvidenceId::new("configured-a-report-parent").unwrap() },
             ] } else { vec![] },
             route: native.routes[0].id.clone(), issuance_id: EvidenceId::new("configured-acquisition-parent").unwrap() };
+        if workflow_members { request.helper = acquisition_helper.as_ref().map(|helper| helper.member.clone()); }
         if human_policy && configured_report {
             request.helper_targets.push(operator_setup::SetupTargetRequest {
                 target: None, issuance_id: EvidenceId::new("warm-original-catalog-parent").unwrap(),

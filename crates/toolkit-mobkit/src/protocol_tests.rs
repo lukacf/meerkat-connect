@@ -104,7 +104,7 @@ impl Host {
             ContentDigest::of_bytes(format!("{}:{call_id}", self.audience).as_bytes()).to_string();
         HostToolAdmission {
             host: HostSetupRequest {
-                setup_helper: None,
+                setup_helper: None, work_context: None,
                 target: self.target.clone(),
                 correlation: id(&correlation),
                 parent_operation: Some(id("original-task")),

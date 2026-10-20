@@ -13,6 +13,14 @@ use meerkat_core::{AgentToolDispatcher, MobMemberBinding, RealmLocator, SessionI
 use super::{InstalledServiceReview, compose_with_auth, refused};
 use crate::{ConnectError, approval::LocalApprovals, connector_auth::ConnectorAuth};
 
+#[cfg(all(unix, feature = "console"))]
+mod shared;
+#[cfg(all(unix, feature = "console"))]
+pub use shared::{
+    BoundSharedSetupInstallation, PreparedSharedSetupInstallation, SharedSetupInstallation,
+    configure_shared_setup_installation, prepare_shared_setup_installation,
+};
+
 /// Configure the application's existing factory before it prepares members.
 /// The application supplies its exact selected helper, realm, native account
 /// facade and fresh private approval owner. This explicitly selects both the

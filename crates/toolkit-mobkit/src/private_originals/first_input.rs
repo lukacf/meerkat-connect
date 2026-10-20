@@ -19,7 +19,7 @@ use meerkat_toolkit::host_lifetime::{NativeHostLifetime, control::HostLifetimeEr
 
 impl PrivateOriginals {
     /// Select the exact host once, or confirm that same live owner during
-    /// bootstrap of that same selected host. This weak reverse
+    /// bootstrap after a restrictive workflow reservation. This weak reverse
     /// reference cannot keep a host alive or transfer to a replacement host.
     pub(crate) fn bind_host_lifetime(
         &self,
@@ -46,7 +46,7 @@ impl PrivateOriginals {
         reference: &PrivateOriginalRef,
         context: &GovernedBindContext,
     ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
-        self.binding_for_selected_input(reference, context, None, None, None, None).await
+        self.binding_for_selected_input(reference, context, None, None, None, None, None).await
     }
 
     /// A separately authenticated input may select its already issued task
@@ -58,7 +58,7 @@ impl PrivateOriginals {
         grant: &PrivateServiceGrantRef,
         approved_login: Option<crate::private_host::ConsoleLoginHandle>,
     ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
-        self.binding_for_selected_input(reference, context, Some(grant), None, None, approved_login).await
+        self.binding_for_selected_input(reference, context, Some(grant), None, None, approved_login, None).await
     }
 
     pub(super) async fn binding_for_batch_input(
@@ -66,16 +66,25 @@ impl PrivateOriginals {
         task: &service_approved_input::ApprovedTaskLink,
         approved_login: Option<crate::private_host::ConsoleLoginHandle>,
     ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
-        self.binding_for_selected_input(reference, context, None, Some(task), None, approved_login).await
+        self.binding_for_selected_input(reference, context, None, Some(task), None, approved_login, None).await
     }
 
     pub(super) async fn binding_for_console_input(
         self: &Arc<Self>, reference: &PrivateOriginalRef, context: &GovernedBindContext,
         entry: super::console_ingress::ConsoleEntry,
     ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
-        self.binding_for_selected_input(reference, context, None, None, Some(entry), None).await
+        self.binding_for_selected_input(reference, context, None, None, Some(entry), None, None).await
     }
 
+    pub(super) async fn binding_for_workflow_input(
+        self: &Arc<Self>,
+        reference: &PrivateOriginalRef,
+        context: &GovernedBindContext,
+        planning: &setup_workflow::InstalledWorkflowPlanning,
+    ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
+        planning.check_for_binding(self, reference)?;
+        self.binding_for_selected_input(reference, context, None, None, None, None, Some(planning)).await
+    }
 
     async fn binding_for_selected_input(
         self: &Arc<Self>,
@@ -85,12 +94,17 @@ impl PrivateOriginals {
         batch: Option<&service_approved_input::ApprovedTaskLink>,
         console: Option<super::console_ingress::ConsoleEntry>,
         approved_login: Option<crate::private_host::ConsoleLoginHandle>,
+        planning: Option<&setup_workflow::InstalledWorkflowPlanning>,
     ) -> Result<Arc<HeldPrivateOriginal>, PrivateOriginalError> {
         let stored = self.store.get(&self.key(reference)?).await.map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
         let record = self.decode_record(&stored, reference)?;
         if grant.is_some() && batch.is_some() { return Err(PrivateOriginalError::Conflict); }
-        let selected_setup = if grant.is_none() && batch.is_none() {
+        if planning.is_some() && (grant.is_some() || batch.is_some() || console.is_some()
+            || approved_login.is_some() || record.setup_request.is_some()
+            || record.configured_setup.is_some() || record.approved_task.is_some())
+        { return Err(PrivateOriginalError::Denied); }
+        let selected_setup = if planning.is_some() { None } else if grant.is_none() && batch.is_none() {
             if record.setup_request.is_some() {
                 // An explicit per-original review takes precedence. It is never
                 // upgraded or replaced by configured agent acquisition.
@@ -102,7 +116,10 @@ impl PrivateOriginals {
             if record.setup_request.is_some() { return Err(PrivateOriginalError::Denied); }
             None
         };
-        let selected_basis = if let Some(task) = batch {
+        let selected_basis = if let Some(planning) = planning {
+            planning.check_for_binding(self, reference)?;
+            WorkAuthorityBasis::GrantLineage { lineage: planning.lineage().to_vec() }
+        } else if let Some(task) = batch {
             if let Some(setup) = task.setup() {
                 self.issue_service_setup(reference, setup, approved_login.as_ref()).await?;
             }
@@ -307,11 +324,14 @@ impl PrivateOriginals {
         let original = match grant {
             None if batch.is_some() => self.bind_batch_source(reference, batch.unwrap(), association, custody).await?,
             Some(grant) => self.bind_access_source(reference, grant, association, custody).await?,
-            None if selected_setup.is_some() => {
+            None if selected_setup.is_some() || planning.is_some() => {
                 let original = self.owner.bind_issued_access_async(
                     association, custody, requester, actor, Some(&native.grant_administrator),
                     |association| async move {
-                        self.persist_or_observe_binding(reference, &association, true).await
+                        match planning {
+                            Some(planning) => self.persist_or_observe_workflow_binding(reference, &association, planning).await,
+                            None => self.persist_or_observe_binding(reference, &association, true).await,
+                        }
                     },
                 ).await.map_err(|error| match error {
                     OriginalWriterError::Conflict => PrivateOriginalError::Conflict,

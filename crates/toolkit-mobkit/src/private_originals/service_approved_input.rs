@@ -13,6 +13,8 @@ pub(super) mod application;
 mod compensation;
 mod batch;
 mod selection;
+pub(super) mod shared_preparation;
+pub use shared_preparation::{InstalledSharedEntry, InstalledSharedPreparation, SharedPreparationLeave, SharedPreparationResource};
 use selection::{ApprovedServiceMember, ApprovedTaskHeader, ApprovedTaskMember};
 pub(super) use selection::ApprovedTaskLink;
 pub use batch::{PublicServiceBatchEntry, PreparedPublicServiceBatch, PreparedPublicInstruction};
@@ -245,6 +247,35 @@ impl PrivateOriginals {
             OriginalWriterError::Conflict => PrivateOriginalError::Conflict,
             _ => PrivateOriginalError::Unavailable,
         })?;
+        // The native-send/Controller-decision gates are closed and drained.
+        // Leave the single P record only after durable source cancellation.
+        // Any lost CAS remains closed/pending; no acknowledgement claims a
+        // fully removed member until this same owner can reconcile it.
+        let decoded = cancelled.iter().map(|stored| {
+            Ok((stored.clone(), self.decode_stored(stored)?))
+        }).collect::<Result<Vec<_>, PrivateOriginalError>>()?;
+        if decoded.iter().all(|(_, record)| record.shared_preparations.is_empty()) {
+            return Ok(cancelled);
+        }
+        let scope = SetupScope::new(
+            Id::new(self.scope.realm.clone()).map_err(|_| PrivateOriginalError::Conflict)?,
+            Id::new(self.scope.owner.clone()).map_err(|_| PrivateOriginalError::Conflict)?,
+        );
+        let setup = SetupStore::new(self.store.as_ref(), scope)
+            .map_err(|_| PrivateOriginalError::Unavailable)?;
+        for (stored, record) in decoded {
+            for member in &record.shared_preparations {
+                if member.source() != &stored.key { return Err(PrivateOriginalError::Conflict); }
+                setup.begin_shared_preparation_leave(member).await
+                    .map_err(|_| PrivateOriginalError::Unavailable)?;
+                let last = setup.leave_shared_preparation(member).await
+                    .map_err(|_| PrivateOriginalError::Unavailable)?;
+                // Durable cancellation/leave is not physical stop completion.
+                // The same source's live resource must detach this member and
+                // join a last-member stop before cancellation is acknowledged.
+                self.leave_shared_resource(member, last).await?;
+            }
+        }
         Ok(cancelled)
     }
 }
@@ -826,6 +857,7 @@ impl InstalledServiceTask {
                 event_sha256: digest(&canonical_json(&event).map_err(|_| E::from(PrivateOriginalError::Conflict))?) };
             let key = source.key(&reference).map_err(|_| E::from(PrivateOriginalError::Denied))?;
             let data = encode(SourceRecord { custody_attempt: None,
+                shared_preparations: Vec::new(),
                 setup_request: None, configured_setup: None, service_setup_children: vec![],
                 source: parent_record.source,
                 event,
@@ -837,6 +869,7 @@ impl InstalledServiceTask {
                 approved_task: Some(link.clone()),
                 service_admission: None,
             bound_service_input: None,
+                planning_source_evidence: None,
             }).map_err(|_| E::from(PrivateOriginalError::Conflict))?;
             let mut conditions = vec![RecordCondition { key: parent.key, revision: parent.revision,
                 content_digest: parent.content_digest, claim: None, dispatch_claim: None }, snapshot.condition()];

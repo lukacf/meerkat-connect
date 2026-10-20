@@ -18,6 +18,11 @@ enum ResourceProjection {
         resources: PreparedApplicationResources,
     },
     Completed(PreparedApplicationSetup),
+    #[cfg(all(unix, feature = "console"))]
+    Shared {
+        helper: PreparedSetupHelper,
+        context: Arc<crate::resources::SharedSetupCallContext>,
+    },
 }
 
 pub(crate) struct SetupResourceSelection {
@@ -78,6 +83,28 @@ impl SetupResourceSelection {
         })
     }
 
+    /// Select from the actual pending installation owner and the non-decodable
+    /// live peer. No completed artifact or member roster is synthesized here.
+    #[cfg(all(unix, feature = "console"))]
+    pub(crate) fn from_shared(
+        owner: &toolkit_mobkit::installed_host::PreparedInstallationOwner,
+        helper: PreparedSetupHelper,
+        context: Arc<crate::resources::SharedSetupCallContext>,
+    ) -> Result<Self, String> {
+        let native = &owner.selected().native_host;
+        if !native.members.iter().any(|row| &row.member == helper.member())
+            || meerkat_core::mob_realm_id(&helper.member().mob_id).as_ref().ok() != Some(&native.realm)
+            || !context.validates_resource(&helper)
+        {
+            return Err("shared setup resource differs from the selected native owner".into());
+        }
+        Ok(Self {
+            helper: helper.member().clone(), members: native.members.clone(),
+            server: helper.server().clone(), projection: ResourceProjection::Shared { helper, context },
+            registration_slots: Mutex::new(BTreeMap::new()),
+            local_round: OnceLock::new(),
+        })
+    }
 
     pub(crate) fn server(&self) -> &McpServerConfig { &self.server }
 
@@ -111,6 +138,13 @@ impl SetupResourceSelection {
     pub(crate) fn helper_projection(&self) -> Result<PreparedSetupHelper, String> {
         match &self.projection {
             ResourceProjection::Completed(setup) => setup.helper_projection(),
+            #[cfg(all(unix, feature = "console"))]
+            ResourceProjection::Shared { helper, context } => {
+                if !context.validates_resource(helper) {
+                    return Err("shared setup resource is no longer current".into());
+                }
+                Ok(helper.clone())
+            }
             ResourceProjection::Preparing { helper, source, profile, tools, resources } => {
                 let bytes = read_regular_artifact(&resources.handoff.path)?;
                 if hash(&bytes) != resources.handoff.sha256 {
@@ -163,7 +197,9 @@ impl SetupResourceSelection {
             if helper {
                 participant.selected.set(()).map_err(|_| "registration already selected")?;
                 #[cfg(all(unix, feature = "console"))]
-                if let Some(local) = self.local_round.get() {
+                if let ResourceProjection::Shared { context, .. } = &self.projection {
+                    context.bind_attempt_registration(self.helper.clone(), session.as_str().to_owned(), participant)?;
+                } else if let Some(local) = self.local_round.get() {
                     local.bind_registration(session.as_str().to_owned(), participant)?;
                 }
             }

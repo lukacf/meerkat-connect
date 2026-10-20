@@ -73,6 +73,71 @@ pub struct ToolkitGatewayHost {
 }
 
 impl ToolkitGatewayHost {
+    /// Reserve a compiled planning member before `prepare_bootstrap`.
+    /// A validated reservation selects this exact host lifetime in the source
+    /// owner and composes its retained registration hook. Invalid reservations
+    /// select neither. Actual machine binding remains in normal bootstrap.
+    /// Fresh members require real held completion. An ordinary resumed member
+    /// may restore historical source custody from exact retained P/G evidence,
+    /// but stays restricted pending workflow attachment. Neither path permits
+    /// appending to an already active host.
+    /// A later host-currentness or bootstrap failure retains the restriction;
+    /// it does not transfer the source to a different host or imply activation.
+    pub async fn reserve_workflow_member(
+        &mut self,
+        terms: &meerkat_toolkit::setup::SetupWorkflowTerms,
+        original: &PrivateOriginalRef,
+        spec: &meerkat_mobkit::identity_first::DurableAgentSpec,
+    ) -> Result<Arc<crate::private_originals::InstalledWorkflowMember>, HostLifetimeError> {
+        self.owner.validate_current_selection()?;
+        if self.private_closed.is_closed() || self.machine.get().is_some() {
+            return Err(HostLifetimeError::Denied);
+        }
+        let originals = self.private_originals.as_ref().ok_or(HostLifetimeError::Unavailable)?;
+        let registration = self.member_registration.clone().ok_or(HostLifetimeError::Unavailable)?;
+        let registry = self.installed_tool_policy.clone().ok_or(HostLifetimeError::Unavailable)?;
+        let member = originals.reserve_workflow_member_for_host(
+            &self.owner, terms, original, spec,
+        ).await.map_err(|error| match error {
+            PrivateOriginalError::Unavailable => HostLifetimeError::Unavailable,
+            _ => HostLifetimeError::Denied,
+        })?;
+        // The source reservation completes synchronously after its writer is
+        // acquired. Retain its participant before any later refusal, with no
+        // intervening await that could abandon an unregistered selection.
+        self.member_registration = Some(Arc::new(
+            crate::installed_host::prepared_registration::PreparedMemberRegistration::from_installed(
+                registration, registry, member.registration_participant(),
+            ),
+        ));
+        self.owner.validate_current_selection()?;
+        if self.private_closed.is_closed() { return Err(HostLifetimeError::Denied); }
+        Ok(member)
+    }
+    /// Restore an already committed inline disclosure from the host's exact
+    /// private G/P WorkGraph service. The expected audiences must equal the
+    /// original recorded selection. This does not recreate Find or a native
+    /// input, start recovery, or resolve unknown historical delivery. An absent
+    /// record remains Pending; a reconstructed committed origin cannot dispatch.
+    pub async fn restore_committed_workflow_context(
+        &self, planning: &Arc<crate::private_originals::InstalledWorkflowPlanning>,
+        membership: &meerkat_toolkit::setup::SetupWorkflowWaiter,
+        recipient: meerkat_workgraph::WorkGraphService,
+        backend: &meerkat_toolkit::setup::SetupWorkBackend,
+        output_audiences: std::collections::BTreeSet<toolkit_package::Id>,
+    ) -> Result<crate::private_originals::WorkflowContextObservation, PrivateOriginalError> {
+        self.owner.validate_current_selection().map_err(|_| PrivateOriginalError::Unavailable)?;
+        if self.private_closed.is_closed() { return Err(PrivateOriginalError::Denied); }
+        let source = self.private_originals.as_ref().ok_or(PrivateOriginalError::Unavailable)?;
+        source.check_context_restore_host(&self.owner)?;
+        let acquisition = self.acquisition.lock().map_err(|_| PrivateOriginalError::Unavailable)?
+            .configured().ok_or(PrivateOriginalError::Unavailable)?;
+        // Only the control published after the normal Ready/start boundary is
+        // usable. An open default control cannot bypass that native lifecycle.
+        let control = self.acquisition_recovery.published_transfer_control(&acquisition, source, backend)
+            .map_err(|_| PrivateOriginalError::Unavailable)?;
+        planning.restore_committed_context(source, membership, recipient, backend, output_audiences, &control).await
+    }
 
     /// Join a trusted configured resource to the existing installed native
     /// owners before bootstrap takes them. The caller composes any existing
@@ -758,7 +823,7 @@ impl GatewayHostComposition for ToolkitGatewayHost {
             self.owner.join_close(&closing.handle).await
         };
         let recovery_close = async {
-            // Stop above excludes new recovery work before this census,
+            // Stop above excludes new transfer registration before this census,
             // even when initialization never started the recovery worker.
             let custody_close = async {
                 match &self.private_originals {
@@ -767,11 +832,18 @@ impl GatewayHostComposition for ToolkitGatewayHost {
                     None => Ok(()),
                 }
             };
+            let transfer_close = async {
+                match &self.private_originals {
+                    Some(originals) => originals.join_workflow_context_transfers(false).await
+                        .map_err(|_| HostLifetimeError::NotSettled),
+                    None => Ok(()),
+                }
+            };
             // These independently retained owners must all enter their joins,
             // including when another owner fails or does not settle promptly.
-            let (recovered, custody) = tokio::join!(
-                self.acquisition_recovery.join(), custody_close);
-            recovered.and(custody)
+            let (recovered, custody, transfers) = tokio::join!(
+                self.acquisition_recovery.join(), custody_close, transfer_close);
+            recovered.and(custody).and(transfers)
         };
         let (recovery, native) = tokio::join!(
             tokio::time::timeout(std::time::Duration::from_secs(30), recovery_close),
