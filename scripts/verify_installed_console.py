@@ -196,7 +196,7 @@ def input_text(frame):
     return None
 
 
-def native_original_pair(frames, live, accepted, original_request, fresh_request):
+def native_original_pair(frames, live, accepted, original_request, fresh_request, *, fresh_context=None):
     """Join the accepted Send anchor to at most two ordered native run starts."""
     # The accepted Send owns its reservation anchor. Each native RunStarted
     # owns its input interaction lineage, which can differ from that reservation.
@@ -231,9 +231,17 @@ def native_original_pair(frames, live, accepted, original_request, fresh_request
         require(interaction is None or nonempty(interaction), "invalid native run interaction")
         interactions[run] = interaction
         expected = original_request if index == 0 else fresh_request
+        if index == 1 and fresh_context is not None:
+            # The caller binds this exact context from the checked human review
+            # before submitting approval. Never infer it from observed input.
+            require(nonempty(fresh_context), "reviewed fresh host context is missing")
+            matches_input = frame["payload"].get("input") == {"kind": "content", "content": [
+                {"type": "text", "text": fresh_context}, {"type": "text", "text": expected}]}
+        else:
+            matches_input = input_text(frame) == expected
         require(frame["payload"].get("source_event_type") == "run_started"
                 and frame["payload"].get("session_id") == accepted["session_id"]
-                and input_text(frame) == expected
+                and matches_input
                 and positions[anchor["id"]] < positions[frame["id"]],
                 "native original/fresh input differs from the accepted session or request")
     require(len(set(runs)) == len(runs), "fresh instruction reused the original native run")
