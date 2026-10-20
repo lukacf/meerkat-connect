@@ -51,12 +51,14 @@ when it resolves to that commit, with no branch/HEAD fallback. Existing public
 source, byte, archive, attestation and reader checks remain. Descriptive producer
 paths do not force rebuilding an otherwise unchanged library artifact.
 
-CLI candidate commands retain the same CI producer directory; `stage-cli` requires the
-existing CI preflight. Direct native production/assembly on a retained host remains
-a development route. The lead requires clean GitHub-hosted, attested production
-for installed-scope Connect selections in the 0.9.4 installer; standalone CLI
-coverage of that requirement is being clarified. Cross-job artifact transport is
-an orchestration choice. Actual selected builds and consumer qualification remain
+CLI candidate commands retain the same CI producer directory; `stage-cli` requires
+the existing CI preflight. The lead confirms that the standalone CLI may use the
+existing retained native producer, independent shutdown review and assembler,
+with checksums, review record and assembler input inventory. Clean GitHub-hosted,
+attested production remains required for every Forge input, including the CLI if
+Forge consumes it. Standalone CLI CI migration is a 0.9.5 item; the permitted
+retained route needs no new producer, assembler mode or cross-job transport.
+Actual selected builds and consumer qualification remain
 required; no CI run, successor publication or public readback is claimed. The released
 breadth limits below remain separate from the service-read development journey.
 
