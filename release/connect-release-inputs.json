@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "kind": "connect-linux-candidate-inputs",
+  "kind": "connect-candidate-inputs",
   "target": "linux-x86_64",
   "scope": "installed_gateway_schema4_resource_startup_and_shutdown_preview",
   "connect_version": null,

@@ -69,6 +69,15 @@ for the next affected compile. Diagnostic fragments do not decide acceptance,
 so the actual journey proceeds with its existing compiled oracle while retaining
 that negative-control failure.
 
+The corrected [actual CLI journey](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-r9-cli-consumer-0h57sh2n/FINAL.json) now passes independent review:
+Connect installs Hacker News and Wikipedia, exits setup and joins its helpers;
+a fresh ordinary stock rkat session in the same realm then reads three real
+Hacker News stories. Its final IDs and titles match the service results, and
+realm configuration is unchanged. The scripted loopback model is explicit.
+This proves the CLI lifecycle and actual service calls; the separate normal
+live-model read remains blocked at Core credential admission. The successful
+realm is retained for that affected read, with all physical owners joined.
+
 An independently reviewed live-read wrapper can verify the completed setup in
 that retained realm and start a third ordinary rkat session with a real model.
 It preserves the scripted failure and requires three actual Hacker News results,
@@ -99,10 +108,15 @@ the invalid arguments before access review. Independent review establishes this
 fixture defect as the first refusal before the scripted model schedule stops.
 The fixture correction is reviewed: it supplies the intended service/catalog
 policy and checks the complete native review candidate while preserving prior
-grants and both decisions. Its affected rerun uses the existing gateway.
-Intentional process loss and
-successor recovery are not reached. Cleanup is natural; the previous 403 remains
-a separate failed run and approval/restart recovery remains unqualified.
+grants and both decisions. The affected rerun approves software review 60 and
+access review 83, then fails a stale verifier assertion: accepted Console
+submission and native run IDs need not match under Meta's governed ingress.
+Native envelope and payload agree, and the first original run completes. The
+correction must retain the exact accepted submission, session, business input,
+ordering and stable per-run native lineage. No second-run completion, deliberate
+process loss or successor recovery is established. Login retirement remains
+uncertain; all physical owners join naturally. Earlier failures remain recorded,
+and approval/restart recovery is unqualified.
 
 The planned successor package selection uses Toolkit 0.9.4 with
 `meerkat-meta==0.9.4` for the native-host extra. Current development metadata and
@@ -110,6 +124,12 @@ produced artifacts have not yet moved to that selection. Published 0.9.0 assets
 remain immutable. The existing candidate producer will supply Forge's runtime
 selection and paths; historical v44 artifacts are format/layout rehearsal inputs
 only. Linux x86_64 is the first target, with macOS qualification separate.
+
+The existing public-development release producer now supports explicit Linux
+x86_64 and macOS arm64 dispatches with separate target-qualified assets. Its six
+changed files pass independent source review and 180 offline controls. It reuses
+the existing packager, assembler, verifier and Meta reader. The exact release
+inputs remain unbound; no native candidate build or publication has run.
 
 The latest executed r8 compatibility and Console custody changes
 compile. Five of seven affected controls pass: both Console custody checks, both

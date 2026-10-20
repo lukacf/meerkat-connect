@@ -1,4 +1,4 @@
-# Connect Linux candidate and publication
+# Connect native candidates and publication
 
 This manual-only workflow is source preparation for the Core/Meta 0.9.4 installed
 selection. It does not publish, tag, install on a user host, dispatch another
@@ -6,6 +6,16 @@ workflow, or qualify any bytes until its actual producer and verifier succeed.
 Connect's native package version and application SDK version are independent
 explicit selections, checked against the dispatched source metadata. There is
 no default to the public 0.9.0 artifacts or to a development pair.
+
+Dispatch `linux-x86_64` and `macos-arm64` independently. Each dispatch selects
+one target and that target's committed input-file digest; neither target can
+stand in for the other. Linux uses `ubuntu-24.04`, and macOS uses `macos-15`,
+which GitHub lists as an arm64 runner in its
+[hosted-runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+The producer also checks the actual operating system and architecture before
+any native build. A runner label alone is not target evidence. The separate
+attestation job remains on Ubuntu: it hashes and attests the selected bytes
+without running the product, so it does not require a matching native host.
 
 The existing producer path is used without weakening its acceptance:
 
@@ -44,13 +54,17 @@ The source archive is the public dispatched commit. Candidate source SHA,
 workflow SHA and dispatch SHA must agree. There is no restored Cargo/target
 cache and no secret needed for downloads or native execution. The attestation
 job alone receives OIDC/attestation permissions. The GitHub-hosted runner's
-actual tool versions and package inventory are retained; the runner image and
+actual tool versions and package inventory are retained (dpkg on Linux;
+Homebrew and Xcode SDK on macOS). Python 3.12 and Rust 1.97.0 are selected on
+both hosts. macOS requires the native Xcode tools, zstd, pkg-config and OpenSSL;
+the workflow records the selected OpenSSL location. The runner image and
 system package set are observed, not claimed reproducible from this draft.
 
 ## Required inputs still unbound
 
-`connect-release-inputs.json` contains deliberate nulls. It refuses before any
-native build. The existing owners must supply all of the following:
+`connect-release-inputs.json` selects Linux; `connect-release-inputs-macos-arm64.json`
+selects macOS. Both contain deliberate nulls and refuse before any native build.
+The existing owners must supply all of the following separately for each target:
 
 - The final dispatched public Connect source commit, its native package version,
   SDK distribution/version, and exact native Cargo manifest/lock hashes.
@@ -115,6 +129,14 @@ whose existing owner must provide clean source/build provenance. This workflow
 does not invent missing library/tool build receipts. Public availability of an old archive is
 not a substitute for that provenance or current source equality.
 
+This producer records its actual checkout, runner temporary directory, Python
+and Rust toolchain roots, Cargo directories and macOS Homebrew prefix in the
+attested candidate manifest. Its own records may reference only those observed
+roots, using path-component containment rather than string prefixes. Acceptance
+uses those roots only after verifying both original attested subjects. This
+allowance does not apply while inspecting downloaded predecessor artifacts;
+it cannot make an old private-host library or SDK acceptable.
+
 ## Accept an exact candidate without write credentials
 
 `accept-publication` accepts an already emitted candidate. It does not run the
@@ -131,7 +153,7 @@ python3 scripts/connect-candidate.py accept-publication \
 ```
 
 These paths describe a future selected operation, not runnable release inputs
-from this draft. The request must contain exactly these nine fields:
+from this draft. The request must contain exactly these ten fields:
 
 | Field | Required value |
 | --- | --- |
@@ -142,13 +164,18 @@ from this draft. The request must contain exactly these nine fields:
 | `inputs_sha256` | Exact 64-character lowercase SHA-256 of the original committed input selection. |
 | `connect_version` | Exact selected native package version in `major.minor.patch` form; not inferred from Core or Meta. |
 | `release_id`, `tag` | Positive integer ID and exact tag of the existing release selected for later publication. |
+| `target` | Exactly `linux-x86_64` or `macos-arm64`, matching the manifest, input selection and original runtime selection. |
 
 The candidate directory must supply these three original files:
 
-- `connect-linux-candidate.tar.gz`, the complete candidate closure below 2 GiB.
-- `connect-candidate.json`, its original attested manifest, at most 32 MiB.
-- `connect-provenance.jsonl`, the attestation bundle for both subjects, at most
+- `connect-<target>-candidate.tar.gz`, the complete candidate closure below 2 GiB.
+- `connect-<target>-candidate.json`, its original attested manifest, at most 32 MiB.
+- `connect-<target>-provenance.jsonl`, the attestation bundle for both subjects, at most
   32 MiB. Unsigned bundle JSON is not verification evidence.
+
+For example, the macOS archive is `connect-macos-arm64-candidate.tar.gz`.
+Every subject and bundle name includes the target, so the two independently
+accepted candidates can coexist on the same selected release without overwrites.
 
 The repository is fixed to `lukacf/meerkat-connect` and the workflow to
 `.github/workflows/connect-candidate.yml`. GitHub's `gh attestation verify`
@@ -229,18 +256,27 @@ Actions artifact alone is not that handoff.
 
 The candidate workflow was checked by source reading, Python AST parsing,
 JSON parsing, YAML parsing and exact patch roundtrip. The publication commands
-also passed 76 offline controls using controlled verifier results, a controlled
+also passed 180 offline controls using controlled verifier results, a controlled
 reader and transport responses. Those controls include input substitution,
 conflicting assets at each position, partial writes, repository visibility
 changes, commit-only/tagged native selection, and real local Git fetches that
-refuse commit/tag mismatches before checkout. They do
+refuse commit/tag mismatches before checkout. Both targets exercise the existing
+acceptance and publication controls. Additional checks cover native host/target
+mismatches, data-only attestation, private or foreign producer paths, target
+binding mismatches and preserving the other target's release assets. They do
 not establish actual signature verification, selected Meta-reader acceptance,
 public upload or Forge inclusion. No Cargo, packager, native verifier, native
 binary, GitHub job or remote host was executed for this draft. Actual attested
 candidate inputs and the exact selected Meta package must still pass acceptance;
 the selected source and input joins need a real owner-authorized CI run.
-The Linux installed-product scope is narrower than shared setup workflow,
-acquisition, account login, model/task completion, installation or another OS.
+Each target's installed-product scope is narrower than shared setup workflow,
+acquisition, account login, model/task completion or installation. Success on
+one target establishes nothing about the other target's execution.
+
+Both target input inventories, exact source graph and SDK selections remain
+unbound. No current native macOS build or installed-product execution has been
+measured. The existing 120-minute build-job and 15-minute attestation-job bounds
+are limits, not completion estimates or promises for either platform.
 
 There is no Connect release workflow or prior trigger policy to extend at the
 reviewed public source. This adds only `workflow_dispatch`. Candidate publication,

@@ -30,8 +30,7 @@ import urllib.request
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-INPUTS = ROOT / "release/connect-release-inputs.json"
-TARGET = "linux-x86_64"
+TARGETS = {"linux-x86_64": ("Linux", "x86_64"), "macos-arm64": ("Darwin", "arm64")}
 SCOPE = "installed_gateway_schema4_resource_startup_and_shutdown_preview"
 MAX_FILE = 2 * 1024**3 - 1
 HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -46,6 +45,32 @@ FORGE_READERS = {"installer/launchkit/runtime_selection.py",
 def require(ok, message):
     if not ok:
         raise ValueError(message)
+
+
+def checked_target(value):
+    require(isinstance(value, str) and value in TARGETS, "explicit supported target required")
+    return value
+
+
+def selected_target():
+    return checked_target(os.environ.get("CONNECT_TARGET"))
+
+
+def input_path(target):
+    checked_target(target)
+    name = "connect-release-inputs.json" if target == "linux-x86_64" else "connect-release-inputs-macos-arm64.json"
+    return ROOT / "release" / name
+
+
+def publication_files(target):
+    checked_target(target)
+    return (f"connect-{target}-candidate.tar.gz", f"connect-{target}-candidate.json",
+            f"connect-{target}-provenance.jsonl")
+
+
+def require_native_host(target):
+    require((platform.system(), platform.machine()) == TARGETS[checked_target(target)],
+            "candidate target differs from native build host")
 
 
 def unique(pairs):
@@ -139,20 +164,23 @@ def checked_native_releases(value):
     return value
 
 
-def preflight():
+def preflight(*, native=False):
     require(os.environ.get("GITHUB_ACTIONS") == "true"
             and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-            and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
-            and platform.system() == "Linux" and platform.machine() == "x86_64",
-            "manual clean GitHub-hosted Linux execution required")
+            and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+            "manual clean GitHub-hosted execution required")
+    target = selected_target()
+    if native:
+        require_native_host(target)
+    inputs = input_path(target)
     require(os.environ.get("GITHUB_REPOSITORY") == "lukacf/meerkat-connect", "wrong candidate repository")
     revision, tree = source_state()
     expected = os.environ.get("CONNECT_INPUTS_SHA256", "")
-    require(HEX.fullmatch(expected) and digest(INPUTS) == expected, "release input selection differs")
-    value = read_json(INPUTS)
+    require(HEX.fullmatch(expected) and digest(inputs) == expected, "release input selection differs")
+    value = read_json(inputs)
     require(not unbound(value), "unbound release inputs: no build or old-default fallback")
-    require(value["schema_version"] == 1 and value["kind"] == "connect-linux-candidate-inputs"
-            and value["target"] == TARGET and value["scope"] == SCOPE, "wrong candidate scope")
+    require(value["schema_version"] == 1 and value["kind"] == "connect-candidate-inputs"
+            and value["target"] == target and value["scope"] == SCOPE, "wrong candidate scope")
     require(VERSION.fullmatch(value["connect_version"]), "explicit Connect version required")
     native = tomllib.loads((ROOT / "native-candidate/Cargo.toml").read_text())
     sdk = tomllib.loads((ROOT / "sdk/python/pyproject.toml").read_text())["project"]
@@ -220,7 +248,7 @@ class Recorder:
                     code = process.wait()
         record_env = {key: selected_env[key] for key in (
             "RUSTUP_TOOLCHAIN", "XDG_CACHE_HOME", "RUST_LANE_ID", "CARGO_INCREMENTAL",
-            "CARGO_TERM_COLOR", "CARGO_BUILD_JOBS", "MEERKAT_CONNECT_RESOURCES_SHA256", "TMPDIR")
+            "CARGO_TERM_COLOR", "CARGO_BUILD_JOBS", "MEERKAT_CONNECT_RESOURCES_SHA256", "TMPDIR", "OPENSSL_DIR")
             if key in selected_env}
         record = {"argv": argv, "cwd": str(cwd), "env": record_env, "exit_code": code,
                   "timed_out": expired, "elapsed_seconds": time.time() - started, "log": binding(log)}
@@ -243,21 +271,32 @@ def download(path, row):
     path.chmod(0o644)
 
 
-def provenance(value):
+def checked_producer_roots(value):
+    require(isinstance(value, list) and 0 < len(value) <= 16
+            and all(isinstance(item, str) for item in value), "bounded producer roots required")
+    roots = tuple(PurePosixPath(item) for item in value)
+    require(all(root.is_absolute() and ".." not in root.parts
+                and (len(root.parts) >= 4 or str(root) == "/opt/homebrew") for root in roots),
+            "invalid current producer provenance root")
+    return roots
+
+
+def provenance(value, *, current_roots=()):
     """Refuse historical private locators; do not rewrite producer bytes."""
     if isinstance(value, dict):
         for item in value.values():
-            provenance(item)
+            provenance(item, current_roots=current_roots)
     elif isinstance(value, list):
         for item in value:
-            provenance(item)
+            provenance(item, current_roots=current_roots)
     elif isinstance(value, str):
-        require(not re.search(r"/Users/|/private/|/var/folders/|/home/(?!runner(?:/|$))[^/]+/", value),
-                "private input provenance requires fresh owner-produced CI artifacts")
-        for item in re.findall(r"(?:^|[=\s\"'])/(?:tmp|var/tmp|srv|opt)/[^\s\"']*", value):
-            allowed = (str(ROOT), os.environ.get("RUNNER_TEMP", ""), "/opt/hostedtoolcache/")
-            require(any(prefix and item.lstrip("= \t\"'").startswith(prefix) for prefix in allowed),
-                    "foreign absolute producer locator requires fresh CI provenance")
+        roots = checked_producer_roots([str(root) for root in current_roots]) if current_roots else ()
+        for item in re.findall(r"/(?:Users|private|var/folders|home/(?!runner(?:/|$))[^/]+|tmp|var/tmp|srv|opt)/[^\s\"']*", value):
+            path = PurePosixPath(item)
+            # Component containment excludes sibling-prefix and traversal escapes.
+            current = ".." not in path.parts and any(path.is_relative_to(root) for root in roots)
+            public_tool = ".." not in path.parts and path.is_relative_to("/opt/hostedtoolcache")
+            require(current or public_tool, "foreign/private provenance requires fresh owner-produced CI artifacts")
 
 
 def inspect_prebuilt(path):
@@ -366,7 +405,10 @@ def fetch_native_source(record, work, domain, selected):
 
 
 def build():
-    value, revision, tree = preflight()
+    value, revision, tree = preflight(native=True)
+    target = value["target"]
+    inputs_path = input_path(target)
+    subjects = publication_files(target)[:2]
     work = Path(os.environ["RUNNER_TEMP"]) / "connect-candidate"
     require(not work.exists() and not (ROOT / "dist").exists(), "fresh output roots required")
     work.mkdir()
@@ -376,7 +418,7 @@ def build():
     inputs = work / "inputs"
     artifacts = work / "artifacts"
     artifacts.mkdir()
-    copy_exact(INPUTS, work / "inputs-selection.json")
+    copy_exact(inputs_path, work / "inputs-selection.json")
     for name, row in value["files"].items():
         download(inputs / name, row)
         inspect_prebuilt(inputs / name)
@@ -438,7 +480,23 @@ def build():
     record.run("rust-version", ["rustc", "+1.97.0", "--version", "--verbose"])
     record.run("cargo-version", ["cargo", "+1.97.0", "--version", "--verbose"])
     record.run("python-version", [sys.executable, "--version"])
-    record.run("system-packages", ["dpkg-query", "-W"])
+    if target == "linux-x86_64":
+        record.run("system-packages", ["dpkg-query", "-W"])
+    else:
+        record.run("system-packages", ["brew", "list", "--versions"])
+        record.run("system-sdk", ["xcrun", "--show-sdk-path"])
+    _, sysroot_log = record.run("rust-sysroot", ["rustc", "+1.97.0", "--print", "sysroot"])
+    _, cargo_paths_log = record.run("cargo-paths", [ROOT / "scripts/repo-cargo", "--print-env"])
+    cargo_paths = dict(line.split("=", 1) for line in cargo_paths_log.read_text().splitlines())
+    current_roots = [ROOT, Path(os.environ["RUNNER_TEMP"]), Path(sysroot_log.read_text().strip()),
+                     Path(cargo_paths["CARGO_HOME"]), Path(cargo_paths["CARGO_TARGET_DIR"]), Path(sys.prefix)]
+    if target == "macos-arm64":
+        _, brew_log = record.run("system-prefix", ["brew", "--prefix"])
+        current_roots.append(Path(brew_log.read_text().strip()))
+    # Retain only observed roots from this producer. The attested manifest lets
+    # acceptance recheck our own records without relaxing predecessor inputs.
+    current_roots = sorted({str(path) for root in current_roots for path in (root, root.resolve(strict=True))})
+    checked_producer_roots(current_roots)
     record.run("system", ["uname", "-a"])
     resource = value["resources"]
     upstream = work / "upstream"
@@ -456,7 +514,7 @@ def build():
         "--destination", starter, "--manifest", starter_manifest, "--manifest-sha256", digest(starter_manifest)])
     args = [sys.executable, ROOT / "scripts/package-connect-resources.py",
         "--destination", work / "resources", "--upstream", upstream, "--zstd", shutil.which("zstd"),
-        "--target", TARGET, "--starter", starter,
+        "--target", target, "--starter", starter,
         "--release-manifest-sha256", digest(starter / "release-manifest.json")]
     for key, option in (("library", "library"), ("acquisition_node", "acquisition-node"), ("npm", "npm")):
         row = value["files"][resource[key]]
@@ -470,7 +528,7 @@ def build():
     record.run("resources", args, seconds=900)
     resource_record = work / "resources/build.json"
     resource_value = read_json(resource_record)
-    provenance(resource_value)
+    provenance(resource_value, current_roots=current_roots)
     wrapper = ROOT / "scripts/repo-cargo"
     manifest = ROOT / "native-candidate/Cargo.toml"
     _, metadata_log = record.run("metadata", [wrapper, "+1.97.0", "metadata", "--locked", "--format-version", "1",
@@ -552,13 +610,13 @@ def build():
     copy_exact(binaries[0], binary)
     binary.chmod(0o755)
     native_record = work / "build-record.json"
-    write_new(native_record, {"schema_version": 1, "target": TARGET, "binary_kind": "toolkit_gateway",
+    write_new(native_record, {"schema_version": 1, "target": target, "binary_kind": "toolkit_gateway",
         "resources_sha256": resource_value["resources_sha256"], "binary": binding(binary), "cargo": cargo,
         "source_manifest": binding(source_manifest), "resource_build_record_sha256": digest(resource_record)})
     assembly = [sys.executable, ROOT / "scripts/assemble-connect-product.py", "--binary", binary,
         "--binary-sha256", digest(binary), "--build-record", native_record,
         "--resource-build-record", resource_record, "--resource-build-record-sha256", digest(resource_record),
-        "--binary-kind", "toolkit_gateway", "--target", TARGET, "--release-version", value["connect_version"]]
+        "--binary-kind", "toolkit_gateway", "--target", target, "--release-version", value["connect_version"]]
     record.run("stage", [*assembly, "--stage-only", "--destination", work / "stage"], seconds=600)
     # Install the original selected Meta wheel and the just-built Connect wheel.
     # There is no network dependency resolution or second SDK build here.
@@ -579,7 +637,7 @@ def build():
     site = Path(site_log.read_text().strip())
     staged = work / "stage/staging.json"
     record.run("installed-product", [python, "-I", ROOT / "scripts/verify_native_gateway_subprocess.py",
-        "--toolkit-gateway", work / ("stage/meerkat-connect-" + TARGET + "/bin/toolkit_gateway"),
+        "--toolkit-gateway", work / ("stage/meerkat-connect-" + target + "/bin/toolkit_gateway"),
         "--toolkit-python", site, "--meta-python", site, "--case", "installed-product",
         "--installed-staging", staged, "--installed-staging-sha256", digest(staged),
         "--output", work / "verification"], seconds=900)
@@ -603,7 +661,7 @@ def build():
     copy_exact(catalog, artifacts / "model-catalog.json")
     # Exact public reader shape. The producer's absolute locators stay untouched;
     # Forge owns only their later physical relocation, not record rewriting.
-    selection = {"format": "forge-meta-toolkit-runtime-selection-v1", "artifact_root": str(artifacts), "target": TARGET,
+    selection = {"format": "forge-meta-toolkit-runtime-selection-v1", "artifact_root": str(artifacts), "target": target,
         "assembly": binding(artifacts / "assembly.json"), "source_manifest": binding(source_manifest),
         "meta_wheel": binding(artifacts / sdk_wheels["meta"].name),
         "toolkit_wheel": binding(artifacts / sdk_wheels["toolkit"].name),
@@ -643,33 +701,36 @@ def build():
                          "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
         elif path.is_file() and not path.is_symlink():
             if path.suffix == ".json":
-                provenance(read_json(path))
+                provenance(read_json(path), current_roots=current_roots)
             elif path.suffix in {".log", ".txt", ".sha256"} or path.name == "gateway.stderr":
-                provenance(path.read_text(encoding="utf-8", errors="strict"))
+                provenance(path.read_text(encoding="utf-8", errors="strict"), current_roots=current_roots)
             rows.append({"path": path.relative_to(closure).as_posix(), "size": path.stat().st_size, "sha256": digest(path)})
     write_new(closure / "CONTENTS.json", {"schema_version": 1, "files": rows})
     dist = ROOT / "dist"
     dist.mkdir()
-    archive = dist / "connect-linux-candidate.tar.gz"
+    archive = dist / subjects[0]
     archive_tree(closure, archive)
     require(0 < archive.stat().st_size <= MAX_FILE, "candidate wrapper exceeds Forge public input/archive limit")
-    write_new(dist / "connect-candidate.json", {"schema_version": 1, "kind": "connect-installed-candidate",
+    write_new(dist / subjects[1], {"schema_version": 1, "kind": "connect-installed-candidate",
         "repository": os.environ["GITHUB_REPOSITORY"], "source_sha": revision, "source_tree": tree,
         "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
-        "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "target": TARGET, "scope": SCOPE,
+        "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "target": target, "scope": SCOPE,
         "connect_version": value["connect_version"], "native_release": value["native_release"],
-        "inputs_sha256": digest(INPUTS), "archive": {"name": archive.name, "size": archive.stat().st_size, "sha256": digest(archive)},
+        "producer_roots": current_roots,
+        "inputs_sha256": digest(inputs_path), "archive": {"name": archive.name, "size": archive.stat().st_size, "sha256": digest(archive)},
         "runtime_selection_sha256": digest(artifacts / "RUNTIME-SELECTION.json"), "publication": "not_performed"})
 
 
 def fetch_built():
-    preflight()
+    value, _, _ = preflight()
+    target = value["target"]
+    subjects = publication_files(target)[:2]
     identifier = os.environ.get("CONNECT_ARTIFACT_ID", "")
     expected = os.environ.get("CONNECT_ARTIFACT_DIGEST", "").removeprefix("sha256:")
     require(identifier.isdigit() and HEX.fullmatch(expected), "exact build artifact ID and digest required")
     endpoint = "repos/" + os.environ["GITHUB_REPOSITORY"] + "/actions/artifacts/" + identifier
     metadata = json.loads(subprocess.check_output(["gh", "api", endpoint]))
-    expected_name = "connect-linux-build-" + os.environ["GITHUB_RUN_ID"] + "-" + os.environ["GITHUB_RUN_ATTEMPT"]
+    expected_name = "connect-" + target + "-build-" + os.environ["GITHUB_RUN_ID"] + "-" + os.environ["GITHUB_RUN_ATTEMPT"]
     require(metadata["name"] == expected_name and str(metadata["workflow_run"]["id"]) == os.environ["GITHUB_RUN_ID"]
             and metadata["workflow_run"]["head_sha"] == os.environ["CONNECT_SOURCE_SHA"]
             and not metadata["expired"] and metadata["digest"].removeprefix("sha256:") == expected,
@@ -683,14 +744,15 @@ def fetch_built():
     with zipfile.ZipFile(archive) as zipped:
         entries = zipped.infolist()
         require(len(entries) == 2 and {entry.filename for entry in entries}
-                == {"connect-linux-candidate.tar.gz", "connect-candidate.json"}, "unexpected attestation subject set")
+                == set(subjects), "unexpected attestation subject set")
         for entry in entries:
             require(0 < entry.file_size <= MAX_FILE and not stat.S_ISLNK(entry.external_attr >> 16),
                     "invalid attestation subject")
             with zipped.open(entry) as source, (dist / entry.filename).open("xb") as destination:
                 shutil.copyfileobj(source, destination)
-    manifest = read_json(dist / "connect-candidate.json")
-    checked_candidate_binding(manifest, dist / "connect-linux-candidate.tar.gz", {
+    manifest = read_json(dist / subjects[1])
+    checked_candidate_binding(manifest, dist / subjects[0], {
+        "target": target,
         "source_sha": os.environ["CONNECT_SOURCE_SHA"], "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
         "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
         "inputs_sha256": os.environ["CONNECT_INPUTS_SHA256"]})
@@ -701,8 +763,6 @@ def fetch_built():
 # selection: the original v1 document and Meta-owned reader remain authoritative.
 PUBLICATION_REPO = "lukacf/meerkat-connect"
 PUBLICATION_WORKFLOW = ".github/workflows/connect-candidate.yml"
-SUBJECTS = ("connect-linux-candidate.tar.gz", "connect-candidate.json")
-PUBLICATION_FILES = (*SUBJECTS, "connect-provenance.jsonl")
 SLSA = "https://slsa.dev/provenance/v1"
 MAX_METADATA = 32 * 1024**2
 
@@ -715,8 +775,9 @@ def checked_file(path, maximum=MAX_FILE):
 
 def checked_publication_request(value):
     require(set(value) == {"source_sha", "source_tree", "source_ref", "run_id", "run_attempt",
-                          "inputs_sha256", "connect_version", "release_id", "tag"},
+                          "inputs_sha256", "connect_version", "release_id", "tag", "target"},
             "exact publication request fields required")
+    checked_target(value["target"])
     require(SHA.fullmatch(value["source_sha"]) and SHA.fullmatch(value["source_tree"])
             and HEX.fullmatch(value["inputs_sha256"]) and VERSION.fullmatch(value["connect_version"]),
             "unbound publication source, version or inputs")
@@ -788,30 +849,32 @@ def verify_publication_subject(path, bundle, request, *, env=None):
 
 def checked_candidate_binding(manifest, payload, expected):
     require(all(manifest[key] == expected[key] for key in
-                ("source_sha", "workflow_sha", "run_id", "run_attempt", "inputs_sha256")),
+                ("source_sha", "workflow_sha", "run_id", "run_attempt", "inputs_sha256", "target")),
             "candidate binding differs")
     require(manifest["archive"] == {"name": payload.name, "size": payload.stat().st_size,
                                     "sha256": digest(payload)}, "candidate closure differs")
 
 
 def checked_publication_candidate(directory, request):
-    rows = [checked_file(directory / name, MAX_FILE if name == SUBJECTS[0] else MAX_METADATA)
-            for name in PUBLICATION_FILES]
-    manifest = read_json(directory / SUBJECTS[1])
-    checked_candidate_binding(manifest, directory / SUBJECTS[0], {
-        "source_sha": request["source_sha"], "workflow_sha": request["source_sha"],
+    files = publication_files(request["target"])
+    subjects = files[:2]
+    rows = [checked_file(directory / name, MAX_FILE if name == subjects[0] else MAX_METADATA)
+            for name in files]
+    manifest = read_json(directory / subjects[1])
+    checked_candidate_binding(manifest, directory / subjects[0], {
+        "target": request["target"], "source_sha": request["source_sha"], "workflow_sha": request["source_sha"],
         "run_id": str(request["run_id"]), "run_attempt": str(request["run_attempt"]),
         "inputs_sha256": request["inputs_sha256"]})
     require(manifest["schema_version"] == 1 and manifest["kind"] == "connect-installed-candidate"
             and manifest["repository"] == PUBLICATION_REPO and manifest["source_tree"] == request["source_tree"]
-            and manifest["target"] == TARGET and manifest["scope"] == SCOPE
+            and manifest["target"] == request["target"] and manifest["scope"] == SCOPE
             and manifest["connect_version"] == request["connect_version"]
             and manifest["publication"] == "not_performed", "candidate scope or source differs")
     checked_native_releases(manifest["native_release"])
     return manifest, rows
 
 
-def unpack_publication_candidate(archive_path, destination):
+def unpack_publication_candidate(archive_path, destination, *, current_roots=()):
     """Data-only bounded extraction; retained links are checked but not created."""
     import posixpath
     destination.mkdir()
@@ -851,10 +914,10 @@ def unpack_publication_candidate(archive_path, destination):
             require(path.stat().st_size == member.size, "truncated candidate member")
             if path.suffix == ".json":
                 require(member.size <= MAX_METADATA, "candidate metadata exceeds bound")
-                provenance(read_json(path))
+                provenance(read_json(path), current_roots=current_roots)
             elif path.suffix in {".log", ".txt", ".sha256"} or path.name == "gateway.stderr":
                 require(member.size <= MAX_METADATA, "candidate text exceeds bound")
-                provenance(path.read_text())
+                provenance(path.read_text(), current_roots=current_roots)
             if rel != "CONTENTS.json":
                 inventory.append({"path": rel, "size": member.size, "sha256": digest(path)})
     contents = read_json(destination / "CONTENTS.json")
@@ -867,7 +930,8 @@ def read_publication_product(root, meta, manifest, request, work, env):
     inputs = read_json(root / "inputs-selection.json")
     require(digest(root / "inputs-selection.json") == request["inputs_sha256"]
             and inputs["native_release"] == manifest["native_release"]
-            and inputs["connect_version"] == request["connect_version"], "original input selection differs")
+            and inputs["connect_version"] == request["connect_version"]
+            and inputs["target"] == request["target"], "original input selection differs")
     def git(*args):
         return subprocess.check_output(["git", "-C", str(meta), *args], env=env, timeout=30, text=True).strip()
     selected = checked_native_releases(manifest["native_release"])["meta"]
@@ -885,6 +949,7 @@ def read_publication_product(root, meta, manifest, request, work, env):
     document = root / "artifacts/RUNTIME-SELECTION.json"
     require(digest(document) == manifest["runtime_selection_sha256"], "original selection differs")
     selection = read_json(document)
+    require(selection["target"] == request["target"], "runtime selection target differs")
     # This is the existing Forge fetch-layout map. The owner alone performs
     # physical relocation on its in-memory target; no serialized bytes change.
     artifact_root = PurePosixPath(selection["artifact_root"])
@@ -920,6 +985,8 @@ def read_publication_product(root, meta, manifest, request, work, env):
 def accept_publication(request_path, candidate, meta, output):
     checked_file(request_path, MAX_METADATA)
     request = checked_publication_request(read_json(request_path))
+    files = publication_files(request["target"])
+    subjects = files[:2]
     require(not output.exists(), "fresh acceptance directory required")
     output.mkdir()
     env = read_only_environment(output)
@@ -927,15 +994,17 @@ def accept_publication(request_path, candidate, meta, output):
     # copies before committing acceptance; no write credential enters children.
     assets = output / "assets"
     assets.mkdir()
-    for name in PUBLICATION_FILES:
-        checked_file(candidate / name, MAX_FILE if name == SUBJECTS[0] else MAX_METADATA)
+    for name in files:
+        checked_file(candidate / name, MAX_FILE if name == subjects[0] else MAX_METADATA)
         copy_exact(candidate / name, assets / name)
     manifest, rows = checked_publication_candidate(assets, request)
-    for name in SUBJECTS:
-        verified = verify_publication_subject(assets / name, assets / PUBLICATION_FILES[2], request, env=env)
+    for name in subjects:
+        verified = verify_publication_subject(assets / name, assets / files[2], request, env=env)
         write_new(output / (name + ".verification.json"), verified)
     root = output / "unpacked"
-    inventory = unpack_publication_candidate(assets / SUBJECTS[0], root)
+    # These roots are trusted only after both original subjects are verified.
+    current_roots = checked_producer_roots(manifest["producer_roots"])
+    inventory = unpack_publication_candidate(assets / subjects[0], root, current_roots=current_roots)
     selection, paths, evidence = read_publication_product(root, meta, manifest, request, output, env)
     require(0 < len(evidence) <= 512 and len({r["path"] for r in evidence}) == len(evidence),
             "bounded distinct owner evidence required")
@@ -1035,8 +1104,10 @@ def publish_accepted(directory, expected_sha256, output):
             and accepted["schema_version"] == 1 and accepted["kind"] == "connect-publication-acceptance"
             and accepted["scope"] == SCOPE and accepted["publication"] == "not_performed", "invalid acceptance")
     request = checked_publication_request(accepted["request"])
-    require(isinstance(accepted["assets"], list) and len(accepted["assets"]) == len(PUBLICATION_FILES)
-            and [row["name"] for row in accepted["assets"]] == list(PUBLICATION_FILES),
+    files = publication_files(request["target"])
+    subjects = files[:2]
+    require(isinstance(accepted["assets"], list) and len(accepted["assets"]) == len(files)
+            and [row["name"] for row in accepted["assets"]] == list(files),
             "accepted asset allowlist differs")
     require(not output.exists(), "fresh publication observation directory required")
     output.mkdir(mode=0o700)
@@ -1051,14 +1122,14 @@ def publish_accepted(directory, expected_sha256, output):
             name = expected["name"]
             with (assets / name).open("xb") as retained:
                 row = copy_publication_input(directory / "assets" / name, retained,
-                    MAX_FILE if name == SUBJECTS[0] else MAX_METADATA)
+                    MAX_FILE if name == subjects[0] else MAX_METADATA)
             require(row == expected, "accepted allowlist bytes differ")
             (assets / name).chmod(0o400)
         require(checked_publication_candidate(assets, request)[1] == accepted["assets"],
                 "accepted allowlist bytes differ")
         verifier_env = read_only_environment(output)
-        for name in SUBJECTS:
-            verify_publication_subject(assets / name, assets / PUBLICATION_FILES[2], request, env=verifier_env)
+        for name in subjects:
+            verify_publication_subject(assets / name, assets / files[2], request, env=verifier_env)
         release, original = release_state(request)
         # Drafts remain draft under their release owner's control. This command
         # neither creates nor publishes a release/tag, nor invents public URLs.
@@ -1083,7 +1154,7 @@ def publish_accepted(directory, expected_sha256, output):
                 # pathname is reopened by the write-capable child process.
                 with tempfile.TemporaryFile("w+b", dir=output) as upload:
                     row = copy_publication_input(assets / name, upload,
-                        MAX_FILE if name == SUBJECTS[0] else MAX_METADATA)
+                        MAX_FILE if name == subjects[0] else MAX_METADATA)
                     require(row == expected, "allowlist changed before upload")
                     upload.seek(0)
                     report["write_attempted"].append(name)
@@ -1101,7 +1172,7 @@ def publish_accepted(directory, expected_sha256, output):
                 and all(final.get(n) == row for n, row in verified_rows.items())
                 and checked_publication_candidate(assets, request)[1] == accepted["assets"],
                 "publication changed during readback")
-        archive = next(row for row in accepted["assets"] if row["name"] == SUBJECTS[0])
+        archive = next(row for row in accepted["assets"] if row["name"] == subjects[0])
         url = f"https://github.com/{PUBLICATION_REPO}/releases/download/{request['tag']}/{archive['name']}"
         files = {row["path"]: {"url": url, "archive_size": archive["size"], "archive_sha256": archive["sha256"],
             "member": "connect-export/" + row["path"], "size": row["size"], "sha256": row["sha256"]}
@@ -1123,7 +1194,7 @@ def main():
     args = parser.parse_args()
     command = args.command
     if command == "preflight":
-        preflight()
+        preflight(native=True)
     elif command == "build":
         build()
     elif command == "fetch-built":

@@ -47,11 +47,14 @@ def verified_statement(path, request):
     return [{"verificationResult": {"signature": {"certificate": cert}, "verifiedTimestamps": [{"fixture": True}], "statement": statement}}]
 
 
-@pytest.fixture
-def fixture(tmp_path, monkeypatch):
+@pytest.fixture(params=tuple(p.TARGETS))
+def fixture(tmp_path, monkeypatch, request):
     class Case:
         pass
     c = Case()
+    c.target = request.param
+    c.files = p.publication_files(c.target)
+    c.subjects = c.files[:2]
     c.root, c.candidate, c.meta = tmp_path, tmp_path / "candidate", tmp_path / "meta"
     c.candidate.mkdir()
     c.export = tmp_path / "connect-export"
@@ -59,7 +62,7 @@ def fixture(tmp_path, monkeypatch):
     c.artifacts.mkdir(parents=True)
     c.request = {"source_sha": "a" * 40, "source_tree": "b" * 40, "source_ref": "refs/heads/main",
         "run_id": 123, "run_attempt": 2, "inputs_sha256": "0" * 64, "connect_version": "1.2.3",
-        "release_id": 456, "tag": "candidate-1.2.3"}
+        "release_id": 456, "tag": "candidate-1.2.3", "target": c.target}
     c.native = {name: {"repository": "lukacf/" + repo, "version": "0.9.4", "tag": "v0.9.4", "source_sha": sha * 40}
                 for name, repo, sha in (("core", "meerkat", "c"), ("meta", "meerkat-meta", "d"))}
     # Controlled package with the same public function signatures. This is not
@@ -95,7 +98,7 @@ def selected_runtime_artifacts(target):
     return SimpleNamespace(origin='installed-gateway-assembly', evidence=tuple(
         SimpleNamespace(path=x,size=x.stat().st_size,sha256=hashlib.sha256(x.read_bytes()).hexdigest()) for x in items))
 ''')
-    inputs = {"native_release": c.native, "connect_version": c.request["connect_version"],
+    inputs = {"target": c.target, "native_release": c.native, "connect_version": c.request["connect_version"],
               "forge_reader_source_pins": {name: p.digest(c.meta / name) for name in p.FORGE_READERS}}
     dump(c.export / "inputs-selection.json", inputs)
     c.request["inputs_sha256"] = p.digest(c.export / "inputs-selection.json")
@@ -104,10 +107,12 @@ def selected_runtime_artifacts(target):
     for name in ["meta.whl", "toolkit.whl", "dependency.whl", "requirements.txt", "product.tar.gz", "product.tar.gz.sha256"]:
         (c.artifacts / name).write_bytes(("controlled bytes " + name).encode())
     dump(c.artifacts / "assembly.json", {"scope": p.SCOPE, "release_version": "1.2.3", "archive": "product.tar.gz"})
+    c.producer_root = ("/home/runner/work/_temp" if c.target == "linux-x86_64" else "/Users/runner/work/_temp")
+    producer_artifacts = c.producer_root + "/connect-candidate/artifacts"
     def selected(name):
-        return {**pin(c.artifacts / name), "path": "/home/runner/work/_temp/connect-candidate/artifacts/" + name}
-    c.selection = {"format": "forge-meta-toolkit-runtime-selection-v1", "artifact_root": "/home/runner/work/_temp/connect-candidate/artifacts",
-        "target": p.TARGET, "assembly": selected("assembly.json"), "source_manifest": selected("source-manifest.json"),
+        return {**pin(c.artifacts / name), "path": producer_artifacts + "/" + name}
+    c.selection = {"format": "forge-meta-toolkit-runtime-selection-v1", "artifact_root": producer_artifacts,
+        "target": c.target, "assembly": selected("assembly.json"), "source_manifest": selected("source-manifest.json"),
         "meta_wheel": selected("meta.whl"), "toolkit_wheel": selected("toolkit.whl"), "dependency_requirements": selected("requirements.txt"),
         "model_catalog": selected("model-catalog.json"), "dependency_wheels": [selected("dependency.whl")],
         "meta": {"controlled_fixture": True}, "toolkit": {"controlled_fixture": True}}
@@ -116,17 +121,18 @@ def selected_runtime_artifacts(target):
         contents = [{"path": x.relative_to(c.export).as_posix(), "size": x.stat().st_size, "sha256": p.digest(x)}
                     for x in sorted(c.export.rglob('*')) if x.is_file() and x.name != 'CONTENTS.json']
         dump(c.export / "CONTENTS.json", {"schema_version": 1, "files": contents})
-        archive = c.candidate / p.SUBJECTS[0]
+        archive = c.candidate / c.subjects[0]
         archive.unlink(missing_ok=True)
         p.archive_tree(c.export, archive)
         manifest = {"schema_version": 1, "kind": "connect-installed-candidate", "repository": p.PUBLICATION_REPO,
             "source_sha": c.request["source_sha"], "source_tree": c.request["source_tree"], "workflow_sha": c.request["source_sha"],
             "run_id": str(c.request["run_id"]), "run_attempt": str(c.request["run_attempt"]), "inputs_sha256": c.request["inputs_sha256"],
-            "target": p.TARGET, "scope": p.SCOPE, "connect_version": "1.2.3", "native_release": c.native,
+            "target": c.target, "scope": p.SCOPE, "connect_version": "1.2.3", "native_release": c.native,
+            "producer_roots": [c.producer_root],
             "archive": {"name": archive.name, "size": archive.stat().st_size, "sha256": p.digest(archive)},
             "runtime_selection_sha256": p.digest(c.artifacts / "RUNTIME-SELECTION.json"), "publication": "not_performed"}
-        dump(c.candidate / p.SUBJECTS[1], manifest)
-        (c.candidate / p.PUBLICATION_FILES[2]).write_bytes(b'UNTRUSTED CONTROLLED BUNDLE BYTES\n')
+        dump(c.candidate / c.subjects[1], manifest)
+        (c.candidate / c.files[2]).write_bytes(b'UNTRUSTED CONTROLLED BUNDLE BYTES\n')
         dump(c.root / "request.json", c.request)
     c.pack = pack
     c.pack()
@@ -164,7 +170,7 @@ def test_acceptance_keeps_original_bytes_and_uses_scrubbed_verifier_and_reader(f
     c = fixture
     monkeypatch.setenv('GH_TOKEN', 'not-a-real-write-token')
     monkeypatch.setenv('PROVIDER_SECRET', 'not-a-real-provider-secret')
-    before = {name: (c.candidate / name).read_bytes() for name in p.PUBLICATION_FILES}
+    before = {name: (c.candidate / name).read_bytes() for name in c.files}
     accepted = c.accept()
     assert accepted['publication'] == 'not_performed'
     assert accepted['selection'] == c.selection
@@ -175,7 +181,7 @@ def test_acceptance_keeps_original_bytes_and_uses_scrubbed_verifier_and_reader(f
         assert 'GH_TOKEN' not in env and 'PROVIDER_SECRET' not in env
     assert {x['path'] for x in accepted['evidence']} >= {'artifacts/build-record.json', 'artifacts/resource-build-record.json',
         'artifacts/gateway-verification.json', 'artifacts/product.tar.gz', 'artifacts/product.tar.gz.sha256'}
-    for name in p.PUBLICATION_FILES:
+    for name in c.files:
         assert (c.root / 'accepted/assets' / name).read_bytes() == before[name] == (c.candidate / name).read_bytes()
     assert not (c.root / 'accepted/publication.json').exists()
     assert ['rev-parse', '--verify', 'refs/tags/v0.9.4^{commit}'] in c.git_commands
@@ -202,7 +208,7 @@ def test_exact_rc_selection_accepts_without_final_release_tag(fixture, tag):
     assert accepted['publication'] == 'not_performed' and len(c.reader_calls) == 1
     refs = [args[2] for args in c.git_commands if args[:1] == ['rev-parse']]
     assert refs == ['HEAD^{commit}'] + (['refs/tags/' + tag + '^{commit}'] if tag else [])
-    retained = p.read_json(c.root / 'accepted/assets' / p.SUBJECTS[1])
+    retained = p.read_json(c.root / 'accepted/assets' / c.subjects[1])
     assert retained['native_release'] == c.native
 
 
@@ -364,7 +370,7 @@ def test_missing_indirect_record_is_refused_by_reader(fixture):
 @pytest.mark.parametrize('scope', ['source_built_development_gateway','unqualified_product_prefix_for_verification'])
 def test_development_and_staging_are_not_publishable_preview(fixture,scope):
     c=fixture
-    manifest=p.read_json(c.candidate/p.SUBJECTS[1]);manifest['scope']=scope;dump(c.candidate/p.SUBJECTS[1],manifest)
+    manifest=p.read_json(c.candidate/c.subjects[1]);manifest['scope']=scope;dump(c.candidate/c.subjects[1],manifest)
     with pytest.raises(ValueError,match='scope'):c.accept()
     assert not c.reader_calls
 
@@ -422,31 +428,31 @@ def prepare_publish(c,monkeypatch):
 def test_publication_uploads_only_accepted_bytes_then_emits_original_inventory(fixture,monkeypatch):
     c=fixture;t,publish=prepare_publish(c,monkeypatch)
     result=publish()
-    assert t.uploads==list(p.PUBLICATION_FILES)
+    assert t.uploads==list(c.files)
     assert result['status']=='verified_public_inventory' and result['selection']==c.selection
     assert result['files']['artifacts/product.tar.gz']['member']=='connect-export/artifacts/product.tar.gz'
-    assert all(v['url'].endswith('/'+p.SUBJECTS[0]) for v in result['files'].values())
-    for name in p.PUBLICATION_FILES:assert t.files[name]==(c.candidate/name).read_bytes()
+    assert all(v['url'].endswith('/'+c.subjects[0]) for v in result['files'].values())
+    for name in c.files:assert t.files[name]==(c.candidate/name).read_bytes()
     assert len(c.reader_calls)==1
 
 
 def test_equal_existing_assets_require_public_readback_without_reupload(fixture,monkeypatch):
     c=fixture;t,publish=prepare_publish(c,monkeypatch)
-    for name in p.PUBLICATION_FILES:t.record(name,(c.candidate/name).read_bytes())
+    for name in c.files:t.record(name,(c.candidate/name).read_bytes())
     assert publish()['status']=='verified_public_inventory' and not t.uploads
 
 
 def test_conflicting_existing_asset_is_not_overwritten(fixture,monkeypatch):
     c=fixture;t,publish=prepare_publish(c,monkeypatch)
-    name=p.SUBJECTS[0];raw=(c.candidate/name).read_bytes();t.record(name,b'!'*len(raw))
+    name=c.subjects[0];raw=(c.candidate/name).read_bytes();t.record(name,b'!'*len(raw))
     with pytest.raises(AssertionError,match='bytes differ'):publish()
     assert not t.uploads and t.files[name]==b'!'*len(raw)
     assert p.read_json(c.root/'publication/publication.json')['status']=='refused_or_partial'
 
 
-@pytest.mark.parametrize('conflict', p.PUBLICATION_FILES[1:])
-def test_later_existing_conflict_refuses_before_any_missing_asset_upload(fixture, monkeypatch, conflict):
-    c=fixture;t,publish=prepare_publish(c,monkeypatch)
+@pytest.mark.parametrize('conflict_index', [1, 2])
+def test_later_existing_conflict_refuses_before_any_missing_asset_upload(fixture, monkeypatch, conflict_index):
+    c=fixture;conflict=c.files[conflict_index];t,publish=prepare_publish(c,monkeypatch)
     raw=(c.candidate/conflict).read_bytes()
     t.record(conflict,b'!'*len(raw))
     with pytest.raises(AssertionError,match='bytes differ'):
@@ -457,10 +463,10 @@ def test_later_existing_conflict_refuses_before_any_missing_asset_upload(fixture
 
 
 def test_failed_second_upload_preserves_partial_evidence_without_final_inventory(fixture,monkeypatch):
-    c=fixture;t,publish=prepare_publish(c,monkeypatch);t.fail_upload=p.SUBJECTS[1]
+    c=fixture;t,publish=prepare_publish(c,monkeypatch);t.fail_upload=c.subjects[1]
     with pytest.raises(OSError):publish()
     report=p.read_json(c.root/'publication/publication.json')
-    assert report['verified_assets']==[p.SUBJECTS[0]] and report['write_attempted']==list(p.SUBJECTS)
+    assert report['verified_assets']==[c.subjects[0]] and report['write_attempted']==list(c.subjects)
     assert report['status']=='refused_or_partial' and 'files' not in report
 
 
@@ -481,15 +487,15 @@ def test_selected_acceptance_hash_and_allowlist_are_rechecked(fixture,monkeypatc
 
 def test_changed_allowlist_never_reaches_upload(fixture,monkeypatch):
     c=fixture;t,publish=prepare_publish(c,monkeypatch)
-    (c.root/'accepted/assets'/p.SUBJECTS[0]).write_bytes(b'changed')
+    (c.root/'accepted/assets'/c.subjects[0]).write_bytes(b'changed')
     with pytest.raises(ValueError):publish()
     assert not t.uploads
 
 
 def test_foreign_public_url_refuses(fixture,monkeypatch):
     c=fixture;t,publish=prepare_publish(c,monkeypatch)
-    for name in p.PUBLICATION_FILES:t.record(name,(c.candidate/name).read_bytes())
-    t.records[p.SUBJECTS[0]]['browser_download_url']='https://example.invalid/foreign'
+    for name in c.files:t.record(name,(c.candidate/name).read_bytes())
+    t.records[c.subjects[0]]['browser_download_url']='https://example.invalid/foreign'
     with pytest.raises(ValueError,match='public asset identity'):publish()
     assert not t.uploads
 
@@ -499,7 +505,7 @@ def test_changed_new_asset_after_readback_prevents_final_inventory(fixture,monke
     original_download=t.download
     def read(path,row):
         original_download(path,row)
-        if path.name==p.PUBLICATION_FILES[-1]:t.records[p.SUBJECTS[0]]['id']+=1000
+        if path.name==c.files[-1]:t.records[c.subjects[0]]['id']+=1000
     monkeypatch.setattr(p,'download',read)
     with pytest.raises(ValueError,match='publication changed'):publish()
     report=p.read_json(c.root/'publication/publication.json')
@@ -522,7 +528,7 @@ def test_second_attested_subject_is_independently_required(fixture):
     c=fixture
     def mutate(rows):
         result=rows[0]['verificationResult']
-        if result['statement']['subject'][0]['name']==p.SUBJECTS[1]:
+        if result['statement']['subject'][0]['name']==c.subjects[1]:
             result['signature']['certificate']['runInvocationURI']='foreign-attempt'
     c.mutate_verified=mutate
     with pytest.raises(ValueError,match='certificate'):c.accept()
@@ -538,9 +544,9 @@ def test_archive_link_parent_cannot_be_reinterpreted_as_directory(tmp_path):
         p.unpack_publication_candidate(archive,tmp_path/'unpacked')
 
 
-def test_existing_fetch_binding_retains_five_fields_and_archive_contract(fixture):
-    c=fixture;manifest=p.read_json(c.candidate/p.SUBJECTS[1]);payload=c.candidate/p.SUBJECTS[0]
-    keys=('source_sha','workflow_sha','run_id','run_attempt','inputs_sha256')
+def test_existing_fetch_binding_retains_target_and_source_fields_and_archive_contract(fixture):
+    c=fixture;manifest=p.read_json(c.candidate/c.subjects[1]);payload=c.candidate/c.subjects[0]
+    keys=('source_sha','workflow_sha','run_id','run_attempt','inputs_sha256','target')
     expected={k:manifest[k] for k in keys}
     p.checked_candidate_binding(manifest,payload,expected)
     for key in keys:
@@ -582,11 +588,11 @@ def test_acceptance_replacement_after_read_cannot_change_parsed_selection(fixtur
 
 def test_original_assets_replaced_after_retention_never_enter_upload(fixture,monkeypatch):
     c=fixture;t,publish=prepare_publish(c,monkeypatch)
-    before={name:(c.candidate/name).read_bytes() for name in p.PUBLICATION_FILES}
+    before={name:(c.candidate/name).read_bytes() for name in c.files}
     observed=[]
     def replace(rows):
         if len(c.commands)==3:
-            for name in p.PUBLICATION_FILES:
+            for name in c.files:
                 path=c.root/'accepted/assets'/name
                 path.unlink();path.write_bytes(b'unaccepted original handoff replacement')
                 observed.append(path)
@@ -603,14 +609,14 @@ def test_replaced_private_path_cannot_substitute_entered_upload_stream(fixture,m
     mutated=[]
     def api(endpoint,*,upload=None):
         if upload is not None and not mutated:
-            path=c.root/'publication/assets'/p.SUBJECTS[0]
+            path=c.root/'publication/assets'/c.subjects[0]
             path.unlink();path.write_bytes(b'unaccepted replacement before gh stdin read')
             mutated.append(path)
         return original_api(endpoint,upload=upload)
     monkeypatch.setattr(p,'publication_api',api)
     with pytest.raises(ValueError):publish()
-    assert len(mutated)==1 and t.uploads==list(p.PUBLICATION_FILES)
-    for name in p.PUBLICATION_FILES:assert t.files[name]==(c.candidate/name).read_bytes()
+    assert len(mutated)==1 and t.uploads==list(c.files)
+    for name in c.files:assert t.files[name]==(c.candidate/name).read_bytes()
     report=p.read_json(c.root/'publication/publication.json')
     assert report['status']=='refused_or_partial' and 'files' not in report
 
@@ -645,7 +651,139 @@ def test_repository_becoming_private_stops_further_uploads(fixture,monkeypatch):
         t.private=True
     monkeypatch.setattr(p,'download',read)
     with pytest.raises(ValueError,match='repository is not public'):publish()
-    assert t.uploads==[p.SUBJECTS[0]]
+    assert t.uploads==[c.subjects[0]]
     report=p.read_json(c.root/'publication/publication.json')
-    assert report['status']=='refused_or_partial' and report['verified_assets']==[p.SUBJECTS[0]]
+    assert report['status']=='refused_or_partial' and report['verified_assets']==[c.subjects[0]]
     assert 'files' not in report
+
+
+@pytest.mark.parametrize('target,system,machine', [
+    ('linux-x86_64', 'Linux', 'x86_64'), ('macos-arm64', 'Darwin', 'arm64')])
+def test_native_target_requires_matching_host(monkeypatch, target, system, machine):
+    monkeypatch.setattr(p.platform, 'system', lambda: system)
+    monkeypatch.setattr(p.platform, 'machine', lambda: machine)
+    p.require_native_host(target)
+    other = next(name for name in p.TARGETS if name != target)
+    with pytest.raises(ValueError, match='native build host'):
+        p.require_native_host(other)
+    monkeypatch.setattr(p.platform, 'machine', lambda: 'unsupported')
+    with pytest.raises(ValueError, match='native build host'):
+        p.require_native_host(target)
+
+
+@pytest.mark.parametrize('target', [None, '', 'macos-x86_64', 'linux-arm64', '../macos-arm64'])
+def test_no_implicit_or_unsupported_target(monkeypatch, target):
+    if target is None:
+        monkeypatch.delenv('CONNECT_TARGET', raising=False)
+    else:
+        monkeypatch.setenv('CONNECT_TARGET', target)
+    with pytest.raises(ValueError, match='explicit supported target'):
+        p.selected_target()
+
+
+def test_data_only_preflight_does_not_require_target_host(tmp_path, monkeypatch):
+    selected = tmp_path / 'inputs.json'
+    dump(selected, {'unresolved': None})
+    for key, value in {'GITHUB_ACTIONS': 'true', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
+        'RUNNER_ENVIRONMENT': 'github-hosted', 'GITHUB_REPOSITORY': p.PUBLICATION_REPO,
+        'CONNECT_TARGET': 'macos-arm64', 'CONNECT_INPUTS_SHA256': p.digest(selected)}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(p.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(p.platform, 'machine', lambda: 'x86_64')
+    monkeypatch.setattr(p, 'source_state', lambda: ('a'*40, 'b'*40))
+    monkeypatch.setattr(p, 'input_path', lambda target: selected)
+    with pytest.raises(ValueError, match='native build host'):
+        p.preflight(native=True)
+    # It still checks the exact source/input selection; it merely does not
+    # execute a Mac product on the separate Linux attestation job.
+    with pytest.raises(ValueError, match='unbound release inputs'):
+        p.preflight()
+
+
+@pytest.mark.parametrize('path', [
+    '/Users/runner/work/project/source/records/build.json',
+    '/private/var/folders/ci/run/tmp/records/build.log',
+    '/Users/runner/Library/Caches/rust-workspaces/project/targets/release/toolkit_gateway',
+    '/Users/runner/hostedtoolcache/Python/3.12/arm64/bin/python3',
+    '/opt/homebrew/opt/openssl@3/lib/libssl.dylib'])
+def test_observed_current_producer_paths_require_explicit_roots(path):
+    roots = ['/Users/runner/work/project/source', '/private/var/folders/ci/run/tmp',
+        '/Users/runner/Library/Caches/rust-workspaces/project',
+        '/Users/runner/hostedtoolcache/Python/3.12/arm64', '/opt/homebrew']
+    p.provenance({'argv': [path]}, current_roots=roots)
+    with pytest.raises(ValueError, match='foreign/private provenance'):
+        p.provenance({'argv': [path]})
+
+
+@pytest.mark.parametrize('path', [
+    '/Users/runner/work/project/source-other/file',
+    '/Users/runner/work/project/source/../old/file',
+    '/Users/luka/src/old/file', '/private/var/tmp/another-owner/file',
+    '/srv/old/file', '/opt/private-owner/file'])
+def test_current_root_allowance_does_not_accept_foreign_or_traversal_paths(path):
+    with pytest.raises(ValueError, match='foreign/private provenance'):
+        p.provenance(path, current_roots=['/Users/runner/work/project/source'])
+
+
+@pytest.mark.parametrize('root', ['/', '/Users', '/Users/runner', '/private', '/opt', '/tmp',
+    '/Users/runner/work/../old', 'relative/path'])
+def test_broad_or_ambiguous_producer_roots_refuse(root):
+    with pytest.raises(ValueError, match='producer provenance root'):
+        p.checked_producer_roots([root])
+
+
+def test_predecessor_metadata_gets_no_current_producer_allowance(tmp_path, monkeypatch):
+    monkeypatch.setattr(p, 'ROOT', Path('/Users/runner/work/project/source'))
+    monkeypatch.setenv('RUNNER_TEMP', '/Users/runner/work/_temp')
+    path = tmp_path / 'predecessor.json'
+    dump(path, {'source': '/Users/runner/work/project/source/old-input'})
+    with pytest.raises(ValueError, match='foreign/private provenance'):
+        p.inspect_prebuilt(path)
+
+
+def test_target_asset_names_cannot_collide():
+    linux, mac = (set(p.publication_files(target)) for target in p.TARGETS)
+    assert len(linux) == len(mac) == 3 and linux.isdisjoint(mac)
+    assert p.input_path('linux-x86_64') != p.input_path('macos-arm64')
+
+
+def test_other_target_assets_survive_same_release_publication(fixture, monkeypatch):
+    c = fixture
+    transport, publish = prepare_publish(c, monkeypatch)
+    other = next(target for target in p.TARGETS if target != c.target)
+    for name in p.publication_files(other):
+        transport.record(name, ('other original target ' + name).encode())
+    prior = copy.deepcopy(transport.records)
+    prior_bytes = copy.deepcopy(transport.files)
+    assert publish()['status'] == 'verified_public_inventory'
+    assert transport.uploads == list(c.files)
+    assert all(transport.records[name] == record for name, record in prior.items())
+    assert all(transport.files[name] == raw for name, raw in prior_bytes.items())
+
+
+@pytest.mark.parametrize('part', ['manifest', 'inputs', 'selection'])
+def test_foreign_target_binding_refuses_before_owner_reader(fixture, part):
+    c = fixture
+    other = next(target for target in p.TARGETS if target != c.target)
+    if part == 'manifest':
+        path = c.candidate / c.subjects[1]
+        value = p.read_json(path); value['target'] = other; dump(path, value)
+    elif part == 'inputs':
+        path = c.export / 'inputs-selection.json'
+        value = p.read_json(path); value['target'] = other; dump(path, value)
+        c.request['inputs_sha256'] = p.digest(path); c.pack()
+    else:
+        c.selection['target'] = other
+        dump(c.artifacts / 'RUNTIME-SELECTION.json', c.selection); c.pack()
+    with pytest.raises(ValueError):
+        c.accept()
+    assert not c.reader_calls and not (c.root / 'accepted/acceptance.json').exists()
+
+
+def test_foreign_private_path_inside_attested_closure_still_refuses(fixture):
+    c = fixture
+    dump(c.artifacts / 'build-record.json', {'source': '/Users/foreign-owner/source/build.rs'})
+    c.pack()
+    with pytest.raises(ValueError, match='foreign/private provenance'):
+        c.accept()
+    assert len(c.commands) == 2 and not c.reader_calls
