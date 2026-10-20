@@ -1,14 +1,16 @@
 # Building Meerkat Connect
 
-Connect has two Rust workspaces. The root contains `toolkit-package` and
-`toolkit-store`; `native-candidate/Cargo.toml` contains the CLI and native host
-adapters. Both use the checked-in dependency locks. The portable root is
-unchanged. The native workspace now selects the Core/Meta 0.9.1 development graph
-at exact [Core `efd313d4`](https://github.com/lukacf/meerkat/commit/efd313d44807d3e93f6808a127fa157be84dee05)
-and [Meta `669f54fa`](https://github.com/lukacf/meerkat-meta/commit/669f54fafafd82747c8cd9022e602a774cb4559d)
+Connect has two Rust workspaces. The root owns `toolkit-package`;
+`native-candidate/Cargo.toml` owns the CLI, native host adapters and `toolkit-store`.
+Both use their checked-in dependency locks. The native workspace selects the r9
+development graph at exact
+[Core `9281f3b0`](https://github.com/lukacf/meerkat/commit/9281f3b05b846ff31f9d74a146b8020c507aa818)
+and [Meta `2ea41584`](https://github.com/lukacf/meerkat-meta/commit/2ea415849867ad2cfddee4090a9685c9ec11457e)
 Git revisions. The unpublished `meerkat-machine-codegen` crate comes directly
 from that same Core revision. The retained `vendor/core-codegen` tree is a
 v0.9.0 release input and is not selected by the development native workspace.
+Temporary 0.9.4 preview compositions use separately selected build inputs; they
+do not change these checked-in pins or establish final SDK qualification.
 
 ## Prerequisites
 
