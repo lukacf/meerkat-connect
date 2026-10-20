@@ -71,6 +71,12 @@ of rebuilding the scripted fixture. The actual live attempt starts ordinary rkat
 but fails before a model request because its controller credential is not
 currently usable. Private provider-key presence does not establish correct auth
 routing. The realm is retained and physical owners join; the read remains open.
+Independent source review identifies a Core mismatch between synthetic
+environment credential resolution, which skips lease publication, and governed
+input admission, which requires that lease. The newer offered Core `d4d31d8a`
+retains the same paths. The Core lead has the evidence for 0.9.4 triage; no
+credential or authority workaround is applied, and the exact absent-lease
+disposition remains inferred rather than observed in CLI output.
 
 The latest diagnostic gateway and shared-test builds pass. Both Original
 bindings succeed in the first shared case, which later fails at B's selected
