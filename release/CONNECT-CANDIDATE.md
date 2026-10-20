@@ -60,6 +60,75 @@ both hosts. macOS requires the native Xcode tools, zstd, pkg-config and OpenSSL;
 the workflow records the selected OpenSSL location. The runner image and
 system package set are observed, not claimed reproducible from this draft.
 
+## Standalone CLI from the retained producer
+
+The gateway workflow above does not constitute the standalone Connect release.
+Two commands reuse its exact prepared source, native graph and resource closure:
+
+```sh
+python3 scripts/connect-candidate.py stage-cli \
+  --candidate-work /absolute/retained/connect-candidate
+
+python3 scripts/connect-candidate.py assemble-cli \
+  --candidate-work /absolute/retained/connect-candidate \
+  --shutdown-review /absolute/review/native-shutdown-review.json \
+  --shutdown-review-sha256 <exact-reviewed-record-sha256> \
+  --output /absolute/new-cli-assembly
+```
+
+`stage-cli` uses the same selected dispatch environment and native host as
+`build`. It builds the ordinary `meerkat-connect` executable through `repo-cargo`
+and copies those production bytes before compiling `packaged_setup`, so test
+features cannot replace the selected CLI. Both builds bind the same resource
+digest. The existing assembler creates an unqualified prefix; the exact test
+executable is copied beside the installed CLI. The two existing ignored tests
+then run outside the checkout with an empty runtime PATH:
+
+- `installed_product_native_catalog_preparation_and_help`
+- `installed_product_native_shutdown_joins_active_worker`
+
+Each run must actually execute one test and succeed. Actual command records,
+logs, native traces, fixture selection and process markers stay under `cli/`.
+The composition record describes the test execution. The shutdown template is
+`cli/native-shutdown-review.pending.json`, in the existing review record shape
+with `disposition: pending`. A passing test never changes that disposition.
+The existing independent reviewer inspects the raw observations and emits the
+accepted record separately, retaining its exact candidate and evidence list.
+There is no new user approval step. Failed execution retains its records and
+cannot reach final assembly.
+
+`assemble-cli` checks the supplied review digest, invokes the existing
+composition/shutdown validators, and reuses the exact selected CLI, fixture and
+resource bytes. It performs no build or test execution and preserves the original
+build record. It creates a separate final build record with the two evidence
+references, then invokes the existing assembler. The result is the existing
+`conversation_catalog_local_preparation_and_help_preview`, with
+`cli_tty_qualified: false`. It is neither a Forge gateway selection nor a public
+release, and it retains the assembler's existing exclusions.
+
+This path currently requires the same retained producer directory through
+independent review and assembly. The existing records name absolute executable
+and evidence paths; these commands do not relocate them or rewrite historical
+execution argv. The current ephemeral GitHub workflow does not yet keep that
+producer alive across review. The smallest remaining workflow work is to run
+staging, the existing independent review and final assembly in one retained
+producer lifetime, or restore that producer's exact owned evidence paths before
+assembly. This patch does not claim that CI retention or publication is solved.
+
+The actual standalone release still needs the existing
+`cli_homecore::actual_cli_public_service_survives_setup_exit_and_fresh_rkat_in_exact_realm`
+consumer against the selected packaged bytes at the RC build. Reuse the current
+native consumer driver with `CONNECT_REAL_LIBRARY_PREFIX` pointing to the staged
+prefix, `CONNECT_SUPPLIED_CLI_SHA256` set to the selected production CLI hash, and
+`CONNECT_FINAL_RKAT` / `CONNECT_FINAL_RKAT_SHA256` identifying the matching ordinary
+Core executable. Compile that fixture with the same embedded resource digest.
+It exercises setup, normal exit, a fresh ordinary `rkat` session in the same realm
+and three real Hacker News reads; its controlled model selection is explicit.
+Retain its actual CLI/rkat/test/resource identities, answers and cleanup beside
+the component preview. Neither these package tests nor an older successful
+journey qualifies different RC binaries. Autonomous live-model acceptance is a
+separate observation, not inferred from the controlled journey.
+
 ## Required inputs still unbound
 
 `connect-release-inputs.json` selects Linux; `connect-release-inputs-macos-arm64.json`

@@ -252,7 +252,8 @@ class Recorder:
                     code = process.wait()
         record_env = {key: selected_env[key] for key in (
             "RUSTUP_TOOLCHAIN", "XDG_CACHE_HOME", "RUST_LANE_ID", "CARGO_INCREMENTAL",
-            "CARGO_TERM_COLOR", "CARGO_BUILD_JOBS", "MEERKAT_CONNECT_RESOURCES_SHA256", "TMPDIR", "OPENSSL_DIR")
+            "CARGO_TERM_COLOR", "CARGO_BUILD_JOBS", "MEERKAT_CONNECT_RESOURCES_SHA256", "TMPDIR", "OPENSSL_DIR",
+            "HOME", "PATH", "RUST_TEST_THREADS", "RUST_MIN_STACK")
             if key in selected_env}
         record = {"argv": argv, "cwd": str(cwd), "env": record_env, "exit_code": code,
                   "timed_out": expired, "elapsed_seconds": time.time() - started, "log": binding(log)}
@@ -689,6 +690,176 @@ def build():
         "connect_version": value["connect_version"], "native_release": value["native_release"],
         "inputs_sha256": digest(inputs_path), "archive": {"name": archive.name, "size": archive.stat().st_size, "sha256": digest(archive)},
         "runtime_selection_sha256": digest(artifacts / "RUNTIME-SELECTION.json"), "publication": "not_performed"})
+
+
+CLI_COMPOSITION = "installed_product_native_catalog_preparation_and_help"
+CLI_SHUTDOWN = "installed_product_native_shutdown_joins_active_worker"
+
+
+def cli_producer_inputs(work):
+    """Reuse one retained producer, without relocating its execution records."""
+    require(work.is_absolute() and work.resolve(strict=True) == work,
+            "canonical retained candidate work directory required")
+    source_path = work / "artifacts/source-manifest.json"
+    source = read_json(source_path)
+    selection = work / "inputs-selection.json"
+    require(binding(selection) == source["input_selection"], "retained input selection changed")
+    value = read_json(selection)
+    require(source["revision"] == subprocess.check_output(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip(), "CLI producer source revision differs")
+    for row in source["files"]:
+        path = ROOT / relative(row["path"])
+        require(not path.is_symlink() and binding(path)["sha256"] == row["sha256"]
+                and path.stat().st_size == row["size"], "CLI producer source bytes differ")
+    metadata = source["metadata"]
+    require(binding(Path(metadata["path"])) == metadata, "retained native graph evidence changed")
+    require(value["native_release"] == source["native_release"], "CLI native selection differs")
+    resources = work / "resources/build.json"
+    native = read_json(work / "build-record.json")
+    require(native["source_manifest"] == binding(source_path)
+            and native["resource_build_record_sha256"] == digest(resources)
+            and native["resources_sha256"] == read_json(resources)["resources_sha256"],
+            "CLI inputs differ from the prepared native candidate")
+    return value, source_path, resources
+
+
+def cli_assembly_args(work, build_record):
+    value = read_json(work / "inputs-selection.json")
+    resources = work / "resources/build.json"
+    binary = work / "cli/binary/meerkat-connect"
+    return [sys.executable, ROOT / "scripts/assemble-connect-product.py", "--binary", binary,
+        "--binary-sha256", digest(binary), "--build-record", build_record,
+        "--resource-build-record", resources, "--resource-build-record-sha256", digest(resources),
+        "--binary-kind", "meerkat-connect", "--target", value["target"],
+        "--release-version", value["connect_version"]]
+
+
+def emitted_executable(log, name, *, test):
+    rows = [json.loads(line) for line in log.read_text().splitlines() if line.startswith('{')]
+    paths = [Path(row["executable"]) for row in rows if row.get("reason") == "compiler-artifact"
+             and row.get("target", {}).get("name") == name and row.get("executable")
+             and row.get("profile", {}).get("test") is test]
+    require(len(paths) == 1, "one exact emitted executable required: " + name)
+    return paths[0]
+
+
+def cli_test_evidence(record, installed, name, directory, prefix):
+    directory.mkdir()
+    for leaf in ("home", "tmp", "empty-path"):
+        (directory / leaf).mkdir()
+    execution, log = record.run(name, [installed, "--exact", "--ignored", name, "--nocapture"],
+        cwd=directory, env={"HOME": str(directory / "home"), "TMPDIR": str(directory / "tmp"),
+            "PATH": str(directory / "empty-path"), "RUST_TEST_THREADS": "1", "RUST_MIN_STACK": "8388608"},
+        seconds=900)
+    # libtest exits successfully when a filter selects zero tests, too.
+    require(re.search(r"test result: ok\. 1 passed; 0 failed; 0 ignored;", log.read_text()),
+            "the selected installed test did not actually run once")
+    roots = list((directory / "tmp").glob(prefix + "*"))
+    require(len(roots) == 1 and (roots[0] / "native-dispatch.jsonl").is_file(),
+            "owned installed test evidence is missing")
+    evidence = [binding(record.records / (name + ".json")), binding(log)]
+    # The existing tests retain their raw trace, descriptor, fixture and process
+    # markers at this root. The realm/runtime directories remain in place too.
+    evidence += [binding(path) for path in sorted(roots[0].iterdir()) if path.is_file()]
+    return execution, evidence
+
+
+def stage_cli(work):
+    selected, revision, _ = preflight(native=True)
+    value, source, resources = cli_producer_inputs(work)
+    require(value == selected and read_json(source)["revision"] == revision,
+            "CLI stage differs from the selected candidate")
+    cli = work / "cli"
+    cli.mkdir()  # Each producer attempt is retained; no in-place rerun.
+    record = Recorder(cli)
+    resource = read_json(resources)
+    bound_env = {"MEERKAT_CONNECT_RESOURCES_SHA256": resource["resources_sha256"]}
+    common = ["--locked", "--release", "--manifest-path", ROOT / "native-candidate/Cargo.toml",
+              "-p", "meerkat-connect", "--features", "console,toolkit-mobkit/native-host",
+              "--message-format=json-render-diagnostics"]
+    # Copy production bytes before test compilation can unify dev features or
+    # replace Cargo's ordinary output. The fixture is a separate executable.
+    cargo, log = record.run("cli-build", [ROOT / "scripts/repo-cargo", "+1.97.0", "build",
+        *common, "--bin", "meerkat-connect"], env=bound_env, seconds=5400)
+    binary = cli / "binary/meerkat-connect"
+    copy_exact(emitted_executable(log, "meerkat-connect", test=False), binary)
+    binary.chmod(0o755)
+    _, log = record.run("cli-test-build", [ROOT / "scripts/repo-cargo", "+1.97.0", "test",
+        *common, "--test", "packaged_setup", "--no-run"], env=bound_env, seconds=5400)
+    tested = cli / "binary/packaged_setup"
+    copy_exact(emitted_executable(log, "packaged_setup", test=True), tested)
+    tested.chmod(0o755)
+    build_path = cli / "build-record.json"
+    write_new(build_path, {"schema_version": 1, "target": value["target"], "binary_kind": "meerkat-connect",
+        "resources_sha256": resource["resources_sha256"], "binary": binding(binary), "cargo": cargo,
+        "source_manifest": binding(source), "resource_build_record_sha256": digest(resources),
+        "test_executable": binding(tested)})
+    record.run("cli-stage", [*cli_assembly_args(work, build_path), "--stage-only",
+        "--destination", cli / "stage"], seconds=600)
+    staged = cli / "stage/staging.json"
+    candidate = read_json(staged)["candidate"]
+    installed = cli / ("stage/meerkat-connect-" + value["target"] + "/bin/packaged_setup")
+    copy_exact(tested, installed)
+    installed.chmod(0o755)
+    execution, composition_evidence = cli_test_evidence(record, installed, CLI_COMPOSITION,
+        cli / "composition-run", "connect-product-acceptance-")
+    write_new(cli / "installed-composition.json", {"schema_version": 1,
+        "kind": "meerkat_connect_installed_composition", "scope": CLI_COMPOSITION,
+        "status": "passed", "candidate": candidate, "test_executable": binding(installed),
+        "execution": execution, "evidence": composition_evidence})
+    execution, evidence = cli_test_evidence(record, installed, CLI_SHUTDOWN,
+        cli / "shutdown-run", "connect-active-worker-acceptance-")
+    evidence += [binding(path) for path in (staged, build_path, resources, source,
+        cli / "records/cli-build.json", cli / "records/cli-test-build.json",
+        cli / "installed-composition.json")]
+    # This is deliberately not accepted. An independent reviewer assesses the
+    # retained observations and emits the existing accepted review separately.
+    write_new(cli / "native-shutdown-review.pending.json", {"schema_version": 1,
+        "kind": "meerkat_connect_native_shutdown_review", "scope": "active_setup_worker_shutdown",
+        "disposition": "pending", "candidate": candidate, "test_executable": binding(installed),
+        "execution": execution, "evidence": evidence})
+    cli_producer_inputs(work)
+
+
+def assemble_cli(work, review, review_sha256, output):
+    value, _, resources = cli_producer_inputs(work)
+    cli = work / "cli"
+    staged = read_json(cli / "stage/staging.json")
+    build_path = cli / "build-record.json"
+    require(digest(build_path) == staged["build_record_sha256"]
+            and digest(resources) == staged["resource_build_record_sha256"], "CLI staged inputs changed")
+    require(HEX.fullmatch(review_sha256) and digest(review) == review_sha256,
+            "exact independent shutdown review required")
+    # Invoke the existing validators, not a second definition of acceptance.
+    import runpy
+    assembler = runpy.run_path(str(ROOT / "scripts/assemble-connect-product.py"))
+    helpers = runpy.run_path(str(assembler["PREPARE"]))
+    candidate = staged["candidate"]
+    binary = cli / "binary/meerkat-connect"
+    _, observed = assembler["build_record"](build_path, binary, digest(binary), helpers,
+        target=value["target"], resources_sha=candidate["resources_sha256"],
+        binary_kind="meerkat-connect", resource_record_sha=digest(resources), stage_only=True)
+    require(observed["candidate"] == candidate, "CLI staged candidate changed")
+    composition = cli / "installed-composition.json"
+    assembler["composition_record"](binding(composition), helpers, candidate)
+    assembler["shutdown_record"](binding(review), helpers, candidate)
+    pending = read_json(cli / "native-shutdown-review.pending.json")
+    accepted = read_json(review)
+    require(pending["candidate"] == candidate and all(row in accepted["evidence"] for row in pending["evidence"]),
+            "shutdown review does not cover this producer's exact observations")
+    require(output.is_absolute() and not output.exists(), "fresh CLI assembly output required")
+    output.mkdir()
+    record = Recorder(output)
+    final_build = read_json(build_path)
+    final_build.update(installed_composition=binding(composition), native_shutdown_review=binding(review))
+    final_path = output / "qualified-build-record.json"
+    write_new(final_path, final_build)
+    record.run("cli-assemble", [*cli_assembly_args(work, final_path), "--destination", output / "assembled"], seconds=600)
+    final = read_json(output / "assembled/assembly.json")
+    require(final["scope"] == "conversation_catalog_local_preparation_and_help_preview"
+            and final["release_version"] == value["connect_version"]
+            and final["qualification"]["candidate"] == candidate
+            and final["qualification"]["cli_tty_qualified"] is False, "CLI assembly scope or candidate differs")
 
 
 def fetch_built():
@@ -1155,16 +1326,24 @@ def publish_accepted(directory, expected_sha256, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("preflight", "build", "fetch-built", "accept-publication", "publish-accepted"))
-    for name in ("request", "candidate", "meta-source", "accepted", "output"):
+    parser.add_argument("command", choices=("preflight", "build", "stage-cli", "assemble-cli", "fetch-built", "accept-publication", "publish-accepted"))
+    for name in ("request", "candidate", "meta-source", "accepted", "output", "candidate-work", "shutdown-review"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--acceptance-sha256")
+    parser.add_argument("--shutdown-review-sha256")
     args = parser.parse_args()
     command = args.command
     if command == "preflight":
         preflight(native=True)
     elif command == "build":
         build()
+    elif command == "stage-cli":
+        require(args.candidate_work, "retained candidate work directory required")
+        stage_cli(args.candidate_work)
+    elif command == "assemble-cli":
+        require(all((args.candidate_work, args.shutdown_review, args.shutdown_review_sha256, args.output)),
+                "retained producer, exact independent review and output required")
+        assemble_cli(args.candidate_work, args.shutdown_review, args.shutdown_review_sha256, args.output)
     elif command == "fetch-built":
         fetch_built()
     elif command == "accept-publication":
