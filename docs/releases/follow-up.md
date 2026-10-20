@@ -62,6 +62,12 @@ rerun. Supplied production CLI bytes can now be pinned explicitly in the fixture
 avoiding a redundant production rebuild after test compilation. Existing task,
 isolation and actual-read checks remain intact. Physical command groups from the
 failed run join naturally.
+The corrected fixture now compiles and its canonical fresh-input control passes.
+A separate diagnostic-only negative control mistakes a valid two-name display
+for malformed input. The reviewed one-character delimiter correction is adopted
+for the next affected compile. Diagnostic fragments do not decide acceptance,
+so the actual journey proceeds with its existing compiled oracle while retaining
+that negative-control failure.
 
 An independently reviewed live-read wrapper can verify the completed setup in
 that retained realm and start a third ordinary rkat session with a real model.
@@ -74,7 +80,9 @@ routing. The realm is retained and physical owners join; the read remains open.
 Independent source review identifies a Core mismatch between synthetic
 environment credential resolution, which skips lease publication, and governed
 input admission, which requires that lease. The newer offered Core `d4d31d8a`
-retains the same paths. The Core lead has the evidence for 0.9.4 triage; no
+retains the same paths. The Core lead accepts the issue for 0.9.4, with owner
+reproduction and review and a proposed RC1 correction; no fixed revision is
+offered yet. No
 credential or authority workaround is applied, and the exact absent-lease
 disposition remains inferred rather than observed in CLI output.
 
@@ -89,7 +97,10 @@ and submits one actual software approval. Preparation and installation succeed,
 then its controlled access request omits required `tool_policy`; the tool rejects
 the invalid arguments before access review. Independent review establishes this
 fixture defect as the first refusal before the scripted model schedule stops.
-The fixture correction and rerun remain pending. Intentional process loss and
+The fixture correction is reviewed: it supplies the intended service/catalog
+policy and checks the complete native review candidate while preserving prior
+grants and both decisions. Its affected rerun uses the existing gateway.
+Intentional process loss and
 successor recovery are not reached. Cleanup is natural; the previous 403 remains
 a separate failed run and approval/restart recovery remains unqualified.
 

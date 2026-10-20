@@ -1036,7 +1036,7 @@ fn fresh_input_failure_diagnostic_excludes_arbitrary_payloads_and_bounds_parts()
         deferred_catalog_projection(&[vec!["native_one", "native_one"], vec![], vec![]]),
         deferred_catalog_projection(&[vec!["native_one"], vec!["native_one"], vec![]]),
         deferred_catalog_projection(&[vec!["native_one; other"], vec![], vec![]]),
-        deferred_catalog_projection(&[vec!["native_one, other"], vec![], vec![]]),
+        deferred_catalog_projection(&[vec!["native_one,other"], vec![], vec![]]),
         deferred_catalog_projection(&[many.iter().map(String::as_str).collect(), vec![], vec![]]),
         deferred_catalog_projection(&[vec![oversized.as_str()], vec![], vec![]]),
         deferred_catalog_projection(&[aggregate.iter().map(String::as_str).collect(), vec![], vec![]]),
