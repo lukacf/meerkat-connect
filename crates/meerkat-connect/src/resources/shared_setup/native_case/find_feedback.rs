@@ -759,7 +759,7 @@ mod check_tests {
                 target: Arc::new(AuditTarget::Tool { call_id:call.into(), tool_name:"setup_selected_check".into(),
                     arguments_digest:meerkat_authorization_contracts::evidence::EvidenceDigest::of_bytes(b"{}"), owners:vec![] }),
                 reason: OperationRefusalKind::ReprepareRequired,
-                read: Some(AuditRefusalRead::new(1, AuditRefusalBasis::PublicationChanged, 146, Some(148), uuid::Uuid::new_v4())),
+                read: Some(AuditRefusalRead::new(1, AuditRefusalBasis::PublicationChanged, 146, Some(148), SessionId::new().0)),
             },
         } }
     }
