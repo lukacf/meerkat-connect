@@ -112,8 +112,9 @@ grants and both decisions. The affected rerun approves software review 60 and
 access review 83, then fails a stale verifier assertion: accepted Console
 submission and native run IDs need not match under Meta's governed ingress.
 Native envelope and payload agree, and the first original run completes. The
-correction must retain the exact accepted submission, session, business input,
-ordering and stable per-run native lineage. No second-run completion, deliberate
+reviewed correction now retains the exact accepted submission, session,
+business input, ordering and stable per-run native lineage. Both tracked
+verifier corrections are adopted; the affected native consumer remains pending. No second-run completion, deliberate
 process loss or successor recovery is established. Login retirement remains
 uncertain; all physical owners join naturally. Earlier failures remain recorded,
 and approval/restart recovery is unqualified.

@@ -96,7 +96,7 @@ def original_work_reference(value, source_authority):
             and value["authority"] == source_authority and nonempty(value["work"]))
 
 
-def reviewed_original_catalog(request, decision, accepted, prior_raw, verifier):
+def reviewed_original_catalog(request, decision, accepted, prior_raw, verifier, *, expected_selection=None):
     """Join the reviewed whole successor to the actual native bootstrap bytes."""
     wrapper = request["member_tool_policy"]
     proposal = wrapper["proposal"]
@@ -107,11 +107,11 @@ def reviewed_original_catalog(request, decision, accepted, prior_raw, verifier):
             and wrapper["native_service_scope"] == "the separate native service and catalog grants still expire with this task",
             "human catalog review omitted its complete policy or visibility scope")
     verifier.reviewed_original_catalog_policy(proposal, decision["catalog"],
-        accepted["session_id"], prior_raw)
+        accepted["session_id"], prior_raw, expected_selection=expected_selection)
 
 
 def public_review(review, accepted, results, operation, original_owner, route, task_scope, source_authority,
-                  *, prior_tool_policy=None, verifier=None, principal=None):
+                  *, prior_tool_policy=None, verifier=None, principal=None, expected_tool_policy=None):
     answer = approval_answer(review)
     principal = human() if principal is None else principal
     body = review["prompt"]["body"]
@@ -130,8 +130,10 @@ def public_review(review, accepted, results, operation, original_owner, route, t
             "actual original-task references missing")
     selection = {"operations": [operation], "agent": "original", "expires_in_ms": None}
     if prior_tool_policy is not None:
-        selection["tool_policy"] = {"tools": [], "catalog": "r2"}
-        reviewed_original_catalog(request, decision, accepted, prior_tool_policy, verifier)
+        selection["tool_policy"] = ({"tools": [], "catalog": "r2"}
+                                    if expected_tool_policy is None else expected_tool_policy)
+        reviewed_original_catalog(request, decision, accepted, prior_tool_policy, verifier,
+                                  expected_selection=expected_tool_policy)
     require(request["software"]["job_id"] == results["installed-job"]["job"]["id"]
             and request["software"]["family"] == "agno" and request["software"]["profile"] == "hackernews"
             and request["software"]["server_name"] == server
@@ -196,8 +198,9 @@ def input_text(frame):
 
 def native_original_pair(frames, live, accepted, original_request, fresh_request):
     """Join the accepted Send anchor to at most two ordered native run starts."""
-    # Accepted send owns the interaction anchor. Native event lineage may carry
-    # only a run ID; do not invent its absent interaction ID from the envelope.
+    # The accepted Send owns its reservation anchor. Each native RunStarted
+    # owns its input interaction lineage, which can differ from that reservation.
+    # Preserve an absent native interaction ID rather than inventing one.
     positions = {f["id"]: i for i, f in enumerate(frames)}
     require(len(positions) == len(frames), "duplicate native source frame")
     anchors = [f for f in frames if f["id"] == accepted["input_frame_id"]]
@@ -220,8 +223,13 @@ def native_original_pair(frames, live, accepted, original_request, fresh_request
               and f.get("session_id") == accepted["session_id"]]
     require(len(starts) <= 2, "duplicate native original or fresh run")
     runs = []
+    interactions = {}
     for index, frame in enumerate(starts):
-        runs.append(run_id(frame))
+        run = run_id(frame)
+        runs.append(run)
+        interaction = frame["payload"]["identity"].get("interaction_id")
+        require(interaction is None or nonempty(interaction), "invalid native run interaction")
+        interactions[run] = interaction
         expected = original_request if index == 0 else fresh_request
         require(frame["payload"].get("source_event_type") == "run_started"
                 and frame["payload"].get("session_id") == accepted["session_id"]
@@ -233,8 +241,8 @@ def native_original_pair(frames, live, accepted, original_request, fresh_request
         if frame.get("run_id") in runs:
             run_id(frame)
             require(frame.get("interaction_id") == frame["payload"]["identity"].get("interaction_id")
-                    and frame.get("interaction_id") in (None, accepted["interaction_id"]),
-                    "native run contradicts the accepted Console interaction")
+                    and frame.get("interaction_id") == interactions[frame["run_id"]],
+                    "native run contradicts its RunStarted interaction lineage")
     if len(starts) < 2:
         return None
     a, b = starts[:1], starts[1:]

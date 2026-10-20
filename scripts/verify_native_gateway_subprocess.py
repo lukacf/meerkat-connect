@@ -1790,9 +1790,9 @@ def acquisition_helper_targets():
     ]
 
 
-def reviewed_original_catalog_policy(proposal, catalog, session_id, prior_raw):
+def reviewed_original_catalog_policy(proposal, catalog, session_id, prior_raw, *, expected_selection=None):
     """Validate the exact complete successor before either native approval path."""
-    selection = {"tools": [], "catalog": "r2"}
+    selection = {"tools": [], "catalog": "r2"} if expected_selection is None else expected_selection
     prior = unique_json(prior_raw)
     candidate_raw = proposal["candidate_canonical_json"].encode()
     candidate = unique_json(candidate_raw)
@@ -1812,8 +1812,15 @@ def reviewed_original_catalog_policy(proposal, catalog, session_id, prior_raw):
     original = [row for row in expected["members"] if row["member_identity"] == "original"]
     require(len(original) == 1 and not any(row["tool_name"] in ("tool_catalog_search", "tool_catalog_load")
             for row in original[0]["grants"]), "bootstrap original catalog selection was not absent")
-    original[0]["grants"].extend({"tool_name": name, "action": "invoke", "consequence": "r2"}
-                               for name in ("tool_catalog_search", "tool_catalog_load"))
+    selected_grants = [{"tool_name": row["name"], "action": "invoke", "consequence": row["consequence"]}
+                       for row in selection["tools"]]
+    selected_grants.extend({"tool_name": name, "action": "invoke", "consequence": selection["catalog"]}
+                           for name in ("tool_catalog_search", "tool_catalog_load"))
+    for grant in selected_grants:
+        existing = [row for row in original[0]["grants"] if row["tool_name"] == grant["tool_name"]]
+        require(not existing or existing == [grant], "review changed an existing exact tool grant")
+        if not existing:
+            original[0]["grants"].append(grant)
     original[0]["grants"].sort(key=lambda row: row["tool_name"])
     source = candidate["source"]
     require(set(source) == {"source_id", "source_digest"}
