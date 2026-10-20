@@ -26,6 +26,13 @@ retained setup artifacts as observations, not permission to repeat the action.
 Connect does not automatically retry it. Confirmed cancellation with no effect
 retains its existing exit behavior.
 
+During finalization, Ctrl-C stops the next Connect operation from starting.
+Connect waits for an operation already started and reports its actual result.
+For example, a saved public-service configuration can remain without an agent
+grant. An account finalizer already started can finish its internal steps before
+Connect exits. Read the reported configuration, account and access results;
+cancellation does not roll back completed work.
+
 ## Bootstrap failed or was interrupted
 
 Do not rerun bootstrap into the same client, output or workspace. It preserves

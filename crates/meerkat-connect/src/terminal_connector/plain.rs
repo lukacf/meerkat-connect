@@ -279,13 +279,22 @@ impl ReviewedPlainInstallation {
     }
 
     pub(super) async fn finalize_outcome_after_close(self) -> FinalizedInstallation {
-        let target = FinalizationTarget::new(&self.storage, &self.config, &self.request, self.source.job_id(), self.source.session());
-        let outcome = self.finalize_effect_after_close().await
-            .unwrap_or_else(FinalizationOutcome::BeforeAdministrationRefused);
-        FinalizedInstallation::new(target, outcome)
+        let interrupt = std::future::pending::<io::Result<()>>();
+        tokio::pin!(interrupt);
+        self.finalize_outcome_with_interrupt(interrupt.as_mut()).await
     }
 
-    async fn finalize_effect_after_close(self) -> Result<FinalizationOutcome, ConnectError> {
+    pub(super) async fn finalize_outcome_with_interrupt<I: Future<Output = io::Result<()>>>(self,
+        mut interrupt: Pin<&mut I>) -> FinalizedInstallation {
+        let target = FinalizationTarget::new(&self.storage, &self.config, &self.request, self.source.job_id(), self.source.session());
+        let mut stopped = None;
+        let outcome = self.finalize_effect_after_close(interrupt.as_mut(), &mut stopped).await
+            .unwrap_or_else(FinalizationOutcome::BeforeAdministrationRefused);
+        FinalizedInstallation::new_with_stop(target, outcome, stopped)
+    }
+
+    async fn finalize_effect_after_close<I: Future<Output = io::Result<()>>>(self,
+        interrupt: Pin<&mut I>, stopped: &mut Option<secrets::Stop>) -> Result<FinalizationOutcome, ConnectError> {
         let StockGrantTarget::Mcp { server, operations: McpOperations::Exact(operations) } = &self.request.target else {
             return Err(unavailable("The exact public-service review is required. Nothing was finalized."));
         };
@@ -305,32 +314,58 @@ impl ReviewedPlainInstallation {
         let principals = StockPrincipals::for_local_operator(&self.storage.locator.realm)
             .map_err(|error| ConnectError::native("Identify selected realm operator", error))?;
         let reused = exact_saved_configuration(&self.own_servers, &self.config).map_err(unavailable)?;
-        let generation = if reused {
-            self.expected_generation
-        } else {
-            if effective_name_present(&self.storage, &self.config.name).await? {
-                return Err(unavailable("This service name is already configured in the selected realm. No public-service configuration or grant was written."));
-            }
-            match McpRealmPersistTarget::new(&runtime).add(
-                self.config.clone(), Some(self.expected_generation),
-            ).await {
-                Ok(saved) => saved.generation,
-                Err(error) => return Ok(FinalizationOutcome::PublicPersistenceError(error)),
-            }
-        };
-        // Every call requests new native access. The existing native owner
-        // rechecks this exact descriptor and generation under its own custody.
-        let installation = ReviewedMcpInstallation { server: self.config.clone(), generation };
-        let outcome = grant_stock_agent_for_reviewed_installation(
-            &self.storage, &principals, &self.request, &installation,
-        ).await;
-        Ok(if reused {
-            FinalizationOutcome::PublicReused { generation, grant: outcome }
-        } else {
-            FinalizationOutcome::PublicPersisted { generation, grant: outcome }
-        })
+        if !reused && effective_name_present(&self.storage, &self.config.name).await? {
+            return Err(unavailable("This service name is already configured in the selected realm. No public-service configuration or grant was written."));
+        }
+        let (storage, config, request, principals) = (&self.storage, &self.config, &self.request, &principals);
+        Ok(settle_public_effects(interrupt, stopped, reused.then_some(self.expected_generation),
+            || async {
+                McpRealmPersistTarget::new(&runtime).add(self.config.clone(), Some(self.expected_generation))
+                    .await.map(|saved| saved.generation)
+            },
+            |generation| async move {
+                // Native rechecks this exact descriptor and generation under
+                // its own custody. A stopped config write cannot start this call.
+                let installation = ReviewedMcpInstallation { server: config.clone(), generation };
+                grant_stock_agent_for_reviewed_installation(
+                    storage, principals, request, &installation,
+                ).await
+            },
+        ).await)
     }
 }
+
+/// One sequence for the production config and grant entry points. Cancellation
+/// gates each effect; an entered effect always settles into its original type.
+async fn settle_public_effects<I, P, PF, G, GF>(mut interrupt: Pin<&mut I>,
+    stopped: &mut Option<secrets::Stop>, existing_generation: Option<u64>,
+    persist: P, grant: G) -> FinalizationOutcome
+where
+    I: Future<Output = io::Result<()>>,
+    P: FnOnce() -> PF,
+    PF: Future<Output = Result<u64, meerkat_core::mcp_config::McpRealmPersistError>>,
+    G: FnOnce(u64) -> GF,
+    GF: Future<Output = Result<meerkat::governed_realm::stock::issuance::StockGrantOutcome, StockGrantError>>,
+{
+    let reused = existing_generation.is_some();
+    let generation = match existing_generation {
+        Some(generation) => generation,
+        None => match secrets::joined_effect(interrupt.as_mut(), stopped, persist).await {
+            None => return FinalizationOutcome::BeforeAdministrationStopped,
+            Some(Ok(generation)) => generation,
+            Some(Err(error)) => return FinalizationOutcome::PublicPersistenceError(error),
+        },
+    };
+    let Some(grant) = secrets::joined_effect(interrupt.as_mut(), stopped, || grant(generation)).await else {
+        return FinalizationOutcome::PublicStoppedBeforeGrant { generation, reused };
+    };
+    if reused { FinalizationOutcome::PublicReused { generation, grant } }
+    else { FinalizationOutcome::PublicPersisted { generation, grant } }
+}
+
+#[cfg(test)]
+#[path = "plain_cancellation_tests.rs"]
+mod cancellation_tests;
 
 /// Check documents already reconciled by the software owner. This is not a
 /// second payload verifier or an atomic filesystem snapshot. Exclusive host

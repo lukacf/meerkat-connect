@@ -108,16 +108,23 @@ impl ReviewedConnector {
     }
 
     async fn finalize_outcome_after_close(self) -> FinalizedInstallation {
-        let target = FinalizationTarget::new(&self.storage, &self.config, &self.request,
-            &self.installed.job_id, &self.installed.session);
-        let outcome = match self.finalize_native_after_close().await {
-            Ok(outcome) => FinalizationOutcome::Connector(outcome),
-            Err(error) => FinalizationOutcome::BeforeAdministrationRefused(error),
-        };
-        FinalizedInstallation::new(target, outcome)
+        let interrupt = std::future::pending::<io::Result<()>>();
+        tokio::pin!(interrupt);
+        self.finalize_outcome_with_interrupt(interrupt.as_mut()).await
     }
 
-    async fn finalize_native_after_close(self) -> Result<ReviewedConnectorFinalization, ConnectError> {
+    async fn finalize_outcome_with_interrupt<I: Future<Output = io::Result<()>>>(self,
+        mut interrupt: Pin<&mut I>) -> FinalizedInstallation {
+        let target = FinalizationTarget::new(&self.storage, &self.config, &self.request,
+            &self.installed.job_id, &self.installed.session);
+        let mut stopped = None;
+        let outcome = self.finalize_native_after_close(interrupt.as_mut(), &mut stopped).await
+            .unwrap_or_else(FinalizationOutcome::BeforeAdministrationRefused);
+        FinalizedInstallation::new_with_stop(target, outcome, stopped)
+    }
+
+    async fn finalize_native_after_close<I: Future<Output = io::Result<()>>>(self,
+        interrupt: Pin<&mut I>, stopped: &mut Option<secrets::Stop>) -> Result<FinalizationOutcome, ConnectError> {
         if self.decision.status != ApprovalStatus::Approved
             || self.installed.server_name != self.config.name
         {
@@ -140,14 +147,23 @@ impl ReviewedConnector {
         // Reuse the setup factory's exact credential persistence. Native code
         // takes administrative custody before constructing its auth service;
         // no setup runtime or prebuilt auth service is reopened here.
-        let outcome = finalize_reviewed_connector(
+        Ok(settle_connector_effect(interrupt, stopped, || finalize_reviewed_connector(
             &self.storage,
             &principals,
             &self.factory,
             &review,
-        )
-        .await;
-        Ok(outcome)
+        )).await)
+    }
+}
+
+/// Core owns the entire connector finalizer once entered. Only gate its entry;
+/// cancellation does not split or abandon that native composite operation.
+async fn settle_connector_effect<I, F>(interrupt: Pin<&mut I>, stopped: &mut Option<secrets::Stop>,
+    effect: impl FnOnce() -> F) -> FinalizationOutcome
+where I: Future<Output = io::Result<()>>, F: Future<Output = ReviewedConnectorFinalization> {
+    match secrets::joined_effect(interrupt, stopped, effect).await {
+        Some(outcome) => FinalizationOutcome::Connector(outcome),
+        None => FinalizationOutcome::BeforeAdministrationStopped,
     }
 }
 
@@ -322,7 +338,8 @@ impl ReviewedInstallation {
         }
         Ok(Some(match self {
             Self::Secret(reviewed) => reviewed.finalize_outcome_after_close(interrupt.as_mut()).await,
-            other => other.finalize_outcome_after_close().await,
+            Self::Plain(reviewed) => reviewed.finalize_outcome_with_interrupt(interrupt.as_mut()).await,
+            Self::Account(reviewed) => reviewed.finalize_outcome_with_interrupt(interrupt.as_mut()).await,
         }))
     }
     pub async fn finalize_after_close<W: Write>(self, output: &mut W) -> Result<(), ConnectError> {
@@ -412,6 +429,7 @@ pub struct FinalizedInstallation {
     target: FinalizationTarget,
     outcome: FinalizationOutcome,
     continuation: Option<FinalizationNotice>,
+    stopped: Option<secrets::Stop>,
 }
 
 /// One process-owned occurrence, constructed at finalizer settlement and moved
@@ -453,12 +471,14 @@ impl FinalizationTarget {
 #[derive(Debug)]
 enum FinalizationOutcome {
     BeforeAdministrationRefused(ConnectError),
+    BeforeAdministrationStopped,
     Connector(ReviewedConnectorFinalization),
     PublicPersistenceError(meerkat_core::mcp_config::McpRealmPersistError),
     PublicPersisted { generation: u64,
         grant: Result<meerkat::governed_realm::stock::issuance::StockGrantOutcome, StockGrantError> },
     PublicReused { generation: u64,
         grant: Result<meerkat::governed_realm::stock::issuance::StockGrantOutcome, StockGrantError> },
+    PublicStoppedBeforeGrant { generation: u64, reused: bool },
     Secret(secrets::Outcome),
 }
 
@@ -534,7 +554,12 @@ fn public_persistence_details(error: &meerkat_core::mcp_config::McpRealmPersistE
 
 impl FinalizedInstallation {
     fn new(target: FinalizationTarget, outcome: FinalizationOutcome) -> Self {
-        let mut observed = Self { target, outcome, continuation: None };
+        Self::new_with_stop(target, outcome, None)
+    }
+
+    fn new_with_stop(target: FinalizationTarget, outcome: FinalizationOutcome,
+        stopped: Option<secrets::Stop>) -> Self {
+        let mut observed = Self { target, outcome, continuation: None, stopped };
         observed.continuation = Some(FinalizationNotice {
             realm: observed.target.realm.clone(), session: observed.target.session.clone(), input: observed.make_input(),
         });
@@ -550,18 +575,21 @@ impl FinalizedInstallation {
     /// The finalizer consumed the original listener and joined its entered
     /// effect. Do not poll that completed listener or start a continuation.
     pub fn stopped_during_finalization(&self) -> bool {
-        matches!(&self.outcome, FinalizationOutcome::Secret(outcome) if outcome.stopped())
+        self.stopped.is_some()
+            || matches!(&self.outcome, FinalizationOutcome::Secret(outcome) if outcome.stopped())
     }
 
     fn has_unconfirmed_effect(&self) -> bool {
         match &self.outcome {
             FinalizationOutcome::BeforeAdministrationRefused(_)
+                | FinalizationOutcome::BeforeAdministrationStopped
                 | FinalizationOutcome::Connector(ReviewedConnectorFinalization::Refused(_)) => false,
             FinalizationOutcome::Connector(ReviewedConnectorFinalization::PersistUncertain { .. }) => true,
             FinalizationOutcome::Connector(ReviewedConnectorFinalization::Persisted { grant, .. })
                 | FinalizationOutcome::PublicPersisted { grant, .. }
                 | FinalizationOutcome::PublicReused { grant, .. } => unconfirmed_grant_effect(grant.as_ref()),
             FinalizationOutcome::PublicPersistenceError(error) => public_persistence_may_have_changed(error),
+            FinalizationOutcome::PublicStoppedBeforeGrant { .. } => false,
             FinalizationOutcome::Secret(outcome) => outcome.has_unconfirmed_effect(),
         }
     }
@@ -588,12 +616,14 @@ impl FinalizedInstallation {
         if &self.target.realm != realm || self.target.server != server { return false; }
         match &self.outcome {
             FinalizationOutcome::BeforeAdministrationRefused(_) => false,
+            FinalizationOutcome::BeforeAdministrationStopped => false,
             FinalizationOutcome::Connector(ReviewedConnectorFinalization::Refused(_)) => false,
             FinalizationOutcome::Connector(ReviewedConnectorFinalization::PersistUncertain { .. }) => true,
             FinalizationOutcome::Connector(ReviewedConnectorFinalization::Persisted { grant, .. })
                 | FinalizationOutcome::PublicPersisted { grant, .. }
                 | FinalizationOutcome::PublicReused { grant, .. } => uncertain_grant(grant.as_ref()),
             FinalizationOutcome::PublicPersistenceError(error) => public_persistence_may_have_changed(error),
+            FinalizationOutcome::PublicStoppedBeforeGrant { .. } => false,
             FinalizationOutcome::Secret(outcome) => outcome.blocks_reentry(),
         }
     }
@@ -603,6 +633,8 @@ impl FinalizedInstallation {
         match &self.outcome {
             FinalizationOutcome::BeforeAdministrationRefused(_) => Err(unavailable(
                 "Finalization stopped before native administration. No service configuration or grant was written by this finalizer.")),
+            FinalizationOutcome::BeforeAdministrationStopped => Err(unavailable(
+                "Setup stopped before native administration. No configuration or grant operation was started.")),
             FinalizationOutcome::Connector(outcome) => finalization_message_ref(
                 &target.server, target.realm.realm.as_str(), &target.agent, outcome),
             FinalizationOutcome::PublicPersistenceError(error) => Err(unavailable(&format!(
@@ -614,6 +646,11 @@ impl FinalizedInstallation {
             FinalizationOutcome::PublicReused { generation, grant } => configured_grant_message_ref(
                 &format!("The exact reviewed public-service configuration for {} in realm {} at generation {} was already saved and was reused. This is a new access request; any prior uncertain grant outcome remains unresolved",
                     target.server, target.realm.realm.as_str(), generation), &target.agent, grant.as_ref()),
+            FinalizationOutcome::PublicStoppedBeforeGrant { reused, .. } => Err(unavailable(if *reused {
+                "Public-service setup stopped before requesting new access. The existing configuration was not changed; no new grant was requested."
+            } else {
+                "Public-service setup stopped after the configuration was saved. No new grant was requested. The saved configuration was not rolled back."
+            })),
             FinalizationOutcome::Secret(outcome) => outcome.message(target),
         }
     }
@@ -628,7 +665,18 @@ impl FinalizedInstallation {
     /// agent address independent work. Failure to print does not consume facts.
     pub fn display_for_continuation<W: Write>(&self, output: &mut W) -> Result<(), ConnectError> {
         let message = self.message().unwrap_or_else(|error| error.to_string());
-        writeln!(output, "{message}").map_err(|error| ConnectError::native("Display native finalization result", error))
+        writeln!(output, "{message}").map_err(|error| ConnectError::native("Display native finalization result", error))?;
+        if let Some(stop) = &self.stopped {
+            let message = match stop {
+                secrets::Stop::Cancelled => "Cancellation was observed. Any entered operation was joined; no later operation was started.",
+                secrets::Stop::ListenerFailed(_) => "Cancellation monitoring failed. Any entered operation was joined; no later operation was started.",
+            };
+            writeln!(output, "{message}").map_err(|error| ConnectError::native("Display finalization stop", error))?;
+            if matches!(stop, secrets::Stop::ListenerFailed(_)) {
+                return Err(unavailable("Cancellation monitoring failed during installation finalization. Review the displayed result and any retained setup artifacts."));
+            }
+        }
+        Ok(())
     }
 
     /// Private invocation evidence, using the existing setup artifact owner.
@@ -694,6 +742,7 @@ impl FinalizedInstallation {
         };
         let facts = match &self.outcome {
             FinalizationOutcome::BeforeAdministrationRefused(_) => json!({"persistence":"not_entered", "grant":{"state":"not_requested"}}),
+            FinalizationOutcome::BeforeAdministrationStopped => json!({"persistence":"not_entered", "grant":{"state":"not_requested"}}),
             FinalizationOutcome::Connector(ReviewedConnectorFinalization::Refused(
                 meerkat::governed_realm::stock::finalize::ReviewedConnectorRefusal::ConfigConflict { expected,current })) =>
                 json!({"persistence":"refused", "error":{"kind":"GenerationConflict","expected":expected,"current":current}, "grant":{"state":"not_requested"}}),
@@ -704,14 +753,23 @@ impl FinalizedInstallation {
             FinalizationOutcome::PublicReused { generation, grant: result } => json!({"persistence":"already_saved",
                 "generation":generation, "new_access_request":true, "prior_grant_outcome":"not_resolved", "grant":grant(result.as_ref())}),
             FinalizationOutcome::PublicPersistenceError(error) => json!({"persistence":if public_persistence_may_have_changed(error) {"uncertain"} else {"refused"}, "error":public_persistence_details(error), "grant":{"state":"not_requested"}}),
+            FinalizationOutcome::PublicStoppedBeforeGrant { generation, reused } => json!({
+                "persistence":if *reused {"already_saved"} else {"saved"},
+                "generation":generation, "grant":{"state":"not_requested"}}),
             FinalizationOutcome::Secret(outcome) => outcome.facts(outcome.grant()
                 .map_or_else(|| json!({"state":"not_requested"}), |result| grant(result.as_ref()))),
         };
-        json!({"kind":"connect_finalization_observation", "realm":self.target.realm.realm.as_str(),
+        let mut notice = json!({"kind":"connect_finalization_observation", "realm":self.target.realm.realm.as_str(),
             "server":self.target.server, "consumer_agent":self.target.agent, "source_job":self.target.job_id,
             "facts":facts, "service_readiness":"not_observed",
             "automatic_reentry_blocked":self.blocks_reentry(&self.target.realm,&self.target.server),
-            "instruction":"This is the process-owned result of the completed finalizer, not human consent. Continue the original setup task using these exact facts. Do not repeat this finalizer or claim service use. If this target is unresolved, explain that limit and continue independent requested services; a new package/job does not permit replay for the same realm and server."})
+            "instruction":"This is the process-owned result of the completed finalizer, not human consent. Continue the original setup task using these exact facts. Do not repeat this finalizer or claim service use. If this target is unresolved, explain that limit and continue independent requested services; a new package/job does not permit replay for the same realm and server."});
+        if let Some(stop) = &self.stopped {
+            notice["stop"] = json!(match stop {
+                secrets::Stop::Cancelled => "cancelled", secrets::Stop::ListenerFailed(_) => "listener_failed",
+            });
+        }
+        notice
     }
 }
 
