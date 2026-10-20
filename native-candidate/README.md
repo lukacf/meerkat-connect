@@ -1,8 +1,8 @@
 # Native Connect workspace
 
-This workspace contains the Connect CLI, integrated Console gateway and native
-host adapters. The directory name is retained from development. The portable
-root workspace and its package/store lock remain separate and unchanged.
+This workspace contains the Connect CLI, integrated Console gateway, native
+host adapters and `toolkit-store`. The directory name is retained from development.
+The portable root workspace owns `toolkit-package`; its lockfile remains separate.
 
 The native workspace selects the exact development pair:
 
