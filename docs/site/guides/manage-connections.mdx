@@ -47,6 +47,8 @@ Both changes present the current service and selected slots for protected
 terminal approval. `set` then asks for each value with terminal echo disabled.
 Enter values only at those prompts, never in command arguments or chat.
 The service must already be configured and declare the selected slots.
+These commands manage native secret slots for owned stdio services; they do
+not replace OAuth sign-in.
 
 These changes preserve other slots, the service configuration and grants.
 Cancellation can leave an already started save completed; an uncertain result
