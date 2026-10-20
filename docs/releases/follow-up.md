@@ -31,9 +31,12 @@ remove their membership fields to make them load; retain them for the shared
 branch or use a separate ordinary development realm.
 
 The merge gate is the released Core/Meta 0.9.4 dependency pair and matching SDKs,
-with passing affected native controls and ordinary CLI and Console acceptance on
-those exact inputs. These checks can run before publication once the final source
-pair is selected. Shared execution and broader frontend/deployment coverage
+with passing affected native controls and ordinary CLI and Console acceptance.
+Execution records retain their exact inputs. A reviewed source comparison can
+carry an earlier result when the exercised path is unchanged; new artifact
+bindings still need verification, and the earlier result is not a new execution.
+These checks can run before publication once the source pair is selected.
+Shared execution and broader frontend/deployment coverage
 do not gate that merge. The lightweight CI checks packaging, panel behavior and
 documentation; its success does not establish native or installed acceptance.
 
@@ -44,12 +47,15 @@ still contain the deferred entry points. Preserve the existing source, artifact
 and resource checks when selecting the ordinary release inputs.
 
 Connect 0.9.4 is not yet qualified. The checked-in development workspace selects
-[Core `07e976ab`](https://github.com/lukacf/meerkat/commit/07e976abbf0f2bbf77283988bee913e59a7d8fb0)
-and [Meta `86afecf6`](https://github.com/lukacf/meerkat-meta/commit/86afecf691947e306f363643e1c5ca346df2a90c).
-Both dependency locks resolve and replay with locked, offline Cargo metadata.
-The selected Meta revision includes the Console identity priming correction;
-the Forge installer update remains pending. Final release selection, native
-validation and installed artifact qualification remain separate.
+[Core `00b3f3da`](https://github.com/lukacf/meerkat/commit/00b3f3da28707d6ae5332334749c30b4dca406da)
+and [Meta `e934e156`](https://github.com/lukacf/meerkat-meta/commit/e934e156f53a5b7efc33a8800c4d2816a7b950fc).
+The selected Meta revision includes the Console identity priming and Forge
+Toolkit 0.9.4 wheel-reader corrections. Its
+[Python SDK](https://github.com/lukacf/meerkat-meta/tree/e934e156f53a5b7efc33a8800c4d2816a7b950fc/sdk/python)
+and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/e934e156f53a5b7efc33a8800c4d2816a7b950fc/sdk/typescript)
+trees are unchanged; reviewed artifacts remain reusable when their exact inputs
+match. Final release selection, native validation and installed artifact
+qualification remain separate.
 
 ### Retained development evidence
 

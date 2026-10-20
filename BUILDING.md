@@ -4,18 +4,19 @@ Connect has two Rust workspaces. The root owns `toolkit-package`;
 `native-candidate/Cargo.toml` owns the CLI, native host adapters and `toolkit-store`.
 Both use their checked-in dependency locks. The native workspace selects the 0.9.4
 development graph at exact
-[Core `07e976ab`](https://github.com/lukacf/meerkat/commit/07e976abbf0f2bbf77283988bee913e59a7d8fb0)
-and [Meta `86afecf6`](https://github.com/lukacf/meerkat-meta/commit/86afecf691947e306f363643e1c5ca346df2a90c)
+[Core `00b3f3da`](https://github.com/lukacf/meerkat/commit/00b3f3da28707d6ae5332334749c30b4dca406da)
+and [Meta `e934e156`](https://github.com/lukacf/meerkat-meta/commit/e934e156f53a5b7efc33a8800c4d2816a7b950fc)
 Git revisions. The unpublished `meerkat-machine-codegen` crate comes directly
 from that same Core revision. The retained `vendor/core-codegen` tree is a
 v0.9.0 release input and is not selected by the development native workspace.
 These immutable pins support development testing; they are not final release
 qualification. The selected Meta revision includes the Console identity priming
-correction; the Forge installer update remains pending. The corresponding Meta
-[Python SDK](https://github.com/lukacf/meerkat-meta/tree/86afecf691947e306f363643e1c5ca346df2a90c/sdk/python)
-and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/86afecf691947e306f363643e1c5ca346df2a90c/sdk/typescript)
-come from the same revision. Canonical SDK package version/pin selection and
-installed native runtime acceptance remain separate.
+correction and the Forge Toolkit 0.9.4 wheel-reader correction. Its
+[Python SDK](https://github.com/lukacf/meerkat-meta/tree/e934e156f53a5b7efc33a8800c4d2816a7b950fc/sdk/python)
+and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/e934e156f53a5b7efc33a8800c4d2816a7b950fc/sdk/typescript)
+source trees are unchanged from the reviewed candidate artifacts, permitting
+their reuse with exact input checks. Canonical TypeScript metadata/lock selection
+and installed native runtime acceptance remain separate.
 
 ## Prerequisites
 
