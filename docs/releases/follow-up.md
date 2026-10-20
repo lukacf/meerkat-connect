@@ -63,11 +63,36 @@ avoiding a redundant production rebuild after test compilation. Existing task,
 isolation and actual-read checks remain intact. Physical command groups from the
 failed run join naturally.
 
-The r9 approval development gateway build also passes. Its affected consumer
-fails at setup-data HTTP 403 before intentional process loss or successor
-recovery, with natural physical cleanup. The precise refusal remains under
-investigation; the earlier recovery-read Unavailable observation is not proof
-of the 403's cause. Approval/restart recovery remains unqualified.
+An independently reviewed live-read wrapper can verify the completed setup in
+that retained realm and start a third ordinary rkat session with a real model.
+It preserves the scripted failure and requires three actual Hacker News results,
+unchanged configuration/grants and owned cleanup. That execution is independent
+of rebuilding the scripted fixture. The actual live attempt starts ordinary rkat
+but fails before a model request because its controller credential is not
+currently usable. Private provider-key presence does not establish correct auth
+routing. The realm is retained and physical owners join; the read remains open.
+
+The latest diagnostic gateway and shared-test builds pass. Both Original
+bindings succeed in the first shared case, which later fails at B's selected
+check with authorization unavailable before tool entry. The second shared case
+passes again without a behavior correction. Earlier intermittent failures remain
+unresolved. All source rows are restored and physical/cache owners join.
+
+The latest approval consumer passes the previous setup-data HTTP 403 boundary
+and submits one actual software approval. Preparation and installation succeed,
+then its controlled access request omits required `tool_policy`; the tool rejects
+the invalid arguments before access review. Independent review establishes this
+fixture defect as the first refusal before the scripted model schedule stops.
+The fixture correction and rerun remain pending. Intentional process loss and
+successor recovery are not reached. Cleanup is natural; the previous 403 remains
+a separate failed run and approval/restart recovery remains unqualified.
+
+The planned successor package selection uses Toolkit 0.9.4 with
+`meerkat-meta==0.9.4` for the native-host extra. Current development metadata and
+produced artifacts have not yet moved to that selection. Published 0.9.0 assets
+remain immutable. The existing candidate producer will supply Forge's runtime
+selection and paths; historical v44 artifacts are format/layout rehearsal inputs
+only. Linux x86_64 is the first target, with macOS qualification separate.
 
 The latest executed r8 compatibility and Console custody changes
 compile. Five of seven affected controls pass: both Console custody checks, both
