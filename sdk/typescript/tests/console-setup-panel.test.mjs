@@ -1289,6 +1289,124 @@ test("operator refresh preserves keyboard focus only within the same scope and c
   recovery.suspend(); recovery.update(recoveryOffer(), "another-viewer"); assert.equal(container.ownerDocument.activeElement, container.ownerDocument.body);
 });
 
+for (const kind of ["access", "recovery"]) {
+  const selector = kind === "access" ? ".toolkit-application-access" : ".toolkit-operator-recovery";
+  const key = kind === "access" ? "application_access" : "operator_recovery";
+  const offer = () => kind === "access" ? applicationAccess() : recoveryOffer();
+  const refused = () => kind === "access" ? accessResponse("controller_in_use")
+    : new Response(JSON.stringify({ scope: "operator_service_recovery", parent: "controller_in_use",
+      child: "not_entered", uncertain: false, policy_changed: false }), { headers: { "content-type": "application/json" } });
+  const refusal = kind === "access" ? /required by unfinished controller work/ : /Unfinished controller work still requires/;
+  const historical = kind === "access" ? /Last revocation attempt:/ : /Last approval cleanup attempt:/;
+  const settled = () => new Promise(resolve => setImmediate(resolve));
+  const tick = async timers => {
+    assert.equal(timers.size, 1); const callback = [...timers.values()][0]; timers.clear(); await callback();
+  };
+
+  test(`${kind} management feedback survives ordinary polling as history while owner status stays current`, async t => {
+    const { container, timers } = pageFixture(t); const calls = []; const nextAction = deferred();
+    let value = offer(); let reads = 0;
+    const page = mountSourceStatusPage(container, async () => {
+      reads++; return { projection: snapshot(), [key]: { ...value, offer_id: reads } };
+    }, async (path, options) => {
+      calls.push({ path, body: JSON.parse(options.body) });
+      if (calls.length === 1) return refused();
+      return nextAction.promise;
+    });
+    t.after(() => { nextAction.resolve(refused()); page.dispose(); }); await settled();
+    container.querySelector(`${selector} button`).click(); await settled();
+    assert.match(container.querySelector(selector).textContent, refusal);
+    await tick(timers);
+    assert.match(container.querySelector(selector).textContent, refusal, "the next ordinary poll must retain the explanation");
+    assert.match(container.querySelector(selector).textContent, historical);
+    assert.equal(calls.length, 1, "polling must not replay the action");
+    const nextOffer = reads;
+    container.querySelector(`${selector} button`).click();
+    assert.doesNotMatch(container.querySelector(selector).textContent, refusal, "a new action replaces the old explanation");
+    nextAction.reject(Error("reply lost")); await settled(); await tick(timers);
+    assert.match(container.querySelector(selector).textContent, /result could not be confirmed/);
+    assert.match(container.querySelector(selector).textContent, historical);
+    assert.deepEqual(calls.map(call => call.body), [
+      { offer_id: 1, row_id: value.rows[0].id }, { offer_id: nextOffer, row_id: value.rows[0].id },
+    ]);
+    assert.ok(calls.every(call => call.path === `/host/toolkit/setup/${kind}/revoke`));
+    value = kind === "access" ? applicationAccess("grant_unavailable")
+      : recoveryOffer({ state: "publication_present", can_recover: false });
+    await tick(timers);
+    assert.match(container.querySelector(selector).textContent, /result could not be confirmed/);
+    assert.equal(container.querySelector(`${selector} button`), null, "historical feedback grants no current action");
+    assert.match(container.querySelector(selector).textContent,
+      kind === "access" ? /Access is unavailable/ : /cleanup is unavailable here/);
+  });
+
+  test(`${kind} management feedback clears on target or viewer loss, retirement and failed observations`, async t => {
+    for (const change of ["target", "viewer", "pagehide", "unavailable", "503"]) {
+      const { container, timers, transition } = pageFixture(t); let changed = false; let calls = 0;
+      const page = mountSourceStatusPage(container, async () => {
+        if (changed && change === "503") { const error = Error("temporarily unavailable"); error.status = 503; throw error; }
+        const value = offer();
+        if (changed && change === "target") value.rows = [];
+        if (changed && change === "unavailable") value.state = "unavailable";
+        return { projection: { ...snapshot(), scope: changed && change === "viewer" ? "another-viewer" : "viewer" }, [key]: value };
+      }, async () => { calls++; return refused(); });
+      t.after(() => page.dispose()); await settled();
+      container.querySelector(`${selector} button`).click(); await settled(); await tick(timers);
+      assert.match(container.querySelector(selector).textContent, historical, change);
+      changed = true;
+      if (change === "pagehide") transition("pagehide"); else await tick(timers);
+      assert.doesNotMatch(container.textContent, historical, change);
+      changed = false;
+      if (change === "pagehide") { transition("pageshow"); await settled(); } else await tick(timers);
+      assert.doesNotMatch(container.textContent, historical, `${change}: a returning row must not revive retired feedback`);
+      assert.equal(calls, 1, change); page.dispose();
+    }
+  });
+
+  test(`${kind} management feedback cannot return with a late response after its viewer or target retired`, async t => {
+    for (const change of ["target", "viewer", "clear"]) {
+      const container = fixture(t); const held = deferred(); let calls = 0;
+      const mount = kind === "access" ? mountApplicationAccess : mountOperatorRecovery;
+      const panel = mount(container, async () => {}, () => { calls++; return held.promise; });
+      t.after(() => { held.resolve(refused()); panel.dispose(); }); panel.update(offer(), "viewer");
+      container.querySelector("button").click();
+      if (change === "clear") panel.clear();
+      else panel.update(change === "target" ? { ...offer(), rows: [] } : offer(), change === "viewer" ? "other-viewer" : "viewer");
+      panel.update(offer(), "viewer");
+      held.resolve(refused()); await settled();
+      assert.doesNotMatch(container.textContent, refusal, change);
+      assert.doesNotMatch(container.textContent, historical, change);
+      assert.equal(calls, 1, change);
+    }
+  });
+
+  test(`${kind} management feedback stays inside its exact target card after multiple rows reorder`, async t => {
+    const { container, timers } = pageFixture(t); const value = offer(); const calls = [];
+    const selected = { ...value.rows[0], id: "c".repeat(64), service: "selected-service",
+      target: "selected-worker", resource: "selected-resource" };
+    value.rows.push(selected);
+    const page = mountSourceStatusPage(container, async () => ({ projection: snapshot(), [key]: value }),
+      async (path, options) => { calls.push({ path, body: JSON.parse(options.body) }); return refused(); });
+    t.after(() => page.dispose()); await settled();
+    const cards = () => [...container.querySelectorAll(`${selector} article`)];
+    cards()[1].querySelector("button").click(); await settled();
+    const checkTarget = () => {
+      const target = cards().find(card => card.querySelector("h3").textContent === selected.service);
+      const other = cards().find(card => card !== target);
+      assert.match(target.textContent, refusal, "the explanation must be inside the selected target's card");
+      assert.match(target.querySelector('[role="status"]').textContent, historical);
+      assert.doesNotMatch(other.textContent, historical);
+      assert.equal(container.querySelectorAll(`${selector} [role="status"]`).length, 1, "reuse the existing status node");
+    };
+    checkTarget();
+    cards()[0].querySelector("button").focus();
+    value.rows.reverse(); await tick(timers);
+    assert.equal(cards()[0].querySelector("h3").textContent, selected.service);
+    checkTarget();
+    assert.deepEqual(calls, [{ path: `/host/toolkit/setup/${kind}/revoke`,
+      body: { offer_id: value.offer_id, row_id: selected.id } }]);
+  });
+}
+
 
 test("503 clears stale setup actions and the existing poll refreshes the retained page; 403 still pauses", async t => {
   for (const status of [503, 403]) {

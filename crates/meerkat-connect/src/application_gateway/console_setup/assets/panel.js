@@ -558,7 +558,7 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
     root.className = "toolkit-view toolkit-application-access";
     container.append(root);
     let disposed = false; let epoch = 0; let currentScope;
-    let status; let rendered; let hint;
+    let status; let rendered; let hint; let lastAction;
     const movedFocus = event => {
         if (hint && event.target !== document.body && event.target !== document.documentElement) hint.focus = undefined;
     };
@@ -566,7 +566,7 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
     const focusHint = () => rendered && { scope: currentScope,
         focus: [...rendered].find(([, element]) => element === document.activeElement)?.[0] };
     const clear = () => {
-        ++epoch; currentScope = undefined; rendered = undefined; hint = undefined;
+        ++epoch; currentScope = undefined; rendered = undefined; hint = undefined; lastAction = undefined;
         root.replaceChildren(); status = undefined;
     };
     return {
@@ -582,6 +582,7 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
         update(value, scope, paged = false) {
             if (disposed) return;
             const previous = hint ?? focusHint();
+            const previousAction = lastAction;
             clear(); currentScope = scope; const current = epoch;
             const heading = document.createElement("h2"); heading.textContent = "Access issued by this application";
             status = document.createElement("p"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
@@ -614,6 +615,11 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
             if (!value.rows.length) { status.textContent = paged
                 ? "No matching application-issued access records on this page."
                 : "No matching application-issued access records were found."; return; }
+            // Historical feedback only: fresh owner rows still control status
+            // and actions. Dropped viewer/target identities cannot return it.
+            if (previousAction?.scope === scope && ids.has(previousAction.row)) {
+                lastAction = previousAction; status.textContent = lastAction.text ?? "";
+            }
             const controls = new Map();
             for (const row of value.rows) {
                 const card = document.createElement("article");
@@ -629,6 +635,7 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
                 fact("Expiry", row.lifetime.expires_at_ms === null ? "No expiry declared in this scope"
                     : new Date(row.lifetime.expires_at_ms).toISOString());
                 fact("Status", labels[row.state], false); card.append(title, facts);
+                if (lastAction?.row === row.id) card.append(status);
                 if (row.can_revoke) {
                     const button = document.createElement("button"); button.type = "button";
                     button.textContent = "Revoke this access"; button.disabled = submission.sending;
@@ -637,6 +644,7 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
                     button.addEventListener("click", async () => {
                         if (disposed || epoch !== current || submission.sending) return;
                         submission.sending = true;
+                        const action = { scope, row: row.id }; lastAction = action; status.textContent = ""; card.append(status);
                         for (const control of root.querySelectorAll("button")) control.disabled = true;
                         let text = "The revocation result could not be confirmed. Read current status before a new decision.";
                         try {
@@ -660,8 +668,9 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
                         } catch { /* No retry: an entered native mutation may have completed. */ }
                         submission.sending = false;
                         if (!disposed) {
+                            if (lastAction === action) action.text = `Last revocation attempt: ${text}`;
                             await refresh();
-                            if (!disposed && currentScope === scope && status) status.textContent = text;
+                            if (!disposed && lastAction === action && currentScope === scope && status) status.textContent = action.text;
                         }
                     });
                     card.append(button);
@@ -681,11 +690,11 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
 export function mountOperatorRecovery(container, refresh, fetcher = fetch, submission = { sending: false }) {
     const doc = container.ownerDocument;
     const root = doc.createElement("section"); root.className = "toolkit-view toolkit-operator-recovery";
-    let epoch = 0; let disposed = false; let currentScope; let status; let controls; let hint;
+    let epoch = 0; let disposed = false; let currentScope; let status; let controls; let hint; let lastAction;
     const focusHint = () => controls && { scope:currentScope, focus:[...controls].find(([, element]) => element === doc.activeElement)?.[0] };
     const movedFocus = event => { if (hint && event.target !== doc.body && event.target !== doc.documentElement) hint.focus = undefined; };
     doc.addEventListener("focusin", movedFocus);
-    const clear = () => { ++epoch; currentScope = undefined; status = undefined; controls = undefined; hint = undefined; root.replaceChildren(); root.remove(); };
+    const clear = () => { ++epoch; currentScope = undefined; status = undefined; controls = undefined; hint = undefined; lastAction = undefined; root.replaceChildren(); root.remove(); };
     return {
         clear,
         suspend() {
@@ -695,7 +704,7 @@ export function mountOperatorRecovery(container, refresh, fetcher = fetch, submi
         },
         update(value, scope, paged = false) {
             if (disposed) return;
-            const previous = hint ?? focusHint(); clear();
+            const previous = hint ?? focusHint(); const previousAction = lastAction; clear();
             // Absent policy retains the prior presentation, including no new
             // operator section for an ordinary requester-only installation.
             if (value == null) return;
@@ -728,6 +737,11 @@ export function mountOperatorRecovery(container, refresh, fetcher = fetch, submi
             note.textContent = "These are your operator approvals. Missing task publication does not mean the work was abandoned. Choosing cleanup attempts to revoke this approval's native access; it does not remove credentials, uninstall software, roll back tool policy, or stop running work.";
             root.append(note);
             if (!value.rows.length) { status.textContent = paged ? "No matching service approvals on this page." : "No matching service approvals found."; return; }
+            // Keep only the last explanation for this still-visible owner row.
+            // It cannot restore an offer, a current state or a cleanup action.
+            if (previousAction?.scope === scope && ids.has(previousAction.row)) {
+                lastAction = previousAction; status.textContent = lastAction.text ?? "";
+            }
             controls = new Map();
             for (const row of value.rows) {
                 const card = doc.createElement("article"); const title = doc.createElement("h3"); title.textContent = row.service;
@@ -739,6 +753,7 @@ export function mountOperatorRecovery(container, refresh, fetcher = fetch, submi
                 fact("Agent", row.target, true); fact("Operations", row.operations.join(", "), true); fact("Resource", row.resource, true);
                 fact("Publication", states[row.state]); fact("Parent access", parents[row.parent]); fact("Application access", children[row.child]); fact("Tool policy", policies[row.policy]);
                 card.append(title, facts);
+                if (lastAction?.row === row.id) card.append(status);
                 if (row.can_recover) {
                     const button = doc.createElement("button"); button.type = "button"; button.textContent = "Revoke this unresolved approval"; button.disabled = submission.sending;
                     labelManagementAction(button, context);
@@ -746,6 +761,7 @@ export function mountOperatorRecovery(container, refresh, fetcher = fetch, submi
                     button.addEventListener("click", async () => {
                         if (disposed || current !== epoch || submission.sending) return;
                         submission.sending = true; for (const control of root.querySelectorAll("button")) control.disabled = true;
+                        const action = { scope, row: row.id }; lastAction = action; status.textContent = ""; card.append(status);
                         let text = "The cleanup result could not be confirmed. Read current status before making a new decision.";
                         try {
                             const response = await fetcher("/host/toolkit/setup/recovery/revoke", { method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error",
@@ -761,7 +777,11 @@ export function mountOperatorRecovery(container, refresh, fetcher = fetch, submi
                             }
                         } catch { /* Never replay an operation whose response may have been lost. */ }
                         submission.sending = false;
-                        if (!disposed) { await refresh(); if (!disposed && currentScope === scope && status) status.textContent = text; }
+                        if (!disposed) {
+                            if (lastAction === action) action.text = `Last approval cleanup attempt: ${text}`;
+                            await refresh();
+                            if (!disposed && lastAction === action && currentScope === scope && status) status.textContent = action.text;
+                        }
                     });
                     card.append(button);
                 }
