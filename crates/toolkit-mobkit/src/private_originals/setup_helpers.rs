@@ -1185,8 +1185,6 @@ fn aa1_helper_send_failure(error: &IdentityRuntimeError) {
         IdentityRuntimeError::ActorAdmissionTimeout { .. } => "IdentityRuntimeError::ActorAdmissionTimeout",
         IdentityRuntimeError::ActorLoopStalled { .. } => "IdentityRuntimeError::ActorLoopStalled",
         IdentityRuntimeError::ActorTerminated { .. } => "IdentityRuntimeError::ActorTerminated",
-        IdentityRuntimeError::NoActiveLease(_) => "IdentityRuntimeError::NoActiveLease",
-        IdentityRuntimeError::LeaseLost(_) => "IdentityRuntimeError::LeaseLost",
         IdentityRuntimeError::InvalidState { .. } => "IdentityRuntimeError::InvalidState",
         IdentityRuntimeError::StaleRuntimeAlias { .. } => "IdentityRuntimeError::StaleRuntimeAlias",
         _ => "IdentityRuntimeError::Other",

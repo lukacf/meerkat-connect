@@ -364,6 +364,11 @@ struct ExactPackageReadback {
     evidence: PrivateSourceEvidence,
     config: meerkat_core::McpServerConfig,
     calls: AtomicUsize,
+    barrier: std::sync::Mutex<Option<Arc<ReadbackBarrier>>>,
+}
+struct ReadbackBarrier {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
 }
 #[async_trait::async_trait]
 impl ServiceInstallationReadback for ExactPackageReadback {
@@ -390,6 +395,12 @@ impl ServiceInstallationReadback for ExactPackageReadback {
             return Err(PrivateOriginalError::Denied);
         }
         self.calls.fetch_add(1, Ordering::SeqCst);
+        let barrier = self.barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.acquire().await
+                .map_err(|_| PrivateOriginalError::Unavailable)?.forget();
+        }
         Ok(self.config.clone())
     }
 }
@@ -479,6 +490,7 @@ async fn approved_native(
         evidence: record.event.original_authentication,
         config,
         calls: AtomicUsize::new(0),
+        barrier: std::sync::Mutex::new(None),
     });
     fixture
         .source
@@ -502,6 +514,97 @@ async fn approved_native(
             .is_empty()
     );
     (b, stored, task, readback, a_input, instruction)
+}
+
+async fn installation_publication_case(change_owner: bool) {
+    let (fixture, _) =
+        PersistentFixture::for_live_attachment_with_model_and_human_policy(|inner| inner).await;
+    let endpoint = Endpoint::new();
+    let outcome = AssertUnwindSafe(Box::pin(tokio::time::timeout(WAIT * 4, async {
+        fixture.source.bind_controller_pin_source(fixture.service.clone()).unwrap();
+        let (b, stored, task, readback, _, _) =
+            approved_native(&fixture, &endpoint, true).await;
+        let unrelated = fixture.store.admit(toolkit_store::AdmissionRequest {
+            key: toolkit_store::StoreKey {
+                realm: fixture.scope.realm.clone(),
+                owner: "test/attachment-publication".into(),
+                id: "unrelated".into(),
+            },
+            admission_key: "unrelated".into(),
+            data: toolkit_store::RecordData {
+                schema: "attachment-publication-control".into(),
+                version: 1,
+                body: serde_json::json!({"value": 0}),
+            },
+            events: vec![], effects: vec![],
+        }).await.unwrap().record().clone();
+        let barrier = Arc::new(ReadbackBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        *readback.barrier.lock().unwrap() = Some(barrier.clone());
+        let model_requests = fixture.model_requests();
+        let grant = task.attachments()[0].clone();
+        let prepare = fixture.source.prepare_service_mcp_installation_member(
+            &fixture.store, &b, &grant.grant,
+        );
+        tokio::pin!(prepare);
+        tokio::select! {
+            _ = barrier.entered.notified() => {},
+            _ = &mut prepare => panic!("package readback did not hold"),
+        }
+        if change_owner {
+            let mut changed = unrelated.data.clone();
+            changed.body["value"] = serde_json::json!(1);
+            fixture.store.compare_and_swap(toolkit_store::Transition {
+                key: unrelated.key, expected_revision: unrelated.revision,
+                expected_digest: Some(unrelated.content_digest), claim: None,
+                data: changed, events: vec![], effects: vec![],
+            }).await.unwrap();
+        }
+        barrier.release.add_permits(1);
+        let prepared = prepare.await;
+        if change_owner {
+            assert!(matches!(prepared, Err(PrivateOriginalError::Unavailable)),
+                "the old captured publication must fail before native entry");
+        } else {
+            assert!(prepared.is_ok(), "unchanged canonical owners must prepare");
+        }
+        *readback.barrier.lock().unwrap() = None;
+        assert_eq!(readback.calls.load(Ordering::SeqCst), 1);
+        if change_owner {
+            // A separate preparation may capture current facts. The refused
+            // preparation above never refreshes its retained stamp.
+            assert!(fixture.source.prepare_service_mcp_installation_member(
+                &fixture.store, &b, &grant.grant,
+            ).await.is_ok());
+            assert_eq!(readback.calls.load(Ordering::SeqCst), 2);
+        }
+        assert_eq!(fixture.store.get(&stored.key).await.unwrap().unwrap(), stored);
+        assert!(fixture.source.held_service_attachment(&b, &grant).unwrap().is_none());
+        assert_eq!(fixture.model_requests(), model_requests);
+        assert_eq!(endpoint.starts(), 0);
+        assert!(endpoint.calls().is_empty());
+    }))).catch_unwind().await;
+    endpoint.release();
+    fixture.source.join_service_attachments().await;
+    let cleanup = fixture.shutdown().await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    match outcome {
+        Ok(Ok(())) => (),
+        Ok(Err(_)) => panic!("bounded publication preparation control timed out"),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installation_readback_preserves_unchanged_publication_before_native_entry() {
+    installation_publication_case(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installation_readback_refuses_changed_publication_before_native_entry() {
+    installation_publication_case(true).await;
 }
 
 async fn assert_native_inputs(

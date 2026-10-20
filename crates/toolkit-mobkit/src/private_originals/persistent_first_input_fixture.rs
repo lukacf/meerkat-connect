@@ -435,29 +435,13 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
         };
         if let Some(retained) = &retained { member_spec = retained.member.clone(); }
         if let Some(session) = &live_session {
-        let lease = lease_provider
-            .acquire_leases(std::slice::from_ref(&identity), runtime_instance)
-            .await
-            .unwrap()
-            .remove(&identity)
-            .unwrap();
-        let LeaseAcquireResult::Acquired(lease) = lease else {
-            panic!("fixture lease refused")
-        };
-        runtime
-            .register(
-                member_spec.clone(),
-                IdentityLifecycleState::Active,
-                Some(ContinuityRecord {
-                    identity: identity.clone(),
-                    agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{identity}:0")).unwrap(),
-                    session_id: session.clone(),
-                    generation: ContinuityGeneration::new(0),
-                    checkpoint_version: CheckpointVersion::new(0),
-                }),
-                Some(lease),
-            )
-            .await;
+        // Core already owns this spawned member and session; registration adds its roster spec.
+        runtime.register(member_spec.clone()).await;
+        let status = runtime.status(&identity).await.unwrap();
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(status.session_id, Some(session.clone()));
+        assert!(status.agent_runtime_id.is_some(), "spawned Core member has a runtime identity");
+        assert_eq!(runtime.core_session_owner(session).await.unwrap(), Some(identity.clone()));
         }
         let context = Arc::new(IdentityFirstRuntimeContext::new(
             runtime,

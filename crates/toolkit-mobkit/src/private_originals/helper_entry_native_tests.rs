@@ -696,11 +696,13 @@ async fn fresh_helper_reset_catalog_calls_require_explicit_successor_parent() {
             let old_session = handle.get_member(&member).await.unwrap().unwrap().bridge_session_id().cloned().unwrap();
             assert!(acquisition_approved::native_history(history.as_ref(), &old_session).await.is_empty());
             let reset = fixture.runtime.reset_tracked(&helper).await.unwrap();
-            assert_ne!(reset.session_id, old_session);
-            assert_eq!(reset.generation, ContinuityGeneration::new(1));
-            assert_eq!(reset.checkpoint_version, CheckpointVersion::new(0));
+            let reset_session = reset.session_id().expect("reset committed a session");
+            assert_ne!(reset_session, &old_session);
+            assert_eq!(reset.generation().get(), 1);
+            // Core's binding has no Meta checkpoint_version. The fresh canonical
+            // history and zero model requests below prove this reset did no turn.
             let new_session = handle.get_member(&member).await.unwrap().unwrap().bridge_session_id().cloned().unwrap();
-            assert_eq!(new_session, reset.session_id);
+            assert_eq!(&new_session, reset_session);
             assert!(!handle.effective_member_profile(&member).await.unwrap().external_addressable);
             assert!(acquisition_approved::native_history(history.as_ref(), &new_session).await.is_empty());
             assert_eq!(fixture.model_requests(), 0);
@@ -729,8 +731,12 @@ async fn fresh_helper_reset_catalog_calls_require_explicit_successor_parent() {
             let association = held.original().association();
             assert_eq!(association.candidate().target.context.as_str(), new_session.to_string());
             assert_eq!(fixture.source.helper_policy_source(association).unwrap().unwrap().contributors, vec![original.clone()]);
-            acquisition_approved::consumed_native_input(history.as_ref(), &new_session, association, None, deadline).await;
-            acquisition_approved::consumed_native_input(history.as_ref(), &fixture.session, &original, None, deadline).await;
+            let helper_consumed = acquisition_approved::consumed_native_input(history.as_ref(), &new_session, association, None, deadline).await;
+            let original_consumed = acquisition_approved::consumed_native_input(history.as_ref(), &fixture.session, &original, None, deadline).await;
+            // Input consumption alone does not establish machine run settlement.
+            // Keep these exact-run waits inside the existing fixture deadline.
+            fixture.machine.wait_run_settled(&new_session, helper_consumed.seed.last_run_id.as_ref().unwrap()).await;
+            fixture.machine.wait_run_settled(&fixture.session, original_consumed.seed.last_run_id.as_ref().unwrap()).await;
             assert!(acquisition_approved::native_history(history.as_ref(), &old_session).await.is_empty());
             assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
             let feedback = probe.feedback.lock().unwrap();

@@ -349,10 +349,6 @@ impl SessionBridge for ObservedBridge {
         self.inner.raw_member_alias_exists(alias).await
     }
 
-    fn requires_resume_snapshot(&self) -> bool {
-        self.inner.requires_resume_snapshot()
-    }
-
     async fn recover_committed_boundary(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -360,42 +356,164 @@ impl SessionBridge for ObservedBridge {
         self.inner.recover_committed_boundary(session_id).await
     }
 
+    // Keep Core as the owner of bindings, lifecycle and durable observations.
+    async fn create_session(
+        &self,
+        identity: &AgentIdentity,
+        spec: &DurableAgentSpec,
+        draft: &AgentBuildDraft,
+    ) -> Result<MemberRuntimeBinding, BridgeError> {
+        self.inner.create_session(identity, spec, draft).await
+    }
+
+    async fn create_session_held(
+        &self,
+        identity: &AgentIdentity,
+        spec: &DurableAgentSpec,
+        draft: &AgentBuildDraft,
+        pass: &HeldCreatePass,
+    ) -> Result<MemberRuntimeBinding, BridgeError> {
+        self.inner
+            .create_session_held(identity, spec, draft, pass)
+            .await
+    }
+
     async fn reset_member_to_successor(
         &self,
         identity: &AgentIdentity,
         spec: &DurableAgentSpec,
         draft: &AgentBuildDraft,
-    ) -> Result<ResetSuccessorBinding, BridgeError> {
+    ) -> Result<MemberRuntimeBinding, BridgeError> {
         self.inner
             .reset_member_to_successor(identity, spec, draft)
             .await
     }
 
-    async fn create_session(
+    async fn capture_queued_member_inputs(
         &self,
         identity: &AgentIdentity,
-        runtime_id: &AgentRuntimeId,
-        spec: &DurableAgentSpec,
-        draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
-    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+    ) -> Result<QueuedMemberInputs, BridgeError> {
         self.inner
-            .create_session(identity, runtime_id, spec, draft, session_id)
+            .capture_queued_member_inputs(identity, session_id)
             .await
+    }
+
+    async fn readmit_queued_member_inputs(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        inputs: QueuedMemberInputs,
+    ) {
+        self.inner
+            .readmit_queued_member_inputs(identity, session_id, inputs)
+            .await;
     }
 
     async fn resume_session(
         &self,
         identity: &AgentIdentity,
-        runtime_id: &AgentRuntimeId,
         spec: &DurableAgentSpec,
         draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
-        snapshot: &SessionSnapshot,
+        resume_from_role: Option<&meerkat_mob::ProfileName>,
     ) -> Result<ResumeSessionOutcome, BridgeError> {
         self.inner
-            .resume_session(identity, runtime_id, spec, draft, session_id, snapshot)
+            .resume_session(identity, spec, draft, session_id, resume_from_role)
             .await
+    }
+
+    fn declared_role_migration(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Option<meerkat_mob::ProfileName> {
+        self.inner.declared_role_migration(identity)
+    }
+
+    async fn live_member(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<Option<MemberRuntimeBinding>, BridgeError> {
+        self.inner.live_member(identity).await
+    }
+
+    async fn live_member_scope(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<Option<meerkat_mob::MemberDeliveryScope>, BridgeError> {
+        self.inner.live_member_scope(identity).await
+    }
+
+    async fn ensure_member_live(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<Option<MemberRuntimeBinding>, BridgeError> {
+        self.inner.ensure_member_live(identity).await
+    }
+
+    async fn identity_convergence_status(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<
+        meerkat_mob::identity::IdentityStoredObservation<
+            meerkat_mob::identity::IdentityConvergenceStatus,
+        >,
+        BridgeError,
+    > {
+        self.inner.identity_convergence_status(identity).await
+    }
+
+    async fn identity_intent_present(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<Option<bool>, BridgeError> {
+        self.inner.identity_intent_present(identity).await
+    }
+
+    async fn member_binding_history(
+        &self,
+    ) -> Result<meerkat_mob::MemberBindingHistory, BridgeError> {
+        self.inner.member_binding_history().await
+    }
+
+    async fn last_member_binding(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<Option<meerkat_mob::MemberBinding>, BridgeError> {
+        self.inner.last_member_binding(identity).await
+    }
+
+    async fn identity_management(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<meerkat_mob::MemberIdentityManagement, BridgeError> {
+        self.inner.identity_management(identity).await
+    }
+
+    async fn durable_identity_members(
+        &self,
+    ) -> Result<Vec<meerkat_mob::MemberBinding>, BridgeError> {
+        self.inner.durable_identity_members().await
+    }
+
+    async fn identity_labelled_members(
+        &self,
+    ) -> Result<Vec<meerkat_mob::AgentIdentity>, BridgeError> {
+        self.inner.identity_labelled_members().await
+    }
+
+    async fn durable_session_held(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<bool, BridgeError> {
+        self.inner.durable_session_held(session_id).await
+    }
+
+    async fn session_outlives_member(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<bool, BridgeError> {
+        self.inner.session_outlives_member(session_id).await
     }
 
     async fn deliver_admitted(

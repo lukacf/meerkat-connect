@@ -513,37 +513,22 @@ impl FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>> {
             // Match Meta's lazy roster registration: the helper identity is
             // owned but has no embodiment, session or lease yet. The actual
             // governed dispatch below must still materialize it natively.
-            runtime.register(helper_spec, IdentityLifecycleState::Dormant, None, None).await;
+            runtime.register(helper_spec).await;
+            let status = runtime.status(&helper).await.unwrap();
+            assert_eq!(status.state, IdentityLifecycleState::Dormant);
+            assert!(status.session_id.is_none());
+            assert!(status.agent_runtime_id.is_none());
             assert_eq!(runtime.owned_identity_for_member_alias(helper.as_str()).await, Some(helper));
             assert!(handle.get_member(&helper_member).await.unwrap().is_none());
         }
         for (spec, selected_identity, selected_session) in materialized {
-            let lease = lease_provider
-                .acquire_leases(std::slice::from_ref(&selected_identity), runtime_instance)
-                .await
-                .unwrap()
-                .remove(&selected_identity)
-                .unwrap();
-            let LeaseAcquireResult::Acquired(lease) = lease else {
-                panic!("actual member identity lease refused")
-            };
-            runtime
-                .register(
-                    spec,
-                    IdentityLifecycleState::Active,
-                    Some(ContinuityRecord {
-                        identity: selected_identity.clone(),
-                        agent_runtime_id: AgentRuntimeId::parse(&format!(
-                            "rt:{selected_identity}:0"
-                        ))
-                        .unwrap(),
-                        session_id: selected_session,
-                        generation: ContinuityGeneration::new(0),
-                        checkpoint_version: CheckpointVersion::new(0),
-                    }),
-                    Some(lease),
-                )
-                .await;
+            // Core already owns this spawned member and session; registration adds its roster spec.
+            runtime.register(spec).await;
+            let status = runtime.status(&selected_identity).await.unwrap();
+            assert_eq!(status.state, IdentityLifecycleState::Active);
+            assert_eq!(status.session_id, Some(selected_session.clone()));
+            assert!(status.agent_runtime_id.is_some(), "spawned Core member has a runtime identity");
+            assert_eq!(runtime.core_session_owner(&selected_session).await.unwrap(), Some(selected_identity.clone()));
         }
         let context = Arc::new(IdentityFirstRuntimeContext::new(
             runtime, Arc::new(MutableRosterProvider::new(roster.clone())),
