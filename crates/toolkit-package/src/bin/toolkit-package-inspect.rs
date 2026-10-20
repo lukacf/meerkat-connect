@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 use toolkit_package::{
-    ActivationManifest, ComponentSource, ContentDigest, HostCapabilities, ImportedMcpServers,
+    ActivationManifest, ComponentSource, ContentDigest, Export, HostCapabilities, ImportedMcpServers,
     ImportedMcpbManifest, ImportedPluginManifest, IntegrationPackage, McpbUnresolvedContract,
     PluginRoot, PortableMcpServer, ValidatedManifest, ValidationError, canonical_json,
 };
@@ -470,6 +470,18 @@ fn activation_summary(validated: &ValidatedManifest) -> Value {
         }).collect::<Vec<_>>(),
         "initialization_order": validated.initialization_order(),
         "shutdown_order": validated.shutdown_order().collect::<Vec<_>>(),
+        "declared_frontends": manifest.exports.iter().filter_map(|export| {
+            let Export::AgentFrontend(frontend) = export else { return None };
+            Some(json!({
+                "id": frontend.id, "components": frontend.components,
+                "modalities": frontend.modalities,
+                "admission_contract": frontend.admission_contract,
+                "conversation_contract": frontend.conversation_contract,
+                "delivery_contract": frontend.delivery_contract,
+                "control_contract": frontend.control_contract,
+                "live_contract": frontend.live_contract,
+            }))
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -892,6 +904,82 @@ mod tests {
                 "runtimes": ["python"], "placements": ["local"],
             },
         })
+    }
+
+    #[test]
+    fn activation_inspection_reports_declared_frontends_without_implying_host_support() {
+        let mut input = activation_input();
+        input["package"]["known_exports"][0] = json!({
+            "id": "frontend", "role": "agent_frontend",
+            "description": "Inert frontend declaration.",
+        });
+        input["manifest"]["components"][0]["lifetime"] = json!("deployment");
+        let contract = |name: &str| json!({
+            "name": name, "version": {"major": 1, "minimum_minor": 0},
+        });
+        input["manifest"]["exports"] = json!([{
+            "role": "agent_frontend", "id": "frontend", "components": ["python-server"],
+            "modalities": ["text"], "admission_contract": contract("fixture/admission"),
+            "conversation_contract": contract("fixture/conversation"),
+            "delivery_contract": contract("fixture/delivery"),
+            "control_contract": null, "live_contract": null,
+            "authentication": {"kind": "none"}, "diagnostics": "check", "cleanup": "close",
+        }]);
+        bind_package(&mut input);
+        let selected = validated(&input);
+        let (first, code) = report("activation", input.clone());
+        assert_eq!(code, 0);
+        assert_eq!(first["scope"], "metadata_only");
+        assert_eq!(first["summary"]["manifest_digest"], json!(selected.digest()));
+        let declarations = first["summary"]["declared_frontends"]
+            .as_array()
+            .expect("inspection must expose the selected frontend declarations");
+        assert_eq!(declarations.len(), 1);
+        let declared = &declarations[0];
+        assert_eq!(declared["id"], "frontend");
+        assert_eq!(declared["components"], json!(["python-server"]));
+        assert_eq!(declared["modalities"], json!(["text"]));
+        for field in [
+            "admission_contract", "conversation_contract", "delivery_contract",
+            "control_contract", "live_contract",
+        ] {
+            assert_eq!(declared[field], input["manifest"]["exports"][0][field]);
+            assert!(declared.get(field).is_some());
+        }
+
+        let mut changed = input.clone();
+        changed["manifest"]["exports"][0]["modalities"] = json!(["text", "image"]);
+        changed["manifest"]["exports"][0]["control_contract"] = contract("fixture/control");
+        let (second, code) = report("activation", changed.clone());
+        assert_eq!(code, 0);
+        assert_eq!(second["summary"]["declared_frontends"][0]["modalities"],
+                   json!(["text", "image"]));
+        assert_eq!(second["summary"]["declared_frontends"][0]["control_contract"],
+                   contract("fixture/control"));
+        assert_ne!(first["summary"]["manifest_digest"], second["summary"]["manifest_digest"]);
+        assert_eq!(second["summary"]["manifest_digest"], json!(validated(&changed).digest()));
+
+        let host_input = json!({
+            "selection": changed,
+            "host": {"contracts": {}, "services": {}, "runtimes": ["python"], "placements": ["local"]},
+        });
+        let host: HostCapabilities = serde_json::from_value(host_input["host"].clone()).unwrap();
+        let selected = validated(&host_input["selection"]);
+        let (host_report, code) = report("activation-host", host_input);
+        assert_eq!(code, 0);
+        assert_eq!(host_report["summary"]["compatible"], false);
+        assert_eq!(host_report["summary"]["compatibility"], json!(selected.check_host(&host)));
+        assert_eq!(host_report["summary"]["activation"]["declared_frontends"],
+                   second["summary"]["declared_frontends"]);
+        for summary in [&first["summary"], &second["summary"], &host_report["summary"]["activation"]] {
+            for absent in ["ready", "authorized", "configuration", "policy"] {
+                assert!(summary.get(absent).is_none());
+            }
+            assert!(!summary.to_string().contains("fixture_server/__main__.py"));
+        }
+        let (service, code) = report("activation", activation_input());
+        assert_eq!(code, 0);
+        assert_eq!(service["summary"]["declared_frontends"], json!([]));
     }
 
     #[test]
