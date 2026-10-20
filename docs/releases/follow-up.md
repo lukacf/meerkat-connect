@@ -16,9 +16,9 @@ artifact and execution references with their narrower qualifications and failure
 | --- | --- |
 | Standalone CLI setup followed by normal agent use | Pass: setup installs Hacker News and Wikipedia, exits and joins its helpers; fresh ordinary stock rkat in the same realm returns three real HTTPS Hacker News stories with exact IDs/titles. The model schedule is scripted. |
 | Installed SDK acquisition/use | Pass: the same Original acquires Hacker News and reads one story. Corrupted resources are refused before setup. |
-| Shared setup | Nine custody/recovery controls and all three new writer controls pass. The latest shared pair passes planning admission but times out at B's readback/continuation after passing the former binding failure point. Earlier failures remain recorded; the complete shared journey is unqualified. |
+| Shared setup | Nine custody/recovery controls and all three new writer controls pass. The latest shared pair passes planning admission and B's native continuation is terminal, but the combined completion/delivery/fixture condition times out; its unsatisfied term is not yet identified. Earlier failures remain recorded; the complete shared journey is unqualified. |
 | Console approval/recovery | The corrected run approves software/access and starts setup. One status 503 is followed by fresh 200 reads, with no 403s or protected-action retries. Its fixture then rejects two genuine native catalog notices as extra user input. The narrow fixture correction passes independent review and 16 offline controls; its runtime rerun and complete continuation/recovery remain pending. Cleanup settles. |
-| Ordinary live-model read | Admission fails with `CredentialUnusable` before a model request. The Core lead independently reproduced `LeaseAbsent` at 01:16 UTC on 2026-10-20; a reviewed fixed SHA is pending. No credential or grant workaround is used. |
+| Ordinary live-model read | Admission fails with `CredentialUnusable` before a model request. The Core lead independently reproduced `LeaseAbsent` and confirms LANDING GO at `7934c49716` at 02:20 UTC on 2026-10-20. Its Rust code is byte-identical to `37985f72686007afc995aa51590f73bcc974317f`; consumption and the live read remain pending. No credential or grant workaround is used. |
 
 Adopted source corrections have these affected results:
 
@@ -43,10 +43,12 @@ Adopted source corrections have these affected results:
 The selection-writer-v2 correction is adopted after independent source review
 (`9743bde`), using the existing async writer and preserving source/cancellation
 checks. All three native writer controls pass. The combined batch has seven of
-eight passing: the remaining shared case reaches B's readback/continuation and
-times out. The earlier binding failure's cause is not retrospectively proven.
-Source restoration and physical process joins pass; the failed journey remains
-unqualified. The next live-model read consumes the exact reviewed Core fix when offered.
+eight passing: B's native continuation is terminal, but the combined
+preparation-completion, delivery-acknowledgement and fixture-finished condition
+times out. Its unsatisfied term and the earlier binding failure's cause remain
+unknown. Source restoration and physical process joins pass; the failed journey
+remains unqualified. The reviewed Core fix is available; consumption and the next
+live-model read remain pending.
 
 Release selection still needs exact Core/Meta/Toolkit 0.9.4 artifacts, matching
 SDKs, the native graph and the actual selected Meta reader. Linux x86_64 and macOS
