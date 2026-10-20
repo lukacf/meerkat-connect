@@ -176,11 +176,13 @@ fn tool_scope_display_fields(content: &str) -> Option<(bool, bool, u64)> {
 
 // Render native display from supplied groups. Acceptance below supplies only
 // the exact source-bound set; the diagnostic parser never supplies authority.
+// The second group is the known loaded set leaving hidden catalog membership.
+// Actual callable readiness is checked from typed load results and offered tools.
 fn deferred_catalog_projection(groups: &[Vec<&str>; 3]) -> String {
     use meerkat_core::event::{ToolConfigChangeDomain, ToolConfigChangeOperation,
         ToolConfigChangeStatus, ToolConfigChangedPayload};
     use meerkat_core::types::{SystemNoticeBlock, SystemNoticeKind, SystemNoticeMessage};
-    let labels = ["new deferred tools available: ", "deferred tools removed: ",
+    let labels = ["new deferred tools available: ", "deferred tools now available to call: ",
         "sources still connecting: "];
     let clauses: Vec<_> = groups.iter().zip(labels).filter(|(names, _)| !names.is_empty())
         .map(|(names, label)| format!("{label}{}", names.join(", "))).collect();
@@ -195,12 +197,12 @@ fn deferred_catalog_projection(groups: &[Vec<&str>; 3]) -> String {
 }
 
 fn deferred_catalog_display_fragments(content: &str) -> Option<Value> {
-    // Refuse ambiguous delimiters, count mismatches and noncanonical lookalikes.
+    // Refuse ambiguous delimiters and noncanonical lookalikes.
     // All limits apply before any fragment is included in the failure output.
     if content.len() > 4096 { return None; }
     let (body, _) = content.split_once('\n')?;
     let body = body.strip_prefix("Deferred catalog changed at turn boundary: ")?;
-    let labels = ["new deferred tools available: ", "deferred tools removed: ",
+    let labels = ["new deferred tools available: ", "deferred tools now available to call: ",
         "sources still connecting: "];
     let mut groups: [Vec<&str>; 3] = std::array::from_fn(|_| Vec::new());
     let mut previous = None;
@@ -309,8 +311,8 @@ fn fresh_native_context(messages: &[Value]) -> bool {
     if loads.len() > 1 { return false; }
     let loaded_at = loads.first().copied().unwrap_or(messages.len());
     let added_text = fresh_deferred_addition();
-    let removed_text = deferred_catalog_projection(&[vec![], vec![OPERATION], vec![]]);
-    let (mut added, mut removed, mut boundaries) = (false, false, [false; 2]);
+    let loaded_text = deferred_catalog_projection(&[vec![], vec![OPERATION], vec![]]);
+    let (mut added, mut loaded, mut boundaries) = (false, false, [false; 2]);
     for (index, message) in messages.iter().enumerate().filter(|(_, row)| row["role"] == "user") {
         if index == business[0] { continue; }
         if index < business[0] { return false; }
@@ -323,9 +325,9 @@ fn fresh_native_context(messages: &[Value]) -> bool {
         } else if content == added_text {
             if added || after_load { return false; }
             added = true;
-        } else if content == removed_text {
-            if !added || removed || !after_load { return false; }
-            removed = true;
+        } else if content == loaded_text {
+            if !added || loaded || !after_load { return false; }
+            loaded = true;
         } else { return false; }
     }
     true
@@ -1022,10 +1024,10 @@ fn fresh_input_failure_diagnostic_excludes_arbitrary_payloads_and_bounds_parts()
     let oversized = "x".repeat(129);
     let aggregate: Vec<_> = (0..9).map(|index| format!("name_{index}_{}", "x".repeat(113))).collect();
     for invalid in [
-        notice.replacen("added_hidden=2", "added_hidden=1", 1),
-        notice.replacen("removed_hidden=1", "removed_hidden=2", 1),
-        notice.replacen("pending_sources=1", "pending_sources=0", 1),
-        notice.replace("added_hidden=2", "added_hidden=02"),
+        notice.replace("deferred catalog updated", "deferred catalog changed"),
+        notice.replace("deferred tools now available to call: ", "deferred tools removed: "),
+        notice.replace("sources still connecting: ", "sources ready: "),
+        notice.replace("Tool configuration changed: ", "Tool configuration pending: "),
         format!("{notice}\n{private}"),
         format!("{}; {private}\n{}", notice.lines().next().unwrap(), notice.lines().nth(1).unwrap()),
         notice.lines().next().unwrap().to_owned(),
@@ -1040,6 +1042,7 @@ fn fresh_input_failure_diagnostic_excludes_arbitrary_payloads_and_bounds_parts()
         deferred_catalog_projection(&[aggregate.iter().map(String::as_str).collect(), vec![], vec![]]),
         format!("{notice}{}", "x".repeat(4096)),
     ] {
+        assert_ne!(invalid, notice, "negative control must change the native projection");
         let shape = fresh_text_shape(&invalid);
         assert!(shape["deferred_catalog_display"].is_null());
         let rejected = vec![json!({"role":"user","content":RUN_PROMPT}),

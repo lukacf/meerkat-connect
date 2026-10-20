@@ -57,8 +57,11 @@ both service setups, approvals and setup exit. Fresh ordinary rkat reaches catal
 search/load, then the fixture rejects a native deferred-catalog notice before the
 story read. Independent review establishes fixture drift: the assertion expects
 the old removed label where exact r9 now says the tool is available to call. The
-complete journey remains unqualified pending correction and rerun. Physical
-command groups join naturally.
+reviewed correction is adopted; the complete journey remains unqualified pending
+rerun. Supplied production CLI bytes can now be pinned explicitly in the fixture,
+avoiding a redundant production rebuild after test compilation. Existing task,
+isolation and actual-read checks remain intact. Physical command groups from the
+failed run join naturally.
 
 The r9 approval development gateway build also passes. Its affected consumer
 fails at setup-data HTTP 403 before intentional process loss or successor
