@@ -2,15 +2,19 @@
 
 Connect has two Rust workspaces. The root owns `toolkit-package`;
 `native-candidate/Cargo.toml` owns the CLI, native host adapters and `toolkit-store`.
-Both use their checked-in dependency locks. The native workspace selects the r9
+Both use their checked-in dependency locks. The native workspace selects the 0.9.4 preview
 development graph at exact
-[Core `9281f3b0`](https://github.com/lukacf/meerkat/commit/9281f3b05b846ff31f9d74a146b8020c507aa818)
-and [Meta `2ea41584`](https://github.com/lukacf/meerkat-meta/commit/2ea415849867ad2cfddee4090a9685c9ec11457e)
+[Core `56df4b7a`](https://github.com/lukacf/meerkat/commit/56df4b7a6f6474e9598764549624af3cefeaa048)
+and [Meta `ff4d271e`](https://github.com/lukacf/meerkat-meta/commit/ff4d271ecfb01653d6cf27e2b5fa87799e9f6a1b)
 Git revisions. The unpublished `meerkat-machine-codegen` crate comes directly
 from that same Core revision. The retained `vendor/core-codegen` tree is a
 v0.9.0 release input and is not selected by the development native workspace.
-Temporary 0.9.4 preview compositions use separately selected build inputs; they
-do not change these checked-in pins or establish final SDK qualification.
+These immutable preview pins support development testing; they are not final
+release qualification. The corresponding Meta
+[Python SDK](https://github.com/lukacf/meerkat-meta/tree/ff4d271ecfb01653d6cf27e2b5fa87799e9f6a1b/sdk/python)
+and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/ff4d271ecfb01653d6cf27e2b5fa87799e9f6a1b/sdk/typescript)
+come from the same revision. Canonical SDK package version/pin selection and
+installed native runtime acceptance remain separate.
 
 ## Prerequisites
 
@@ -123,11 +127,13 @@ GitHub release assets; no Toolkit registry upload is required.
 For current development, use the source under `sdk/python` and `sdk/typescript`.
 Their native-host metadata selects `meerkat-meta==0.9.1` and
 `@rkat/meta-sdk` 0.9.1. Toolkit retains version 0.9.0; the separate `@rkat/sdk`
-dependency remains 0.9.0. Meta SDK source bytes are unchanged from the retained
-`16cf534` revision to `669f54fa`, but native binary and resource compatibility
-still requires an assembled candidate and installed-host verification. Do not
-assume the older Toolkit release wheel
-or tarball contains the current source merely because its version matches.
+dependency remains 0.9.0 and is used for compile-time types. Those canonical
+package pins do not select the preview Meta SDK linked above. Development tests
+use explicitly versioned candidate packages from that exact source; final SDK
+package selection remains open. Native binary and resource compatibility still
+requires an assembled candidate and installed-host verification. Do not assume
+the older Toolkit release wheel or tarball contains the current source merely
+because its version matches.
 
 Python optional extras select service and native-host dependencies.
 `sdk/agno/stage.py` and `sdk/services/stage.py` project explicit source allowlists

@@ -29,21 +29,21 @@ meerkat-toolkit = { path = "../crates/meerkat-toolkit" }
 indexmap = "2"
 # Development integration against the isolated upstream prerequisite changes.
 # Distribution requires a published or immutable Git dependency containing them.
-meerkat = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818", default-features = false }
-meerkat-machine-dsl = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-machine-schema = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-machine-codegen = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-core = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-llm-core = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-authorization = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-authorization-contracts = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-runtime = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-workgraph = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-tools = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
+meerkat = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048", default-features = false }
+meerkat-machine-dsl = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-machine-schema = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-machine-codegen = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-core = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-llm-core = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-authorization = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-authorization-contracts = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-runtime = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-workgraph = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-tools = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
 
-meerkat-mob = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-mob-mcp = { version = "=0.9.3", git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-mobkit = { package = "meerkat-meta", git = "https://github.com/lukacf/meerkat-meta.git", rev = "2ea415849867ad2cfddee4090a9685c9ec11457e" }
+meerkat-mob = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-mob-mcp = { version = "=0.9.4", git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-mobkit = { package = "meerkat-meta", git = "https://github.com/lukacf/meerkat-meta.git", rev = "ff4d271ecfb01653d6cf27e2b5fa87799e9f6a1b" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -57,50 +57,50 @@ debug = 1
 
 # Exact owner-supplied native source map; Meta has registry-version edges.
 [patch.crates-io]
-meerkat-agent-build-authority = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-anthropic = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-atif = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-auth-core = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-authorization-contracts = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-authorization = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-capabilities = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-client = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-comms = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-contracts = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-copilot = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-core = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-gemini = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-hooks = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-jobs = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-live = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-llm-core = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-machine-codegen = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-machine-derive = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-machine-dsl-core = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-machine-dsl = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-machine-kernels = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-machine-schema = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-mcp-server = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-memory = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-mob-adaptive = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-mob-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-mob-pack = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-mob = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-models = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-openai = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-providers = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-rest = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-rpc = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-runtime = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-sandbox = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-schedule = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-session = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-skills = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-sqlite = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-store-conformance = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-store = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-tools = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-web-runtime = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat-workgraph = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
-meerkat = { git = "https://github.com/lukacf/meerkat.git", rev = "9281f3b05b846ff31f9d74a146b8020c507aa818" }
+meerkat-agent-build-authority = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-anthropic = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-atif = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-auth-core = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-authorization-contracts = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-authorization = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-capabilities = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-client = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-comms = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-contracts = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-copilot = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-core = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-gemini = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-hooks = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-jobs = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-live = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-llm-core = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-machine-codegen = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-machine-derive = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-machine-dsl-core = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-machine-dsl = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-machine-kernels = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-machine-schema = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-mcp-server = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-memory = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-mob-adaptive = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-mob-mcp = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-mob-pack = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-mob = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-models = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-openai = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-providers = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-rest = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-rpc = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-runtime = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-sandbox = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-schedule = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-session = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-skills = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-sqlite = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-store-conformance = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-store = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-tools = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-web-runtime = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat-workgraph = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
+meerkat = { git = "https://github.com/lukacf/meerkat.git", rev = "56df4b7a6f6474e9598764549624af3cefeaa048" }
