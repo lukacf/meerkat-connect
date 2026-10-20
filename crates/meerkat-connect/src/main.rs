@@ -68,7 +68,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Inspect or remove credentials for an existing service without setup or a model.
+    /// Inspect, set or remove credentials for an existing service without setup or a model.
     Credentials {
         #[command(subcommand)]
         action: CredentialAction,
@@ -81,6 +81,12 @@ enum CredentialAction {
     Status {
         #[arg(long)]
         after: Option<String>,
+    },
+    /// Review exact declared slots, then enter replacement values privately.
+    Set {
+        service: String,
+        #[arg(long = "slot", required = true)]
+        slots: Vec<String>,
     },
     /// Review removal of exact declared slots; configuration and grants stay unchanged.
     Remove {
@@ -212,6 +218,7 @@ async fn run(cli: Cli) -> Result<(), ConnectError> {
         use meerkat_connect::terminal_connector::{ServiceCredentialCommand, run_service_credential_command};
         let command = match action {
             CredentialAction::Status { after } => ServiceCredentialCommand::Status { after },
+            CredentialAction::Set { service, slots } => ServiceCredentialCommand::Set { service, slots },
             CredentialAction::Remove { service, slots } => ServiceCredentialCommand::Remove { service, slots },
         };
         return run_service_credential_command(storage, command, &mut lines,
@@ -1313,6 +1320,7 @@ mod tests {
     fn credential_commands_are_available_without_setup_options() {
         for arguments in [
             vec!["meerkat-connect", "--realm", "meta", "credentials", "status"],
+            vec!["meerkat-connect", "--realm", "meta", "credentials", "set", "cards", "--slot", "TOKEN"],
             vec!["meerkat-connect", "--realm", "meta", "credentials", "remove", "cards", "--slot", "TOKEN"],
         ] {
             assert!(Cli::try_parse_from(arguments).is_ok(),
@@ -1327,6 +1335,7 @@ mod tests {
         ordinary.check_command_options().unwrap();
         for arguments in [
             vec!["meerkat-connect", "--model", "fixture", "credentials", "status"],
+            vec!["meerkat-connect", "--model", "fixture", "credentials", "set", "cards", "--slot", "KEY"],
             vec!["meerkat-connect", "--choose-model", "credentials", "status"],
             vec!["meerkat-connect", "--homecore", "https://example.invalid", "credentials", "status"],
             vec!["meerkat-connect", "--stdio", "credentials", "status"],
@@ -1335,6 +1344,12 @@ mod tests {
         }
         assert!(Cli::try_parse_from(["meerkat-connect", "credentials", "remove", "cards"]).is_err());
         assert!(Cli::try_parse_from(["meerkat-connect", "credentials", "remove", "cards", "--slot", "TOKEN", "--value", "not-accepted"]).is_err());
+        assert!(Cli::try_parse_from(["meerkat-connect", "credentials", "set", "cards"]).is_err());
+        assert!(Cli::try_parse_from(["meerkat-connect", "credentials", "set", "cards", "--slot", "TOKEN", "--value", "not-accepted"]).is_err());
+        assert!(Cli::try_parse_from(["meerkat-connect", "credentials", "set", "cards", "--slot", "TOKEN", "not-accepted"]).is_err());
+        let set = Cli::try_parse_from(["meerkat-connect", "--realm", "meta", "credentials", "set", "cards", "--slot", "KEY", "--slot", "TOKEN"]).unwrap();
+        assert!(matches!(set.command, Some(Command::Credentials { action: CredentialAction::Set { service, slots } })
+            if service == "cards" && slots == ["KEY", "TOKEN"]));
         let selected = Cli::try_parse_from(["meerkat-connect", "--realm", "meta", "credentials", "status"]).unwrap();
         assert!(matches!(selected.command, Some(Command::Credentials { action: CredentialAction::Status { .. } })));
     }
