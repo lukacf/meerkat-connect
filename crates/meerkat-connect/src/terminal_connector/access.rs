@@ -347,6 +347,18 @@ impl FinalizedAccess {
     }
     pub(super) fn take_continuation_notice(&mut self) -> Option<FinalizationNotice> { self.continuation.take() }
     pub(super) fn stopped(&self) -> bool { self.stopped.is_some() }
+    pub(super) fn has_unconfirmed_effect(&self) -> bool {
+        match &self.outcome {
+            Outcome::NotEntered(_) => false,
+            Outcome::Grant(result) => unconfirmed_grant_effect(result.as_ref()),
+            Outcome::Revoke(Ok(result)) => result.outcome == RevocationOutcome::Uncertain
+                || result.unselected.is_err()
+                || result.cleanup.iter().any(|attempt| attempt.outcome == RevocationOutcome::Uncertain),
+            // This API returns entered revocation/selection effects in Ok;
+            // losing its owned command is the error with an unknown effect.
+            Outcome::Revoke(Err(error)) => matches!(error, StockGovernanceError::CommandUncertain),
+        }
+    }
     pub(super) fn display<W: Write>(&self, output: &mut W) -> Result<(), ConnectError> {
         writeln!(output, "{}", self.notice()).map_err(|error| ConnectError::native("Display native access result", error))
     }
@@ -369,6 +381,57 @@ mod tests {
     use meerkat_core::{ApprovalService, ConfigDelta, ConfigStore, FileConfigStore};
     use meerkat_auth_core::auth_store::{FileLockCoordinator, FileTokenStore, ProviderAuthPersistence};
     use std::path::Path;
+
+    #[test]
+    fn access_exit_keeps_unknown_native_effects_but_not_definite_no_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = storage(root.path(), "exit-fixture");
+        for (outcome, expected) in [
+            (Outcome::NotEntered("stopped_before_native_entry"), false),
+            (Outcome::Grant(Err(StockGrantError::Refused(StockGovernanceError::GrantsUnavailable))), false),
+            (Outcome::Grant(Err(StockGrantError::CommandUncertain)), true),
+            (Outcome::Revoke(Err(StockGovernanceError::GrantsUnavailable)), false),
+            (Outcome::Revoke(Err(StockGovernanceError::CommandUncertain)), true),
+        ] {
+            let result = FinalizedAccess::new(storage.locator.clone(), SessionId::new(),
+                change("mail", "fixture"), outcome, Some(secrets::Stop::Cancelled));
+            let action = FinalizedAction { outcome:ActionOutcome::Access(result), continuation:None };
+            assert_eq!(FinalizedAction::finish_invocation(&[action], Ok(())).is_err(), expected);
+        }
+    }
+
+    #[test]
+    fn access_exit_preserves_unknown_revocation_unselection_and_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = storage(root.path(), "exit-fixture");
+        let principal = stock_agent_principal(&storage.locator.realm, "fixture").unwrap();
+        // Identifier shape only, never passed to a native operation.
+        let reference: meerkat_authorization_contracts::work_association::GrantLineageRef =
+            serde_json::from_value(json!({"root_authority":principal,
+                "authority_namespace":"fixture-authority","authority_generation":1,
+                "authority_incarnation":"6f75f457-4232-4e12-8426-508d49ece197",
+                "grant_id":"current","issued_revision":1})).unwrap();
+        for (revocation, unselected, cleanup, expected) in [
+            (RevocationOutcome::Revoked, Ok(()), RevocationOutcome::Revoked, false),
+            (RevocationOutcome::Deferred, Ok(()), RevocationOutcome::Deferred, false),
+            (RevocationOutcome::Uncertain, Ok(()), RevocationOutcome::Revoked, true),
+            (RevocationOutcome::Revoked, Err("PRIVATE_UNSELECTION".into()), RevocationOutcome::Revoked, true),
+            (RevocationOutcome::Revoked, Ok(()), RevocationOutcome::Uncertain, true),
+        ] {
+            let result = FinalizedAccess::new(storage.locator.clone(), SessionId::new(),
+                Change::Revoke {service:"mail".into(), agent:"fixture".into()},
+                Outcome::Revoke(Ok(StockRevokeOutcome {
+                    revoked:reference.clone(), outcome:revocation, unselected,
+                    cleanup:vec![meerkat::governed_realm::stock::issuance::CleanupAttempt {
+                        agent:"fixture".into(), grant:reference.clone(), outcome:cleanup,
+                    }],
+                })), None);
+            let action = FinalizedAction {outcome:ActionOutcome::Access(result), continuation:None};
+            let result = FinalizedAction::finish_invocation(&[action], Ok(()));
+            assert_eq!(result.is_err(), expected);
+            if let Err(error) = result { assert!(!error.to_string().contains("PRIVATE_UNSELECTION")); }
+        }
+    }
 
     fn storage(root: &Path, realm: &str) -> ResolvedStorage {
         crate::RealmOptions {context_root:root.to_owned(),state_root:Some(root.join("state")),

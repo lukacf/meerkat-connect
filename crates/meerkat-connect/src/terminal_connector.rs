@@ -52,6 +52,9 @@ mod login;
 mod oauth_management;
 mod plain;
 mod secrets;
+#[cfg(test)]
+#[path = "terminal_connector/exit_tests.rs"]
+mod exit_tests;
 
 pub use secrets::management::{ServiceCredentialCommand, run_service_credential_command};
 
@@ -370,6 +373,23 @@ enum ActionOutcome {
     Access(access::FinalizedAccess),
 }
 impl FinalizedAction {
+    /// Finish only the CLI invocation. Historical results grant no retry or
+    /// current-state authority, and a later success cannot settle an earlier
+    /// uncertain effect.
+    pub fn finish_invocation(completed: &[Self], result: Result<(), ConnectError>) -> Result<(), ConnectError> {
+        // A failure already reports a nonzero exit. Preserve that primary
+        // error; a finalization result is not a cleanup failure.
+        result?;
+        if !completed.iter().any(Self::has_unconfirmed_effect) { return Ok(()); }
+        Err(unavailable(
+            "A finalized setup action has an unresolved or uncertain outcome. Review the displayed result and any retained setup artifacts. Later successful actions do not settle it; do not repeat it automatically."))
+    }
+    fn has_unconfirmed_effect(&self) -> bool {
+        match &self.outcome {
+            ActionOutcome::Installation(value) => value.has_unconfirmed_effect(),
+            ActionOutcome::Access(value) => value.has_unconfirmed_effect(),
+        }
+    }
     pub fn take_continuation_notice(&mut self) -> Option<FinalizationNotice> { self.continuation.take() }
     pub fn installation(&self) -> Option<Arc<FinalizedInstallation>> {
         match &self.outcome { ActionOutcome::Installation(value) => Some(value.clone()), ActionOutcome::Access(_) => None }
@@ -445,6 +465,13 @@ enum FinalizationOutcome {
 fn uncertain_grant(result: Result<&meerkat::governed_realm::stock::issuance::StockGrantOutcome, &StockGrantError>) -> bool {
     matches!(result, Err(StockGrantError::IssuanceUncertain { .. } | StockGrantError::NotSelected { .. }
         | StockGrantError::SelectionUncertain { .. } | StockGrantError::CommandUncertain))
+}
+
+fn unconfirmed_grant_effect(result: Result<&meerkat::governed_realm::stock::issuance::StockGrantOutcome, &StockGrantError>) -> bool {
+    match result {
+        Ok(outcome) => outcome.cleanup.iter().any(|attempt| attempt.outcome == RevocationOutcome::Uncertain),
+        Err(_) => uncertain_grant(result),
+    }
 }
 
 fn public_persistence_may_have_changed(error: &meerkat_core::mcp_config::McpRealmPersistError) -> bool {
@@ -524,6 +551,19 @@ impl FinalizedInstallation {
     /// effect. Do not poll that completed listener or start a continuation.
     pub fn stopped_during_finalization(&self) -> bool {
         matches!(&self.outcome, FinalizationOutcome::Secret(outcome) if outcome.stopped())
+    }
+
+    fn has_unconfirmed_effect(&self) -> bool {
+        match &self.outcome {
+            FinalizationOutcome::BeforeAdministrationRefused(_)
+                | FinalizationOutcome::Connector(ReviewedConnectorFinalization::Refused(_)) => false,
+            FinalizationOutcome::Connector(ReviewedConnectorFinalization::PersistUncertain { .. }) => true,
+            FinalizationOutcome::Connector(ReviewedConnectorFinalization::Persisted { grant, .. })
+                | FinalizationOutcome::PublicPersisted { grant, .. }
+                | FinalizationOutcome::PublicReused { grant, .. } => unconfirmed_grant_effect(grant.as_ref()),
+            FinalizationOutcome::PublicPersistenceError(error) => public_persistence_may_have_changed(error),
+            FinalizationOutcome::Secret(outcome) => outcome.has_unconfirmed_effect(),
+        }
     }
 
     pub(crate) fn belongs_to(&self, realm: &meerkat_core::RealmLocator, session: &SessionId) -> bool {

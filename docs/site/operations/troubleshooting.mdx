@@ -19,6 +19,13 @@ for that exact request. A new question does not authorize repeating the effect.
 If the CLI closes instead, starting it again creates a new conversation; it does
 not resume or replay the old request.
 
+In the current standalone CLI source, an unresolved or uncertain finalization
+makes the invocation exit with a nonzero status, even if a later setup succeeds
+or you leave with `/quit`, EOF or Ctrl-C. Review the displayed result and any
+retained setup artifacts as observations, not permission to repeat the action.
+Connect does not automatically retry it. Confirmed cancellation with no effect
+retains its existing exit behavior.
+
 ## Bootstrap failed or was interrupted
 
 Do not rerun bootstrap into the same client, output or workspace. It preserves

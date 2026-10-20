@@ -321,6 +321,9 @@ async fn run(cli: Cli) -> Result<(), ConnectError> {
     let mut finalizations: Vec<std::sync::Arc<FinalizedInstallation>> = Vec::new();
     let mut completed_actions: Vec<FinalizedAction> = Vec::new();
     let mut notice = None;
+    // Every exit after finalization passes through the retained typed outcomes,
+    // including a stop during a later round's startup or native close.
+    let result = async {
     loop {
     let composition = setup.take_composition().and_then(|(lazy, presenter)| {
         let forge = lazy.take_forge_presenter()?;
@@ -550,6 +553,8 @@ async fn run(cli: Cli) -> Result<(), ConnectError> {
     };
     notice = Some(next_notice);
     }
+    }.await;
+    FinalizedAction::finish_invocation(&completed_actions, result)
 }
 
 /// An unconfirmed close retains its native owner while awaiting an explicit
