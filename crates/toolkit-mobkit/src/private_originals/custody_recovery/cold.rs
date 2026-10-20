@@ -103,89 +103,56 @@ impl PrivateOriginals {
     pub(crate) async fn restore_promoted_custody(&self, key: &StoreKey,
         original: &Arc<RetainedToolkitOriginal>,
     ) -> Result<(), PrivateOriginalError> {
-        // Closed test labels locate refusal without exposing source or input data.
-        let diagnostic = |_stage: &'static str| {
-            #[cfg(test)]
-            eprintln!("cold_original_restore_refused stage={_stage}");
-        };
         if original.first_binding_for(key)
             || self.owner.has_admitted_source(original.association())
-                .map_err(|error| { diagnostic("retained_source"); cold_service_admission::writer_error(error) })?
+                .map_err(cold_service_admission::writer_error)?
         { return Ok(()); }
         self.owner.check_canonical_source(self.store.as_ref(), &self.scope)
-            .map_err(|error| { diagnostic("canonical_source"); cold_service_admission::writer_error(error) })?;
+            .map_err(cold_service_admission::writer_error)?;
         let (_, stamp) = self.owner.publication().observe(|| ())
-            .map_err(|_| { diagnostic("publication_capture"); PrivateOriginalError::Unavailable })?;
-        let row = self.store.get(key).await
-            .map_err(|error| { diagnostic("source_read"); store_error(error) })?
-            .ok_or_else(|| { diagnostic("source_absent"); PrivateOriginalError::Unavailable })?;
+            .map_err(|_| PrivateOriginalError::Unavailable)?;
+        let row = self.store.get(key).await.map_err(store_error)?
+            .ok_or(PrivateOriginalError::Unavailable)?;
         let kind = if row.data.schema == SOURCE_SCHEMA { Kind::Original } else { Kind::Helper };
         let attempt = if matches!(kind, Kind::Original) {
-            let record = self.cold_original(&row)
-                .map_err(|error| { diagnostic("source_decode"); error })?;
+            let record = self.cold_original(&row)?;
             if record.operation_cancelled || record.final_association.as_ref() != Some(original.association()) {
-                diagnostic("source_cancelled_or_rebound");
                 return Err(PrivateOriginalError::Conflict);
             }
             record.custody_attempt
         } else {
             helper_originals::cold_bound_attempt(&self.scope, &row, original.association())
-                .map_err(|error| { diagnostic("helper_attempt"); cold_service_admission::writer_error(error) })?
+                .map_err(cold_service_admission::writer_error)?
         };
         let Some(attempt) = attempt else { return Ok(()); }; // Existing legacy restoration stays unchanged.
-        if !self.owner.has_installed_pair_recovery()
-            .map_err(|error| { diagnostic("installed_pair_read"); cold_service_admission::writer_error(error) })? {
-            diagnostic("installed_pair_absent");
+        if !self.owner.has_installed_pair_recovery().map_err(cold_service_admission::writer_error)? {
             return Err(PrivateOriginalError::Unavailable);
         }
         match attempt.decision() {
             CustodyDecision::Promoted => (),
-            CustodyDecision::Pending => {
-                diagnostic("attempt_pending");
-                return Err(PrivateOriginalError::Unavailable);
-            }
-            CustodyDecision::Withdrawn => {
-                diagnostic("attempt_withdrawn");
-                return Err(PrivateOriginalError::Conflict);
-            }
+            CustodyDecision::Pending => return Err(PrivateOriginalError::Unavailable),
+            CustodyDecision::Withdrawn => return Err(PrivateOriginalError::Conflict),
         }
-        let machine = self.machine().map_err(|error| { diagnostic("machine"); error })?;
+        let machine = self.machine()?;
         let stored = machine.input_state(attempt.session(), attempt.input_id()).await
-            .map_err(|_| { diagnostic("native_input_read"); PrivateOriginalError::Unavailable })?
-            .ok_or_else(|| { diagnostic("native_input_absent"); PrivateOriginalError::Unavailable })?;
-        let input = self.verified_cold_input(kind, &row, &attempt, &stored)
-            .map_err(|error| { diagnostic("exact_input"); error })?;
+            .map_err(|_| PrivateOriginalError::Unavailable)?.ok_or(PrivateOriginalError::Unavailable)?;
+        let input = self.verified_cold_input(kind, &row, &attempt, &stored)?;
         let registration = machine.current_session_registration_witness(attempt.session()).await
-            .ok_or_else(|| { diagnostic("registration"); PrivateOriginalError::Unavailable })?;
+            .ok_or(PrivateOriginalError::Unavailable)?;
         let attachment = machine.current_executor_attachment_witness(attempt.session()).await
-            .ok_or_else(|| { diagnostic("attachment"); PrivateOriginalError::Unavailable })?;
+            .ok_or(PrivateOriginalError::Unavailable)?;
         let pins = self.controller_pin_source.get().and_then(Weak::upgrade)
-            .ok_or_else(|| { diagnostic("controller_owner"); PrivateOriginalError::Unavailable })?;
-        let actor = pins.live_actor(attempt.session()).await
-            .ok_or_else(|| { diagnostic("live_actor"); PrivateOriginalError::Unavailable })?;
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        let actor = pins.live_actor(attempt.session()).await.ok_or(PrivateOriginalError::Unavailable)?;
         machine.with_admitted_original(&registration, &attachment,
             &actor.executor_actor_identity(), &input, |admitted| {
-                let control = self.custody_recovery.control.state.lock()
-                    .map_err(|_| { diagnostic("recovery_control_lock"); PrivateOriginalError::Unavailable })?;
-                if !control.selected || control.stopped {
-                    diagnostic("recovery_not_active");
-                    return Err(PrivateOriginalError::Unavailable);
-                }
-                let _writer = self.owner.try_source_writer()
-                    .map_err(|error| { diagnostic("source_writer"); cold_service_admission::writer_error(error) })?;
-                stamp.check_current()
-                    .map_err(|_| { diagnostic("publication_currentness"); PrivateOriginalError::Unavailable })?;
+                let control = self.custody_recovery.control.state.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+                if !control.selected || control.stopped { return Err(PrivateOriginalError::Unavailable); }
+                let _writer = self.owner.try_source_writer().map_err(cold_service_admission::writer_error)?;
+                stamp.check_current().map_err(|_| PrivateOriginalError::Unavailable)?;
                 self.owner.recover_retained_custody(original, admitted)
-                    .map_err(|error| { diagnostic("retained_custody"); cold_service_admission::writer_error(error) })
-            }).await.map_err(|error| {
-                use meerkat_runtime::meerkat_machine::AdmittedOriginalRefusal;
-                diagnostic(match error {
-                    AdmittedOriginalRefusal::Unavailable => "native_admitted_original_unavailable",
-                    AdmittedOriginalRefusal::NotAdmitted => "native_admitted_original_not_admitted",
-                    AdmittedOriginalRefusal::Conflict => "native_admitted_original_conflict",
-                });
-                PrivateOriginalError::Unavailable
-            })?
+                    .map_err(cold_service_admission::writer_error)
+            }).await.map_err(|_| PrivateOriginalError::Unavailable)?
     }
 
     fn cold_original(&self, row: &StoredRecord) -> Result<SourceRecord, PrivateOriginalError> {

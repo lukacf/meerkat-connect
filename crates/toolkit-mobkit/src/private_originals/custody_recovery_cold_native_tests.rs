@@ -1,5 +1,6 @@
 //! Restore a genuinely enrolled original through the same persistent owners.
-//! This component control does not submit after reopen or prove delivery wake.
+//! This isolated component control does not submit after reopen or prove
+//! concurrent census progress or delivery wake.
 use super::*;
 use crate::original_ingress::{RetainedToolkitOriginal, custody_attempt::{CustodyAttempt, CustodyDecision}};
 use meerkat_runtime::{LogicalRuntimeId, input_state::{InputLifecycleState, verify_exact_replay}};
@@ -82,6 +83,7 @@ async fn cold_restore_control(tampered: bool) {
     let mut runtime_store = Some(history);
     let mut retained = Some(retained);
     let mut continuation = Some(adapter);
+    let mut first_cold_round = None;
     let checked = std::panic::AssertUnwindSafe(tokio::time::timeout(WAIT * 4, Box::pin(async {
         let (association, original_input, native_record, source_record, grants, session) = {
             let fixture = active.as_ref().unwrap();
@@ -169,6 +171,10 @@ async fn cold_restore_control(tampered: bool) {
         assert_eq!(fixture.cold_source_record().await, source_record);
         assert!(fixture.source.owner.has_installed_pair_recovery().unwrap());
         assert!(!fixture.source.owner.has_live_first_binding(&source_record.key).unwrap());
+        // Select the real recovery owner, but isolate this one-shot exact-input
+        // restoration from its background census. This permit holds no authority
+        // lock and is released outside the cancellable body before owner join.
+        first_cold_round = Some(fixture.source.hold_first_custody_round_for_test());
         fixture.source.start_custody_recovery(
             fixture.continuation_native().continuation_source_announcer(),
         ).unwrap();
@@ -250,6 +256,7 @@ async fn cold_restore_control(tampered: bool) {
         assert_eq!(rows[0].state.authority_contributors[0].association(), &association);
         assert_eq!(fixture.model_requests(), 0, "source restoration does not replay the first turn");
     }))).catch_unwind().await;
+    drop(first_cold_round.take());
     let cleanup = if let Some(fixture) = active.as_ref() {
         fixture.source.stop_custody_recovery();
         let (native, source) = tokio::join!(
