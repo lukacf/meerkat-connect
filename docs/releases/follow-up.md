@@ -16,9 +16,9 @@ artifact and execution references with their narrower qualifications and failure
 | --- | --- |
 | Standalone CLI setup followed by normal agent use | Pass: setup installs Hacker News and Wikipedia, exits and joins its helpers; fresh ordinary stock rkat in the same realm returns three real HTTPS Hacker News stories with exact IDs/titles. The model schedule is scripted. |
 | Installed SDK acquisition/use | Pass: the same Original acquires Hacker News and reads one story. Corrupted resources are refused before setup. |
-| Shared setup | Nine custody/recovery controls and all three new writer controls pass. The diagnostic rerun instead encounters a verified pre-entry publication-change refusal on B's check, which the scripted controller treats as fatal. Its bounded fixture correction and the earlier final completion/delivery check remain unfinished. |
-| Console approval/recovery | Both native agent runs complete in the accepted session after protected approvals. The verifier rejects the exact reviewed service context plus unchanged instruction because it expects one input block. Status 503 recovery works and cleanup settles; the exact two-block fixture correction and process-loss recovery remain pending. |
-| Ordinary live-model read | Admission fails with `CredentialUnusable` before a model request. The Core lead independently reproduced `LeaseAbsent` and confirms LANDING GO at `7934c49716` at 02:20 UTC on 2026-10-20. Its Rust code is byte-identical to `37985f72686007afc995aa51590f73bcc974317f`; consumption and the live read remain pending. No credential or grant workaround is used. |
+| Shared setup | Nine custody/recovery controls and all three new writer controls pass. A smaller correction in two existing test files handles one fresh check and requires exact native refusal evidence after settlement. Its focused and complete-case executions remain pending, including the earlier final completion/delivery check. |
+| Console approval/recovery | Both native completions and the corrected exact two-block input check pass. The next observer incorrectly compares a raw source idempotency key with Core's qualified stored key. The exact consumed input and completed run exist. Correct that observer; process-loss recovery remains unentered and cleanup joins naturally. |
+| Ordinary live-model read | The ordinary rkat build with the approved Core credential correction passes. The live run is refused before model output. Its retained realm authorizes the scripted model route, not the selected OpenAI route. Correct the fresh setup scenario to select and normally authorize the same live route from the start. The earliest typed refusal remains unproven; no existing grants or credentials are changed. |
 
 Adopted source corrections have these affected results:
 
@@ -47,8 +47,8 @@ eight passing: B's native continuation is terminal, but the combined
 preparation-completion, delivery-acknowledgement and fixture-finished condition
 times out. Its unsatisfied term and the earlier binding failure's cause remain
 unknown. Source restoration and physical process joins pass; the failed journey
-remains unqualified. The reviewed Core fix is available; consumption and the next
-live-model read remain pending.
+remains unqualified. The reviewed Core fix is built, but the live scenario's
+route mismatch must be corrected before rerunning its read.
 
 Release selection still needs exact Core/Meta/Toolkit 0.9.4 artifacts, matching
 SDKs, the native graph and the actual selected Meta reader. Linux x86_64 and macOS
