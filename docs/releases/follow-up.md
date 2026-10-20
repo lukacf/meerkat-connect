@@ -20,6 +20,12 @@ artifact and execution references with their narrower qualifications and failure
 | Console approval/recovery | Both native completions and the corrected exact two-block input check pass. The next observer incorrectly compares a raw source idempotency key with Core's qualified stored key. The exact consumed input and completed run exist. The corrected observer passes 26 controls; the actual rerun is underway. Process-loss recovery remains unentered in settled evidence and cleanup joins naturally. |
 | Ordinary live-model read | The ordinary rkat build with the approved Core credential correction passes. The live run is refused before model output. Its retained realm authorizes the scripted model route, not the selected OpenAI route. Correct the fresh setup scenario to select and normally authorize the same live route from the start. The earliest typed refusal remains unproven; no existing grants or credentials are changed. |
 
+The one-helper shared workflow still needs production execution and per-original
+completion wiring. Its current path delivers planning context, but does not call
+the existing per-waiter operation staging method; setup-result lookup only
+recognizes ordinary helpers. Policy refuses unstaged calls. This is an
+implementation gap, so expanding planning tests alone cannot close it.
+
 Adopted source corrections have these affected results:
 
 - Console status handling (`6cff5eb`) preserves unavailable reads as 503 and
