@@ -2,17 +2,18 @@
 
 Connect has two Rust workspaces. The root owns `toolkit-package`;
 `native-candidate/Cargo.toml` owns the CLI, native host adapters and `toolkit-store`.
-Both use their checked-in dependency locks. The native workspace selects the 0.9.4 preview
+Both use their checked-in dependency locks. The native workspace selects the 0.9.4
 development graph at exact
-[Core `56df4b7a`](https://github.com/lukacf/meerkat/commit/56df4b7a6f6474e9598764549624af3cefeaa048)
-and [Meta `ff4d271e`](https://github.com/lukacf/meerkat-meta/commit/ff4d271ecfb01653d6cf27e2b5fa87799e9f6a1b)
+[Core `07e976ab`](https://github.com/lukacf/meerkat/commit/07e976abbf0f2bbf77283988bee913e59a7d8fb0)
+and [Meta `86afecf6`](https://github.com/lukacf/meerkat-meta/commit/86afecf691947e306f363643e1c5ca346df2a90c)
 Git revisions. The unpublished `meerkat-machine-codegen` crate comes directly
 from that same Core revision. The retained `vendor/core-codegen` tree is a
 v0.9.0 release input and is not selected by the development native workspace.
-These immutable preview pins support development testing; they are not final
-release qualification. The corresponding Meta
-[Python SDK](https://github.com/lukacf/meerkat-meta/tree/ff4d271ecfb01653d6cf27e2b5fa87799e9f6a1b/sdk/python)
-and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/ff4d271ecfb01653d6cf27e2b5fa87799e9f6a1b/sdk/typescript)
+These immutable pins support development testing; they are not final release
+qualification. The selected Meta revision includes the Console identity priming
+correction; the Forge installer update remains pending. The corresponding Meta
+[Python SDK](https://github.com/lukacf/meerkat-meta/tree/86afecf691947e306f363643e1c5ca346df2a90c/sdk/python)
+and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/86afecf691947e306f363643e1c5ca346df2a90c/sdk/typescript)
 come from the same revision. Canonical SDK package version/pin selection and
 installed native runtime acceptance remain separate.
 

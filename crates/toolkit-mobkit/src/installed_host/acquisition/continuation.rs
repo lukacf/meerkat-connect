@@ -429,8 +429,6 @@ impl SetupContinuationOwner for InstalledNativeContinuation {
                 return Err(ContinuationError::InvalidReceipt);
             }
             self.service()?;
-            if let Some(evidence) = &evidence {
-            }
             return Ok(evidence);
         }
         let (status, observed_at_ms) = self.status(obligation).await?;
