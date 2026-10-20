@@ -67,6 +67,36 @@ class GuideTests(SelectedFixture, unittest.IsolatedAsyncioTestCase):
                         unavailable = await client.call_tool("setup_guide", {"topic": "python-install"})
                         self.assertEqual(unavailable.structured_content, {"error": "guide_unavailable"})
 
+    async def test_operation_scope_guidance_reaches_helper_in_supported_layouts(self):
+        source_root = Path(adapter.__file__).resolve().parents[2]
+        topics = ("selected-metadata", "python-install", "node-install")
+        for kind in ("source", "combined", "standalone"):
+            with self.subTest(layout=kind):
+                module = None
+                if kind != "source":
+                    module, guides = self.layout("operation-scope-" + kind, kind)
+                    for topic in topics:
+                        filename, source = adapter.GUIDE_FILES[topic]
+                        (guides / filename).write_bytes((source_root / source).read_bytes())
+                controller = self.controller()
+                before = controller.state()
+                async with Client(self.server(controller, module)) as client:
+                    for topic in topics:
+                        with self.subTest(topic=topic):
+                            raw = (source_root / adapter.GUIDE_FILES[topic][1]).read_bytes()
+                            result = await self.call(client, topic)
+                            self.assertEqual(result["text"].encode(), raw)
+                            self.assertEqual(result["sha256"], backend.digest(raw))
+                            self.assertLessEqual(result["bytes"], adapter.GUIDE_LIMIT)
+                            text = " ".join(result["text"].split())
+                            for distinction in ("native protected", "operation-name allowlist",
+                                                "query semantics", "startup effects",
+                                                "filesystem confinement"):
+                                self.assertTrue(distinction in text,
+                                                f"{kind}/{topic} omits {distinction!r}")
+                self.assertEqual(controller.runner.calls, [])
+                self.assertEqual(controller.state(), before)
+
     async def test_limit_is_exact_utf8_bytes_and_empty_contract_refuses(self):
         for label, data, valid in (("limit", b"# " + b"X" * (32 * 1024 - 2), True),
                                    ("empty", b"", False),
@@ -159,6 +189,10 @@ class HostedGuideTests(HostedFixture, unittest.IsolatedAsyncioTestCase):
                     raw = Path(hosted_adapter.__file__).with_name("HOSTED-METADATA.md").read_bytes()
                     self.assertFalse(result.is_error)
                     self.assertEqual(result.structured_content["text"].encode(), raw)
+                    text = " ".join(result.structured_content["text"].split())
+                    for distinction in ("native protected", "operation-name allowlist",
+                                        "query semantics", "startup effects", "filesystem confinement"):
+                        self.assertTrue(distinction in text, f"hosted-metadata omits {distinction!r}")
             self.assertEqual(controller.runner.calls, [])
 
 
@@ -174,6 +208,10 @@ class McpbGuideTests(McpbFixture, unittest.IsolatedAsyncioTestCase):
             raw = (Path(adapter.__file__).resolve().parents[2] / "crates/toolkit-package/MCPB-INSTALL.md").read_bytes()
             self.assertFalse(result.is_error)
             self.assertEqual(result.structured_content["text"].encode(), raw)
+            text = " ".join(result.structured_content["text"].split())
+            for distinction in ("native protected", "operation-name allowlist",
+                                "query semantics", "startup effects", "filesystem confinement"):
+                self.assertTrue(distinction in text, f"mcpb-install omits {distinction!r}")
         self.assertEqual(controller.runner.calls, [])
 
 

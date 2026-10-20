@@ -541,6 +541,36 @@ their respective inputs. Python and npm acquisition opt-ins are independent.
 Partial pairs, incomplete opt-ins and older Python-only releases without the
 Node tools are refused before output. See [Node acquisition](NODE-ACQUISITION.md).
 
+### Add selected Node build support
+
+This optional development path is not in Connect 0.9.0. With the complete selected Node/npm pair above and a matching archived
+installer/Node validator, supply both options:
+
+```text
+--node-build-profile /ABS/host/node-build-profile.json
+--node-build-profile-sha256 EXACT_RAW_PROFILE_SHA256
+```
+
+The nonempty profile is an exact regular file of at most 65536 bytes. Its
+[version-1 shape](../../crates/toolkit-package/NODE-INSTALL.md#version-1-host-profile)
+selects named executable/input files, an exact Node target, a fixed nonsecret
+environment and limits. The pair alone cannot enable Node or network acquisition.
+Omission keeps the existing profile and no-build behavior.
+
+Preparation snapshots the unchanged bytes as `node-build-profile.json`, adds
+`node_build: {path, sha256}` to `selected-install.json`, and binds the snapshot in
+the existing prepared receipt. Referenced executable/input paths are not rewritten
+or provisioned; they must remain valid on the execution host. The pinned installer
+owns their schema and byte validation during planning/review. Preparation does
+not run a compiler, Node, npm or a package build.
+
+`package-connect-resources.py` accepts the same pair and places the exact profile
+in the existing resource inventory. The product preparer discovers that entry
+and forwards the pair through the starter and archived host preparer. Do not add
+a new top-level `resources.json` field or supply a build profile through agent
+tool arguments. See the [selected setup sequence](SELECTED.md#select-an-explicit-node-build).
+
+
 ### Add public npm search
 
 To let an agent research npm candidates before choosing a package, enable the
@@ -578,6 +608,7 @@ Recovery-only preparation refuses the search opt-in.
 A successful output directory contains:
 
 - `selected-install.json`, using the existing standing local-software scope.
+- `node-build-profile.json`, only with the complete optional build-profile pair.
 - `python-acquisition.json`, only when public PyPI was explicitly enabled.
 - `node-acquisition.json`, only when public npm acquisition or search was explicitly enabled.
 - `compose-acquisition-host.json` and `compose-acquisition.json`, only with the

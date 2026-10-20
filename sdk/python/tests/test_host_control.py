@@ -87,7 +87,7 @@ def test_authenticated_event_reply_cannot_replace_original():
     writer.close()
 
 
-@pytest.mark.parametrize("state", ["operations_cancelled", "operation_grant_revoked"])
+@pytest.mark.parametrize("state", ["operations_cancelled", "operation_grant_revoked", "operations_cancelled_cleanup_pending"])
 def test_original_cancellation_reports_durable_disposition_not_legacy_grant_revoke(state):
     client, reader, writer = pipes()
     original = original_for(source_event())

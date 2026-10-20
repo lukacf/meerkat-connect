@@ -164,6 +164,12 @@ impl InstalledNativeContinuation {
         self.binding(&canonical)?;
         Ok(())
     }
+    async fn delivers_original_result(&self, obligation: &ContinuationObligation)
+        -> Result<bool, ContinuationError>
+    {
+        if obligation.approved_service().is_none() { return Ok(true); }
+        self.originals.failed_service_allows_original_result(obligation).await
+    }
     fn owner(binding: &NativeOriginalTask) -> ContinuationOwner {
         match &binding.member {
             Some(member) => ContinuationOwner::Member {
@@ -180,13 +186,23 @@ impl InstalledNativeContinuation {
                 producer_id: obligation.operation().to_string(), result_digest: obligation.digest()?.to_string(), summary: None },
             // This is the exact committed result, not the original user content
             // or a claim that the original task itself has completed.
-            body: String::from_utf8(match obligation.helper_detail() {
+            body: String::from_utf8(if let Some(failure) = obligation.service_attachment_failure() {
+                let mut body = serde_json::json!({
+                    "outcome": obligation.outcome(), "service_attachment_failure": failure,
+                    "explanation": "The selected service attachment attempt failed or was rejected. Its replacement instruction was permanently fenced before admission. This is a setup failure result under your original authority, not service readiness or permission to retry. Research any corrected choice and request a separately reviewed setup.",
+                });
+                if let Some(observation) = obligation.service_attachment_observation() {
+                    body["service_attachment_observation"] = serde_json::to_value(observation)
+                        .map_err(|_| ContinuationError::Unsupported)?;
+                }
+                canonical_json(&body)?
+            } else { match obligation.helper_detail() {
                 Some(detail) => canonical_json(&serde_json::json!({
                     "outcome": obligation.outcome(), "explanation": detail,
                 }))?,
                 // Preserve generic legacy delivery bytes when no helper report exists.
                 None => canonical_json(obligation.outcome())?,
-            })
+            } })
             .map_err(|_| ContinuationError::Unsupported)?
             .into(),
             handling: ContinuationHandling::Queue,
@@ -376,10 +392,15 @@ impl RetainedJobSource for InstalledNativeContinuation {
         if producer != &self.producer() { return RetainedJobLookup::Absent; }
         let Ok(operation) = Id::new(job_id) else { return RetainedJobLookup::Absent; };
         match self.committed(&operation).await {
-            // B already owns the sole continuation input. Do not expose A's
-            // retained work as another native result-delivery authorization.
-            Ok(Some(obligation)) if obligation.approved_service().is_some() => RetainedJobLookup::Absent,
-            Ok(Some(obligation)) => match self.binding(&obligation) {
+            Ok(Some(obligation)) => {
+                // B keeps the sole input unless its exact canonical failure
+                // and durable non-entry permit the original failure result.
+                match self.delivers_original_result(&obligation).await {
+                    Ok(true) => (),
+                    Ok(false) => return RetainedJobLookup::Absent,
+                    Err(_) => return RetainedJobLookup::Unavailable("canonical setup result is unavailable".into()),
+                }
+                match self.binding(&obligation) {
                 Ok(binding) => match obligation.digest() {
                     Ok(digest) => RetainedJobLookup::Found(RetainedJobFacts {
                         owner_session_id: binding.origin_session_id.clone(),
@@ -388,6 +409,7 @@ impl RetainedJobSource for InstalledNativeContinuation {
                     Err(_) => RetainedJobLookup::Unavailable("canonical setup result is unavailable".into()),
                 },
                 Err(_) => RetainedJobLookup::Absent,
+                }
             },
             Ok(None) => RetainedJobLookup::Absent,
             Err(_) => RetainedJobLookup::Unavailable("canonical setup result is unavailable".into()),
@@ -399,7 +421,7 @@ impl SetupContinuationOwner for InstalledNativeContinuation {
     async fn verify_admission(&self, obligation: &ContinuationObligation, expected: &ContextReference)
         -> Result<Option<ContinuationAdmissionEvidence>, ContinuationError>
     {
-        if obligation.approved_service().is_some() {
+        if !self.delivers_original_result(obligation).await? {
             self.service()?;
             self.exact(obligation).await?;
             let evidence = self.originals.observe_service_continuation(obligation).await?;
@@ -407,6 +429,8 @@ impl SetupContinuationOwner for InstalledNativeContinuation {
                 return Err(ContinuationError::InvalidReceipt);
             }
             self.service()?;
+            if let Some(evidence) = &evidence {
+            }
             return Ok(evidence);
         }
         let (status, observed_at_ms) = self.status(obligation).await?;
@@ -428,7 +452,7 @@ impl SetupContinuationDelivery for InstalledNativeContinuation {
     }
     async fn admit(&self, obligation: &ContinuationObligation) -> Result<ContinuationAdmissionEvidence, ContinuationError> {
         self.exact(obligation).await?;
-        if obligation.approved_service().is_some() {
+        if !self.delivers_original_result(obligation).await? {
             self.service()?;
             let evidence = self.originals.observe_service_continuation(obligation).await?
                 .ok_or(ContinuationError::OwnerUnavailable)?;
@@ -459,7 +483,7 @@ impl SetupContinuationDelivery for InstalledNativeContinuation {
         }
     }
     async fn reconcile(&self, obligation: &ContinuationObligation) -> Result<ContinuationReconciliation, ContinuationError> {
-        if obligation.approved_service().is_some() {
+        if !self.delivers_original_result(obligation).await? {
             self.service()?;
             self.exact(obligation).await?;
             let evidence = self.originals.observe_service_continuation(obligation).await?;

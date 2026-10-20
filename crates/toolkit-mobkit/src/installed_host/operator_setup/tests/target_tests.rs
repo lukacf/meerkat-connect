@@ -14,12 +14,13 @@ fn helper(owner: &OperatorSetup) -> InstalledSetupSelection {
     let mut helper = InstalledSetupSelection { member: member.member.clone(), ingress_actor: actor.clone(),
         logical_executor: member.logical_owner.clone(), represented_subject: route.represented_subject.clone(),
         controller_parent: route.controller_parent.clone().unwrap(),
+        catalog_capability: None,
         operation_basis: WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![] }, report_capability: None };
     helper.report_capability = Some(configured_report::issue_or_recover(&owner.source, &owner.native.grant_administrator,
         &owner.operator, &helper, &HelperReportCapabilityRequest { member: helper.member.clone(),
             issuance_id: EvidenceId::new("paired-helper-report").unwrap(),
             account_issuance_id: Some(EvidenceId::new("paired-helper-account").unwrap()), public_issuance_id: Some(EvidenceId::new("paired-helper-public").unwrap()) },
-        configured_report::report_parent(&helper.logical_executor, &member.audience), &member.audience).unwrap());
+        configured_report::report_parent(&owner.native.grant_administrator, &helper.logical_executor, &member.audience), &member.audience).unwrap());
     helper
 }
 

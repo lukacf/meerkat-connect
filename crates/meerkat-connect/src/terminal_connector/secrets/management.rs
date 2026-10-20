@@ -26,6 +26,74 @@ pub struct Request {
 }
 enum Requested { Inventory(Inventory), Change(Change) }
 
+/// Direct local administration. No credential value, model, service launch or
+/// setup permission can be supplied through this entry.
+pub enum ServiceCredentialCommand {
+    Status { after: Option<String> },
+    Set { service: String, slots: Vec<String> },
+    Remove { service: String, slots: Vec<String> },
+}
+
+/// Use the same realm and native persistence as ordinary credential management,
+/// without entering the setup conversation or preparing its supplied helper.
+pub async fn run_service_credential_command<F: Future<Output = io::Result<()>> + Send, W: Write>(
+    storage: ResolvedStorage, command: ServiceCredentialCommand,
+    input: &mut TerminalInput, output: &mut W, interrupt: F,
+) -> Result<(), ConnectError> {
+    let factory = SessionStartup::realm_factory(&storage);
+    run_direct(&storage, &factory, command, input, output, interrupt).await
+}
+
+async fn run_direct<F: Future<Output = io::Result<()>> + Send, W: Write>(
+    storage: &ResolvedStorage, factory: &meerkat::AgentFactory, command: ServiceCredentialCommand,
+    input: &mut TerminalInput, output: &mut W, interrupt: F,
+) -> Result<(), ConnectError> {
+    StockPrincipals::for_local_operator(&storage.locator.realm)
+        .map_err(|_| unavailable("The selected realm's local operator is unavailable"))?;
+    tokio::pin!(interrupt);
+    let change = match command {
+        ServiceCredentialCommand::Status { after } => {
+            if after.as_ref().is_some_and(|value| value.is_empty() || value.len() > 256 || value.chars().any(char::is_control)) {
+                return Err(unavailable("Use an exact service credential inventory cursor"));
+            }
+            let query = Inventory { after };
+            let facts = tokio::select! { biased;
+                signal = interrupt.as_mut() => {
+                    signal.map_err(|error| ConnectError::native("Listen for credential inventory cancellation", error))?;
+                    return Err(unavailable("Credential inventory was cancelled"));
+                },
+                result = inventory(storage, factory, &query) => result.map_err(unavailable)?,
+            };
+            return writeln!(output, "{facts}").and_then(|()| output.flush())
+                .map_err(|error| ConnectError::native("Display credential inventory", error));
+        },
+        ServiceCredentialCommand::Set { service, slots } => Change { service, slots, action: Action::Set },
+        ServiceCredentialCommand::Remove { service, slots } => Change { service, slots, action: Action::Remove },
+    };
+    if !valid_change(&change) { return Err(unavailable("Select an exact service and unique declared credential slots")); }
+    input.require_terminal().map_err(|error| ConnectError::native("Require protected credential terminal", error))?;
+    let artifacts = crate::resources::reserve_setup_artifacts(storage)?;
+    let (approvals, mut presenter) = LocalApprovals::create(&artifacts)?;
+    // This ID binds only the fresh local decision owner. No agent or
+    // native runtime session is created for direct administration.
+    let session = SessionId::new();
+    approvals.bind_session(&session)?;
+    let requester = ApprovalPrincipalId::new("connect-local-operator")
+        .map_err(|error| ConnectError::native("Name credential command requester", error))?;
+    let (response, mut received) = oneshot::channel();
+    let presented = manage(storage, factory, false, &session, change, response,
+        Some(requester), &approvals, &mut presenter, input, output, interrupt.as_mut()).await;
+    approvals.retire();
+    input.check_cleanup().map_err(|error| ConnectError::native("Restore credential terminal", error))?;
+    presented?;
+    let facts = received.try_recv().map_err(|_| unavailable(
+        "Credential change ended without a returned outcome. Do not retry automatically."))?;
+    if facts.get("state").and_then(Value::as_str) == Some("updated") { return Ok(()); }
+    writeln!(output, "{facts}").and_then(|()| output.flush())
+        .map_err(|error| ConnectError::native("Display credential change refusal", error))?;
+    Err(unavailable("Credential change was not confirmed. Check current presence; do not retry an uncertain action automatically."))
+}
+
 fn refused() -> ToolError {
     ToolError::execution_failed("Use the current service credential inventory and select exact declared slots. Credential values, commands, configuration and grants are not accepted by these tools.")
 }
@@ -175,7 +243,7 @@ pub(in crate::terminal_connector) async fn present<F: Future<Output = io::Result
             let _ = request.response.send(result);
             Ok(true)
         },
-        Requested::Change(change) => manage(&owner.storage, &owner.factory, owner.reviewed.is_some(), &request.session, change, request.response,
+        Requested::Change(change) => manage(&owner.storage, &owner.factory, owner.reviewed.is_some(), &request.session, change, request.response, None,
             approvals, presenter, input, output, interrupt.as_mut()).await,
     }
 }
@@ -185,6 +253,7 @@ pub(in crate::terminal_connector) async fn present<F: Future<Output = io::Result
 async fn manage<F: Future<Output = io::Result<()>> + Send, W: Write>(
     storage: &ResolvedStorage, factory: &meerkat::AgentFactory, finalization_waiting: bool,
     session: &SessionId, change: Change, mut response: oneshot::Sender<Value>,
+    requester: Option<ApprovalPrincipalId>,
     approvals: &LocalApprovals, presenter: &mut ApprovalPresenter, input: &mut TerminalInput,
     output: &mut W, mut interrupt: Pin<&mut F>,
 ) -> Result<bool, ConnectError> {
@@ -216,8 +285,10 @@ async fn manage<F: Future<Output = io::Result<()>> + Send, W: Write>(
     let body = json!({"phase":"service_credential_management","realm":storage.locator.realm.as_str(),
         "service":config.name,"action":change.action,"slots":change.slots,"current_presence":observation_facts(&Some(Ok(before))),
         "notice":"Change only these credentials for the unchanged service definition. Set fills or replaces the selected values; remove deletes the selected values. Other slots, service configuration and agent grants stay as they are. Later connections use the changed credentials; running processes can retain old environment values. This does not revoke provider credentials or prove vendor account readiness. Any earlier uncertain attempt remains uncertain. Cancellation can leave some selected updates completed."});
+    let mut request = review_request(session, "Change these service credentials?", body)?;
+    if let Some(requester) = requester { request.requester = requester; }
     let decision = match review(approvals, presenter, input, output,
-        review_request(session, "Change these service credentials?", body)?, &mut response, interrupt.as_mut()).await? {
+        request, &mut response, interrupt.as_mut()).await? {
         ReviewOutcome::Decided(value) => value,
         ReviewOutcome::CallerGone => return Ok(true),
         ReviewOutcome::Stopped => return Ok(false),
@@ -355,7 +426,7 @@ async fn administer<I: Future<Output = io::Result<()>>>(storage: &ResolvedStorag
 mod tests {
     use super::*;
     use meerkat_auth_core::auth_store::{FileLockCoordinator, FileTokenStore, ProviderAuthPersistence,
-        PersistedTokens, TokenKey, TokenStore, TokenStoreError};
+        PersistedTokens, TokenKey, TokenStore, TokenStoreError, TokenStoreObservation};
     use meerkat_core::{ConfigStore, FileConfigStore};
     use std::{path::{Path, PathBuf}, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
     use tokio::sync::Semaphore;
@@ -375,6 +446,10 @@ mod tests {
         async fn load(&self, key: &TokenKey) -> Result<Option<PersistedTokens>, TokenStoreError> {
             if self.fail_load.load(Ordering::SeqCst) { return Err(TokenStoreError::Unavailable("fixture-private-store-detail".into())); }
             self.inner.load(key).await
+        }
+        async fn observe_status(&self, key: &TokenKey) -> Result<TokenStoreObservation, TokenStoreError> {
+            if self.fail_load.load(Ordering::SeqCst) { return Err(TokenStoreError::Unavailable("fixture-private-store-detail".into())); }
+            self.inner.observe_status(key).await
         }
         async fn save(&self, key: &TokenKey, value: &PersistedTokens) -> Result<(), TokenStoreError> {
             self.saves.fetch_add(1, Ordering::SeqCst);
@@ -444,6 +519,301 @@ mod tests {
     }
     fn values(values: &[&str]) -> Vec<ServiceSecret> {
         values.iter().map(|value| ServiceSecret::from_hidden_input((*value).into()).unwrap()).collect()
+    }
+
+    #[derive(Clone, Default)]
+    struct Seen(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Seen {
+        fn text(&self) -> String { String::from_utf8(self.0.lock().unwrap().clone()).unwrap() }
+    }
+    impl Write for Seen {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[tokio::test]
+    async fn direct_status_uses_owned_inventory_without_setup_or_model_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = Fixture::new(root.path()).await;
+        let original = std::fs::read(&fixture.config_path).unwrap();
+        let global = fixture.storage.layout.user_rkat_root().unwrap().join("config.toml");
+        std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+        std::fs::write(&global, "not a valid model configuration [").unwrap();
+        let (_send, receive) = mpsc::channel(1);
+        let mut input = TerminalInput::scripted(receive);
+        let mut output = Vec::new();
+        run_direct(&fixture.storage, &fixture.factory, ServiceCredentialCommand::Status { after: None },
+            &mut input, &mut output, std::future::pending::<io::Result<()>>()).await.unwrap();
+        let facts: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(facts["realm"], "management-fixture");
+        assert_eq!(facts["services"][0]["service"], "cards");
+        assert_eq!(facts["services"].as_array().unwrap().len(), 1);
+        assert_eq!(std::fs::read(&fixture.config_path).unwrap(), original);
+        assert!(!fixture.storage.locator.state_root.join(".meerkat-connect").exists());
+        assert!(!fixture.storage.locator.state_root.join("management-fixture/runtime.sqlite").exists());
+        for private in ["private-command", "private-argument", "INLINE_PRIVATE", "private-inline-value"] {
+            assert!(!String::from_utf8_lossy(&output).contains(private));
+        }
+        assert_eq!(fixture.store.saves.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.store.clears.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn direct_changes_require_exact_selection_and_a_protected_terminal() {
+        use nix::pty::openpty;
+        let root = tempfile::tempdir().unwrap();
+        let fixture = Fixture::new(root.path()).await;
+        let original = std::fs::read(&fixture.config_path).unwrap();
+        for set in [false, true] {
+            let command = |service: &str, slots: Vec<&str>| {
+                let service = service.to_owned();
+                let slots = slots.into_iter().map(str::to_owned).collect();
+                if set { ServiceCredentialCommand::Set { service, slots } }
+                else { ServiceCredentialCommand::Remove { service, slots } }
+            };
+            for (service, slots) in [("missing", vec!["KEY"]), ("cards", vec!["OTHER"]),
+                ("cards", vec!["KEY", "KEY"]), ("cards", vec![])] {
+                let pair = openpty(None, None).unwrap();
+                let mut input = TerminalInput::from_owned_fd(pair.slave);
+                let mut output = Vec::new();
+                let result = run_direct(&fixture.storage, &fixture.factory, command(service, slots),
+                    &mut input, &mut output, std::future::pending::<io::Result<()>>()).await;
+                assert!(result.is_err());
+                assert!(!String::from_utf8_lossy(&output).contains("Type 'approve "));
+            }
+            let (_send, receive) = mpsc::channel(1);
+            let mut input = TerminalInput::scripted(receive);
+            assert!(run_direct(&fixture.storage, &fixture.factory, command("cards", vec!["KEY"]),
+                &mut input, &mut Vec::new(), std::future::pending::<io::Result<()>>()).await.is_err());
+        }
+        assert_eq!(fixture.store.saves.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.store.clears.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(&fixture.config_path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn direct_remove_reuses_review_currentness_and_joined_native_removal() {
+        use nix::{pty::openpty, unistd::write};
+        tokio::time::timeout(Duration::from_secs(15), async {
+            for mode in ["approve", "deny", "quit", "cancel", "stale"] {
+                let root = tempfile::tempdir().unwrap();
+                let fixture = Fixture::new(root.path()).await;
+                let seed = change(Action::Set, &["KEY", "TOKEN"]);
+                let seeded = fixture.run(&seed, &values(&["fixture-key", "fixture-token"])).await;
+                assert_eq!(seeded.facts(&fixture.config, &seed)["state"], "updated");
+                let original_references = ["KEY", "TOKEN"].map(|slot| meerkat_core::auth::McpServiceSecretRef::for_definition(
+                    fixture.storage.locator.realm.clone(), &fixture.config, slot).unwrap());
+                assert_ne!(TokenKey::mcp_service_secret(&original_references[0]), TokenKey::mcp_service_secret(&original_references[1]));
+                for reference in &original_references {
+                    assert_eq!(meerkat_core::auth::observe_mcp_service_secret(fixture.store.as_ref(), reference).await.unwrap(),
+                        meerkat_core::auth::McpServiceSecretPresence::Stored);
+                }
+                let original = std::fs::read(&fixture.config_path).unwrap();
+                let realm = meerkat_store::realm_paths_in(&fixture.storage.locator.state_root, fixture.storage.locator.realm.as_str());
+                let grants = meerkat_store::grant_owner_store_path(&realm.root);
+                let grants_before = std::fs::read(&grants).ok();
+                let pair = openpty(None, None).unwrap();
+                let mut input = TerminalInput::from_owned_fd(pair.slave);
+                let mut output = Seen::default(); let seen = output.clone();
+                let (cancel, cancelled) = oneshot::channel();
+                let signal = async { let _ = cancelled.await; Ok(()) };
+                let human = async {
+                    while !seen.text().contains("Type 'approve ") { tokio::task::yield_now().await; }
+                    let text = seen.text();
+                    assert!(text.contains("service_credential_management"));
+                    assert!(text.contains("\"service\": \"cards\""));
+                    assert!(!text.contains("supplied setup helper"));
+                    let id = text.split("Type 'approve ").last().unwrap().split('\'').next().unwrap();
+                    if mode == "stale" {
+                        let mut changed = fixture.config.clone();
+                        let McpTransportConfig::Stdio(stdio) = &mut changed.transport else { unreachable!() };
+                        stdio.args.push("changed-before-removal".into());
+                        FileConfigStore::new(fixture.config_path.clone(), meerkat_models::canonical())
+                            .patch(ConfigDelta(json!({"tools":{"mcp_servers":[changed]}}))).await.unwrap();
+                    }
+                    if mode == "cancel" { cancel.send(()).unwrap(); None }
+                    else {
+                        let answer = match mode { "deny" => format!("deny {id}\n"), "quit" => "/quit\n".into(), _ => format!("approve {id}\n") };
+                        write(&pair.master, answer.as_bytes()).unwrap();
+                        // The join retains this output until the command settles.
+                        Some(cancel)
+                    }
+                };
+                let (result, _retained_cancel) = tokio::join!(run_direct(&fixture.storage, &fixture.factory,
+                    ServiceCredentialCommand::Remove { service: "cards".into(), slots: vec!["KEY".into()] },
+                    &mut input, &mut output, signal), human);
+                assert_eq!(result.is_ok(), mode == "approve", "{mode}");
+                input.check_cleanup().unwrap();
+                assert_eq!(fixture.store.clears.load(Ordering::SeqCst), usize::from(mode == "approve"));
+                let current = owned(&fixture.storage).await.unwrap().remove(0);
+                let observed = source(&fixture.storage, &fixture.persistence()).unwrap().observe(&current).await.unwrap();
+                if mode == "stale" {
+                    assert_ne!(current.stdio_launch_meaning(), fixture.config.stdio_launch_meaning());
+                    for slot in ["KEY", "TOKEN"] {
+                        assert_eq!(observed.slots[slot], meerkat_core::auth::McpServiceSecretPresence::NotStored);
+                    }
+                    // The changed definition cannot inherit the original references, which remain stored.
+                    for reference in &original_references {
+                        assert_eq!(meerkat_core::auth::observe_mcp_service_secret(fixture.store.as_ref(), reference).await.unwrap(),
+                            meerkat_core::auth::McpServiceSecretPresence::Stored);
+                    }
+                } else {
+                    assert_eq!(observed.slots["KEY"], if mode == "approve" { meerkat_core::auth::McpServiceSecretPresence::NotStored }
+                        else { meerkat_core::auth::McpServiceSecretPresence::Stored });
+                    assert_eq!(observed.slots["TOKEN"], meerkat_core::auth::McpServiceSecretPresence::Stored);
+                    assert_eq!(std::fs::read(&fixture.config_path).unwrap(), original);
+                }
+                assert_eq!(std::fs::read(&grants).ok(), grants_before);
+                assert!(!realm.root.join("runtime.sqlite").exists());
+                assert_eq!(fixture.store.saves.load(Ordering::SeqCst), 2);
+                for secret in ["fixture-key", "fixture-token"] { assert!(!seen.text().contains(secret)); }
+            }
+        }).await.expect("direct protected removal must settle without setup or a model");
+    }
+
+    #[tokio::test]
+    async fn direct_set_uses_protected_input_and_preserves_exact_native_outcomes() {
+        use nix::{pty::openpty, sys::termios::{tcgetattr, LocalFlags}, unistd::write};
+        let progress = std::cell::Cell::new(("not-started", "initializing"));
+        tokio::time::timeout(Duration::from_secs(30), async {
+            for mode in ["corrupt_global", "fill", "replace", "deny", "cancel", "quit", "stale", "uncertain", "entered_cancel"] {
+                progress.set((mode, "initializing"));
+                let root = tempfile::tempdir().unwrap();
+                let fixture = Fixture::new(root.path()).await;
+                fixture.run(&change(Action::Set, &["TOKEN"]), &values(&["fixture-sibling-token"])).await;
+                if mode == "replace" {
+                    fixture.run(&change(Action::Set, &["KEY"]), &values(&["fixture-old-key"])).await;
+                }
+                let saves_before = fixture.store.saves.load(Ordering::SeqCst);
+                let key = |slot| TokenKey::mcp_service_secret(&meerkat_core::auth::McpServiceSecretRef::for_definition(
+                    fixture.storage.locator.realm.clone(), &fixture.config, slot).unwrap());
+                let sibling_before = fixture.store.load(&key("TOKEN")).await.unwrap();
+                let config_before = std::fs::read(&fixture.config_path).unwrap();
+                let realm = meerkat_store::realm_paths_in(&fixture.storage.locator.state_root, fixture.storage.locator.realm.as_str());
+                let grants = meerkat_store::grant_owner_store_path(&realm.root);
+                let grants_before = std::fs::read(&grants).ok();
+                // Model setup is absent for direct management. Corrupt global
+                // TOML is different: native custody must still read that chain.
+                let global = fixture.storage.layout.user_rkat_root().unwrap().join("config.toml");
+                assert!(!global.exists());
+                if mode == "corrupt_global" {
+                    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+                    std::fs::write(&global, "not a valid model configuration [").unwrap();
+                }
+                fixture.store.lose_next.store(mode == "uncertain", Ordering::SeqCst);
+                fixture.store.hold_next.store(mode == "entered_cancel", Ordering::SeqCst);
+                let _release = Release(fixture.store.clone());
+                let pair = openpty(None, None).unwrap();
+                let observer = pair.slave.try_clone().unwrap();
+                let terminal_before = tcgetattr(&observer).unwrap();
+                let mut input = TerminalInput::from_owned_fd(pair.slave);
+                let mut output = Seen::default();
+                let seen = output.clone();
+                let (cancel, cancelled) = oneshot::channel();
+                let signal = async { let _ = cancelled.await; Ok(()) };
+                let completed = AtomicBool::new(false);
+                let human = async {
+                    if mode == "corrupt_global" { return Some(cancel); }
+                    progress.set((mode, "waiting-for-review"));
+                    while !seen.text().contains("Type 'approve ") {
+                        assert!(!completed.load(Ordering::SeqCst), "{mode}: command ended before review");
+                        tokio::task::yield_now().await;
+                    }
+                    let text = seen.text();
+                    assert!(text.contains("\"service\": \"cards\"") && text.contains("\"action\": \"set\""));
+                    assert!(text.contains("\"KEY\""));
+                    assert!(!text.contains("supplied setup helper"));
+                    let id = text.split("Type 'approve ").last().unwrap().split('\'').next().unwrap();
+                    if mode == "cancel" {
+                        cancel.send(()).unwrap();
+                        return None;
+                    }
+                    if mode == "stale" {
+                        let mut changed = fixture.config.clone();
+                        let McpTransportConfig::Stdio(stdio) = &mut changed.transport else { unreachable!() };
+                        stdio.args.push("changed-before-set".into());
+                        FileConfigStore::new(fixture.config_path.clone(), meerkat_models::canonical())
+                            .patch(ConfigDelta(json!({"tools":{"mcp_servers":[changed]}}))).await.unwrap();
+                    }
+                    let answer = if mode == "deny" { format!("deny {id}\n") } else { format!("approve {id}\n") };
+                    write(&pair.master, answer.as_bytes()).unwrap();
+                    if matches!(mode, "deny" | "stale") { return Some(cancel); }
+                    progress.set((mode, "waiting-for-hidden-input"));
+                    while !seen.text().contains("Service credential (hidden)")
+                        || tcgetattr(&observer).unwrap().local_flags.contains(LocalFlags::ECHO) {
+                        assert!(!completed.load(Ordering::SeqCst), "{mode}: command ended before hidden input");
+                        tokio::task::yield_now().await;
+                    }
+                    assert_eq!(fixture.store.saves.load(Ordering::SeqCst), saves_before);
+                    write(&pair.master, if mode == "quit" { b"/quit\n".as_slice() }
+                        else { b"fixture-replacement-key\n".as_slice() }).unwrap();
+                    if mode == "entered_cancel" {
+                        progress.set((mode, "waiting-for-store-entry"));
+                        loop {
+                            if let Ok(permit) = fixture.store.entered.try_acquire() {
+                                permit.forget();
+                                break;
+                            }
+                            assert!(!completed.load(Ordering::SeqCst), "{mode}: command ended before store entry");
+                            tokio::task::yield_now().await;
+                        }
+                        cancel.send(()).unwrap();
+                        tokio::task::yield_now().await;
+                        assert!(!seen.text().contains("\"updates\""), "entered write must settle before reporting");
+                        fixture.store.release.add_permits(1);
+                        return None;
+                    }
+                    // Keep the interrupt sender alive until the command returns.
+                    Some(cancel)
+                };
+                let command = async {
+                    let result = run_direct(&fixture.storage, &fixture.factory,
+                        ServiceCredentialCommand::Set { service: "cards".into(), slots: vec!["KEY".into()] },
+                        &mut input, &mut output, signal).await;
+                    completed.store(true, Ordering::SeqCst);
+                    eprintln!("direct set {mode}: command returned {}", if result.is_ok() { "success" } else { "error" });
+                    result
+                };
+                let (result, _retained_cancel) = tokio::join!(command, human);
+                progress.set((mode, "checking-outcome"));
+                assert_eq!(result.is_ok(), matches!(mode, "fill" | "replace"), "{mode}");
+                input.check_cleanup().unwrap();
+                assert_eq!(tcgetattr(&observer).unwrap(), terminal_before);
+                let entered = matches!(mode, "fill" | "replace" | "uncertain" | "entered_cancel");
+                assert_eq!(fixture.store.saves.load(Ordering::SeqCst), saves_before + usize::from(entered), "{mode}");
+                assert_eq!(fixture.store.clears.load(Ordering::SeqCst), 0);
+                let reopened = FileTokenStore::new(fixture.vault_path.clone());
+                let selected = reopened.load(&key("KEY")).await.unwrap();
+                assert_eq!(selected.as_ref().and_then(|value| value.primary_secret.as_deref()),
+                    entered.then_some("fixture-replacement-key"), "{mode}");
+                assert_eq!(reopened.load(&key("TOKEN")).await.unwrap(), sibling_before);
+                assert_eq!(std::fs::read(&grants).ok(), grants_before);
+                assert!(!realm.root.join("runtime.sqlite").exists());
+                if mode == "stale" {
+                    let current = owned(&fixture.storage).await.unwrap().remove(0);
+                    assert_ne!(current.stdio_launch_meaning(), fixture.config.stdio_launch_meaning());
+                    let observed = source(&fixture.storage, &fixture.persistence()).unwrap().observe(&current).await.unwrap();
+                    assert!(observed.slots.values().all(|value| *value == meerkat_core::auth::McpServiceSecretPresence::NotStored));
+                } else {
+                    assert_eq!(std::fs::read(&fixture.config_path).unwrap(), config_before);
+                }
+                let text = seen.text();
+                if mode == "corrupt_global" {
+                    assert!(!text.contains("Type 'approve ") && !text.contains("Service credential (hidden)"));
+                    assert!(text.contains("\"reason\":\"current_credential_owner_observation_unavailable\""));
+                }
+                if mode == "uncertain" { assert!(text.contains("\"state\":\"uncertain\"")); }
+                if mode == "entered_cancel" { assert!(text.contains("\"state\":\"stopped\"")); }
+                for secret in ["fixture-sibling-token", "fixture-old-key", "fixture-replacement-key"] {
+                    assert!(!text.contains(secret));
+                }
+            }
+        }).await.unwrap_or_else(|_| {
+            let (mode, phase) = progress.get();
+            panic!("direct protected set must settle without setup or a model: {mode} at {phase}");
+        });
     }
 
     #[tokio::test]
@@ -685,7 +1055,7 @@ mod tests {
                 if reason == "slot" {request.slots=vec!["UNDECLARED".into()];}
                 let (caller,receive) = oneshot::channel();
                 let signal = std::future::pending::<io::Result<()>>(); tokio::pin!(signal);
-                assert!(manage(&fixture.storage,&fixture.factory,false,&session,request,caller,&approvals,
+                assert!(manage(&fixture.storage,&fixture.factory,false,&session,request,caller,None,&approvals,
                     &mut presenter,&mut input,&mut output,signal.as_mut()).await.unwrap());
                 let facts = receive.await.unwrap();
                 assert_eq!(facts["state"],"unavailable");

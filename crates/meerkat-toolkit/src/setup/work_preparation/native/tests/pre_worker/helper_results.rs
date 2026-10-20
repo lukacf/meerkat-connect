@@ -10,6 +10,7 @@ async fn published_helper(
     NativeWorkPreparation,
     SetupRequestEvidence,
     NativeHelperSource,
+    Vec<(InputAuthorityAssociation, RecordCondition)>,
 ) {
     let preparation = prepare(f, "canonical helper input").await;
     let observed = graph_admit(f, &preparation).await;
@@ -25,7 +26,19 @@ async fn published_helper(
         )
         .await
         .unwrap();
-    (preparation, child, source)
+    // Explicit source history remains fixture data, not native permission.
+    let original = f.store.admit(AdmissionRequest {
+        key: StoreKey { realm: "tenant".into(), owner: "fixture-original".into(), id: "result-parent".into() },
+        admission_key: "result-parent".into(),
+        data: RecordData { schema: "test.original_source".into(), version: 1,
+            body: serde_json::to_value(f.authority.association()).unwrap() },
+        events: vec![], effects: vec![],
+    }).await.unwrap().record().clone();
+    let contributors = vec![(f.authority.association().clone(), RecordCondition {
+        key: original.key, revision: original.revision, content_digest: original.content_digest,
+        claim: None, dispatch_claim: None,
+    })];
+    (preparation, child, source, contributors)
 }
 fn helper_context<'a>(
     child: &'a SetupRequestEvidence,
@@ -47,11 +60,14 @@ fn access<'a>(
     source: &'a NativeHelperSource,
     input: &'a ContextReference,
     context: &'a SetupUseContext<'a>,
+    contributor_sources: &'a [(InputAuthorityAssociation, RecordCondition)],
 ) -> SetupHelperResultAccess<'a> {
     SetupHelperResultAccess {
         helper: &source.association,
         source: &source.source,
         contributors: &source.contributors,
+        contributor_sources,
+        ancestor_sources: &[],
         effect: &source.effect,
         input_digest: &input.content_digest,
         context,
@@ -66,7 +82,7 @@ fn report() -> SetupHelperFailure {
 #[tokio::test]
 async fn canonical_helper_result_survives_lost_reply_and_binds_explanation_before_delivery() {
     let f = Fixture::new().await;
-    let (preparation, child, source) = published_helper(&f).await;
+    let (preparation, child, source, contributor_sources) = published_helper(&f).await;
     let operation = operation_id(f.snapshot.request()).unwrap();
     let authorization = native_fixture::current(child.association());
     let context = helper_context(&child, &authorization, f.now);
@@ -86,7 +102,7 @@ async fn canonical_helper_result_survives_lost_reply_and_binds_explanation_befor
                 .resolve_helper_failure(
                     &operation,
                     SetupHelperFailure::Failed { detail },
-                    access(&source, preparation.input_reference(), &context),
+                    access(&source, preparation.input_reference(), &context, &contributor_sources),
                     &f.backend,
                     "invalid-detail"
                 )
@@ -99,7 +115,7 @@ async fn canonical_helper_result_survives_lost_reply_and_binds_explanation_befor
         .resolve_helper_failure(
             &operation,
             report(),
-            access(&source, preparation.input_reference(), &context),
+            access(&source, preparation.input_reference(), &context, &contributor_sources),
             &f.backend,
             "result-fixture",
         )
@@ -170,7 +186,7 @@ async fn canonical_helper_result_survives_lost_reply_and_binds_explanation_befor
         .resolve_helper_failure(
             &operation,
             report(),
-            access(&source, preparation.input_reference(), &context),
+            access(&source, preparation.input_reference(), &context, &contributor_sources),
             &f.backend,
             "replay-fixture",
         )
@@ -193,7 +209,7 @@ async fn canonical_helper_result_survives_lost_reply_and_binds_explanation_befor
                 SetupHelperFailure::Failed {
                     detail: "Different result under the same acquisition.".into()
                 },
-                access(&source, preparation.input_reference(), &context),
+                access(&source, preparation.input_reference(), &context, &contributor_sources),
                 &f.backend,
                 "conflicting-fixture"
             )
@@ -214,7 +230,7 @@ async fn canonical_helper_result_survives_lost_reply_and_binds_explanation_befor
 #[tokio::test]
 async fn helper_result_refuses_substituted_source_effect_parent_and_current_context() {
     let f = Fixture::new().await;
-    let (preparation, child, source) = published_helper(&f).await;
+    let (preparation, child, source, contributor_sources) = published_helper(&f).await;
     let operation = operation_id(f.snapshot.request()).unwrap();
     let authorization = native_fixture::current(child.association());
     let context = helper_context(&child, &authorization, f.now);
@@ -242,7 +258,7 @@ async fn helper_result_refuses_substituted_source_effect_parent_and_current_cont
                 .resolve_helper_failure(
                     &operation,
                     report(),
-                    access(&changed, &input, &context),
+                    access(&changed, &input, &context, &contributor_sources),
                     &f.backend,
                     "negative-fixture"
                 )
@@ -257,7 +273,7 @@ async fn helper_result_refuses_substituted_source_effect_parent_and_current_cont
             .resolve_helper_failure(
                 &operation,
                 report(),
-                access(&source, preparation.input_reference(), &wrong_context),
+                access(&source, preparation.input_reference(), &wrong_context, &contributor_sources),
                 &f.backend,
                 "parent-context"
             )
@@ -272,7 +288,7 @@ async fn helper_result_refuses_substituted_source_effect_parent_and_current_cont
             .resolve_helper_failure(
                 &operation,
                 report(),
-                access(&source, preparation.input_reference(), &stale),
+                access(&source, preparation.input_reference(), &stale, &contributor_sources),
                 &f.backend,
                 "stale-policy"
             )
@@ -296,5 +312,257 @@ fn helper_report_shape_cannot_assert_ready_or_smuggle_authority() {
         serde_json::json!({"kind":"failed","detail":"No export","authority":{}}),
     ] {
         assert!(serde_json::from_value::<SetupHelperFailure>(value).is_err());
+    }
+}
+
+
+#[tokio::test]
+async fn helper_result_uses_current_owner_condition_without_rewriting_publication() {
+    let f = Fixture::new().await;
+    let (preparation, child, source, contributor_sources) = published_helper(&f).await;
+    let operation = operation_id(f.snapshot.request()).unwrap();
+    let authorization = native_fixture::current(child.association());
+    let context = helper_context(&child, &authorization, f.now);
+    let before = f.store.get(&source.source.key).await.unwrap().unwrap();
+    // This Toolkit-layer fixture has opaque source data. The installed source
+    // owner's real typed-input checks are covered by the native helper test.
+    let advanced = f.store.compare_and_swap(toolkit_store::Transition {
+        key: before.key.clone(), expected_revision: before.revision,
+        expected_digest: Some(before.content_digest.clone()), data: before.data,
+        claim: None, events: vec![], effects: vec![],
+    }).await.unwrap();
+    let mut current = source.clone();
+    current.source.revision = advanced.revision;
+    current.source.content_digest = advanced.content_digest.clone();
+    let (_, published) = f.bridge(&f.store).helper_result_snapshot(&operation,
+        &access(&current, preparation.input_reference(), &context, &contributor_sources), &f.backend).await.unwrap();
+    assert_eq!(published.helper_source().unwrap().source, source.source);
+    for kind in ["stale", "regressed", "ahead", "digest", "claim", "dispatch"] {
+        let mut changed = current.clone();
+        match kind {
+            "stale" => changed.source = source.source.clone(),
+            "regressed" => changed.source.revision = source.source.revision - 1,
+            "ahead" => changed.source.revision += 1,
+            "digest" => {
+                changed.source.revision = source.source.revision;
+                changed.source.content_digest = "changed-content".into();
+            }
+            "claim" => changed.source.claim = Some(toolkit_store::RecordLease {
+                store_id: "foreign".into(), key: changed.source.key.clone(),
+                worker: "foreign".into(), fence: 1, expires_at_ms: 1,
+            }),
+            "dispatch" => changed.source.dispatch_claim = Some(f.lease.clone()),
+            _ => unreachable!(),
+        }
+        assert!(f.bridge(&f.store).helper_result_snapshot(&operation,
+            &access(&changed, preparation.input_reference(), &context, &contributor_sources), &f.backend).await.is_err(), "{kind}");
+    }
+    let (_, again) = f.bridge(&f.store).helper_result_snapshot(&operation,
+        &access(&current, preparation.input_reference(), &context, &contributor_sources), &f.backend).await.unwrap();
+    assert_eq!(again.helper_source().unwrap().source, source.source);
+}
+
+// The peer mutation occurs after the producer's final reads, immediately
+// before the actual SQLite transaction. Intercept the old unconditional path
+// too, so a result-only CAS cannot make this regression pass accidentally.
+struct ResultBoundaryStore<'a> {
+    inner: &'a SqliteStore,
+    target: StoreKey,
+    source: StoredRecord,
+    fired: AtomicBool,
+}
+
+impl ResultBoundaryStore<'_> {
+    async fn mutate_before_commit(&self, key: &StoreKey) {
+        if key != &self.target || self.fired.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let mut data = self.source.data.clone();
+        data.body["changed_at_result_commit"] = serde_json::Value::Bool(true);
+        self.inner.compare_and_swap(Transition {
+            key: self.source.key.clone(),
+            expected_revision: self.source.revision,
+            expected_digest: Some(self.source.content_digest.clone()),
+            claim: None, data, events: vec![], effects: vec![],
+        }).await.unwrap();
+    }
+}
+
+#[async_trait::async_trait]
+impl ConditionalAdmissionStore for ResultBoundaryStore<'_> {
+    async fn admit_conditionally(&self, request: ConditionalAdmission) -> StoreResult<AdmissionOutcome> {
+        self.inner.admit_conditionally(request).await
+    }
+    async fn compare_and_swap_conditionally(&self, request: ConditionalTransition) -> StoreResult<StoredRecord> {
+        self.mutate_before_commit(&request.transition.key).await;
+        self.inner.compare_and_swap_conditionally(request).await
+    }
+}
+
+#[tokio::test]
+async fn helper_result_fences_contributor_and_helper_changes_at_commit() {
+    for changed in ["contributor", "helper", "ancestor"] {
+        let f = Fixture::new().await;
+        let (preparation, child, mut source, mut contributors) = published_helper(&f).await;
+        let ancestor = f.store.admit(AdmissionRequest {
+            key: StoreKey { realm: "tenant".into(), owner: "fixture-ancestor".into(), id: "approved-parent".into() },
+            admission_key: "approved-parent".into(),
+            data: RecordData { schema: "test.ancestor_source".into(), version: 1,
+                body: serde_json::json!({"cancelled": false}) }, events: vec![], effects: vec![],
+        }).await.unwrap().record().clone();
+        let mut ancestors = vec![RecordCondition {
+            key: ancestor.key, revision: ancestor.revision, content_digest: ancestor.content_digest,
+            claim: None, dispatch_claim: None,
+        }];
+        let source_key = match changed {
+            "contributor" => &contributors[0].1.key,
+            "helper" => &source.source.key,
+            "ancestor" => &ancestors[0].key,
+            _ => unreachable!(),
+        };
+        let raced = ResultBoundaryStore {
+            inner: &f.store,
+            target: f.snapshot.key().clone(),
+            source: f.store.get(source_key).await.unwrap().unwrap(),
+            fired: AtomicBool::new(false),
+        };
+        let operation = operation_id(f.snapshot.request()).unwrap();
+        let authorization = native_fixture::current(child.association());
+        let context = helper_context(&child, &authorization, f.now);
+        let bridge = SetupStore::new_conditional(
+            &raced, SetupScope::new(id("tenant"), id("deployment")),
+        ).unwrap();
+        let before = f.store.get(f.snapshot.key()).await.unwrap().unwrap();
+        let effects = f.store.list_effects(f.snapshot.key(), None, 64).await.unwrap();
+        let mut result_access = access(&source, preparation.input_reference(), &context, &contributors);
+        result_access.ancestor_sources = &ancestors;
+        let result = bridge.resolve_helper_failure(
+            &operation, report(), result_access,
+            &f.backend, "ordinary-result-race",
+        ).await;
+        assert!(raced.fired.load(Ordering::SeqCst), "{changed}");
+        assert!(matches!(result, Err(SetupError::Store(StoreError::Conflict))), "{changed}");
+        assert_eq!(f.store.get(f.snapshot.key()).await.unwrap().unwrap(), before, "{changed}");
+        assert_eq!(f.store.list_effects(f.snapshot.key(), None, 64).await.unwrap(), effects, "{changed}");
+        assert!(bridge.committed_continuation(&operation).await.unwrap().is_none(), "{changed}");
+
+        // Only source revision changed in this storage fixture. A fresh read
+        // retains the same helper publication and exact contributor identity.
+        let current = f.store.get(&raced.source.key).await.unwrap().unwrap();
+        let condition = RecordCondition {
+            key: current.key, revision: current.revision, content_digest: current.content_digest,
+            claim: None, dispatch_claim: None,
+        };
+        match changed {
+            "contributor" => contributors[0].1 = condition,
+            "helper" => source.source = condition,
+            "ancestor" => ancestors[0] = condition,
+            _ => unreachable!(),
+        }
+        let mut current_access = access(&source, preparation.input_reference(), &context, &contributors);
+        current_access.ancestor_sources = &ancestors;
+        let committed = f.bridge(&f.store).resolve_helper_failure(
+            &operation, report(), current_access,
+            &f.backend, "ordinary-result-after-race",
+        ).await.unwrap();
+        assert_eq!(committed.phase, AcquisitionPhase::Unavailable, "{changed}");
+        let obligation = f.bridge(&f.store).committed_continuation(&operation).await.unwrap().unwrap();
+        assert_eq!(obligation.original_work(), f.authority.original_work(), "{changed}");
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolkitStore for ResultBoundaryStore<'_> {
+    fn capabilities(&self) -> StoreCapabilities {
+        self.inner.capabilities()
+    }
+    async fn now_ms(&self) -> StoreResult<i64> {
+        self.inner.now_ms().await
+    }
+    async fn admit(&self, request: AdmissionRequest) -> StoreResult<AdmissionOutcome> {
+        self.inner.admit(request).await
+    }
+    async fn get(&self, key: &StoreKey) -> StoreResult<Option<StoredRecord>> {
+        self.inner.get(key).await
+    }
+    async fn list_records(
+        &self,
+        scope: &StoreScope,
+        after: Option<&str>,
+        limit: u32,
+    ) -> StoreResult<Vec<StoredRecord>> {
+        self.inner.list_records(scope, after, limit).await
+    }
+    async fn compare_and_swap(&self, transition: Transition) -> StoreResult<StoredRecord> {
+        self.mutate_before_commit(&transition.key).await;
+        self.inner.compare_and_swap(transition).await
+    }
+    async fn claim_record(
+        &self,
+        key: &StoreKey,
+        revision: u64,
+        worker: &str,
+        ttl: u64,
+    ) -> StoreResult<RecordLease> {
+        self.inner.claim_record(key, revision, worker, ttl).await
+    }
+    async fn renew_record_claim(&self, lease: &RecordLease, ttl: u64) -> StoreResult<RecordLease> {
+        self.inner.renew_record_claim(lease, ttl).await
+    }
+    async fn recover_record_claim(&self, lease: &RecordLease) -> StoreResult<RecordLease> {
+        self.inner.recover_record_claim(lease).await
+    }
+    async fn release_record_claim(&self, lease: &RecordLease) -> StoreResult<()> {
+        self.inner.release_record_claim(lease).await
+    }
+    async fn read_events(
+        &self,
+        key: &StoreKey,
+        after: u64,
+        limit: u32,
+    ) -> StoreResult<Vec<StoredEvent>> {
+        self.inner.read_events(key, after, limit).await
+    }
+    async fn get_effect(&self, key: &EffectKey) -> StoreResult<Option<StoredEffect>> {
+        self.inner.get_effect(key).await
+    }
+    async fn list_effects(
+        &self,
+        key: &StoreKey,
+        after: Option<&str>,
+        limit: u32,
+    ) -> StoreResult<Vec<StoredEffect>> {
+        self.inner.list_effects(key, after, limit).await
+    }
+    async fn claim_effect(
+        &self,
+        key: &EffectKey,
+        revision: u64,
+        worker: &str,
+        ttl: u64,
+    ) -> StoreResult<EffectClaimOutcome> {
+        self.inner.claim_effect(key, revision, worker, ttl).await
+    }
+    async fn acknowledge_effect(
+        &self,
+        lease: &EffectLease,
+        outcome: EffectOutcome,
+    ) -> StoreResult<StoredEffect> {
+        self.inner.acknowledge_effect(lease, outcome).await
+    }
+    async fn claim_reconciliation(
+        &self,
+        key: &EffectKey,
+        worker: &str,
+        ttl: u64,
+    ) -> StoreResult<StoredEffect> {
+        self.inner.claim_reconciliation(key, worker, ttl).await
+    }
+    async fn reconcile_effect(
+        &self,
+        lease: &EffectLease,
+        resolution: Reconciliation,
+    ) -> StoreResult<StoredEffect> {
+        self.inner.reconcile_effect(lease, resolution).await
     }
 }

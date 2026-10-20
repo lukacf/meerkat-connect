@@ -26,11 +26,13 @@ class Candidate:
         self,
         *,
         activate: Callable[[], Awaitable[None]] | None = None,
+        deactivate: Callable[[], Awaitable[None]] | None = None,
         dispatch: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.lifecycle: list[str] = []
         self.calls: list[dict[str, Any]] = []
         self.on_activate = activate
+        self.on_deactivate = deactivate
         self.on_dispatch = dispatch
 
     async def activate(self) -> None:
@@ -40,12 +42,124 @@ class Candidate:
 
     async def deactivate(self) -> None:
         self.lifecycle.append("deactivate")
+        if self.on_deactivate is not None:
+            await self.on_deactivate()
+
+    async def send(self, recipient: str, parts: tuple[str, ...]) -> dict[str, str]:
+        return await self(recipient=recipient, parts=parts)
 
     async def __call__(self, **kwargs: Any) -> dict[str, str]:
         self.calls.append(kwargs)
         if self.on_dispatch is not None:
             await self.on_dispatch()
         return {"outcome": "sent", "provider_message_id": "fixture-result"}
+
+
+@pytest.mark.asyncio
+async def test_connections_close_after_selection_reads_commits_and_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = original_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    def assert_closed() -> None:
+        assert opened
+        for connection in opened:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                connection.execute("SELECT 1")
+
+    monkeypatch.setattr(sender_module.sqlite3, "connect", connect)
+    path = tmp_path / "sender-authority.sqlite3"
+    try:
+        authority = SenderAuthority(path=path)
+        assert_closed()
+        authority.attach_active(sender_id=SENDER, owner_id="old", sender=Candidate())
+        assert_closed()
+        assert authority.active_owner(SENDER) == "old"
+        assert authority.owner_count(SENDER) == 1
+        assert_closed()
+        activation = authority.stage_activation(
+            sender_id=SENDER, to_owner_id="new", sender=Candidate(),
+        )
+        await authority.commit_activation(activation)
+        assert rows(path)[0][:2] == (SENDER, "new")
+        assert_closed()
+        await authority.close_activation(activation)
+
+        with closing(original_connect(path)) as connection, connection:
+            connection.execute(
+                "CREATE TRIGGER reject_blocked BEFORE UPDATE ON sender_authority "
+                "WHEN NEW.owner_id = 'blocked' BEGIN SELECT RAISE(ABORT, 'blocked'); END"
+            )
+        before = rows(path)
+        failed = authority.stage_activation(
+            sender_id=SENDER, to_owner_id="blocked", sender=Candidate(),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="blocked"):
+            await authority.commit_activation(failed)
+        assert rows(path) == before
+        assert_closed()
+        await authority.close_activation(failed)
+    finally:
+        for connection in opened:
+            connection.close()
+
+
+@pytest.mark.parametrize("phase,close_fails", [
+    ("pragma", False), ("pragma", True), ("schema", False), ("schema", True),
+])
+def test_initialization_failure_closes_real_connection_with_expected_error_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, close_fails: bool,
+) -> None:
+    original_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+    errors: list[sqlite3.DatabaseError] = []
+
+    class Connection(sqlite3.Connection):
+        def execute(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            try:
+                return super().execute(*args, **kwargs)
+            except sqlite3.DatabaseError as error:
+                errors.append(error)
+                raise
+
+        def close(self) -> None:
+            super().close()
+            if close_fails:
+                raise OSError("controlled close failure after actual closure")
+
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = original_connect(*args, **kwargs, factory=Connection)
+        opened.append(connection)
+        denied = sqlite3.SQLITE_PRAGMA if phase == "pragma" else sqlite3.SQLITE_CREATE_TABLE
+        connection.set_authorizer(
+            lambda action, *_: sqlite3.SQLITE_DENY if action == denied else sqlite3.SQLITE_OK
+        )
+        return connection
+
+    monkeypatch.setattr(sender_module.sqlite3, "connect", connect)
+    try:
+        # Raw PRAGMA setup preserves its original failure. The constructor's
+        # outer closing scope keeps normal Python exception chaining instead.
+        constructor_close_failure = phase == "schema" and close_fails
+        expected = OSError if constructor_close_failure else sqlite3.DatabaseError
+        with pytest.raises(expected) as caught:
+            SenderAuthority(path=tmp_path / "sender-authority.sqlite3")
+        assert len(opened) == 1
+        if constructor_close_failure:
+            assert caught.value.__context__ is errors[0]
+        else:
+            assert caught.value is errors[0]
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            opened[0].execute("SELECT 1")
+    finally:
+        for connection in opened:
+            sqlite3.Connection.close(connection)
 
 
 def rows(path: Path) -> list[tuple[str, str, int]]:
@@ -101,6 +215,7 @@ async def test_existing_selection_reopens_detached_then_replays_and_closes(tmp_p
     await authority.close_activation(activation)
     assert rows(path) == selected
     assert candidate.lifecycle == ["activate", "activate", "deactivate"]
+    assert not authority.is_attached(SENDER)
 
     del authority
     reopened = SenderAuthority(path=path)
@@ -537,10 +652,290 @@ async def test_current_handle_retains_replay_and_dropping_it_keeps_active_sender
     del candidate
     gc.collect()
     await authority.commit_activation(handle)
-    await authority.close_activation(handle)
-    assert reference().lifecycle == ["activate", "activate", "deactivate"]
+    assert reference().lifecycle == ["activate", "activate"]
     del handle
     gc.collect()
     assert reference() is not None and authority.is_attached(SENDER)
     await dispatch(authority)
     assert len(reference().calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("completion", ["success", "failure", "cancelled"])
+async def test_close_fences_dispatch_before_deactivation_and_preserves_selection(
+    tmp_path: Path, completion: str
+) -> None:
+    authority = SenderAuthority(path=tmp_path / "senders.sqlite3")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def deactivate() -> None:
+        entered.set()
+        await release.wait()
+        if completion == "failure":
+            raise RuntimeError("provider cleanup uncertain")
+
+    candidate = Candidate(deactivate=deactivate)
+    handle = authority.stage_activation(sender_id=SENDER, to_owner_id="same", sender=candidate)
+    await authority.commit_activation(handle)
+    selected = rows(authority.path)
+    borrowed = await authority.select_dispatch(sender_id=SENDER)
+    closing = asyncio.create_task(authority.close_activation(handle))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        assert not authority.is_attached(SENDER) and not authority.has_sender(SENDER)
+        assert not authority.is_current_dispatch(borrowed)
+        with pytest.raises(ValueError, match="not attached"):
+            await authority.send(sender_id=SENDER, recipient="recipient", parts=("later",))
+        if completion == "cancelled":
+            closing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+        else:
+            release.set()
+            if completion == "failure":
+                with pytest.raises(RuntimeError, match="cleanup uncertain"):
+                    await closing
+            else:
+                await closing
+        assert rows(authority.path) == selected
+        assert not authority.is_attached(SENDER)
+        with pytest.raises(ValueError, match="not attached"):
+            await dispatch(authority)
+        assert candidate.calls == []
+        # Only a new explicit activation may restore dispatch, including after
+        # a failed or cancelled provider cleanup. Its external effects are unknown.
+        await authority.commit_activation(handle)
+        assert rows(authority.path) == selected
+        assert not authority.is_current_dispatch(borrowed)
+        assert (await dispatch(authority))["provider_message_id"] == "fixture-result"
+        assert candidate.lifecycle == ["activate", "deactivate", "activate"]
+    finally:
+        if not closing.done():
+            closing.cancel()
+            await asyncio.gather(closing, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_close_does_not_block_or_invalidate_an_independent_sender(tmp_path: Path) -> None:
+    authority = SenderAuthority(path=tmp_path / "senders.sqlite3")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def deactivate() -> None:
+        entered.set()
+        await release.wait()
+        raise RuntimeError("provider cleanup uncertain")
+
+    closing_sender, independent = Candidate(deactivate=deactivate), Candidate()
+    handle = authority.stage_activation(
+        sender_id=SENDER, to_owner_id="same", sender=closing_sender
+    )
+    await authority.commit_activation(handle)
+    other = authority.stage_activation(
+        sender_id="independent", to_owner_id="other", sender=independent
+    )
+    await authority.commit_activation(other)
+    selected = rows(authority.path)
+    borrowed = await authority.select_dispatch(sender_id="independent")
+    closing = asyncio.create_task(authority.close_activation(handle))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        assert authority.is_current_dispatch(borrowed)
+        result = await asyncio.wait_for(
+            authority.dispatch(
+                sender_id="independent", recipient="recipient", part_index=0,
+                part={"text": "independent"},
+            ), timeout=2,
+        )
+        assert result["outcome"] == "sent"
+        # The independent lifecycle can also proceed while the first is closing.
+        await asyncio.wait_for(authority.commit_activation(other), timeout=2)
+        release.set()
+        with pytest.raises(RuntimeError, match="cleanup uncertain"):
+            await closing
+        assert rows(authority.path) == selected
+        assert authority.is_attached("independent") and not authority.is_attached(SENDER)
+        assert len(independent.calls) == 1 and closing_sender.calls == []
+        assert independent.lifecycle == ["activate", "activate"]
+    finally:
+        if not closing.done():
+            closing.cancel()
+            await asyncio.gather(closing, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_close_serializes_exact_handle_reactivation(tmp_path: Path) -> None:
+    authority = SenderAuthority(path=tmp_path / "senders.sqlite3")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def deactivate() -> None:
+        entered.set()
+        await release.wait()
+
+    candidate = Candidate(deactivate=deactivate)
+    handle = authority.stage_activation(sender_id=SENDER, to_owner_id="same", sender=candidate)
+    await authority.commit_activation(handle)
+    selected = rows(authority.path)
+    closing = asyncio.create_task(authority.close_activation(handle))
+    replay = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        replay = asyncio.create_task(authority.commit_activation(handle))
+        await asyncio.sleep(0)
+        assert not replay.done()
+        assert candidate.lifecycle == ["activate", "deactivate"]
+        assert not authority.is_attached(SENDER)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(closing, replay), timeout=2)
+        assert candidate.lifecycle == ["activate", "deactivate", "activate"]
+        assert rows(authority.path) == selected
+        await dispatch(authority)
+        assert len(candidate.calls) == 1
+    finally:
+        pending = [task for task in (closing, replay) if task is not None and not task.done()]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_close_replacement_survives_old_deactivation_and_same_object_is_refused(
+    tmp_path: Path,
+) -> None:
+    authority = SenderAuthority(path=tmp_path / "senders.sqlite3")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def deactivate() -> None:
+        entered.set()
+        await release.wait()
+
+    candidate, replacement = Candidate(deactivate=deactivate), Candidate()
+    handle = authority.stage_activation(sender_id=SENDER, to_owner_id="same", sender=candidate)
+    await authority.commit_activation(handle)
+    closing = asyncio.create_task(authority.close_activation(handle))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        selected = rows(authority.path)
+        with pytest.raises(ValueError, match="deactivating"):
+            authority.attach_active(sender_id=SENDER, owner_id="same", sender=candidate)
+        assert rows(authority.path) == selected and not authority.is_attached(SENDER)
+        authority.attach_active(sender_id=SENDER, owner_id="same", sender=replacement)
+        replacement_rows = rows(authority.path)
+        release.set()
+        await asyncio.wait_for(closing, timeout=2)
+        assert rows(authority.path) == replacement_rows and authority.is_attached(SENDER)
+        for operation in (authority.commit_activation, authority.close_activation):
+            with pytest.raises(ValueError, match="attachment changed"):
+                await operation(handle)
+        await dispatch(authority)
+        assert candidate.calls == [] and len(replacement.calls) == 1
+        assert candidate.lifecycle == ["activate", "deactivate"] and replacement.lifecycle == []
+    finally:
+        if not closing.done():
+            closing.cancel()
+            await asyncio.gather(closing, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_closed_handle_release_does_not_keep_deactivated_sender_attached(tmp_path: Path) -> None:
+    authority = SenderAuthority(path=tmp_path / "senders.sqlite3")
+    candidate = Candidate()
+    reference = weakref.ref(candidate)
+    handle = authority.stage_activation(sender_id=SENDER, to_owner_id="same", sender=candidate)
+    await authority.commit_activation(handle)
+    selected = rows(authority.path)
+    await authority.close_activation(handle)
+    del candidate, handle
+    gc.collect()
+    assert reference() is None and not authority.is_attached(SENDER)
+    assert rows(authority.path) == selected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "target,reuse,attached",
+    [("same", False, True), ("same", True, False), ("new", False, False)],
+)
+async def test_close_after_fsync_failure_fences_only_the_deactivated_implementation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, reuse: bool, attached: bool
+) -> None:
+    authority = SenderAuthority(path=tmp_path / "senders.sqlite3")
+    old = Candidate()
+    authority.attach_active(sender_id=SENDER, owner_id="same", sender=old)
+    candidate = old if reuse else Candidate()
+    handle = authority.stage_activation(sender_id=SENDER, to_owner_id=target, sender=candidate)
+
+    def fail_fsync(path: Path) -> None:
+        raise OSError("durability observation failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sender_module, "_fsync_file", fail_fsync)
+        with pytest.raises(OSError, match="durability observation failed"):
+            await authority.commit_activation(handle)
+    selected = rows(authority.path)
+    await authority.close_activation(handle)
+    assert rows(authority.path) == selected
+    assert authority.is_attached(SENDER) is attached
+    assert candidate.lifecycle == ["activate", "deactivate"]
+    if attached:
+        await dispatch(authority)
+        assert len(old.calls) == 1 and candidate.calls == []
+    else:
+        with pytest.raises(ValueError, match="not attached"):
+            await dispatch(authority)
+    await authority.commit_activation(handle)
+    assert rows(authority.path) == selected
+    await dispatch(authority)
+    assert len(candidate.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_losing_activation_cleanup_cannot_deactivate_a_same_object_reattachment(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "senders.sqlite3"
+    authority, winner = SenderAuthority(path=path), SenderAuthority(path=path)
+    activating, finish_activation = asyncio.Event(), asyncio.Event()
+    deactivating, finish_deactivation = asyncio.Event(), asyncio.Event()
+
+    async def activate() -> None:
+        activating.set()
+        await finish_activation.wait()
+
+    async def deactivate() -> None:
+        deactivating.set()
+        await finish_deactivation.wait()
+
+    candidate = Candidate(activate=activate, deactivate=deactivate)
+    authority.attach_active(sender_id=SENDER, owner_id="old", sender=candidate)
+    losing = authority.stage_activation(sender_id=SENDER, to_owner_id="loser", sender=candidate)
+    winning_sender = Candidate()
+    winning = winner.stage_activation(sender_id=SENDER, to_owner_id="winner", sender=winning_sender)
+    pending = asyncio.create_task(authority.commit_activation(losing))
+    try:
+        await asyncio.wait_for(activating.wait(), timeout=2)
+        await winner.commit_activation(winning)
+        selected = rows(path)
+        finish_activation.set()
+        await asyncio.wait_for(deactivating.wait(), timeout=2)
+        with pytest.raises(ValueError, match="deactivating"):
+            authority.attach_active(sender_id=SENDER, owner_id="winner", sender=candidate)
+        assert rows(path) == selected and not authority.is_attached(SENDER)
+        replacement = Candidate()
+        authority.attach_active(sender_id=SENDER, owner_id="winner", sender=replacement)
+        replacement_rows = rows(path)
+        finish_deactivation.set()
+        with pytest.raises(ValueError, match="changed during activation"):
+            await asyncio.wait_for(pending, timeout=2)
+        assert rows(path) == replacement_rows
+        assert authority.active_owner(SENDER) == winner.active_owner(SENDER) == "winner"
+        with pytest.raises(ValueError, match="attachment changed"):
+            await authority.close_activation(losing)
+        await dispatch(authority)
+        await dispatch(winner)
+        assert len(replacement.calls) == len(winning_sender.calls) == 1
+        assert candidate.calls == [] and candidate.lifecycle == ["activate", "deactivate"]
+        assert winning_sender.lifecycle == ["activate"] and replacement.lifecycle == []
+    finally:
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)

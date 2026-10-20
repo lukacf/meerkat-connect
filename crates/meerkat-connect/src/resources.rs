@@ -78,7 +78,9 @@ mod readback_process;
 #[cfg(unix)]
 mod local_round;
 #[cfg(unix)]
-pub use local_round::{LocalRoundGuard, LocalRoundOwner};
+pub use local_round::{LocalRoundGuard, LocalRoundOwner, OwnedLocalRoundGuard};
+#[cfg(all(unix, feature = "console"))]
+pub use local_round::LocalRoundAttempts;
 
 #[cfg(not(unix))]
 impl InstalledResources {
@@ -129,6 +131,7 @@ where
 
 #[cfg(all(test, unix))]
 mod tests {
+
     use super::*;
     use serde_json::{Value, json};
     use std::os::unix::fs::{PermissionsExt, symlink};

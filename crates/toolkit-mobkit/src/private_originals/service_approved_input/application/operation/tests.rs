@@ -243,7 +243,7 @@ async fn exercise(case: Case, connector: bool) {
                 assert!(b != source_a && b.original == fresh);
                 let row = fixture.store.get(&fixture.source.key(&b).unwrap()).await.unwrap().unwrap();
                 let record = fixture.source.decode_record(&row, &b).unwrap();
-                let grant = &record.approved_task.as_ref().unwrap().grant;
+                let grant = &record.approved_task.as_ref().unwrap().singleton_grant().unwrap();
                 let work = meerkat_authorization_contracts::work_association::OriginalWorkRef { authority: route.source_authority.clone(), work: fresh };
                 let lineage = fixture.source.service_grant_lineage(grant, &work).await.unwrap();
                 assert_eq!(lineage.len(), 2, "real newly issued root and exact attenuated child");
@@ -604,7 +604,7 @@ async fn application_installation_readback_case(include_source: bool) {
                 claim: None, data: parent.data.clone(), events: vec![], effects: vec![],
             }).await.unwrap();
         }
-        let grant = &record.approved_task.as_ref().unwrap().grant;
+        let grant = &record.approved_task.as_ref().unwrap().singleton_grant().unwrap();
         let key = crate::private_originals::service_grants::tests::fixture_access_key(&fixture.source, grant).unwrap();
         let access = fixture.store.get(&key).await.unwrap().unwrap();
         let mut changed = access.data.clone();

@@ -21,6 +21,7 @@ fn capability(fixture: &ContinuationFixture, name: &str) -> CompiledAgentSetupCa
     let native = fixture.lifetime().selected_policy().native_host.as_ref().unwrap();
     let owner = fixture.source.local_operator_setup(fixture.lifetime().clone()).unwrap();
     let mut selected = owner.configure_agent_setup(&AgentSetupCapabilityRequest {
+        helper: None,
         member: native.members[0].member.clone(), route: native.routes[0].id.clone(),
         issuance_id: EvidenceId::new(format!("{name}-find")).unwrap(), helper_targets: vec![],
     }).unwrap();
@@ -136,3 +137,6 @@ async fn old_unbound_child_cannot_acquire_new_targets_and_legacy_scope_remains_e
     let closed = fixture.shutdown().await; assert!(closed.is_ok(), "{closed:?}");
     if let Err(payload) = result { std::panic::resume_unwind(payload); }
 }
+
+#[path = "selection_writer_tests.rs"]
+mod writer_tests;

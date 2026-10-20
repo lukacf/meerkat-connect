@@ -31,6 +31,15 @@ impl InstalledServiceTaskSource {
     ) -> Result<Option<InstalledServiceTask>, PrivateOriginalError> {
         self.prepare_selected(call, context, plan, None).await
     }
+    /// Public service review may select this member's already configured setup
+    /// capability for the fresh task. Other preparation surfaces keep their
+    /// existing capture contract and do not validate this optional selection.
+    pub async fn prepare_public_service(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
+    ) -> Result<Option<InstalledServiceTask>, PrivateOriginalError> {
+        self.prepare_selected_with_setup(call, context, plan, None, true).await
+    }
     /// Software review has no proposed target principal. Select the waiting
     /// member from this exact helper's existing canonical acquisition custody.
     pub async fn prepare_software(
@@ -43,10 +52,17 @@ impl InstalledServiceTaskSource {
         &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
         plan: Option<&meerkat_core::ResolvedToolExecutionPlan>, proposed_agent: Option<&str>,
     ) -> Result<Option<InstalledServiceTask>, PrivateOriginalError> {
+        self.prepare_selected_with_setup(call, context, plan, proposed_agent, false).await
+    }
+    async fn prepare_selected_with_setup(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>, proposed_agent: Option<&str>,
+        select_setup: bool,
+    ) -> Result<Option<InstalledServiceTask>, PrivateOriginalError> {
         let selected = self.selected.upgrade().ok_or(PrivateOriginalError::Unavailable)?;
         let owner = selected.lock().map_err(|_| PrivateOriginalError::Unavailable)?
             .configured().ok_or(PrivateOriginalError::Unavailable)?;
-        let source = owner.host.originals.setup_result_source(context, &owner.helper).await?;
+        let source = owner.host.originals.setup_result_source_from(context, &owner.helper_selections()).await?;
         let operation = Id::new(source.operation.acquisition.id.clone())
             .map_err(|_| PrivateOriginalError::Conflict)?;
         let effect = EffectKey { record: source.operation.acquisition.clone(), id: source.operation.effect.clone() };
@@ -57,9 +73,15 @@ impl InstalledServiceTaskSource {
         let (snapshot, _) = store.helper_result_snapshot(&operation,
             &meerkat_toolkit::setup::SetupHelperResultAccess {
                 helper: &source.helper, source: &source.source,
-                contributors: &source.contributors, effect: &effect,
+                contributors: &source.contributors,
+                contributor_sources: &source.contributor_sources,
+                ancestor_sources: &source.ancestor_sources, effect: &effect,
                 input_digest: &source.operation.input_digest, context: &current,
             }, &owner.work_backend).await.map_err(|_| PrivateOriginalError::Unavailable)?;
+        let selected = owner.selected_helper(snapshot.request()).map_err(|_| PrivateOriginalError::Denied)?;
+        if selected.helper.member != source.selected_helper {
+            return Err(PrivateOriginalError::Denied);
+        }
         // This exact call owns disclosure. No historical request is a permit.
         context.check_tool_authorization(call, plan).map_err(|_| PrivateOriginalError::Denied)?;
         let agent = match proposed_agent {
@@ -69,6 +91,10 @@ impl InstalledServiceTaskSource {
                 .member.clone(),
         };
         let task = owner.host.originals.prepare_service_task(owner.store.clone(), snapshot, call.id, &agent).await?;
+        let task = if select_setup {
+            task.map(|task| task.select_configured_setup(&selected.helper, &selected.member,
+                context.origin_session_id().ok_or(PrivateOriginalError::Denied)?)).transpose()?
+        } else { task };
         context.check_tool_authorization(call, plan).map_err(|_| PrivateOriginalError::Denied)?;
         Ok(task)
     }

@@ -19,6 +19,19 @@ fn status_owner_refused(stage: &'static str, error: HostLifetimeError) {
     });
 }
 
+// An unavailable owner observation cannot establish either visibility or denial.
+fn status_visibility_error(stage: &'static str, error: PrivateOriginalError) -> HostLifetimeError {
+    status_read_refused(stage, match error {
+        PrivateOriginalError::Unavailable => "Unavailable",
+        PrivateOriginalError::Conflict => "Conflict",
+        PrivateOriginalError::Denied => "Denied",
+    });
+    match error {
+        PrivateOriginalError::Unavailable => HostLifetimeError::Unavailable,
+        PrivateOriginalError::Conflict | PrivateOriginalError::Denied => HostLifetimeError::Denied,
+    }
+}
+
 pub type ConsoleRouteComposition = Arc<dyn Fn(ConsoleViewerResolver)
     -> Result<axum::Router, HostLifetimeError> + Send + Sync>;
 
@@ -29,6 +42,7 @@ pub struct ConsoleSetupBinding {
     logins: ConsoleLogins,
     closed: PrivateHostClosed,
     access_policy: Option<ConsoleAccessPolicy>,
+    recovery_policy: Option<ConsoleRecoveryPolicy>,
 }
 /// A bounded current read with private canonical positions. Browser IDs may
 /// select this presentation but never construct a source or an access grant.
@@ -41,6 +55,7 @@ pub struct ConsoleStatusPage {
     projection: serde_json::Value,
     visible_members: Vec<meerkat_mobkit::identity_first::AgentIdentity>,
     access: Option<Result<ConsoleAccessSnapshot, ()>>,
+    recovery: Option<Result<ConsoleServiceRecoverySnapshot, ()>>,
 }
 #[derive(Clone, Copy)]
 pub enum ConsolePageRead { Refresh, Next }
@@ -58,9 +73,24 @@ impl ConsoleStatusPage {
             Err(()) => serde_json::json!({"scope":"application_issued_access","state":"unavailable"}),
         })
     }
+    pub fn recovery(&self) -> Option<&ConsoleServiceRecoverySnapshot> {
+        self.recovery.as_ref().and_then(|value| value.as_ref().ok())
+    }
+    pub fn recovery_projection(&self) -> Option<serde_json::Value> {
+        self.recovery.as_ref().map(|value| match value {
+            Ok(offer) => offer.projection(),
+            Err(()) => serde_json::json!({"scope":"operator_service_recovery","state":"unavailable"}),
+        })
+    }
 }
 
 impl ConsoleSetupBinding {
+    #[cfg(test)]
+    pub(crate) fn fixture(owner: Arc<NativeHostLifetime>, source: Arc<PrivateOriginals>,
+        logins: ConsoleLogins, closed: PrivateHostClosed) -> Self {
+        Self { owner, source, logins, closed, access_policy: None, recovery_policy: None }
+    }
+
     /// A page position retains no authorization snapshot. Every refresh/next
     /// repeats the installed/login/native-view and canonical row checks.
     pub async fn status_page(&self,
@@ -98,17 +128,22 @@ impl ConsoleSetupBinding {
                 }
             },
         };
-        let page = self.source.source_status_page(start.as_deref()).await
+        let page = if self.recovery_policy.is_some() {
+            self.source.source_status_page_with_recovery(start.as_deref()).await
+        } else { self.source.source_status_page(start.as_deref()).await }
             .map_err(|error| {
                 status_read_refused("binding.status_page.source_page", match error {
                     PrivateOriginalError::Unavailable => "Unavailable",
                     PrivateOriginalError::Conflict => "Conflict",
                     PrivateOriginalError::Denied => "Denied",
                 });
-                HostLifetimeError::Unavailable
+                match error {
+                    PrivateOriginalError::Denied => HostLifetimeError::Denied,
+                    PrivateOriginalError::Unavailable | PrivateOriginalError::Conflict => HostLifetimeError::Unavailable,
+                }
             })?;
-        // Keep access as the final canonical reader, as in the original
-        // mounted flow. Both readers use this same captured source slice.
+        // Every selected projection shares this bounded canonical slice.
+        // Absent recovery selection preserves the original page membership.
         let task_read = self.source.console_status_native_page(&viewer, current, &page.rows).await
             .map_err(|error| {
                 status_read_refused("binding.status_page.native_projection", match error {
@@ -116,15 +151,22 @@ impl ConsoleSetupBinding {
                     PrivateOriginalError::Conflict => "Conflict",
                     PrivateOriginalError::Denied => "Denied",
                 });
-                HostLifetimeError::Unavailable
+                match error {
+                    PrivateOriginalError::Denied => HostLifetimeError::Denied,
+                    PrivateOriginalError::Unavailable | PrivateOriginalError::Conflict => HostLifetimeError::Unavailable,
+                }
             })?;
         let access = match self.application_access_rows(current, Some(&page.rows)).await {
             Ok(value) => value.map(Ok),
             Err(_) => Some(Err(())),
         };
+        let recovery = match self.service_recovery_rows(current, &page.rows).await {
+            Ok(value) => value.map(Ok),
+            Err(_) => Some(Err(())),
+        };
         let result = ConsoleStatusPage { source:self.source.clone(), login, principal, start,
             next:page.next_after, projection:task_read.projection,
-            visible_members:task_read.visible_members, access };
+            visible_members:task_read.visible_members, access, recovery };
         self.check_status_page(&result, current).map_err(|error| {
             status_owner_refused("binding.status_page.final_currentness", error);
             error
@@ -137,14 +179,28 @@ impl ConsoleSetupBinding {
     pub fn check_status_page(&self, page: &ConsoleStatusPage,
         current: &(impl Fn() -> Option<ConsoleViewerContext> + Sync),
     ) -> Result<(), HostLifetimeError> {
-        let fresh = current().ok_or(HostLifetimeError::Denied)?;
-        if !Arc::ptr_eq(&self.source, &page.source) || !page.login.same_owner(&self.current_login(&fresh)?)
-            || fresh.human.as_ref().and_then(|human| human.principal().ok()).as_ref() != Some(&page.principal)
-            || fresh.access_view.as_ref().is_some_and(|view| view.enforced()
-                && page.visible_members.iter().any(|identity| !view.can_view_agent(identity.as_str()))) {
+        let fresh = current().ok_or(HostLifetimeError::Denied).map_err(|error| {
+            status_owner_refused("binding.check_status_page.viewer", error); error
+        })?;
+        if !Arc::ptr_eq(&self.source, &page.source) {
+            status_read_refused("binding.check_status_page.source", "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        if !page.login.same_owner(&self.current_login(&fresh)?) {
+            status_read_refused("binding.check_status_page.login_owner", "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        if fresh.human.as_ref().and_then(|human| human.principal().ok()).as_ref() != Some(&page.principal) {
+            status_read_refused("binding.check_status_page.principal", "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        if fresh.access_view.as_ref().is_some_and(|view| view.enforced()
+            && page.visible_members.iter().any(|identity| !view.can_view_agent(identity.as_str()))) {
+            status_read_refused("binding.check_status_page.member_visibility", "Denied");
             return Err(HostLifetimeError::Denied);
         }
         if let Some(Ok(offer)) = &page.access { offer.check_visible(&fresh)?; }
+        if let Some(Ok(offer)) = &page.recovery { offer.check_visible(&fresh)?; }
         Ok(())
     }
 
@@ -157,13 +213,32 @@ impl ConsoleSetupBinding {
     }
 
     pub fn current_login(&self, viewer: &ConsoleViewerContext) -> Result<ConsoleLoginHandle, HostLifetimeError> {
-        if self.closed.is_closed() || viewer.service_identity { return Err(HostLifetimeError::Denied); }
-        self.owner.validate_current_selection()?;
-        let human = viewer.human.as_ref().ok_or(HostLifetimeError::Denied)?;
-        human.current().map_err(|_| HostLifetimeError::Denied)?;
-        human.principal().map_err(|_| HostLifetimeError::Denied)?;
-        self.logins.resolve(human.issuer(), human.subject(), human.login_scope().ok_or(HostLifetimeError::Denied)?)
-            .map_err(|_| HostLifetimeError::Denied)
+        if self.closed.is_closed() {
+            status_read_refused("binding.current_login.closed", "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        if viewer.service_identity {
+            status_read_refused("binding.current_login.service_identity", "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        self.owner.validate_current_selection().map_err(|error| {
+            status_owner_refused("binding.current_login.selection", error); error
+        })?;
+        let human = viewer.human.as_ref().ok_or(HostLifetimeError::Denied).map_err(|error| {
+            status_owner_refused("binding.current_login.human", error); error
+        })?;
+        human.current().map_err(|_| {
+            status_read_refused("binding.current_login.current", "Denied"); HostLifetimeError::Denied
+        })?;
+        human.principal().map_err(|_| {
+            status_read_refused("binding.current_login.principal", "Denied"); HostLifetimeError::Denied
+        })?;
+        let scope = human.login_scope().ok_or(HostLifetimeError::Denied).map_err(|error| {
+            status_owner_refused("binding.current_login.scope", error); error
+        })?;
+        self.logins.resolve(human.issuer(), human.subject(), scope).map_err(|_| {
+            status_read_refused("binding.current_login.resolve", "Denied"); HostLifetimeError::Denied
+        })
     }
     /// Pure canonical read. Re-resolve the HTTP viewer after this await before
     /// disclosing the result. This is not a reconciliation or readiness call.
@@ -186,7 +261,7 @@ impl ToolkitGatewayHost {
         Ok(ConsoleSetupBinding { owner: self.owner.clone(),
             source: self.private_originals.clone().ok_or(HostLifetimeError::InvalidSelection)?,
             logins: self.console_logins.clone().ok_or(HostLifetimeError::InvalidSelection)?,
-            closed: self.private_closed.clone(), access_policy: None })
+            closed: self.private_closed.clone(), access_policy: None, recovery_policy: None })
     }
     pub fn with_console_routes(mut self, routes: ConsoleRouteComposition) -> Result<Self, HostLifetimeError> {
         if self.console_routes.is_some() || self.machine.get().is_some() || self.setup_application.is_none()
@@ -203,6 +278,53 @@ impl ToolkitGatewayHost {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConsoleAccessPolicy { RequesterIssuedLeaves }
+
+/// Separate installed administrative selection. It permits an authenticated
+/// operator to recover only that same operator's unpublished service approval.
+/// RequesterIssuedLeaves and member visibility never imply this permission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsoleRecoveryPolicy { OperatorUnpublishedServiceApprovals }
+
+/// A single protected operator action over an existing canonical read. This
+/// owns presentation/result custody only, not a new durable recovery record.
+pub struct ConsoleServiceRecoverySnapshot {
+    source: Arc<PrivateOriginals>,
+    login: ConsoleLoginHandle,
+    scope: String,
+    read: crate::private_originals::service_recovery::ServiceRecoveryRead,
+    members: Vec<(meerkat_core::MobMemberBinding, meerkat_mobkit::identity_first::AgentIdentity)>,
+    used: std::sync::atomic::AtomicBool,
+    result: Mutex<Option<crate::private_originals::service_recovery::ServiceRecoveryOutcome>>,
+}
+impl ConsoleServiceRecoverySnapshot {
+    fn check_visible(&self, viewer: &ConsoleViewerContext) -> Result<(), HostLifetimeError> {
+        let human = viewer.human.as_ref().ok_or(HostLifetimeError::Denied).map_err(|error| {
+            status_owner_refused("recovery.check_visible.human", error); error
+        })?;
+        let subject = human.current().map_err(|_| {
+            status_read_refused("recovery.check_visible.current", "Denied"); HostLifetimeError::Denied
+        })?;
+        let denied = if viewer.service_identity { Some("recovery.check_visible.service_identity") }
+            else if viewer.principal.as_ref() != Some(&subject) { Some("recovery.check_visible.subject") }
+            else if human.principal().ok().as_ref() != Some(&self.read.human) { Some("recovery.check_visible.principal") }
+            else if human.login_scope() != Some(self.scope.as_str()) { Some("recovery.check_visible.scope") }
+            else if viewer.access_view.as_ref().is_none_or(|access| !access.can_administer()) { Some("recovery.check_visible.admin") }
+            else { None };
+        if let Some(stage) = denied {
+            status_read_refused(stage, "Denied");
+            return Err(HostLifetimeError::Denied);
+        }
+        self.read.check_visible(|member| self.members.iter().find(|(selected, _)| selected == member)
+            .is_some_and(|(_, identity)| viewer.access_view.as_ref().is_some_and(|access|
+                !access.enforced() || access.can_view_agent(identity.as_str()))))
+            .map_err(|error| status_visibility_error("recovery.check_visible.read", error))
+    }
+    pub fn projection(&self) -> serde_json::Value {
+        serde_json::json!({"scope":"operator_service_recovery",
+            "rows":self.read.rows.iter().map(|row| &row.projection).collect::<Vec<_>>()})
+    }
+}
 
 /// Opaque, one-action presentation custody. Browser values cannot create a
 /// source record, select an issuer or supply a native lineage.
@@ -225,7 +347,7 @@ impl ConsoleAccessSnapshot {
         self.read.check_visible(|member| self.members.iter().find(|(selected, _)| selected == member)
             .is_some_and(|(_, identity)| !viewer.access_view.as_ref().is_some_and(|view|
                 view.enforced() && !view.can_view_agent(identity.as_str()))))
-            .map_err(|_| HostLifetimeError::Denied)
+            .map_err(|error| status_visibility_error("access.check_visible.read", error))
     }
     pub fn projection(&self) -> serde_json::Value {
         serde_json::json!({"scope":"application_issued_access",
@@ -238,6 +360,81 @@ impl ConsoleSetupBinding {
     pub fn with_access_policy(mut self, policy: Option<ConsoleAccessPolicy>) -> Self {
         self.access_policy = policy;
         self
+    }
+
+    /// Trusted pinned host composition only; HTTP values cannot select this.
+    pub fn with_recovery_policy(mut self, policy: Option<ConsoleRecoveryPolicy>) -> Self {
+        self.recovery_policy = policy;
+        self
+    }
+
+    async fn service_recovery_rows(&self,
+        current: &(impl Fn() -> Option<ConsoleViewerContext> + Sync), rows: &[toolkit_store::StoredRecord],
+    ) -> Result<Option<ConsoleServiceRecoverySnapshot>, HostLifetimeError> {
+        if self.recovery_policy != Some(ConsoleRecoveryPolicy::OperatorUnpublishedServiceApprovals) { return Ok(None); }
+        let viewer = current().ok_or(HostLifetimeError::Denied)?;
+        let login = self.current_login(&viewer)?;
+        let human = viewer.human.as_ref().ok_or(HostLifetimeError::Denied)?;
+        if viewer.access_view.as_ref().is_none_or(|access| !access.can_administer()) { return Ok(None); }
+        let principal = human.principal().map_err(|_| HostLifetimeError::Denied)?;
+        let scope = human.login_scope().ok_or(HostLifetimeError::Denied)?.to_owned();
+        let members = self.source.console_access_members(&viewer, current).await.map_err(|_| HostLifetimeError::Unavailable)?;
+        let selected = members.iter().map(|(member, _)| member.clone()).collect::<Vec<_>>();
+        let read = match self.source.read_service_recovery_page(&principal, &selected, rows).await {
+            Ok(read) => read,
+            Err(PrivateOriginalError::Denied) => return Ok(None),
+            Err(_) => return Err(HostLifetimeError::Unavailable),
+        };
+        let fresh = current().ok_or(HostLifetimeError::Denied)?;
+        if !login.same_owner(&self.current_login(&fresh)?) { return Err(HostLifetimeError::Denied); }
+        let offer = ConsoleServiceRecoverySnapshot { source:self.source.clone(), login, scope, read, members,
+            used:std::sync::atomic::AtomicBool::new(false), result:Mutex::new(None) };
+        offer.check_visible(&fresh)?;
+        Ok(Some(offer))
+    }
+
+    /// All awaited store checks precede native entry. The same installed/login
+    /// entry then owns the whole finite native cleanup, synchronously.
+    pub async fn recover_service_approval(&self, offer: &ConsoleServiceRecoverySnapshot, row_id: &str,
+        current: &(impl Fn() -> Option<ConsoleViewerContext> + Sync),
+    ) -> Result<serde_json::Value, HostLifetimeError> {
+        if self.recovery_policy != Some(ConsoleRecoveryPolicy::OperatorUnpublishedServiceApprovals)
+            || !Arc::ptr_eq(&self.source, &offer.source) { return Err(HostLifetimeError::Denied); }
+        let viewer = current().ok_or(HostLifetimeError::Denied)?;
+        if !offer.login.same_owner(&self.current_login(&viewer)?) { return Err(HostLifetimeError::Denied); }
+        offer.check_visible(&viewer)?;
+        let row = offer.read.rows.iter().find(|row| row.id == row_id && row.can_recover)
+            .ok_or(HostLifetimeError::Denied)?;
+        if offer.used.swap(true, std::sync::atomic::Ordering::AcqRel) { return Err(HostLifetimeError::Denied); }
+        let prepared = self.source.prepare_service_recovery(&offer.read, row).await
+            .map_err(|_| HostLifetimeError::Unavailable)?;
+        let fresh = current().ok_or(HostLifetimeError::Denied)?;
+        if !offer.login.same_owner(&self.current_login(&fresh)?) { return Err(HostLifetimeError::Denied); }
+        offer.check_visible(&fresh)?;
+        let reservation = offer.login.reserve().map_err(|_| HostLifetimeError::Denied)?;
+        // No await or worker follows reserve. A returned pre-entry error cannot
+        // conceal a parent mutation; native partial outcomes are retained below.
+        let entered = self.owner.with_current_setup(|| {
+            offer.login.with_current_revoke(|| {
+                let viewer = current().ok_or(HostLifetimeError::Denied)?;
+                // Resolve only the accepted carrier. Do not reenter login or
+                // installed-owner lookup under their mutation exclusion.
+                offer.check_visible(&viewer)?;
+                let mut result = offer.result.lock().map_err(|_| HostLifetimeError::Unavailable)?;
+                let outcome = prepared.revoke().map_err(|_| HostLifetimeError::Unavailable)?;
+                let value = serde_json::json!({"scope":"operator_service_recovery", "parent":outcome.parent,
+                    "child":outcome.child, "uncertain":outcome.uncertain,
+                    "policy_observed_at_offer":row.projection["policy"], "policy_changed":false});
+                let uncertain = outcome.uncertain;
+                *result = Some(outcome);
+                Ok((value, uncertain))
+            }).map_err(|_| HostLifetimeError::Denied)?
+        });
+        match entered {
+            Ok((value, true)) => { reservation.uncertain(); Ok(value) },
+            Ok((value, false)) => { reservation.settled(); Ok(value) },
+            Err(error) => { reservation.settled(); Err(error) },
+        }
     }
 
     pub async fn application_access(&self,
@@ -271,7 +468,7 @@ impl ConsoleSetupBinding {
         read.check_visible(|member| members.iter().find(|(selected, _)| selected == member)
             .is_some_and(|(_, identity)| !fresh.access_view.as_ref().is_some_and(|view|
                 view.enforced() && !view.can_view_agent(identity.as_str()))))
-            .map_err(|_| HostLifetimeError::Denied)?;
+            .map_err(|error| status_visibility_error("access.read.check_visible", error))?;
         Ok(Some(ConsoleAccessSnapshot { source:self.source.clone(), login, scope, read, members,
             used:std::sync::atomic::AtomicBool::new(false), result:Mutex::new(None) }))
     }
@@ -341,5 +538,42 @@ impl ConsoleSetupBinding {
             Err(ExpectedRevokeRefusal::Grant(GrantRefusal::Unavailable)) => "unavailable",
         };
         Ok(serde_json::json!({"scope":"application_issued_access","state":state}))
+    }
+}
+
+#[cfg(test)]
+mod status_visibility_tests {
+    use super::*;
+    use meerkat_authorization::publication::{LocalAuthorizationPublication, PublicationError};
+
+    #[test]
+    fn changed_and_poisoned_publication_remain_unavailable_at_visibility_boundary() {
+        // Real publication transitions and actual read checks. This conveys no
+        // synthetic viewer, grant or protected-action authority.
+        for poison in [false, true] {
+            let owner = LocalAuthorizationPublication::new();
+            let (_, stamp) = owner.observe(|| ()).unwrap();
+            let human = meerkat_core::PrincipalRef::in_domain(meerkat_core::PrincipalKind::Human,
+                "visibility-fixture", meerkat_core::TrustDomainId::new("visibility-test").unwrap()).unwrap();
+            let access = crate::private_originals::service_grants::console::ApplicationAccessRead {
+                human: human.clone(), publication: stamp.clone(), rows: vec![],
+            };
+            let recovery = crate::private_originals::service_recovery::ServiceRecoveryRead {
+                human, publication: stamp.clone(), rows: vec![],
+            };
+            assert!(access.check_visible(|_| true).is_ok());
+            assert!(recovery.check_visible(|_| true).is_ok());
+            if poison { owner.poison(); } else { drop(owner.begin_owner_change().unwrap()); }
+            assert!(matches!((poison, stamp.check_current()),
+                (false, Err(PublicationError::Changed)) | (true, Err(PublicationError::Unavailable))));
+            for (stage, result) in [("access.check_visible.read", access.check_visible(|_| true)),
+                ("recovery.check_visible.read", recovery.check_visible(|_| true))] {
+                assert!(matches!(result.map_err(|error| status_visibility_error(stage, error)),
+                    Err(HostLifetimeError::Unavailable)));
+            }
+        }
+        for error in [PrivateOriginalError::Denied, PrivateOriginalError::Conflict] {
+            assert!(matches!(status_visibility_error("visibility.fixture", error), HostLifetimeError::Denied));
+        }
     }
 }

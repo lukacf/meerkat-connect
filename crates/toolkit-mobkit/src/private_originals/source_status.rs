@@ -42,6 +42,18 @@ impl PrivateOriginals {
     pub(crate) async fn source_status_page_from(&self, store: &dyn ToolkitStore, after: Option<&str>)
         -> Result<SourceStatusPage, PrivateOriginalError>
     {
+        self.status_page_records(store, after, false).await
+    }
+
+    pub(crate) async fn source_status_page_with_recovery(&self, after: Option<&str>)
+        -> Result<SourceStatusPage, PrivateOriginalError>
+    {
+        self.status_page_records(self.store.as_ref(), after, true).await
+    }
+
+    pub(crate) async fn status_page_records(&self, store: &dyn ToolkitStore, after: Option<&str>, recovery: bool)
+        -> Result<SourceStatusPage, PrivateOriginalError>
+    {
         let lifetime = self.status_lifetime()?;
         let mut cursor = after.map(str::to_owned);
         let mut scanned = 0;
@@ -59,7 +71,8 @@ impl PrivateOriginals {
                 // read again on Next, including when this row fills the page.
                 cursor = Some(row.key.id.clone());
                 scanned += 1;
-                if row.data.schema == SOURCE_SCHEMA { rows.push(row); }
+                if row.data.schema == SOURCE_SCHEMA || recovery
+                    && crate::installed_host::operator_setup::service_recovery::is_parent_record(&row) { rows.push(row); }
                 if scanned == MAX_STATUS_RECORDS || rows.len() == MAX_STATUS_TASKS { break; }
             }
         }
@@ -209,7 +222,21 @@ impl PrivateOriginals {
                     .await?;
                 self.status_current(&lifetime, human, &visible_routes, current_member_access)?;
                 let status = self.source_publication_status(&reference, &record)?;
-                let (tone, text, next) = status.presentation();
+                let (tone, text, next) = if status == SourcePublicationStatus::Unobserved
+                    && snapshot.state().lifecycle_phase == toolkit_catalog::AcquisitionPhase::Preparing
+                    && !snapshot.approved_service_was_admitted()
+                    && snapshot.approved_service() == Some(&self.service_selection(&stored, &record)?)
+                {
+                    // Project the exact canonical reservation already read above.
+                    // It does not confirm connection readiness or delivery of B.
+                    (
+                        "pending",
+                        "Access approved; setup handoff pending",
+                        "Setup retained the approved instruction. Connection readiness and delivery to your agent are not yet confirmed.",
+                    )
+                } else {
+                    status.presentation()
+                };
                 tasks.push(serde_json::json!({
                     "id": digest(&canonical_json(&(link.acquisition.clone(), &link.original_task, &reference))
                         .map_err(|_| PrivateOriginalError::Conflict)?),
@@ -274,7 +301,7 @@ impl PrivateOriginals {
         // recovery. A partially persisted outer cancellation is not settled
         // merely because this acquisition was already terminal.
         let mut records = vec![source.clone(), parent.clone()];
-        let mut next = self.decode_stored(parent)?.approved_task.map(|link| link.parent);
+        let mut next = self.decode_stored(parent)?.approved_task.map(|link| link.parent.clone());
         while let Some(reference) = next {
             let key = self.key(&reference)?;
             if records.iter().any(|before| before.key == key) || records.len() > MAX_STATUS_TASKS {
@@ -284,7 +311,7 @@ impl PrivateOriginals {
                 .ok_or(PrivateOriginalError::Unavailable)?;
             let ancestor = self.decode_record(&stored, &reference)?;
             if ancestor.source != record.source { return Err(PrivateOriginalError::Conflict); }
-            next = ancestor.approved_task.map(|link| link.parent);
+            next = ancestor.approved_task.map(|link| link.parent.clone());
             records.push(stored);
         }
         if self.service_task_snapshot(record).await?.condition() != task.condition() {
@@ -597,13 +624,13 @@ impl PrivateOriginals {
             return Err(PrivateOriginalError::Conflict);
         }
         if let Some(pending) = pending.first() {
-            return pending.publication_status(&task.original_task.origin_session_id, &task.grant);
+            return pending.publication_status(&task.original_task.origin_session_id, task.grants().first().copied().ok_or(PrivateOriginalError::Conflict)?);
         }
         let candidate = held.original.association().candidate();
         Ok(
             if self
                 .owner
-                .retained_original(&candidate.ingress_namespace, &candidate.original_work)
+                .admitted_original_basis(&candidate.ingress_namespace, &candidate.original_work)
                 .map_err(|_| PrivateOriginalError::Unavailable)?
                 .is_some()
             {

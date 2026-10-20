@@ -15,7 +15,7 @@ use meerkat_toolkit::host_lifetime::{
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ConfiguredSetupSelection {
+pub(crate) struct ConfiguredSetupSelection {
     pub capability: CompiledAgentSetupCapability,
     pub session_id: meerkat_core::SessionId,
 }
@@ -30,6 +30,7 @@ struct ConfiguredSetup {
 impl ConfiguredSetup {
     fn parent_bounds(&self) -> ExecutionRestrictions {
         application_operations::configured_setup_parent(
+            &self.application,
             &self.route.logical_executor,
             &self.member.audience,
         )
@@ -406,3 +407,5 @@ impl PrivateOriginals {
 
 #[cfg(test)]
 mod selection_tests;
+
+pub(crate) mod service;

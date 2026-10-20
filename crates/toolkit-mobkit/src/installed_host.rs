@@ -182,7 +182,7 @@ impl InstalledToolkitHost {
         selection: HostBootstrapSelection,
         startup: NativeOwnerStartup,
     ) -> Result<(NativeHostLifetime, Self), HostLifetimeError> {
-        Self::open_selected(selection, startup, None, None).await
+        Self::open_selected(selection, startup, None, None, #[cfg(test)] None).await
     }
 
     /// Adopt the policy used by this process's completed native preparations.
@@ -195,7 +195,7 @@ impl InstalledToolkitHost {
         startup: NativeOwnerStartup,
         prepared_tool_policy: PreparedInstalledToolPolicy,
     ) -> Result<(NativeHostLifetime, Self), HostLifetimeError> {
-        Self::open_selected(selection, startup, Some(prepared_tool_policy), None).await
+        Self::open_selected(selection, startup, Some(prepared_tool_policy), None, #[cfg(test)] None).await
     }
 
     pub async fn open_with_application_service_policy(
@@ -203,7 +203,19 @@ impl InstalledToolkitHost {
         prepared_tool_policy: Option<PreparedInstalledToolPolicy>,
         participant: Arc<dyn crate::private_originals::ApplicationServicePolicy>,
     ) -> Result<(NativeHostLifetime, Self), HostLifetimeError> {
-        Self::open_selected(selection, startup, prepared_tool_policy, Some(participant)).await
+        Self::open_selected(selection, startup, prepared_tool_policy, Some(participant), #[cfg(test)] None).await
+    }
+
+    /// Test fixtures select a storage observation wrapper before the first
+    /// source adapter claims its canonical store. No live binding is replaced.
+    #[cfg(test)]
+    async fn open_with_source_store(
+        selection: HostBootstrapSelection,
+        startup: NativeOwnerStartup,
+        participant: Option<Arc<dyn crate::private_originals::ApplicationServicePolicy>>,
+        prepare_source: controller_first_input_fixture::PrepareOriginalSource,
+    ) -> Result<(NativeHostLifetime, Self), HostLifetimeError> {
+        Self::open_selected(selection, startup, None, participant, Some(prepare_source)).await
     }
 
     async fn open_selected(
@@ -211,6 +223,7 @@ impl InstalledToolkitHost {
         startup: NativeOwnerStartup,
         prepared_tool_policy: Option<PreparedInstalledToolPolicy>,
         participant: Option<Arc<dyn crate::private_originals::ApplicationServicePolicy>>,
+        #[cfg(test)] prepare_source: Option<controller_first_input_fixture::PrepareOriginalSource>,
     ) -> Result<(NativeHostLifetime, Self), HostLifetimeError> {
         if startup != NativeOwnerStartup::Restore {
             // Ordinary application bootstrap cannot initialize an operator root.
@@ -233,37 +246,13 @@ impl InstalledToolkitHost {
             None => tool_policy.prepare()?,
         };
         let directory = state_directory(&selection, &native, startup)?;
-        let grant_path = directory.join("grants.jsonl");
-        let original_path = directory.join("originals.sqlite3");
-        for path in [&grant_path, &original_path] {
-            match fs::symlink_metadata(path) {
-                Ok(metadata) if !metadata.is_file() => {
-                    return Err(HostLifetimeError::InvalidSelection);
-                }
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err(HostLifetimeError::Unavailable),
-            }
-        }
-        let grants = Arc::new(FileGrantOwnerStore::new(grant_path));
-        let source = Arc::new(
-            match startup {
-                NativeOwnerStartup::Restore => ToolkitOriginalOwner::restore(
-                    grants,
-                    Arc::new(HostAuthorizationClock),
-                    native.ingress_domain.clone(),
-                ),
-                NativeOwnerStartup::Initialize => return Err(HostLifetimeError::Denied),
-            }
-            .map_err(|_| HostLifetimeError::Unavailable)?,
-        );
-        let store = Arc::new(
-            match startup {
-                NativeOwnerStartup::Restore => SqliteStore::open_existing_published(&original_path, source.clone()),
-                NativeOwnerStartup::Initialize => SqliteStore::open(&original_path),
-            }
-            .map_err(|_| HostLifetimeError::Unavailable)?,
-        );
+        // Use the same intact canonical pair contract as stopped preparation.
+        // Its native lease is acquired before the published source store opens.
+        let (source, store) = operator_setup::open_owner_pair_in(
+            &directory, &native.ingress_domain, native.remote_operator.as_ref(),
+            operator_setup::OperatorOwnerStartup::Restore, true,
+        )?;
+        let store = Arc::new(store);
         let routes = native
             .routes
             .iter()
@@ -297,11 +286,18 @@ impl InstalledToolkitHost {
             realm: native.realm.to_string(),
             owner: owner.selected_policy().deployment.to_string(),
         };
+        let source_store: Arc<dyn toolkit_store::ToolkitStore> = store.clone();
+        #[cfg(test)]
+        let source_store = match prepare_source {
+            Some(prepare_source) => prepare_source(source_store),
+            None => source_store,
+        };
         let originals = Arc::new(
-            PrivateOriginals::new(source_scope.clone(), store.clone(), source.clone(), routes)
+            PrivateOriginals::new(source_scope.clone(), source_store, source.clone(), routes)
                 .await
                 .map_err(|_| HostLifetimeError::InvalidSelection)?,
         );
+        originals.select_installed_pair_recovery()?;
         let service_policy = tool_policy.bind_service_owner(store.clone(), source_scope.clone(),
             native.grant_administrator.clone(), participant).await?;
         originals.bind_service_tool_policy(service_policy)?;
@@ -343,8 +339,18 @@ impl InstalledToolkitHost {
     /// Console composition supplies its concrete owners; public init/tool JSON
     /// cannot select them. Native helper/operation cutover still gates dispatch.
     pub fn with_acquisition(
+        self,
+        owners: acquisition::InstalledAcquisitionOwners,
+    ) -> Result<Self, HostLifetimeError> {
+        self.with_acquisition_helpers(owners, vec![])
+    }
+
+    /// Additional native helper inventory for the same acquisition owner. The
+    /// current route capability selects a member; this supplies no route map.
+    pub fn with_acquisition_helpers(
         mut self,
         owners: acquisition::InstalledAcquisitionOwners,
+        additional_helpers: Vec<acquisition::InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         if !self.acquisition.is_unconfigured() {
             return Err(HostLifetimeError::InvalidSelection);
@@ -355,6 +361,7 @@ impl InstalledToolkitHost {
             self.originals.clone(),
             &self.native,
             owners,
+            additional_helpers,
         )?);
         acquisition.bind_tool_driver()?;
         self.acquisition = acquisition::AcquisitionBootstrap::selected(acquisition);
@@ -365,12 +372,22 @@ impl InstalledToolkitHost {
     /// from this exact source/store/policy. Only the existing continuation owner,
     /// selected native helper, proposal bounds and WorkGraph backend are supplied.
     pub fn with_default_acquisition(
+        self,
+        defaults: acquisition::InstalledSetupDefaults,
+    ) -> Result<Self, HostLifetimeError> {
+        self.with_default_acquisition_helpers(defaults, vec![])
+    }
+
+    /// Derive the ordinary owner with additional exact native helpers. Omission
+    /// through with_default_acquisition retains the existing singleton path.
+    pub fn with_default_acquisition_helpers(
         mut self,
         defaults: acquisition::InstalledSetupDefaults,
+        additional_helpers: Vec<acquisition::InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         if !self.acquisition.is_unconfigured() { return Err(HostLifetimeError::InvalidSelection); }
         let acquisition = Arc::new(acquisition::InstalledAcquisition::from_defaults(
-            self.store.clone(), self.source_scope.clone(), self.originals.clone(), &self.native, defaults,
+            self.store.clone(), self.source_scope.clone(), self.originals.clone(), &self.native, defaults, additional_helpers,
         )?);
         acquisition.bind_tool_driver()?;
         self.acquisition = acquisition::AcquisitionBootstrap::selected(acquisition);
@@ -398,29 +415,51 @@ impl InstalledToolkitHost {
         self,
         defaults: acquisition::InstalledSetupBootstrap,
     ) -> Result<Self, HostLifetimeError> {
+        self.with_bootstrap_acquisition_helpers(defaults, vec![])
+    }
+
+    /// Live SDK opt-in to more than one selected helper before native bootstrap.
+    /// Each route still captures its one helper before immutable admission.
+    pub fn with_bootstrap_acquisition_helpers(
+        self,
+        defaults: acquisition::InstalledSetupBootstrap,
+        additional_helpers: Vec<acquisition::InstalledSetupSelection>,
+    ) -> Result<Self, HostLifetimeError> {
         let tools = acquisition::InstalledAcquisitionTools::new(
             std::time::Duration::from_millis(defaults.limits.admission_timeout_ms),
         )?;
-        self.with_enrolled_bootstrap_acquisition(defaults, tools)
+        self.with_enrolled_bootstrap_acquisition_helpers(defaults, tools, additional_helpers)
     }
 
     /// Adopt the dispatcher objects already used by this application's native
     /// preparation. Stores still come only from this authenticated final host.
     /// The same leaves are bound during the existing bootstrap service selection.
     pub fn with_enrolled_bootstrap_acquisition(
+        self,
+        defaults: acquisition::InstalledSetupBootstrap,
+        tools: acquisition::InstalledAcquisitionTools,
+    ) -> Result<Self, HostLifetimeError> {
+        self.with_enrolled_bootstrap_acquisition_helpers(defaults, tools, vec![])
+    }
+
+    /// Use the same already prepared leaves and private helper inventory. No
+    /// additional runtime, native adapter or authority is created here.
+    pub fn with_enrolled_bootstrap_acquisition_helpers(
         mut self,
         defaults: acquisition::InstalledSetupBootstrap,
         tools: acquisition::InstalledAcquisitionTools,
+        additional_helpers: Vec<acquisition::InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         if !self.acquisition.is_unconfigured() {
             return Err(HostLifetimeError::InvalidSelection);
         }
         self.acquisition = acquisition::AcquisitionBootstrap::deferred_with_tools(
             self.store.clone(), self.source_scope.clone(), self.originals.clone(),
-            self.native.clone(), defaults, tools,
+            self.native.clone(), defaults, tools, additional_helpers,
         )?;
         Ok(self)
     }
+
 
     pub fn compose(
         mut self,
@@ -708,6 +747,26 @@ fn installed_operation_unavailable(stage: &'static str, error: &OperationAuthori
 }
 
 impl InstalledApplicationPolicy {
+    /// Helper effects use their one canonical setup deadline, never a review TTL.
+    fn allowance_deadline(
+        &self, association: &InputAuthorityAssociation,
+        purpose: LocalPolicyPurpose, now_ms: u64,
+    ) -> Result<u64, OperationAuthorizationError> {
+        if purpose == LocalPolicyPurpose::Operation {
+            if let Some(deadline) = self.originals.helper_operation_deadline(association)
+                .map_err(mcp_control_error)?
+            {
+                if now_ms >= deadline {
+                    return Err(OperationRefused::new(OperationRefusalKind::Denied).into());
+                }
+                return Ok(deadline);
+            }
+        }
+        // Ordinary work and already-admitted controllers retain their existing
+        // policy lifetime. Native grant/restriction minima still apply to all.
+        Ok(now_ms.saturating_add(60_000))
+    }
+
     /// The actual activation/component machine is read locally under the
     /// enclosing native publication. BeginClose uses that same publication.
     /// This method performs no file reads and retains no permission snapshot.
@@ -959,7 +1018,7 @@ impl AdmittedWorkPolicyOwner for InstalledApplicationPolicy {
         // its custody; activation close is not last-controller revocation.
         Ok(WorkOwnerAllowance {
             restrictions: ExecutionRestrictions::unrestricted(),
-            expires_at_ms: now_ms.saturating_add(60_000),
+            expires_at_ms: self.allowance_deadline(association, purpose, now_ms)?,
         })
     }
 }
@@ -1218,12 +1277,13 @@ impl OperationPolicyOwner for InstalledApplicationPolicy {
             }
             _ => return Err(OperationAuthorizationError::Unavailable),
         };
-        Ok(LocalPolicyAllowance {
+        let allowance = LocalPolicyAllowance {
             operation_values: std::iter::once(values).chain(connector_value).collect(),
             restrictions: ExecutionRestrictions::unrestricted(),
-            expires_at_ms: now_ms.saturating_add(60_000),
+            expires_at_ms: self.allowance_deadline(association, purpose, now_ms)?,
             review_tier: OperationReviewTier::R1,
-        })
+        };
+        Ok(allowance)
     }
 }
 

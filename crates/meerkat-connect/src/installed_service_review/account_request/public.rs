@@ -2,13 +2,14 @@
 //! No account is invented and no standalone realm finalizer is composed here.
 
 use super::*;
-use crate::service_install::PublicServiceSelection;
+use crate::service_install::{ConnectorSelectionError, PublicServiceSelection};
 use crate::approval::ApprovalPresenter;
 use crate::stdio::PromptBridge;
 use std::{collections::BTreeSet, future::Future, sync::atomic::{AtomicBool, Ordering}, time::Duration};
 use meerkat_core::McpServerConfig;
 use meerkat_toolkit::setup::SETUP_PUBLIC_SERVICE_REQUEST;
 use toolkit_mobkit::private_originals::InstalledServiceTask;
+mod batch;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -48,7 +49,11 @@ struct PublicReply {
 
 /// Custody of this actual native invocation, separate from account sign-in.
 /// The selected task and login cannot be decoded from model arguments.
-pub(crate) struct InstalledPublicRequest {
+pub(crate) enum InstalledPublicRequest {
+    Single(InstalledPublicSingleRequest),
+    Batch(batch::InstalledPublicBatchRequest),
+}
+pub(crate) struct InstalledPublicSingleRequest {
     selected: PublicServiceSelection,
     config: McpServerConfig,
     selection: PublicSelection,
@@ -59,15 +64,44 @@ pub(crate) struct InstalledPublicRequest {
 }
 impl InstalledPublicRequest {
     pub(crate) fn console_task(&self) -> Option<&InstalledServiceTask> {
+        let task = match self { Self::Single(value) => value.task.as_ref(), Self::Batch(value) => value.task.as_ref() };
+        task.filter(|task| task.console_login().is_some())
+    }
+    pub(crate) async fn closed(&mut self) {
+        match self { Self::Single(value) => value.response.closed().await, Self::Batch(value) => value.response.closed().await }
+    }
+}
+impl InstalledPublicSingleRequest {
+    fn console_task(&self) -> Option<&InstalledServiceTask> {
         self.task.as_ref().filter(|task| task.console_login().is_some())
     }
-    pub(crate) async fn closed(&mut self) { self.response.closed().await; }
 }
 
 fn unavailable() -> ToolError {
     ToolError::unavailable(SETUP_PUBLIC_SERVICE_REQUEST,
         meerkat_core::ToolUnavailableReason::TemporarilyUnavailable)
 }
+
+/// Shared singleton/batch selection feedback, after the caller's native check.
+/// This only projects the existing owner's refusal; it performs no setup work.
+pub(crate) fn select_public_job(
+    checked: &Arc<CheckedInstalls>, realm: &RealmLocator, session: &SessionId, job_id: &str,
+) -> Result<PublicServiceSelection, ToolError> {
+    checked.public_selection(realm, session, job_id).map_err(|error| {
+        let job = json!(job_id);
+        let reason = match error {
+            ConnectorSelectionError::Unconfirmed => format!(
+                "Job {job} has no current reconciled selection in this helper session. If this is an existing job from this setup session, inspect it with setup_job using the same job_id and call setup_reconcile when reconciliation is available. A succeeded job alone does not confirm its retained receipt. Do not reinstall to remedy this refusal. Unknown, foreign or stale jobs remain refused. This request has not entered access review."),
+            ConnectorSelectionError::MetadataRequired { family, profile } => {
+                let help = json!({"family": family, "profile": profile});
+                format!(
+                    "Job {job} needs current library operation metadata. Call setup_help with {help} after the current setup_check; help read before that check is not retained for this selection. Then retry the public request with the same job, exact raw operation names, intended consumer agent and requested lifetime. Do not reinstall. This request has not entered access review.")
+            }
+        };
+        ToolError::InvalidArguments { name: SETUP_PUBLIC_SERVICE_REQUEST.into(), reason }
+    })
+}
+
 fn invalid() -> ToolError {
     ToolError::InvalidArguments { name: SETUP_PUBLIC_SERVICE_REQUEST.into(),
         reason: "Provide one exact reconciled public job, raw operations, intended consumer agent and explicit lifetime. Commands, credentials, accounts and authority are not accepted.".into() }
@@ -91,18 +125,26 @@ fn parse(raw: &str) -> Result<PublicProposal, ToolError> {
 pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
     context: &ToolDispatchContext, plan: Option<&ResolvedToolExecutionPlan>,
 ) -> Result<ToolDispatchOutcome, ToolError> {
+    if serde_json::from_str::<Value>(call.args.get()).ok().is_some_and(|value| value.get("services").is_some()) {
+        return batch::dispatch(owner, call, context, plan).await;
+    }
     if context.origin_session_id() != Some(&owner.session)
         || context.work_authorization().is_none() || context.retained_work().is_none()
     { return Err(ToolError::access_denied(call.name)); }
     let mut current = context.check_tool_authorization(call, plan)?.unwrap_or_else(|| context.clone());
     let proposal = parse(call.args.get())?;
-    let selected = owner.checked.public_selection(&owner.realm, &owner.session, &proposal.job_id)
-        .map_err(|_| unavailable())?;
+    let selected = select_public_job(&owner.checked, &owner.realm, &owner.session, &proposal.job_id)?;
     let selection = PublicSelection { operations: proposal.operations.into_iter().collect(),
         agent: proposal.agent, expires_in_ms: proposal.expires_in_ms, tool_policy: proposal.tool_policy };
+    let permitted = selected.public_operations().map_err(|_| unavailable())?;
+    if !selection.operations.is_subset(&permitted) {
+        let names = serde_json::to_string(&permitted).map_err(|_| unavailable())?;
+        return Err(ToolError::InvalidArguments { name: call.name.into(), reason: format!(
+            "operations must contain exact raw MCP tool names from the current checked selection. Use operation_tools values, not declaration IDs from its keys. Permitted raw names: {names}. Select only the operations needed for this task, keeping the same job, agent and requested lifetime. This request has not entered access review.") });
+    }
     let config = selected.public_configuration(&selection.operations).map_err(|_| unavailable())?;
     let prepared = match &owner.tasks {
-        Some(tasks) => tasks.prepare_captured_consumer(call, &current, plan).await,
+        Some(tasks) => tasks.prepare_public_service(call, &current, plan).await,
         None => Ok(None),
     };
     if let Some(refreshed) = current.check_tool_authorization(call, plan)? { current = refreshed; }
@@ -129,11 +171,12 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
     if task.console_login().is_none() || selected.public_configuration(&selection.operations).ok().as_ref() != Some(&config) {
         return Err(ToolError::access_denied(call.name));
     }
+    require_console_tool_policy(call.name, &config, &selection.operations, selection.tool_policy.as_ref())?;
     let entry = current.reviewed_entry_ticket(call, plan)?;
     let (checks, mut requests) = mpsc::channel::<oneshot::Sender<bool>>(1);
     let (response, receive) = oneshot::channel();
-    owner.public_requests.as_ref().ok_or_else(unavailable)?.try_send(InstalledPublicRequest { selected, config, selection,
-        task: Some(task), entry, current: CurrentRequest(checks), response }).map_err(|_| unavailable())?;
+    owner.public_requests.as_ref().ok_or_else(unavailable)?.try_send(InstalledPublicRequest::Single(InstalledPublicSingleRequest { selected, config, selection,
+        task: Some(task), entry, current: CurrentRequest(checks), response })).map_err(|_| unavailable())?;
     tokio::pin!(receive);
     let response = loop {
         tokio::select! { biased;
@@ -155,20 +198,36 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
 
 pub fn installed_public_service_request_definition() -> ToolDef {
     ToolDef::new(SETUP_PUBLIC_SERVICE_REQUEST,
-        "Request public service access for the exact waiting task. The selected host uses its application policy or protected Console review. A requires_action result names needed human access review and is not success. Reconcile the installed package or retained remote HTTP export job first. Requires explicit authentication kind none and exact raw names from current library publisher metadata, the selected package canonical manifest, or the retained remote recipe declaration; absence of a native connector is insufficient. Supply only job id, raw operations, intended consumer agent and explicit expires_in_ms (null leaves the task deadline as the limit). Authorized access retains a new instruction and a task-scoped live attachment grant through the existing original-task owner. It never saves realm configuration, creates an account, invokes the service or establishes readiness. A separate public-request capability is required.",
-        json!({"type":"object","additionalProperties":false,"required":["job_id","operations","agent","expires_in_ms"],
+        "Request public service access for the exact waiting task. The selected host uses its application policy or protected Console review. A requires_action result names needed human access review and is not success. Reconcile the installed package or retained remote HTTP export job first. Requires explicit authentication kind none and exact raw names from current library publisher metadata, the selected package canonical manifest, or the retained remote recipe declaration; absence of a native connector is insufficient. Use operation_tools values as raw names, not its declaration-ID keys. For one service supply job_id and raw operations. In an integrated Console, for 2-8 public services needed by this one acquisition, supply services as an array of exact {job_id, operations} members instead. The services form is Console-only in this version. The set must have distinct MCP server targets; protected Console reviews the complete set, and one continuation enters only after every attachment is usable. When the host has selected a current configured setup capability, this same review also shows fresh task-specific setup authority and the exact metadata scope for both agents and sessions. That optional warm path lets the continued task request another public integration through the same live helper; each later service set needs a new access review and fresh grants, including any earlier connection selected again. Without that capability, this continuation cannot request another integration. This does not enable authenticated-service carry-forward or helper reset. Supply intended consumer agent and explicit expires_in_ms (null leaves the task deadline as the limit). If trusted application delegation does not handle the request, protected Console review requires explicit tool_policy with a non-null catalog consequence and coverage of every selected exposed tool name. These are proposals for the same protected review, not authority. Authorized access retains a new instruction and a task-scoped live attachment grant through the existing original-task owner. It never saves realm configuration, creates an account, invokes the service or establishes readiness. A separate public-request capability is required.",
+        { let mut singleton = json!({"type":"object","additionalProperties":false,"required":["agent","expires_in_ms"],
             "properties":{"job_id":{"type":"string"},"agent":consumer_agent_schema(),
                 "expires_in_ms":{"type":["integer","null"],"minimum":1},
                 "tool_policy":tool_policy_schema(),
-                "operations":{"type":"array","minItems":1,"maxItems":128,"uniqueItems":true,
-                    "items":{"type":"string","minLength":1,"maxLength":128}}}}))
+                "operations":{"type":"array","description":"Exact raw MCP tool names: operation_tools values, not declaration-ID keys. Select only the needed subset.","minItems":1,"maxItems":128,"uniqueItems":true,
+                    "items":{"type":"string","minLength":1,"maxLength":128}}}});
+          let services = json!({"type":"array","description":"Console-only: for a multi-service acquisition, supply this instead of top-level job_id and operations. The strict parser requires exactly one form and a complete tool_policy.","minItems":2,"maxItems":8,
+              "items":{"type":"object","additionalProperties":false,"required":["job_id","operations"],
+                  "properties":{"job_id":{"type":"string"},"operations":singleton["properties"]["operations"]}}});
+          singleton["properties"]["services"] = services;
+          singleton })
 }
 
 impl InstalledAccountRequests {
     /// Same enrollment, prompt transport and native entry custody as account
     /// requests, with no account state or callback work on this branch.
     pub(crate) async fn present_public_console<F: Future<Output = ()>>(
-        &mut self, mut request: InstalledPublicRequest,
+        &mut self, request: InstalledPublicRequest,
+        presenter: &mut Option<ApprovalPresenter>, bridge: PromptBridge,
+        refresh: &console::Refresh<'_>, decision: &console::CaptureDecision<'_>, closed: F,
+    ) -> Result<bool, ConnectError> {
+        match request {
+            InstalledPublicRequest::Single(request) => self.present_public_single_console(request, presenter, bridge, refresh, decision, closed).await,
+            InstalledPublicRequest::Batch(request) => self.present_public_batch_console(request, presenter, bridge, refresh, decision, closed).await,
+        }
+    }
+
+    async fn present_public_single_console<F: Future<Output = ()>>(
+        &mut self, mut request: InstalledPublicSingleRequest,
         presenter: &mut Option<ApprovalPresenter>, bridge: PromptBridge,
         refresh: &console::Refresh<'_>, decision: &console::CaptureDecision<'_>, closed: F,
     ) -> Result<bool, ConnectError> {
@@ -262,7 +321,7 @@ impl InstalledServiceReview {
         let request = public_review_request(selected, config, selection)?;
         let operations = selection.operations.iter().cloned().map(toolkit_package::Id::new)
             .collect::<Result<BTreeSet<_>, _>>().map_err(|_| refused("The public operations are invalid"))?;
-        let task = task.prepare_no_connector_review_with_tool_policy(config, operations, selection.expires_in_ms, request, selection.tool_policy.clone())
+        let task = task.prepare_public_instruction(config, operations, selection.expires_in_ms, request, selection.tool_policy.clone())
             .await.map_err(|_| refused("The waiting task cannot be offered for public service approval"))?;
         check()?;
         let record = self.approvals.review_access_cancellable(task.request().clone(),
@@ -319,6 +378,8 @@ fn public_review_request(selected: &PublicServiceSelection, config: &McpServerCo
     selection: &PublicSelection,
 ) -> Result<ApprovalRequest, ConnectError> {
     let body = public_review_body(selected, config, selection)?;
+    require_console_tool_policy(SETUP_PUBLIC_SERVICE_REQUEST, config, &selection.operations, selection.tool_policy.as_ref())
+        .map_err(|error| refused(error.to_string()))?;
     Ok(ApprovalRequest {
         requester: ApprovalPrincipalId::new("connect-installed-setup-agent").map_err(|error| refused(error.to_string()))?,
         owner: ApprovalOwnerRef::Session { session_id: selected.session().clone() },

@@ -80,6 +80,7 @@ pub fn compose_installed_service_review(
     compose_with_auth(adapter, auth, realm, session, approvals)
 }
 
+
 fn compose_with_auth(
     adapter: Arc<meerkat::McpRouterAdapter>,
     auth: Arc<ConnectorAuth>,

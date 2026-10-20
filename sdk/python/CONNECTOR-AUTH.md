@@ -13,10 +13,14 @@ source readback now binds final head `d945f2d4522798f59248763d4a1657236dc44fab`
 and merge `983d1c846665da5c41eeda43a8ce1f69ea4936b6`. Their inspected connector
 APIs are identical, including the Python start/complete/cancel/status methods
 consumed here. This readback does not rerun the earlier tests or qualify native
-integration. The current Connect baseline, Meerkat `0.8.51` / MobKit `0.8.47`,
-does not contain the merged connector login owner or its HostAuthService APIs.
-Do not enable this path on that baseline. See the [final source map](../../docs/verification/20261008-connect-service-account/OWNER-MAP.md)
+integration. The baseline inspected on that date, Meerkat `0.8.51` / MobKit
+`0.8.47`, lacks the merged connector login owner and its HostAuthService APIs.
+Do not enable this path on that historical baseline. See the
+[dated source map](../../docs/verification/20261008-connect-service-account/OWNER-MAP.md)
 and the preserved [earlier consumer review](../../docs/coordination/20261005-connector-oauth-consumer/REVIEW.md).
+See [ordinary CLI and Console setup](../../docs/site/guides/manage-connections.mdx#ordinary-cli-and-console-setup)
+for Connect's broader acquisition journey. A completed service-acquisition case
+does not establish a native OAuth provider composition for this adapter.
 
 ## Attach once to the host's existing step
 
@@ -60,10 +64,13 @@ and exercise it. This callback has no permissive default. Parsing a control or
 matching a reference is not authorization.
 
 `protected_presenter=None` disables opening and omits the sign-in control from
-the projection. Supplying a function alone proves no protection. The real host
-must keep the sign-in page, URL, state, code and callback out of agent browser,
-shell, screenshot, MCP and computer-use observation and control. A new window,
-system browser or mock presenter does not establish that separation.
+the projection. The host authenticates the person, revalidates the exact offer
+and destination, and keeps auth-page content, credentials, state and callback
+material out of model/tool observations and diagnostics. A supplied function,
+new window or successful browser launch does not prove those properties.
+Connect permits a host administered by agents; it requires no separate inaccessible
+machine or protected-service placement. The presenter uses that host's supported
+browser or system ceremony.
 
 ## Use the existing dispatcher and projection
 
@@ -146,7 +153,7 @@ rolls back a completed effect. Call `binding.shutdown()` only for explicit host
 shutdown, not in an HTTP-request or panel-disposal `finally` block. Lost cancel
 replies stay unconfirmed; a false native `cancelled` value is not success.
 
-## Profile limits and the remaining native work
+## Profile limits and qualification
 
 This transport binds `127.0.0.1` on an ephemeral port with a bounded local HTTP
 callback. It does not claim compatibility with Slack's fixed callback profile or
@@ -159,17 +166,19 @@ the admitted account and stable context after a shared refresh. The Python SDK
 methods consumed here return no bearer credential and supply no private service
 request bridge.
 
-Provider-specific ceremony remains a separate integration question. The merged
-high-level strategy supplies account verification and optional native nonce
-custody; its discovered authorize/exchange/refresh profile has no Google
-offline/consent or client-secret configuration hook, or Slack-specific exchange
+Provider-specific ceremony remains a separate integration question. In the
+2026-10-08 source snapshot, the high-level strategy supplies account verification
+and optional native nonce custody; its discovered authorize/exchange/refresh
+profile has no Google offline/consent or client-secret configuration hook, or
+Slack-specific exchange
 format hook. Lower-level native flow, descriptor verification and atomic commit
 APIs exist, but a supported provider composition and refresh continuity must be
 bound before use. The existing stateless Google helper is not automatically
-plugged into that owner. Toolkit awaits the selected consumable native release
-and the private same-account request-use composition for the Services borrowed
-HTTPX client. No token export to the model, ambient account fallback or second
-credential store is introduced.
+plugged into that owner. That source review does not qualify a released native
+provider composition or private same-account request use through the Services
+borrowed HTTPX client. Qualify the selected provider and native revision together
+before claiming that path works. No token export to the model, ambient account
+fallback or second credential store is introduced.
 
 Verification is in [the finite source evidence](../../docs/verification/20261005-connector-auth-source/).
 It covers public SDK framing, target continuity, uncertainty, host admission,

@@ -110,9 +110,24 @@ never bypasses their process owner.
 For ordinary Agent Plugins, add `"plugin_inspection": true` with a compatible
 `package_inspector`. The combined release's host preparation option
 `--enable-plugin-inspection` checks that support and writes both fields.
-`setup_inspect_plugin` takes a direct `staged_id` plus explicit paths such as
-`["./plugin.json", "./mcp.json", "./skills/example/SKILL.md"]`. It returns exact
-public text, canonical diagnostics and a retained `plugin_source` reference.
+`setup_inspect_plugin` takes a direct `staged_id` and exactly one of `inventory`
+or `files`. Begin with `{"staged_id":"ordinary","inventory":"./"}`, then
+inventory observed directories such as `./skills`, the chosen skill directory
+and its references. The same host-pinned canonical reader returns a complete,
+sorted list of direct children: relative `path`, `kind` (`file`, `directory`,
+`symlink` or `special`), and `byte_length` only for files. Symlink rows disclose
+no target. Inventories contain no text, source digest or `plugin_source` and
+retain no source evidence. They allow at most 256 entries, 1024 UTF-8 bytes per
+path, 64 KiB total path bytes and 15 selected-directory components (16 for a
+child). Unsafe, oversized or observably changing directories return no partial
+success. Unsupported inventory in an older pinned inspector reports
+`plugin_inspection_unavailable`; it says nothing about package validity or
+readiness.
+
+After discovering names, request explicit `files`, always including
+`./plugin.json`, plus relevant observed paths such as `./mcp.json`, a skill's
+`SKILL.md` and its references. Only this variant returns exact public text,
+canonical diagnostics and a retained `plugin_source` reference.
 The plugin need not contain a Toolkit namespace. Guidance-only packages need
 no MCP file; unrecognized extension namespaces remain opaque.
 
@@ -165,6 +180,93 @@ remain declarations; they do not grant permission. The host separately supplies
 any references needed for the selected document; full activation still requires truthful host composition. The profile
 does not authorize selected-server execution, credentials, account access,
 frontends, native attachment or business calls.
+
+## Select an explicit Node build
+
+This optional development path is not part of Connect 0.9.0. It uses the existing check, software-effect review, install job and
+readback owners. There is no new build agent or Rust manifest field. The exact
+[version-1 plan and host profile](../../crates/toolkit-package/NODE-INSTALL.md#build-selected-source-with-an-explicit-plan)
+define inputs, literal commands, outputs, limits and raw hash conventions.
+
+The host adds an optional top-level field to `selected-install.json`:
+
+```json
+{
+  "node_build": {
+    "path": "/absolute/host/node-build-profile.json",
+    "sha256": "EXACT_RAW_BUILD_PROFILE_SHA256"
+  }
+}
+```
+
+This is a fragment of the existing selected profile, not a replacement for its
+required fields. It requires `installer` and the `node` validator, plus the
+host-selected Node/npm pair. The profile bytes are snapshotted and rechecked;
+referenced tool paths remain on the execution host. Preparation can supply this
+field through the [optional flag pair](HOST-PREPARATION.md#add-selected-node-build-support).
+Omitting it leaves the original no-build behavior. Agents cannot replace this
+host profile through setup tool arguments.
+
+1. Read `setup_state.node_build`. When `available` is true, `planning` contains
+   executable/file IDs, hashes and useful names, exact target, limits and
+   environment key names. It omits host paths and environment values. An
+   unavailable toolchain requires a host correction; an in-progress operation
+   may temporarily prevent this read. The projection does not execute a build.
+2. Author the plan from those IDs and actual package instructions. Use
+   `profile: "node"`. With inline `package_json` and `activation_json` or
+   `declaration_json`, also send the exact `build_plan_json` string. With staged
+   metadata/hash fields, put the plan at `closure/node-build-plan` and send its
+   `build_plan_sha256`. Mixed inline/hash forms and Python/MCPB build plans refuse.
+3. For ordinary staged or inline source metadata, bind that same digest as
+   `node-build-plan` in the existing pinned closure. For live `acquired_source`,
+   keep the existing minimal source form: the Controller reobserves the original
+   acquisition and adds this separately authored plan digest to its materialized
+   declaration. The original acquisition files and receipt remain unchanged.
+4. Review the returned `build` projection with the existing package, entrypoint
+   and destination. It includes literal commands, exact input/tool hashes,
+   fixed nonsecret environment, target, output mappings and limits. These are
+   retained in the same effect identified by `validation_id` and `effect_sha256`.
+   Only the separate `setup_selected_install` call admits that checked effect.
+
+Approved commands may execute selected package build scripts as trusted local
+code. npm lifecycle scripts remain disabled; the installer does not implicitly
+choose or enable a script. An explicit build is not MCP server launch, native
+attachment, authentication or operation permission. Qualification includes one
+actual local source-addon build and fresh Node consumer on Linux, alongside the
+focused setup controls. General npm build support remains unqualified.
+
+### Node build receipt binding
+
+The original successful installer reply is captured under the host's selected
+execution deadline before any mutable `ready/installed.json` read. Output and
+its canonical parsed form must each fit the existing 2 MiB capture bound;
+overflow, a missing or malformed reply, mismatch or failed process leaves the
+job unconfirmed, retaining its files. A truncated reply cannot become success.
+
+A successful live result has `build_receipt_binding: "original_installer_reply"`
+and `installer_reply` with these observations:
+
+- `raw_sha256` and `bytes`: the actual installer-returned stdout.
+- `semantic_sha256`: SHA-256 of the parsed receipt serialized with the compact,
+  sorted-key, ASCII JSON plus newline convention shown in the Node contract.
+- `receipt_sha256`: the actual raw ready-file hash, recorded only after matching
+  semantics and successful verification. The result also retains that file pin.
+
+The installer's indented receipt file and stdout need not have identical bytes.
+The first readback compares semantics against the original reply, then retains
+the raw file pin. If that first readback fails, a later successful live
+`setup_reconcile` stores the verified raw pin back into the same owned intent.
+Subsequent live observations check both bindings. No observation rewrites the
+historical unconfirmed job as a success.
+
+A live attempt that never observed a valid original reply cannot later claim a
+matched build through same-session reconciliation. Replaying its install call
+returns the same job. The existing explicit retry proposes a fresh destination
+and review; it does not install or erase the old evidence. Explicit cold recovery
+can report `build_receipt_binding: "current_receipt_consistency_only"` after the
+existing inert checks, because the recovered request does not preserve the live
+stdout observation. That is current file consistency, not historical provenance.
+
 
 ## Enable self-contained MCPB bundles
 
@@ -289,9 +391,11 @@ still exposes every tool the selected server supplies.
    successful result supplies the existing installer's `ready/mcp.json` and
    `ready/installed.json` paths and a bounded readback observation.
 
-The agent cannot pass arbitrary filesystem paths, executables, destinations or
-host permissions to these tools. It still chooses the integration, entrypoint
-and literal arguments within the canonical profile. Package metadata and tool
+The agent cannot replace the host-selected executable identities, installation
+destination or permissions through these tools. It chooses the integration,
+entrypoint and literal arguments within the selected profile. Optional build
+plans also carry reviewed literal command arguments; they do not provide
+filesystem confinement. Package metadata and tool
 descriptions are untrusted data, never permission to expand the task.
 
 File-based check accepts metadata documents up to 1 MiB each. Inline documents

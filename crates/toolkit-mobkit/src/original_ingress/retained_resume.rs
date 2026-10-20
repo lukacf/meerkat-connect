@@ -30,6 +30,20 @@ impl ToolkitOriginalOwner {
         let owner = Arc::downgrade(self);
         Arc::new(move |runtime, input, evidence| {
             let owner = owner.upgrade().ok_or_else(unavailable)?;
+            owner.validate_retained_sources(runtime, evidence)?;
+            // Preserve native Pending/withdrawn/cancelled classification before
+            // requiring a live admitted client. Otherwise this eager local pin
+            // check masks Pending and makes permanent withdrawal retry forever.
+            for original in evidence.contributors() {
+                let claims = original.association().candidate();
+                meerkat_runtime::meerkat_machine::require_source_original_live(
+                    owner.grants.as_ref(), owner.as_ref(), &claims.ingress_namespace,
+                    &claims.original_work, &claims.logical_executor, claims.represented_subject.as_ref(),
+                ).map_err(|error| match error {
+                    meerkat_runtime::input_authority::NativeAdmissionError::Refused(refusal) => RetainedResumeError::Refused(refusal),
+                    meerkat_runtime::input_authority::NativeAdmissionError::Readiness(reason) => RetainedResumeError::Readiness(reason),
+                })?;
+            }
             let controller = owner.retained_input_controller(runtime, evidence)?;
             // The native composition rechecks every retained contributor and
             // its current invocation/grant basis. The enclosing native host
@@ -43,6 +57,29 @@ impl ToolkitOriginalOwner {
             )
             .check(runtime, input, evidence)
         })
+    }
+
+    fn validate_retained_sources(&self, runtime: &LogicalRuntimeId,
+        evidence: &RetainedResumeEvidence,
+    ) -> Result<(), RetainedResumeError> {
+        if evidence.identity().controller().is_none() || evidence.contributors().is_empty() {
+            return Err(malformed());
+        }
+        let originals = self.originals.try_lock().map_err(|_| unavailable())?;
+        for original in evidence.contributors() {
+            let association = original.association();
+            let claims = association.candidate();
+            if claims.target.logical_runtime.as_str() != runtime.to_string() { return Err(malformed()); }
+            let known = originals.iter().find(|entry|
+                entry.names(&claims.ingress_namespace.realm, &claims.original_work));
+            let retained = match known {
+                Some(OriginalRecord::Bound(held)) => Some(&held.association),
+                Some(OriginalRecord::UnboundCancellation { withdrawn_association, .. }) => withdrawn_association.as_ref(),
+                None => None,
+            };
+            if retained.is_some_and(|retained| retained != association) { return Err(malformed()); }
+        }
+        Ok(())
     }
 
     fn retained_input_controller(
@@ -74,6 +111,10 @@ impl ToolkitOriginalOwner {
             let controller = held.controller.as_ref().ok_or(RetainedResumeError::Readiness(
                 ControllerReadinessFailure::UnsupportedScope,
             ))?;
+            self.check_workflow_member(runtime, association, Some(controller)).map_err(|error| match error {
+                meerkat_runtime::input_authority::NativeAdmissionError::Refused(refusal) => RetainedResumeError::Refused(refusal),
+                meerkat_runtime::input_authority::NativeAdmissionError::Readiness(reason) => RetainedResumeError::Readiness(reason),
+            })?;
             if controller.selection() != selection {
                 return Err(malformed());
             }

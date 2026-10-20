@@ -118,10 +118,19 @@ can inherit environment variables from their client; no environment isolation
 is implied. The installed directory is not relocatable because the emitted
 launch paths are absolute.
 
-The entire server endpoint is exposed. Declared operations, effects, resource
+An ordinary client importing this bare configuration sees the entire server
+endpoint. Declared operations, effects, resource
 limits and lifecycle contracts remain metadata for their respective host
 owners. The configuration is not an operation filter, grant, account-readiness
 receipt or proof that the endpoint obeys those declarations.
+
+Connect's native protected attachment can separately enforce an approved subset
+of exact MCP tool names through the host's current grant and MCP access
+configuration. Separate write tools do not, by themselves, rule out that
+protected read subset. An operation-name allowlist does not constrain query
+semantics, prevent startup effects or provide filesystem confinement. Inspect
+the allowed tools and startup behavior, and require the host's separate resource
+controls. See [operation selection and runtime enforcement](../../sdk/consumer-setup/METADATA.md#operation-selection-and-runtime-enforcement).
 
 ## Verify, uncertain results and restore
 

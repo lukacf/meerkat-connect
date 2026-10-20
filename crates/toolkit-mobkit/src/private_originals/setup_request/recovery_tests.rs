@@ -169,32 +169,25 @@ impl ToolkitStore for RecoveryStore {
     }
 }
 
-async fn fault_source(
-    fixture: &ContinuationFixture,
-    store: Arc<RecoveryStore>,
-) -> Arc<PrivateOriginals> {
-    // Same canonical database, grant owner, installed routes, machine and runtime.
-    // Only the returned storage observation is faulted, never authorization.
-    let source = Arc::new(
-        PrivateOriginals::new(
-            fixture.scope.clone(),
-            store,
-            fixture.source.owner.clone(),
-            fixture.source.routes().unwrap().to_vec(),
-        )
-        .await
-        .unwrap(),
-    );
-    source
-        .host_lifetime
-        .set(Arc::downgrade(fixture.lifetime()))
-        .unwrap();
-    source.bind_machine(fixture.machine.clone()).unwrap();
-    source
-        .bind_identity_runtime(&fixture.source.bound_identity_runtime().unwrap())
-        .unwrap();
-    source
+async fn fault_fixture() -> (ContinuationFixture, Arc<RecoveryStore>) {
+    let selected = Arc::new(Mutex::new(None));
+    let capture = selected.clone();
+    let fixture = ContinuationFixture::for_service_input_with_source(Box::new(move |store| {
+        let fault = RecoveryStore::new(store);
+        *capture.lock().unwrap() = Some(fault.clone());
+        fault
+    })).await;
+    let store = selected.lock().unwrap().take();
+    match store {
+        Some(store) => (fixture, store),
+        None => {
+            let cleanup = fixture.shutdown().await;
+            assert!(cleanup.is_ok(), "{cleanup:?}");
+            panic!("source store was not selected during actual fixture construction");
+        }
+    }
 }
+
 fn decide(request: ApprovalRequest, choice: ApprovalDecision) -> ApprovalRecord {
     let approvals = ApprovalService::new();
     let pending = approvals.request(request).unwrap();
@@ -243,10 +236,9 @@ async fn retry(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_review_recovers_precommit_and_committed_source_error_with_failed_readback() {
     for mode in [1, 2] {
-        let fixture = ContinuationFixture::for_service_input().await;
+        let (fixture, store) = fault_fixture().await;
         let result = AssertUnwindSafe(Box::pin(async {
-            let store = RecoveryStore::new(fixture.store.clone());
-            let source = fault_source(&fixture, store.clone()).await;
+            let source = fixture.source.clone();
             let (_, submission) = prepared(&fixture, &format!("public-source-fault-{mode}")).await;
             let prepared = source
                 .prepare_local_controller_setup(submission.clone())
@@ -291,6 +283,7 @@ async fn public_review_recovers_precommit_and_committed_source_error_with_failed
         }))
         .catch_unwind()
         .await;
+        drop(store);
         let cleanup = fixture.shutdown().await;
         assert!(cleanup.is_ok(), "{cleanup:?}");
         if let Err(error) = result {
@@ -301,10 +294,9 @@ async fn public_review_recovers_precommit_and_committed_source_error_with_failed
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_review_recovers_native_parent_after_issued_record_cas_failure() {
-    let fixture = ContinuationFixture::for_service_input().await;
+    let (fixture, store) = fault_fixture().await;
     let result = AssertUnwindSafe(Box::pin(async {
-        let store = RecoveryStore::new(fixture.store.clone());
-        let source = fault_source(&fixture, store.clone()).await;
+        let source = fixture.source.clone();
         let (_, submission) = prepared(&fixture, "public-parent-cas").await;
         let prepared = source
             .prepare_local_controller_setup(submission.clone())
@@ -349,6 +341,7 @@ async fn public_review_recovers_native_parent_after_issued_record_cas_failure() 
     }))
     .catch_unwind()
     .await;
+    drop(store);
     let cleanup = fixture.shutdown().await;
     assert!(cleanup.is_ok(), "{cleanup:?}");
     if let Err(error) = result {
@@ -358,10 +351,9 @@ async fn public_review_recovers_native_parent_after_issued_record_cas_failure() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_review_never_reissues_unknown_pending_or_prompts_after_failed_exact_read() {
-    let fixture = ContinuationFixture::for_service_input().await;
+    let (fixture, store) = fault_fixture().await;
     let result = AssertUnwindSafe(Box::pin(async {
-        let store = RecoveryStore::new(fixture.store.clone());
-        let source = fault_source(&fixture, store.clone()).await;
+        let source = fixture.source.clone();
         let (_, submission) = prepared(&fixture, "public-parent-unknown").await;
         let prepared = source
             .prepare_local_controller_setup(submission.clone())
@@ -411,6 +403,7 @@ async fn public_review_never_reissues_unknown_pending_or_prompts_after_failed_ex
     }))
     .catch_unwind()
     .await;
+    drop(store);
     let cleanup = fixture.shutdown().await;
     assert!(cleanup.is_ok(), "{cleanup:?}");
     if let Err(error) = result {
@@ -420,10 +413,9 @@ async fn public_review_never_reissues_unknown_pending_or_prompts_after_failed_ex
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_review_preserves_denial_then_explicit_review_and_refuses_changed_context() {
-    let fixture = ContinuationFixture::for_service_input().await;
+    let (fixture, store) = fault_fixture().await;
     let result = AssertUnwindSafe(Box::pin(async {
-        let store = RecoveryStore::new(fixture.store.clone());
-        let source = fault_source(&fixture, store.clone()).await;
+        let source = fixture.source.clone();
         let (_, submission) = prepared(&fixture, "public-denial-retry").await;
         let owner = owner(&source, &fixture).await;
         let prepared = source
@@ -475,6 +467,7 @@ async fn public_review_preserves_denial_then_explicit_review_and_refuses_changed
     }))
     .catch_unwind()
     .await;
+    drop(store);
     let cleanup = fixture.shutdown().await;
     assert!(cleanup.is_ok(), "{cleanup:?}");
     if let Err(error) = result {
@@ -484,10 +477,9 @@ async fn public_review_preserves_denial_then_explicit_review_and_refuses_changed
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_review_refuses_changed_session_revocation_and_cancellation_without_reprompt() {
-    let fixture = ContinuationFixture::for_service_input().await;
+    let (fixture, store) = fault_fixture().await;
     let result = AssertUnwindSafe(Box::pin(async {
-        let store = RecoveryStore::new(fixture.store.clone());
-        let source = fault_source(&fixture, store.clone()).await;
+        let source = fixture.source.clone();
         let (_, submission) = prepared(&fixture, "public-current-parent").await;
         let captured = source
             .prepare_local_controller_setup(submission.clone())
@@ -556,6 +548,7 @@ async fn public_review_refuses_changed_session_revocation_and_cancellation_witho
     }))
     .catch_unwind()
     .await;
+    drop(store);
     let cleanup = fixture.shutdown().await;
     assert!(cleanup.is_ok(), "{cleanup:?}");
     if let Err(error) = result {
@@ -565,10 +558,9 @@ async fn public_review_refuses_changed_session_revocation_and_cancellation_witho
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_review_uses_exact_decision_with_unrelated_rows_and_failed_listing() {
-    let fixture = ContinuationFixture::for_service_input().await;
+    let (fixture, store) = fault_fixture().await;
     let result = AssertUnwindSafe(Box::pin(async {
-        let store = RecoveryStore::new(fixture.store.clone());
-        let source = fault_source(&fixture, store.clone()).await;
+        let source = fixture.source.clone();
         let (_, submission) = prepared(&fixture, "public-direct-decision").await;
         let captured = source
             .prepare_local_controller_setup(submission.clone())
@@ -685,6 +677,7 @@ async fn public_review_uses_exact_decision_with_unrelated_rows_and_failed_listin
     }))
     .catch_unwind()
     .await;
+    drop(store);
     let cleanup = fixture.shutdown().await;
     assert!(cleanup.is_ok(), "{cleanup:?}");
     if let Err(error) = result {

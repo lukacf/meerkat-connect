@@ -587,14 +587,26 @@ where
                     return Ok(None);
                 }
                 let owner_stopped = std::sync::atomic::AtomicBool::new(false);
-                let shown = present_approval_outcome(prompt, input, output, async {
+                let (shown, completed) = {
+                    let shown = present_approval_outcome(prompt, input, output, async {
+                        tokio::select! { biased;
+                            signal = interrupt.as_mut() => {
+                                owner_stopped.store(true, std::sync::atomic::Ordering::SeqCst); signal
+                            },
+                            _ = caller.closed() => Ok(()),
+                        }
+                    });
+                    tokio::pin!(shown);
                     tokio::select! { biased;
-                        signal = interrupt.as_mut() => {
-                            owner_stopped.store(true, std::sync::atomic::Ordering::SeqCst); signal
-                        },
-                        _ = caller.closed() => Ok(()),
+                        shown = shown.as_mut() => (Some(shown), None),
+                        result = future.as_mut() => (None, Some(result)),
                     }
-                }).await;
+                };
+                if let Some(result) = completed {
+                    input.check_cleanup().map_err(|e| ConnectError::native("Restore account review input", e))?;
+                    return result.map(Some);
+                }
+                let shown = shown.expect("presentation completed without the review");
                 if !matches!(shown, Ok(ApprovalPromptOutcome::Continue)) {
                     if let Some(cancel) = &cancel_review { cancel.retire(); }
                     let owner_closed = owner_stopped.load(std::sync::atomic::Ordering::SeqCst)
@@ -637,6 +649,130 @@ mod tests {
         future::{poll_fn, ready},
         task::Poll,
     };
+
+    struct NoticedOutput {
+        bytes: Vec<u8>,
+        shown: std::sync::Arc<tokio::sync::Notify>,
+    }
+    impl Write for NoticedOutput {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.shown.notify_one();
+            Ok(())
+        }
+    }
+    fn expiring_account_request(session: &SessionId, lifetime: Duration) -> ApprovalRequest {
+        ApprovalRequest {
+            requester: requester().unwrap(),
+            owner: ApprovalOwnerRef::Session { session_id: session.clone() },
+            resource: ApprovalResourceRef {
+                kind: ApprovalResourceKind::Runtime,
+                id: ApprovalResourceId::new("test-account"),
+            },
+            proposed_action: ApprovalProposedAction {
+                kind: ApprovalActionKind::Other,
+                summary: "Exact private account review".into(),
+                body: Some(json!({"verified":"account"})),
+            },
+            risk: ApprovalRisk::Medium,
+            request_body: Some(json!({"verified":"account"})),
+            allowed_decisions: [ApprovalDecision::Approve, ApprovalDecision::Deny].into_iter().collect(),
+            expires_at: Some((SystemTime::now() + lifetime).into()),
+            metadata: Default::default(),
+            request_provenance: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_account_review_expires_while_shown_and_reuses_input_and_presenter() {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let directory = tempfile::tempdir().unwrap();
+            let (approvals, presenter) = LocalApprovals::create(directory.path()).unwrap();
+            let session = SessionId::new();
+            approvals.bind_session(&session).unwrap();
+            let mut presenter = Some(presenter);
+            let (lines, receive_lines) = mpsc::channel(1);
+            let mut input = TerminalInput::scripted(receive_lines);
+            let (mut caller, _reply) = oneshot::channel();
+            let stop = std::future::pending::<io::Result<()>>();
+            tokio::pin!(stop);
+            let (control, cancellation) = ReviewCancellation::channel();
+            let review = approvals.review_access_cancellable(
+                expiring_account_request(&session, Duration::from_millis(500)),
+                cancellation.cancelled(), |id| cancellation.approval_created(id));
+            let mut output = Vec::new();
+            let result = drive_review_cancellable(review, &approvals, &mut presenter,
+                &mut input, &mut output, &mut caller, stop.as_mut(), Some(control)).await;
+            assert!(matches!(result, Err(ConnectError::InvalidInput(ref message))
+                if message == "The access review expired without a returned decision"));
+            assert_eq!(String::from_utf8(output).unwrap().matches("Type 'approve ").count(), 1);
+            assert!(presenter.is_some());
+            approvals.check_session(&session).unwrap();
+            input.check_cleanup().unwrap();
+            lines.send(Ok("input after expiry".into())).await.unwrap();
+            assert_eq!(input.recv().await.unwrap().unwrap(), "input after expiry");
+
+            let (control, cancellation) = ReviewCancellation::channel();
+            let (created, receive_created) = oneshot::channel();
+            let review = approvals.review_access_cancellable(
+                expiring_account_request(&session, Duration::from_secs(120)),
+                cancellation.cancelled(), |id| {
+                    cancellation.approval_created(id);
+                    created.send(id.clone()).unwrap();
+                });
+            let shown = std::sync::Arc::new(tokio::sync::Notify::new());
+            let mut output = NoticedOutput { bytes: Vec::new(), shown: shown.clone() };
+            let driver = drive_review_cancellable(review, &approvals, &mut presenter,
+                &mut input, &mut output, &mut caller, stop.as_mut(), Some(control));
+            let respond = async {
+                shown.notified().await;
+                let id = receive_created.await.unwrap();
+                lines.send(Ok(format!("deny {id}"))).await.unwrap();
+            };
+            let (result, ()) = tokio::join!(driver, respond);
+            assert_eq!(result.unwrap().unwrap().status, meerkat_core::ApprovalStatus::Denied);
+            assert_eq!(String::from_utf8(output.bytes).unwrap().matches("Type 'approve ").count(), 1);
+            assert!(presenter.is_some());
+            approvals.check_session(&session).unwrap();
+            input.check_cleanup().unwrap();
+        }).await.expect("displayed terminal account review did not settle at its actual approval deadline");
+    }
+
+    #[tokio::test]
+    async fn terminal_account_review_cancellation_while_shown_joins_and_releases_input() {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let directory = tempfile::tempdir().unwrap();
+            let (approvals, presenter) = LocalApprovals::create(directory.path()).unwrap();
+            let session = SessionId::new();
+            approvals.bind_session(&session).unwrap();
+            let mut presenter = Some(presenter);
+            let (lines, receive_lines) = mpsc::channel(1);
+            let mut input = TerminalInput::scripted(receive_lines);
+            let (mut caller, _reply) = oneshot::channel();
+            let (stop, receive_stop) = oneshot::channel();
+            let interrupt = async { receive_stop.await.unwrap() };
+            tokio::pin!(interrupt);
+            let (control, cancellation) = ReviewCancellation::channel();
+            let review = approvals.review_access_cancellable(
+                expiring_account_request(&session, Duration::from_secs(120)),
+                cancellation.cancelled(), |id| cancellation.approval_created(id));
+            let shown = std::sync::Arc::new(tokio::sync::Notify::new());
+            let mut output = NoticedOutput { bytes: Vec::new(), shown: shown.clone() };
+            let driver = drive_review_cancellable(review, &approvals, &mut presenter,
+                &mut input, &mut output, &mut caller, interrupt.as_mut(), Some(control));
+            let cancel = async { shown.notified().await; stop.send(Ok(())).unwrap(); };
+            let (result, ()) = tokio::join!(driver, cancel);
+            assert!(result.unwrap().is_none());
+            assert!(presenter.is_none());
+            assert!(approvals.check_session(&session).is_err());
+            input.check_cleanup().unwrap();
+            lines.send(Ok("input after cancellation".into())).await.unwrap();
+            assert_eq!(input.recv().await.unwrap().unwrap(), "input after cancellation");
+        }).await.expect("displayed terminal cancellation did not join its review and input");
+    }
 
     #[tokio::test]
     async fn cancelled_private_review_drops_queued_prompt_then_joins_same_native_review() {

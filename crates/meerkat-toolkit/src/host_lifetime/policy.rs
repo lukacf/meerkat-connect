@@ -105,6 +105,10 @@ pub struct CompiledNativeHost {
 pub struct CompiledAgentSetupCapability {
     pub route: Id,
     pub parent: GrantLineageRef,
+    /// Optional exact host-selected helper for this route. Absence retains the
+    /// application's legacy singleton helper; this does not select a grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helper: Option<MobMemberBinding>,
     /// Explicit correlated helper operations, each with an independent parent.
     /// These are compiler-selected references, not permission or live grants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

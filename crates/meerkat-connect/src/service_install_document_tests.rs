@@ -269,3 +269,21 @@ fn selected_secret_metadata_preserves_source_and_refuses_malformed_or_downgraded
         assert!(selected_service_metadata(&document).is_err());
     }}
 }
+
+
+#[test]
+fn public_operation_feedback_never_accepts_ambiguous_selected_metadata() {
+    for software in [false,true] {
+        let mut proposal=selected_secret_proposal("python",software);
+        proposal["declared_service"]["authentication"]=json!({"kind":"none"});
+        proposal["declared_service"].as_object_mut().unwrap().remove("environment_secret_slots");
+        proposal["declared_service"]["operation_tools"]=json!({"read-item":"actual_read","list-items":"actual_list"});
+        let metadata=selected_service_metadata(&proposal).unwrap().unwrap();
+        assert_eq!(metadata.names().get("read-item").map(String::as_str),Some("actual_read"));
+        for names in [json!({"read-item":"actual_read","list-items":"actual_read"}),
+            json!({"read-item":""}),json!({})] {
+            proposal["declared_service"]["operation_tools"]=names;
+            assert!(selected_service_metadata(&proposal).is_err());
+        }
+    }
+}

@@ -45,7 +45,63 @@ pub(super) struct ApprovedServiceReady {
     pub admission: ApprovedServiceInput,
 }
 
+/// Terminal cause reported by the exact native attachment owner. This is
+/// diagnostic provenance; it proves neither process cleanup nor B non-entry.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovedServiceAttachmentFailure { Failed, Rejected }
+
+/// Bounded host projection of the exact attempt's typed setup observation.
+/// This carries no server text and proves no cause, readiness, cleanup or
+/// permission. The host must supply it with the same terminal observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovedServiceAttachmentObservation {
+    pub phase: ApprovedServiceAttachmentPhase,
+    pub class: ApprovedServiceAttachmentClass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovedServiceAttachmentPhase {
+    Launch,
+    Initialize,
+    ToolDiscovery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ApprovedServiceAttachmentClass {
+    SpawnFailed {},
+    Closed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit: Option<ApprovedServiceAttachmentExit>,
+    },
+    Rejected {},
+    ProtocolError {},
+    TimedOut {},
+    Unknown {},
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ApprovedServiceAttachmentExit {
+    Code(i32),
+    Signal(i32),
+}
+
 impl SetupSnapshot {
+    pub fn service_attachment_failure(&self) -> Option<ApprovedServiceAttachmentFailure> {
+        self.record.service_attachment_failure
+    }
+    pub fn service_attachment_observation(&self) -> Option<ApprovedServiceAttachmentObservation> {
+        self.record.service_attachment_observation
+    }
     pub fn approved_service(&self) -> Option<&ApprovedServiceSelection> {
         self.record.approved_service.as_ref()
     }
@@ -61,6 +117,38 @@ impl SetupStore<'_> {
     pub async fn reject_approved_service(
         &self, snapshot: &SetupSnapshot, owner: &dyn ApprovedServiceSourceOwner,
     ) -> Result<SetupSnapshot, SetupError> {
+        self.reject_service(snapshot, owner, None, None).await
+    }
+
+    /// The host calls this only after observing Failed/Rejected from the exact
+    /// current native attempt. Durable non-entry still comes from the source
+    /// owner, never from that failure enum or an absent admission lookup.
+    pub async fn reject_failed_service_attachment(
+        &self, snapshot: &SetupSnapshot, owner: &dyn ApprovedServiceSourceOwner,
+        failure: ApprovedServiceAttachmentFailure,
+    ) -> Result<SetupSnapshot, SetupError> {
+        self.reject_failed_service_attachment_with_observation(snapshot, owner, failure, None)
+            .await
+    }
+
+    /// Retains only a host-supplied typed projection, alongside the same failure
+    /// and durable non-entry proof. Missing metadata preserves the legacy bytes.
+    pub async fn reject_failed_service_attachment_with_observation(
+        &self,
+        snapshot: &SetupSnapshot,
+        owner: &dyn ApprovedServiceSourceOwner,
+        failure: ApprovedServiceAttachmentFailure,
+        observation: Option<ApprovedServiceAttachmentObservation>,
+    ) -> Result<SetupSnapshot, SetupError> {
+        self.reject_service(snapshot, owner, Some(failure), observation)
+            .await
+    }
+
+    async fn reject_service(
+        &self, snapshot: &SetupSnapshot, owner: &dyn ApprovedServiceSourceOwner,
+        failure: Option<ApprovedServiceAttachmentFailure>,
+        observation: Option<ApprovedServiceAttachmentObservation>,
+    ) -> Result<SetupSnapshot, SetupError> {
         self.scope.check(&snapshot.request)?;
         let selected = snapshot.approved_service().ok_or(SetupError::Rejected)?;
         let detail = owner.observe_rejection(snapshot, selected).await?
@@ -75,6 +163,12 @@ impl SetupStore<'_> {
             expected_revision: state.revision, detail_ref: digest(&detail)?.to_string(), now,
         })?;
         record.detail = Some(detail);
+        // Existing terminal checks and the generated deadline guard still apply.
+        // Never attach this cause to another terminal outcome.
+        if record.state.lifecycle_phase == AcquisitionPhase::Unavailable {
+            record.service_attachment_failure = failure;
+            record.service_attachment_observation = observation;
+        }
         self.commit(snapshot, record, effects, None).await
     }
 

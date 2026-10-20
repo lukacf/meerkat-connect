@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/toolkit-package", "crates/toolkit-store"]
-exclude = ["native-candidate", "crates/meerkat-connect", "crates/toolkit-catalog", "crates/meerkat-toolkit", "crates/toolkit-mobkit", "crates/toolkit-mcp"]
+members = ["crates/toolkit-package"]
+exclude = ["native-candidate", "crates/meerkat-connect", "crates/toolkit-catalog", "crates/meerkat-toolkit", "crates/toolkit-mobkit", "crates/toolkit-mcp", "crates/toolkit-store"]
 resolver = "2"
 
 [workspace.package]

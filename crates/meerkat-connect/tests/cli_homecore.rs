@@ -2113,18 +2113,27 @@ impl Cli {
         }
         let fixture_binary = fixture.join("bin/meerkat-connect");
         let source = fixture_binary.as_path();
+        // A supplied production artifact may be built without test-support.
+        // Its delivery owner supplies the exact receipt hash, as for stock rkat.
+        // All ordinary fixtures keep the Cargo-built executable as their pin.
+        let expected_cli_sha256 = supplied.then(|| std::env::var_os("CONNECT_SUPPLIED_CLI_SHA256"))
+            .flatten().map(|value| value.into_string().expect("CLI SHA-256 must be UTF-8"))
+            .unwrap_or_else(|| file_digest(Path::new(env!("CARGO_BIN_EXE_meerkat-connect"))));
+        assert_eq!(expected_cli_sha256.len(), 64);
+        assert!(expected_cli_sha256.bytes().all(|byte|
+            byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
         assert_eq!(
             file_digest(source),
-            file_digest(Path::new(env!("CARGO_BIN_EXE_meerkat-connect"))),
-            "the selected fixture must contain this exact pin-built executable"
+            expected_cli_sha256,
+            "the selected fixture must contain the exact expected executable bytes"
         );
         let binary = bin.join("meerkat-connect");
         let reuse_prefix = binary.exists();
         if supplied || reuse_prefix {
             assert_eq!(
                 file_digest(&binary),
-                file_digest(Path::new(env!("CARGO_BIN_EXE_meerkat-connect"))),
-                "root must copy this exact pin-built executable into the supplied prefix"
+                expected_cli_sha256,
+                "the installed prefix must contain the exact expected executable bytes"
             );
         } else {
             fs::copy(source, &binary).unwrap();
@@ -2490,8 +2499,8 @@ default_model = "cli-fixture"
         let operations = ["setup_state", "setup_jobs", "setup_job", "setup_catalog",
             "setup_catalog_entry", "setup_catalog_route", "setup_prepare", "setup_retry_prepare",
             "setup_help", "setup_check", "setup_stop", "setup_reconcile", "setup_recovery_manifest",
-            "setup_guide", "setup_inspect_package", "setup_acquire_python", "setup_search_node",
-            "setup_acquire_node", "setup_inspect_acquired", "setup_recipes", "setup_recipe",
+            "setup_guide", "setup_inspect_package", "setup_inspect_schema", "setup_acquire_python", "setup_search_node",
+            "setup_acquire_node", "setup_acquire_node_prebuilt", "setup_inspect_acquired", "setup_recipes", "setup_recipe",
             "setup_remember_remote", "setup_export_recipe"];
         server.access = Some(meerkat_core::McpServerAccess::allowing(operations));
         let prior: Vec<_> = expected.tools.mcp_servers.iter().enumerate()

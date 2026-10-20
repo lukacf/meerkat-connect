@@ -512,16 +512,38 @@ must support the existing lifecycle replay contract. Reopening the database
 retains selection but loses live attachments and handles: the host explicitly
 attaches the selected implementation or stages a fresh candidate in that instance.
 
-Failed or cancelled activation leaves the prior local route intact. It does not
-prove that the candidate's lifecycle had no external effects. A file-sync error
+If `activate` fails or is cancelled, the prior local route is retained. This does
+not prove that the candidate's lifecycle had no external effects. A file-sync error
 after SQLite commit can leave a new durable owner selected but unpublished and
 therefore detached. If the owner ID is unchanged, the previous local attachment
 remains available. Only the exact still-current handle can retry that transition;
 no rollback or lifecycle compensation is implied.
 
-`await close_activation(handle)` deactivates only its selected candidate. It
-does not clear durable selection or make attachment status a readiness signal.
-Already entered provider calls can finish on their original implementation.
+`await close_activation(handle)` removes its candidate's exact local dispatch
+route before awaiting provider deactivation. Durable selection and owner history
+remain intact. Failed or cancelled deactivation propagates to the host and leaves
+that route detached; it does not prove external cleanup. Already entered provider
+calls can finish on their original implementation and retain their receipts.
+The existing egress owner skips detached senders without spending attempts or
+cancelling pending output. Its normal expiry and explicit output cancellation
+policies still apply.
+
+Lifecycle operations serialize per stable sender, so closing one sender does not
+block or invalidate dispatch through an independent sender. Explicit
+`await commit_activation(handle)` can reactivate the still-current candidate and
+waits for an in-flight close of that sender. Synchronous `attach_active` refuses
+the same implementation object while cleanup awaits deactivation, with
+`sender implementation is still deactivating`; use the async activation path to
+wait. This also applies when an activation loses its durable owner comparison:
+it fences any matching local route before deactivating its candidate, without
+changing the winning durable selection. A different synchronous attachment can
+supersede the closing candidate,
+and the old close cannot remove that replacement. Superseded handles remain
+invalid. Attachment status remains a local routing fact, not readiness or
+provider cleanup proof.
+This scheduling independence assumes independently owned implementations. If
+multiple stable sender IDs intentionally share an implementation or provider
+resource, the host must coordinate that shared dependency's lifecycle.
 The [sender replacement verification](../../docs/verification/20261004-sender-staging/REPORT.md)
 records local SQLite, failure, cancellation and stale-handle evidence. Existing
 host installations retain their previous bytes until explicitly updated.

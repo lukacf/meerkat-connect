@@ -79,6 +79,9 @@ async fn unavailable_identity_binding_preserves_slot_and_success_still_denies_re
     let originals = installed.originals.clone();
     let store = installed.store.clone();
     let scope = installed.source_scope.clone();
+    let policy_rows = store.list_records(&scope, None, 32).await.unwrap();
+    assert_eq!(policy_rows.len(), 1);
+    assert_eq!(policy_rows[0].data.schema, "toolkit.application-service-tool-policy");
     let (_signal, closed) = tokio::sync::watch::channel(false);
     let owner = Arc::new(owner);
     let host = installed.compose(owner.clone(), PrivateHostClosed(closed));
@@ -112,7 +115,8 @@ async fn unavailable_identity_binding_preserves_slot_and_success_still_denies_re
         assert!(matches!(host.bind_identity_runtime(&mut native).await,
             Err(GatewayHostError::Unavailable)));
         assert!(matches!(originals.bound_identity_runtime(), Err(PrivateOriginalError::Unavailable)));
-        assert!(store.list_records(&scope, None, 1).await.unwrap().is_empty());
+        assert_eq!(store.list_records(&scope, None, 32).await.unwrap(), policy_rows,
+            "identity binding preserves the exact selected service policy row");
         assert!(service.list(SessionQuery::default()).await.unwrap().is_empty());
         assert_eq!(fs::read(directory.join("grants.jsonl")).unwrap(), grant_bytes);
         drop(candidate);
@@ -137,7 +141,8 @@ async fn unavailable_identity_binding_preserves_slot_and_success_still_denies_re
             Err(GatewayHostError::Denied)));
         assert!(originals.bound_identity_runtime().is_ok());
         assert!(owner.validate_current_selection().is_ok());
-        assert!(store.list_records(&scope, None, 1).await.unwrap().is_empty());
+        assert_eq!(store.list_records(&scope, None, 32).await.unwrap(), policy_rows,
+            "identity binding preserves the exact selected service policy row");
         assert!(service.list(SessionQuery::default()).await.unwrap().is_empty());
         assert_eq!(fs::read(directory.join("grants.jsonl")).unwrap(), grant_bytes);
 
@@ -214,6 +219,9 @@ async fn ordinary_access_hook_control(prejoined: bool) {
     let originals = installed.originals.clone();
     let store = installed.store.clone();
     let scope = installed.source_scope.clone();
+    let policy_rows = store.list_records(&scope, None, 32).await.unwrap();
+    assert_eq!(policy_rows.len(), 1);
+    assert_eq!(policy_rows[0].data.schema, "toolkit.application-service-tool-policy");
     let (signal, logins) = crate::private_host::ConsoleLogins::fixture_owner();
     let host = installed.compose(Arc::new(owner), PrivateHostClosed(signal.subscribe()))
         .with_console_logins(logins).unwrap();
@@ -243,8 +251,8 @@ async fn ordinary_access_hook_control(prejoined: bool) {
         let foreign = LocalAuthorizationPublication::new();
         if prejoined { access.join_authorization_publication(foreign.clone()).unwrap(); }
         native.set_access_controller(access);
-        // Only InstalledConsoleIngress adds a strong originals reference in
-        // this hook. There are no members or concurrent source readers here.
+        // The source task has not started before identity binding. A rejected
+        // hook adds no owner; a successful hook may retain the same source.
         let before_ingress = Arc::strong_count(&originals);
         if prejoined {
             let (_, source_stamp) = originals.authorization_publication().observe(|| ()).unwrap();
@@ -261,9 +269,11 @@ async fn ordinary_access_hook_control(prejoined: bool) {
         }
         host.bind_identity_runtime(&mut native).await.unwrap();
         assert!(originals.bound_identity_runtime().is_ok());
-        assert_eq!(Arc::strong_count(&originals), before_ingress + 1);
+        // The retained recovery task may also hold this same source during a round.
+        assert!(Arc::strong_count(&originals) >= before_ingress + 1);
         assert_hook_joined_source_publication(&originals, &native);
-        assert!(store.list_records(&scope, None, 1).await.unwrap().is_empty());
+        assert_eq!(store.list_records(&scope, None, 32).await.unwrap(), policy_rows,
+            "identity binding preserves the exact selected service policy row");
         assert!(service.list(SessionQuery::default()).await.unwrap().is_empty());
         assert_eq!(fs::read(directory.join("grants.jsonl")).unwrap(), grant_bytes);
     }).catch_unwind().await;
@@ -344,14 +354,23 @@ async fn prepared_access_hook_control(prejoined: bool) {
     let tools = acquisition::InstalledAcquisitionTools::new(Duration::from_secs(10)).unwrap();
     let participant = prepared.gateway_runtime(registration, tools,
         [toolkit_package::Id::new("hook-fixture-viewer").unwrap()].into()).unwrap();
-    let machine = Arc::new(MeerkatMachine::ephemeral()
-        .with_local_grant_authorization(prepared.take_configuration().unwrap()).unwrap());
-    let service = Arc::new(EphemeralSessionService::new(
-        FactoryAgentBuilder::new(AgentFactory::minimal().comms(true), Config::default()), 1,
-    ));
+    // HostJobSource requires the same real runtime store/jobs as this service.
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+        Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+    let persistence = meerkat::PersistenceBundle::new_with_local_grant_authorization(
+        Arc::new(meerkat::SqliteSessionStore::open(directory.join("prepared-native-sessions.sqlite3")).unwrap()),
+        runtime_store.clone(), Arc::new(meerkat::MemoryBlobStore::new()),
+        prepared.take_configuration().unwrap(),
+    ).unwrap();
+    let jobs = persistence.job_store();
+    let (service, machine) = meerkat::surface::build_runtime_backed_service(
+        FactoryAgentBuilder::new(AgentFactory::minimal().comms(true), Config::default()),
+        1, persistence,
+    ).unwrap();
+    let service = Arc::new(service);
     let spec = MobBootstrapSpec::new(definition(), MobStorage::in_memory(), service.clone())
-        .with_session_runtime_adapter(machine).unwrap()
-        .with_declared_ephemeral_mob_storage();
+        .with_session_runtime_adapter(machine).unwrap().with_declared_ephemeral_mob_storage()
+        .with_runtime_delivery(meerkat_mobkit::mob_handle_runtime::MobRuntimeDelivery::new(runtime_store, jobs));
     let spec = participant.prepare_bootstrap(spec).unwrap();
     let mut native = UnifiedRuntime::bootstrap(spec, MetaConfig {
         modules: Vec::new(),
@@ -395,7 +414,9 @@ async fn prepared_access_hook_control(prejoined: bool) {
 
     // The preparation has not installed a host lifetime. Join the same actual
     // native runtime before releasing its retained preparation/store owners.
+    participant.begin_custody_close();
     let report = native.shutdown().await;
+    participant.join_custody_close().await.unwrap();
     assert!(report.cleanup_completed());
     assert!(match report.mob_terminal_shutdown {
         MobTerminalShutdownOutcome::Completed(report) => report.is_clean(),
@@ -414,3 +435,6 @@ async fn prepared_identity_hook_joins_present_controller_to_source_publication()
 async fn prepared_identity_hook_refuses_prejoined_controller_before_binding() {
     prepared_access_hook_control(true).await;
 }
+
+#[path = "identity_binding/custody_recovery_tests.rs"]
+mod custody_recovery_tests;

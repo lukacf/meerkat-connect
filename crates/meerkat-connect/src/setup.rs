@@ -42,6 +42,7 @@ pub(crate) const PREPARATION_TOOLS: &[&str] = &[
     "setup_recovery_manifest",
     "setup_guide",
     "setup_inspect_package",
+    "setup_inspect_schema",
 ];
 
 // Host-selected service preparation may research and retain inert Python/npm
@@ -50,6 +51,7 @@ pub(crate) const ACQUISITION_TOOLS: &[&str] = &[
     "setup_acquire_python",
     "setup_search_node",
     "setup_acquire_node",
+    "setup_acquire_node_prebuilt",
     "setup_inspect_acquired",
     "setup_recipes",
     "setup_recipe",
@@ -356,7 +358,7 @@ mod tests {
             (Some(ToolAccessPolicy::ReadOnly), true),
             (
                 Some(ToolAccessPolicy::DenyList(
-                    ["setup_inspect_package"].into_iter().collect(),
+                    ["setup_inspect_package", "setup_inspect_schema"].into_iter().collect(),
                 )),
                 false,
             ),
@@ -370,9 +372,14 @@ mod tests {
                 policy.permits_call("setup_inspect_package", ToolMutationClass::ReadOnly),
                 permitted
             );
+            assert_eq!(
+                policy.permits_call("setup_inspect_schema", ToolMutationClass::ReadOnly),
+                permitted
+            );
             for name in [
                 "setup_acquire_python",
                 "setup_acquire_node",
+                "setup_acquire_node_prebuilt",
                 "setup_selected_check",
                 "setup_selected_install",
                 "setup_remember_remote",

@@ -29,6 +29,7 @@ class StarterTests(unittest.TestCase):
         fixture.BootstrapTests.setUp(self)
         self.files["setup/bootstrap_host.py"] = ((SOURCE / "bootstrap_host.py").read_bytes(), 0o644)
         self.files["setup/acquired_inspection.py"] = ((SOURCE / "acquired_inspection.py").read_bytes(), 0o644)
+        self.files["setup/public_github.py"] = ((SOURCE / "public_github.py").read_bytes(), 0o644)
         self.files["setup/local_session.py"] = ((SOURCE / "local_session.py").read_bytes(), 0o644)
         self.files["selected/bin/toolkit-package-inspect"] = (b"# not executed\n", 0o755)
         self.publish_release()
@@ -204,6 +205,12 @@ class StarterTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("product_prepare", SOURCE / "product/prepare.py")
         product = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(product)
+        # This archive deliberately uses a synthetic macOS target. Admit that
+        # fixture in this product module only, without changing global platform
+        # functions or the real starter/bootstrap/preparation implementation.
+        patch.object(product, "HOST_TARGETS", {
+            (product.platform.system(), product.platform.machine()): "macos-arm64"
+        }).start()
         def load_fixture_starter(code, namespace):
             builtins.exec(code, namespace)
             # The existing test interpreter need not be the bundled CPython
@@ -300,6 +307,43 @@ class StarterTests(unittest.TestCase):
                     with self.assertRaisesRegex(product.ResourceError, "npm_acquisition_scope_mismatch"):
                         product.prepare(root, destination, threading.Event())
                     self.assertFalse((destination / "product-mcp.json").exists())
+
+    def test_product_node_build_profile_reaches_archived_preparer_as_exact_snapshot(self):
+        product, root, _ = self.npm_product()
+        # Profile meaning is checked by the selected installer at build review.
+        # This control exercises the actual product/start/bootstrap/profile path
+        # with a controlled setup-client installer and no selected build.
+        raw = b'{ "scope": "transport_fixture", "external_tool": "/host/selected/tool" }\n'
+        path = root / "node-build-profile.json"
+        path.write_bytes(raw)
+        manifest = product.verify_resources.return_value[0]
+        manifest["entries"] = [{"path": path.name, "kind": "file", "mode": 0o644,
+                                "size": len(raw), "sha256": fixture.sha(raw)}]
+        product.prepare(root, self.destination, threading.Event())
+        output = self.destination / "config"
+        receipt = json.loads((output / "prepared.json").read_bytes())
+        profile = json.loads((output / "selected-install.json").read_bytes())
+        self.assertEqual((output / path.name).read_bytes(), raw)
+        self.assertEqual(profile["node_build"], {"path": str(output / path.name), "sha256": fixture.sha(raw)})
+        self.assertEqual(receipt["files"][path.name], fixture.sha(raw))
+        self.assertEqual(receipt["runtimes"]["node_build_profile"]["sha256"], fixture.sha(raw))
+        self.assertIn("node", profile["validators"])
+        self.assertTrue((self.destination / "client/verify-entered").is_file())
+        self.assertFalse((self.destination / "session").exists())
+        self.assertFalse((self.destination / "local-session").exists())
+        self.assertTrue((self.destination / "product-mcp.json").is_file())
+        path.write_bytes(b"source changed after preparation")
+        self.assertEqual((output / path.name).read_bytes(), raw)
+
+    def test_product_node_build_changed_inventory_refuses_before_starter(self):
+        product, root, _ = self.npm_product()
+        path = root / "node-build-profile.json"
+        path.write_bytes(b'{}\n')
+        product.verify_resources.return_value[0]["entries"] = [{"path": path.name,
+            "kind": "file", "mode": 0o644, "size": path.stat().st_size, "sha256": "0" * 64}]
+        with self.assertRaisesRegex(product.ResourceError, "bundled_node_build_profile_unavailable"):
+            product.prepare(root, self.destination, threading.Event())
+        self.assertFalse(self.destination.exists())
 
     def test_product_npm_group_null_partial_escape_missing_or_linked_refuses_before_starter(self):
         product, root, group = self.npm_product()

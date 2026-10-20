@@ -113,8 +113,7 @@ impl LlmClient for Model {
             Ok(LlmEvent::ToolCallComplete { id:id.into(), name:name.into(), args:json!({}), meta:None }),
             Ok(LlmEvent::UsageUpdate { usage:meerkat_core::TurnUsage::host_declared(
                 Provider::OpenAI, &request.model, meerkat_core::Usage::default()) }),
-            Ok(LlmEvent::Done { outcome:meerkat::LlmDoneOutcome::Success {
-                stop_reason:meerkat::StopReason::ToolUse } }),
+            Ok(LlmEvent::Done { outcome:meerkat::LlmDoneOutcome::success(meerkat::StopReason::ToolUse) }),
         ]))
     }
     fn provider(&self) -> Provider { Provider::OpenAI }

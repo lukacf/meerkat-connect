@@ -380,13 +380,15 @@ async fn service_composition_keeps_frontends_absent_and_unchecked_install_refuse
     // These are the constructors used by main.rs and the service console.
     // Inert acquisition is available in both; it never grants installation.
     for composition in [&terminal, &lazy] {
-        for (caller, can_acquire_python, can_acquire_node) in [
-            (None, true, true),
-            (Some(meerkat_core::ops::ToolAccessPolicy::ReadOnly), false, false),
+        for (caller, can_acquire_python, can_acquire_node, can_acquire_prebuilt) in [
+            (None, true, true, true),
+            (Some(meerkat_core::ops::ToolAccessPolicy::ReadOnly), false, false, false),
             (Some(meerkat_core::ops::ToolAccessPolicy::DenyList(
-                ["setup_acquire_python"].into_iter().collect())), false, true),
+                ["setup_acquire_python"].into_iter().collect())), false, true, true),
             (Some(meerkat_core::ops::ToolAccessPolicy::DenyList(
-                ["setup_acquire_node"].into_iter().collect())), true, false),
+                ["setup_acquire_node"].into_iter().collect())), true, false, true),
+            (Some(meerkat_core::ops::ToolAccessPolicy::DenyList(
+                ["setup_acquire_node_prebuilt"].into_iter().collect())), true, true, false),
         ] {
             let mut options = crate::SessionOptions::default();
             options.build.tool_access_policy = caller;
@@ -395,6 +397,7 @@ async fn service_composition_keeps_frontends_absent_and_unchecked_install_refuse
                 options.build.tool_access_policy.unwrap()).unwrap();
             assert_eq!(policy.permits_call("setup_acquire_python", meerkat_core::ToolMutationClass::Mutating), can_acquire_python);
             assert_eq!(policy.permits_call("setup_acquire_node", meerkat_core::ToolMutationClass::Mutating), can_acquire_node);
+            assert_eq!(policy.permits_call("setup_acquire_node_prebuilt", meerkat_core::ToolMutationClass::Mutating), can_acquire_prebuilt);
             assert!(policy.permits_call("setup_search_node", meerkat_core::ToolMutationClass::ReadOnly));
             assert!(policy.permits_call("setup_inspect_acquired", meerkat_core::ToolMutationClass::ReadOnly));
         }

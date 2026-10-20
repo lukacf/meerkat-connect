@@ -157,6 +157,7 @@ fn captured_surfaces_require_final_owner_and_project_late_helper_and_member_auth
         authentication_domain: domain.clone(), event_domain: domain,
     });
     selected.native_host.members[0].setup_capability = Some(CompiledAgentSetupCapability {
+        helper: None,
         route, parent: parent[0].clone(), helper_targets: vec![],
     });
     let mut helper = phase.helper().clone();
@@ -529,8 +530,15 @@ async fn registration_fixture(root: &Path) -> (
     Arc<ApplicationSetupCompilation>, Arc<meerkat_runtime::MeerkatMachine>,
     toolkit_mobkit::installed_host::PreparedInstalledHost,
 ) {
+    registration_fixture_from_phase(root, phase(root)).await
+}
+
+async fn registration_fixture_from_phase(root: &Path, phase: ApplicationSetupCompilation) -> (
+    Arc<ApplicationSetupCompilation>, Arc<meerkat_runtime::MeerkatMachine>,
+    toolkit_mobkit::installed_host::PreparedInstalledHost,
+) {
     use toolkit_mobkit::installed_host::{PreparedInstallationOwner, operator_setup::OperatorOwnerStartup};
-    let phase = Arc::new(phase(root));
+    let phase = Arc::new(phase);
     let mut selected = phase.final_authorities.get().unwrap().owner.clone();
     selected.native_host.remote_operator = Some(meerkat_core::PrincipalRef::in_domain(
         meerkat_core::PrincipalKind::ServiceAccount, "registration-admin",
@@ -949,7 +957,7 @@ fn final_helper_catalog_projection_adds_only_requested_base_and_keeps_targets() 
     input.helper.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![target.clone()] };
     let phase = input.validate().unwrap().prepare(super::super::tests::prepared(&root)).unwrap();
     let selected = owner_selection(&phase, Some(operator));
-    let request = PreparedHelperCatalogRequest { issuance_id: EvidenceId::new("compiled-helper-catalog-parent").unwrap() };
+    let request = PreparedHelperCatalogRequest { scope: Default::default(), issuance_id: EvidenceId::new("compiled-helper-catalog-parent").unwrap() };
     // Inert output reference, not native issuance/currentness evidence.
     reference.grant_id = request.issuance_id.clone();
     let mut helper = phase.helper().clone();
@@ -988,13 +996,51 @@ fn final_helper_catalog_projection_cannot_replace_an_occupied_base() {
     input.helper.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: Some(prior), targets: vec![] };
     let phase = input.validate().unwrap().prepare(super::super::tests::prepared(&root)).unwrap();
     let selected = owner_selection(&phase, Some(operator));
-    let request = PreparedHelperCatalogRequest { issuance_id: EvidenceId::new("replacement-catalog-parent").unwrap() };
+    let request = PreparedHelperCatalogRequest { scope: Default::default(), issuance_id: EvidenceId::new("replacement-catalog-parent").unwrap() };
     let mut helper = phase.helper().clone();
     let WorkAuthorityBasis::TargetedGrantLineages { base, .. } = &mut helper.operation_basis else { unreachable!() };
     base.as_mut().unwrap()[0].grant_id = request.issuance_id.clone();
     assert!(phase.retain_authorities_with_helper_access(selected.clone(), helper, None, Some(&request)).is_err());
     assert!(phase.final_authorities.get().is_none());
     phase.retain_authorities(selected, phase.helper().clone()).unwrap();
+}
+
+#[test]
+fn final_helper_catalog_successor_parent_requires_explicit_scope_and_preserves_operation_basis() {
+    use meerkat_authorization_contracts::{evidence::EvidenceId, work_association::WorkAuthorityBasis};
+    use toolkit_mobkit::installed_host::{acquisition::ConfiguredHelperCatalogCapability,
+        preparation::{PreparedHelperCatalogRequest, PreparedHelperCatalogScope}};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let mut input = selected(&root);
+    let realm = meerkat_core::mob_realm_id(&input.helper.member.mob_id).unwrap();
+    let operator = meerkat::governed_realm::stock::StockPrincipals::for_local_operator(&realm).unwrap().operator;
+    let mut reference = input.helper.controller_parent[0].clone();
+    reference.root_authority = operator.clone();
+    input.helper.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![] };
+    let phase = input.validate().unwrap().prepare(super::super::tests::prepared(&root)).unwrap();
+    let selected = owner_selection(&phase, Some(operator));
+    let mut request = PreparedHelperCatalogRequest { scope: PreparedHelperCatalogScope::ExactSession,
+        issuance_id: EvidenceId::new("explicit-successor-catalog-parent").unwrap() };
+    reference.grant_id = request.issuance_id.clone();
+    let mut helper = phase.helper().clone();
+    helper.catalog_capability = Some(ConfiguredHelperCatalogCapability { parent: vec![reference.clone()] });
+    assert!(phase.retain_authorities_with_helper_access(selected.clone(), helper.clone(), None, None).is_err());
+    assert!(phase.retain_authorities_with_helper_access(selected.clone(), helper.clone(), None, Some(&request)).is_err());
+    request.scope = PreparedHelperCatalogScope::CurrentHelperSuccessors;
+    for change in 0..3 {
+        let mut changed = helper.clone();
+        match change {
+            0 => changed.catalog_capability.as_mut().unwrap().parent[0].grant_id = EvidenceId::new("unrequested-parent").unwrap(),
+            1 => changed.catalog_capability.as_mut().unwrap().parent[0].root_authority = phase.input.members[0].logical_owner.clone(),
+            _ => changed.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: Some(vec![reference.clone()]), targets: vec![] },
+        }
+        assert!(phase.retain_authorities_with_helper_access(selected.clone(), changed, None, Some(&request)).is_err());
+        assert!(phase.final_authorities.get().is_none());
+    }
+    phase.retain_authorities_with_helper_access(selected, helper.clone(), None, Some(&request)).unwrap();
+    assert!(phase.final_authorities.get().unwrap().helper == helper);
+    assert_eq!(helper.operation_basis, phase.input.helper.operation_basis);
 }
 
 // Read the real Core bundle composition at its public session-builder boundary.
@@ -1103,4 +1149,136 @@ async fn prepared_helper_report_identity_matches_native_bundle_mount() {
     phase
         .capture(helper_index, &surface)
         .expect("the real result bundle must match its compiler definition");
+}
+
+mod resource_aggregate;
+
+/// Actual native registration fixture for the attempt consumer controls.
+/// Selection is the same mechanical hook port as the resource tests above;
+/// only the SDK case exercises the real selected-destination callback.
+pub(crate) struct AttemptRegistrationFixture {
+    pub source_member: meerkat_core::MobMemberBinding,
+    pub member: meerkat_core::MobMemberBinding,
+    pub session: meerkat_core::SessionId,
+    pub participant: Arc<crate::application_setup::resource::SetupResourceRegistration>,
+    pub machine: Arc<meerkat_runtime::MeerkatMachine>,
+    _owner: toolkit_mobkit::installed_host::PreparedInstalledHost,
+    _authority: Arc<dyn meerkat_core::mcp_attachment::ConfiguredMcpAttachmentAuthority>,
+}
+pub(crate) async fn attempt_registration_fixture(
+    root: &Path,
+    helper_identity: Option<&str>,
+) -> AttemptRegistrationFixture {
+    let (phase, machine, owner) = if let Some(identity) = helper_identity {
+        // Select the member in compiler input before validation, helper-role
+        // projection, authority preparation or native session registration.
+        // A new SessionId alone reconstructs the same native member.
+        let mut input = selected(root);
+        let member_id = roster_member_id_for_identity(identity).to_string();
+        input.roster[1].identity =
+            meerkat_mobkit::identity_first::AgentIdentity::parse(identity).unwrap();
+        input.members[1].member.member = member_id.clone();
+        input.helper.member.member = member_id.clone();
+        input.tool_policy.members[1].member_identity = member_id;
+        input.tool_policy.members.sort_by(|a, b| a.member_identity.cmp(&b.member_identity));
+        let phase = input.validate().unwrap()
+            .prepare(super::super::tests::prepared(root)).unwrap();
+        phase.retain_owner(owner_selection(&phase, None)).unwrap();
+        registration_fixture_from_phase(root, phase).await
+    } else {
+        // Keep the already-qualified storage/failure fixture selection exact.
+        registration_fixture(root).await
+    };
+    let session = meerkat_core::SessionId::new();
+    machine.register_session(session.clone()).await.unwrap();
+    let bindings = machine.prepare_bindings(session.clone()).await.unwrap();
+    let authority = bindings.configured_mcp_attachment().cloned().unwrap();
+    let participant = phase
+        .resource
+        .registration_slots
+        .lock()
+        .unwrap()
+        .get(&session.to_string())
+        .unwrap()
+        .upgrade()
+        .unwrap();
+    phase
+        .resource
+        .select_registration(
+            &meerkat_authorization_contracts::evidence::EvidenceId::new(session.to_string())
+                .unwrap(),
+            true,
+        )
+        .unwrap();
+    authority.authorize_configured(phase.server()).unwrap();
+    AttemptRegistrationFixture {
+        source_member: phase.source_helper_member.clone(),
+        member: phase.helper().member.clone(),
+        session,
+        participant,
+        machine,
+        _owner: owner,
+        _authority: authority,
+    }
+}
+
+/// Direct-router LocalRound controls retain the ordinary compiler resource and
+/// use this existing mechanical destination hook after actual native binding.
+/// No gateway construction or reset transport handoff is implied by this port.
+#[cfg(all(unix, feature = "console"))]
+pub(crate) struct LocalRoundRegistrationFixture {
+    phase: Arc<ApplicationSetupCompilation>,
+    machine: Arc<meerkat_runtime::MeerkatMachine>,
+    _owner: toolkit_mobkit::installed_host::PreparedInstalledHost,
+    authorities: Vec<Arc<dyn meerkat_core::mcp_attachment::ConfiguredMcpAttachmentAuthority>>,
+    sessions: Vec<meerkat_core::SessionId>,
+}
+#[cfg(all(unix, feature = "console"))]
+impl LocalRoundRegistrationFixture {
+    pub(crate) fn server(&self) -> &meerkat_core::McpServerConfig { self.phase.server() }
+    pub(crate) fn member(&self) -> &meerkat_core::MobMemberBinding { &self.phase.helper().member }
+    pub(crate) async fn register(&mut self) -> meerkat_core::SessionId {
+        let session = meerkat_core::SessionId::new();
+        self.machine.register_session(session.clone()).await.unwrap();
+        self.sessions.push(session.clone());
+        let bindings = self.machine.prepare_bindings(session.clone()).await.unwrap();
+        let authority = bindings.configured_mcp_attachment().cloned().unwrap();
+        self.authorities.push(authority.clone());
+        self.phase.resource.select_registration(
+            &meerkat_authorization_contracts::evidence::EvidenceId::new(session.to_string()).unwrap(),
+            true,
+        ).unwrap();
+        authority.authorize_configured(self.server()).unwrap();
+        session
+    }
+    pub(crate) async fn retire(&mut self, session: &meerkat_core::SessionId) {
+        self.machine.unregister_session(session).await.unwrap();
+        self.sessions.retain(|s| s != session);
+    }
+    pub(crate) async fn cleanup(&mut self) -> Vec<String> {
+        let mut failures = Vec::new();
+        for session in &self.sessions {
+            if let Err(error) = self.machine.unregister_session(session).await {
+                failures.push(error.to_string());
+            }
+        }
+        self.sessions.clear();
+        failures
+    }
+}
+#[cfg(all(unix, feature = "console"))]
+pub(crate) async fn local_round_registration_fixture(
+    root: &Path, prepared: crate::resources::PreparedResources,
+    local_owner: crate::resources::LocalRoundOwner,
+) -> (LocalRoundRegistrationFixture, Arc<crate::resources::LocalRoundAttempts>) {
+    let mut phase = selected(root).validate().unwrap().prepare(prepared).unwrap();
+    let attempts = match phase.retain_local_round_owner(local_owner) {
+        Ok(attempts) => attempts,
+        Err((_owner, error)) => panic!("ordinary local preparation must match: {error}"),
+    };
+    phase.retain_owner(owner_selection(&phase, None)).unwrap();
+    let (phase, machine, owner) = registration_fixture_from_phase(root, phase).await;
+    (LocalRoundRegistrationFixture {
+        phase, machine, _owner: owner, authorities: Vec::new(), sessions: Vec::new(),
+    }, attempts)
 }

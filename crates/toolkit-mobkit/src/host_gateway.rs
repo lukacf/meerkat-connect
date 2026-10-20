@@ -6,9 +6,11 @@
 
 mod prepared_application;
 mod console_setup;
+mod local_recovery;
+pub use local_recovery::{LocalRecoveryPageRead, LocalOperatorRecoveryPolicy, LocalServiceRecovery, LocalServiceRecoveryPage, LocalServiceRecoveryResult};
 mod prepared_runtime;
 pub use prepared_runtime::PreparedGatewayRuntime;
-pub use console_setup::{ConsoleAccessPolicy, ConsoleAccessSnapshot, ConsolePageRead, ConsoleSetupBinding, ConsoleStatusPage};
+pub use console_setup::{ConsoleAccessPolicy, ConsoleRecoveryPolicy, ConsoleAccessSnapshot, ConsoleServiceRecoverySnapshot, ConsolePageRead, ConsoleSetupBinding, ConsoleStatusPage};
 pub use prepared_application::PreparedSetupApplication;
 
 use crate::{
@@ -64,12 +66,14 @@ pub struct ToolkitGatewayHost {
     setup_application: Option<PreparedSetupApplication>,
     setup_member_factory: Option<SetupMemberFactoryComposition>,
     console_routes: Option<console_setup::ConsoleRouteComposition>,
+    local_recovery: Option<LocalOperatorRecoveryPolicy>,
     // Process-local transport observation only, never an activation or grant.
     prepared_application_selected: OnceLock<()>,
     acquisition_recovery: crate::installed_host::acquisition::recovery::AcquisitionRecovery,
 }
 
 impl ToolkitGatewayHost {
+
     /// Join a trusted configured resource to the existing installed native
     /// owners before bootstrap takes them. The caller composes any existing
     /// attachment provider; the actual registration hook remains authoritative.
@@ -152,9 +156,9 @@ impl ToolkitGatewayHost {
         }
         if self.private_closed.is_closed() { return Err(HostLifetimeError::Denied); }
         self.owner.validate_current_selection()?;
-        let helper = self.acquisition.lock().map_err(|_| HostLifetimeError::Unavailable)?
-            .configured().map(|acquisition| acquisition.helper().0.clone());
-        current.application_operator_setup(self.owner.clone())?.with_helper_selection(helper)
+        let helpers = self.acquisition.lock().map_err(|_| HostLifetimeError::Unavailable)?
+            .configured().map(|acquisition| acquisition.helper_selections()).unwrap_or_default();
+        current.application_operator_setup(self.owner.clone())?.with_helper_selections(helpers)
     }
 
     /// Prepare the existing local presenter from this member's actual native
@@ -206,10 +210,10 @@ impl ToolkitGatewayHost {
             return Err(HostLifetimeError::Denied);
         }
         self.owner.validate_current_selection()?;
-        let helper = self.acquisition.lock().map_err(|_| HostLifetimeError::Unavailable)?
-            .configured().map(|acquisition| acquisition.helper().0.clone());
+        let helpers = self.acquisition.lock().map_err(|_| HostLifetimeError::Unavailable)?
+            .configured().map(|acquisition| acquisition.helper_selections()).unwrap_or_default();
         self.private_originals.as_ref().ok_or(HostLifetimeError::Unavailable)?
-            .local_operator_setup(self.owner.clone())?.with_helper_selection(helper)
+            .local_operator_setup(self.owner.clone())?.with_helper_selections(helpers)
     }
 
     /// Apply an authenticated application's exact access decision through the
@@ -469,6 +473,7 @@ impl ToolkitGatewayHost {
             setup_application: None,
             setup_member_factory: None,
             console_routes: None,
+            local_recovery: None,
             prepared_application_selected: OnceLock::new(),
             acquisition_recovery: Default::default(),
         }
@@ -673,6 +678,8 @@ impl GatewayHostComposition for ToolkitGatewayHost {
                     PrivateOriginalError::Unavailable => GatewayHostError::Unavailable,
                     _ => GatewayHostError::Denied,
                 })?;
+            originals.start_custody_recovery(runtime.mob_runtime().continuation_source_announcer())
+                .map_err(|_| GatewayHostError::Unavailable)?;
             if let Some(pins) = runtime.mob_runtime().controller_pin_source() {
                 originals.bind_controller_pin_source(pins).map_err(|_| GatewayHostError::Denied)?;
             }
@@ -726,6 +733,7 @@ impl GatewayHostComposition for ToolkitGatewayHost {
 
     fn begin_close(&self, reason: GatewayHostCloseReason) -> Result<(), GatewayHostError> {
         self.acquisition_recovery.stop();
+        if let Some(source) = &self.private_originals { source.stop_custody_recovery(); }
         match reason {
             GatewayHostCloseReason::HostDisconnected | GatewayHostCloseReason::CallerCancelled => {
                 self.owner.host_lost()
@@ -743,13 +751,30 @@ impl GatewayHostComposition for ToolkitGatewayHost {
         // initialization-failure path. An entered step retains its own owner
         // and may settle; no task abort turns uncertainty into no effect.
         self.acquisition_recovery.stop();
+        if let Some(source) = &self.private_originals { source.stop_custody_recovery(); }
         let closing = self.owner.begin_close_activation(HostCloseReason::Shutdown);
         let native_close = async {
             let closing = closing?;
             self.owner.join_close(&closing.handle).await
         };
+        let recovery_close = async {
+            // Stop above excludes new recovery work before this census,
+            // even when initialization never started the recovery worker.
+            let custody_close = async {
+                match &self.private_originals {
+                    Some(originals) => originals.join_custody_recovery().await
+                        .map_err(|_| HostLifetimeError::NotSettled),
+                    None => Ok(()),
+                }
+            };
+            // These independently retained owners must all enter their joins,
+            // including when another owner fails or does not settle promptly.
+            let (recovered, custody) = tokio::join!(
+                self.acquisition_recovery.join(), custody_close);
+            recovered.and(custody)
+        };
         let (recovery, native) = tokio::join!(
-            tokio::time::timeout(std::time::Duration::from_secs(30), self.acquisition_recovery.join()),
+            tokio::time::timeout(std::time::Duration::from_secs(30), recovery_close),
             native_close,
         );
         let settled = native.map_err(host_error)?;
@@ -769,5 +794,6 @@ impl GatewayHostComposition for ToolkitGatewayHost {
             _ = self.private_closed.wait_closed() => {},
         }
         self.acquisition_recovery.stop();
+        if let Some(source) = &self.private_originals { source.stop_custody_recovery(); }
     }
 }

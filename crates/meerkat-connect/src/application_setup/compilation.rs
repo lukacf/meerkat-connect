@@ -269,6 +269,16 @@ struct FinalAuthoritySelection {
 }
 
 impl ApplicationSetupCompilation {
+    /// Retain the owner returned by this same ordinary resource preparation,
+    /// before sharing this compiler with native registration. The returned
+    /// factory can be installed using Core's existing McpAttemptGuards API.
+    /// This does not configure a gateway or authorize a successor by itself.
+    #[cfg(all(unix, feature = "console"))]
+    pub fn retain_local_round_owner(
+        &mut self, owner: crate::resources::LocalRoundOwner,
+    ) -> Result<Arc<crate::resources::LocalRoundAttempts>, (crate::resources::LocalRoundOwner, String)> {
+        self.resource.retain_local_round(owner)
+    }
     pub fn definition(&self) -> &MobDefinition {
         &self.definition
     }
@@ -347,10 +357,23 @@ impl ApplicationSetupCompilation {
         let early = &self.input.helper;
         if (!early.controller_parent.is_empty() && helper.controller_parent != early.controller_parent)
             || (early.report_capability.is_some() && helper.report_capability != early.report_capability)
+            || (early.catalog_capability.is_some() && helper.catalog_capability != early.catalog_capability)
         { return Err("resolved helper replaces an existing parent".into()); }
         let mut unchanged = helper.clone();
         unchanged.controller_parent = early.controller_parent.clone();
         unchanged.report_capability = early.report_capability.clone();
+        if helper.catalog_capability != early.catalog_capability {
+            use toolkit_mobkit::installed_host::preparation::PreparedHelperCatalogScope;
+            let request = catalog.ok_or("unrequested helper catalog successor parent")?;
+            let added = helper.catalog_capability.as_ref().ok_or("resolved helper drops catalog parent")?;
+            let operator = selected.native_host.remote_operator.as_ref().ok_or("missing helper operator")?;
+            if request.scope != PreparedHelperCatalogScope::CurrentHelperSuccessors
+                || !matches!(early.operation_basis, meerkat_authorization_contracts::work_association::WorkAuthorityBasis::TargetedGrantLineages { base: None, .. })
+                || added.parent.len() != 1 || added.parent[0].validate().is_err()
+                || added.parent[0].grant_id != request.issuance_id || &added.parent[0].root_authority != operator
+            { return Err("resolved helper catalog parent differs from the retained request".into()); }
+            unchanged.catalog_capability = early.catalog_capability.clone();
+        }
         if helper.operation_basis != early.operation_basis {
             self.validate_helper_access_insertion(&selected, early, &helper, mcp, catalog)?;
             unchanged.operation_basis = early.operation_basis.clone();
@@ -375,6 +398,9 @@ impl ApplicationSetupCompilation {
             };
         if old_base != new_base {
             let request = catalog.ok_or("unrequested helper catalog base")?;
+            if request.scope != toolkit_mobkit::installed_host::preparation::PreparedHelperCatalogScope::ExactSession {
+                return Err("successor catalog parent is not an executable base".into());
+            }
             let added = new_base.as_ref().ok_or("resolved helper drops its base")?;
             if old_base.is_some() || added.len() != 1 || added[0].validate().is_err()
                 || added[0].grant_id != request.issuance_id || &added[0].root_authority != operator
@@ -796,4 +822,4 @@ pub(super) fn validate_final_artifacts(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

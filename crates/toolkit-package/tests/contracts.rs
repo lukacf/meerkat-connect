@@ -1454,3 +1454,59 @@ fn skill_files_export_as_inert_guidance_through_anchored_reads() {
         ["./skills/setup/SKILL.md"]
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn executable_export_keeps_anchored_containment_and_regular_file_checks() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("actual"), b"inert executable bytes\n").unwrap();
+    std::fs::set_permissions(
+        source.join("actual"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    symlink("actual", source.join("inside")).unwrap();
+    std::fs::write(temp.path().join("outside"), b"outside bytes\n").unwrap();
+    symlink("../outside", source.join("escape")).unwrap();
+    // No writer is created. The regular-file check must refuse before a read
+    // could block on the FIFO.
+    assert!(
+        std::process::Command::new("/usr/bin/mkfifo")
+            .arg(source.join("fifo"))
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let root = PluginRoot::open(&source).unwrap();
+    let export =
+        PortablePluginExport::new(&toolkit_manifest(&package()), &BTreeMap::new(), None).unwrap();
+    assert!(export.clone().with_file(&root, "./escape").is_err());
+    assert!(export.clone().with_file(&root, "./fifo").is_err());
+    assert!(export.clone().with_file(&root, "./").is_err());
+    let export = export.with_file(&root, "./inside").unwrap();
+    let destination = temp.path().join("exported");
+    export.write_new(&destination).unwrap();
+    assert!(
+        std::fs::symlink_metadata(destination.join("inside"))
+            .unwrap()
+            .is_file()
+    );
+    assert_eq!(
+        std::fs::read(destination.join("inside")).unwrap(),
+        b"inert executable bytes\n"
+    );
+    assert_ne!(
+        std::fs::metadata(destination.join("inside"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0
+    );
+    assert!(export.write_new(&destination).is_err());
+}

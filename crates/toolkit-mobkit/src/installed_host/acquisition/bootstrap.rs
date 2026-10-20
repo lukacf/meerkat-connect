@@ -88,6 +88,7 @@ struct DeferredAcquisition {
     originals: Arc<PrivateOriginals>,
     native: CompiledNativeHost,
     defaults: InstalledSetupBootstrap,
+    additional_helpers: Vec<InstalledSetupSelection>,
     tools: InstalledAcquisitionTools,
 }
 
@@ -105,12 +106,13 @@ impl AcquisitionBootstrap {
     pub(crate) fn deferred_with_tools(
         store: Arc<SqliteStore>, source_scope: StoreScope, originals: Arc<PrivateOriginals>,
         native: CompiledNativeHost, defaults: InstalledSetupBootstrap, tools: InstalledAcquisitionTools,
+        additional_helpers: Vec<InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         tools.require_unbound(std::time::Duration::from_millis(defaults.limits.admission_timeout_ms))?;
         // Validate trusted selections before a missing optional backend can be
         // interpreted as a normal disabled capability. These are the existing
         // configuration owners, not copied policy or current grant checks.
-        defaults.helper.selected_member(&native)?;
+        super::InstalledHelpers::new(defaults.helper.clone(), additional_helpers.clone(), &native)?;
         defaults.limits.validate()?;
         super::admission::validate_proposal_ceiling(&native, &defaults.proposal_ceiling)?;
         defaults
@@ -133,10 +135,12 @@ impl AcquisitionBootstrap {
                 originals,
                 native,
                 defaults,
+                additional_helpers,
                 tools,
             })),
         })
     }
+
 
     pub(crate) fn status(&self) -> AcquisitionBootstrapStatus {
         match &self.state {
@@ -204,7 +208,7 @@ impl AcquisitionBootstrap {
                     }
                 };
                 let defaults = deferred.defaults;
-                let acquisition = Arc::new(InstalledAcquisition::from_defaults_with_tools(
+                let acquisition = Arc::new(InstalledAcquisition::from_defaults_with_tools_and_helpers(
                     deferred.store,
                     deferred.source_scope,
                     deferred.originals,
@@ -219,6 +223,7 @@ impl AcquisitionBootstrap {
                         work_step: defaults.work_step,
                     },
                     deferred.tools,
+                    deferred.additional_helpers,
                 )?);
                 acquisition.bind_tool_driver()?;
                 acquisition

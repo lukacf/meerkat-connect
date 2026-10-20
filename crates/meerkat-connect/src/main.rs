@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
 };
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use futures_util::FutureExt;
 use meerkat_runtime::{
     AcceptOutcome,
@@ -37,6 +37,8 @@ use meerkat_connect::{
     about = "Interactive Meerkat Connect setup conversation in a selected realm"
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// Run the private, host-bound Connect JSONL adapter without a terminal.
     #[arg(long, conflicts_with_all = ["realm", "state_root", "context_root", "user_config_root", "model", "choose_model", "homecore", "homecore_memory_only"])]
     stdio: bool,
@@ -64,6 +66,48 @@ struct Cli {
     homecore_memory_only: bool,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Inspect, set or remove credentials for an existing service without setup or a model.
+    Credentials {
+        #[command(subcommand)]
+        action: CredentialAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CredentialAction {
+    /// Show one page of owned service names, declared slots and presence only.
+    Status {
+        #[arg(long)]
+        after: Option<String>,
+    },
+    /// Review exact declared slots, then enter replacement values privately.
+    Set {
+        service: String,
+        #[arg(long = "slot", required = true)]
+        slots: Vec<String>,
+    },
+    /// Review removal of exact declared slots; configuration and grants stay unchanged.
+    Remove {
+        service: String,
+        #[arg(long = "slot", required = true)]
+        slots: Vec<String>,
+    },
+}
+
+impl Cli {
+    fn check_command_options(&self) -> Result<(), ConnectError> {
+        if self.command.is_some() && (self.stdio || self.model.is_some() || self.choose_model
+            || self.homecore.is_some() || self.homecore_memory_only) {
+            return Err(ConnectError::InvalidInput(
+                "Credential commands use the selected local realm and cannot select setup, a model or HomeCore.".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 fn prompt(text: &str) -> Result<(), ConnectError> {
     let mut output = io::stdout();
     write!(output, "{text}")
@@ -80,8 +124,18 @@ fn interaction_error<T>(primary: ConnectError, cancellation: Result<T, ConnectEr
     }
 }
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
+fn main() -> std::process::ExitCode {
+    // Use Core's measured worker and main-future budget, as ordinary rkat does.
+    match meerkat_runtime::host_stack::run_host("meerkat-connect", cli_main) {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("{}", display_text(&error.to_string()));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn cli_main() -> std::process::ExitCode {
     match run(Cli::parse()).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
@@ -110,6 +164,7 @@ async fn next_line(
 }
 
 async fn run(cli: Cli) -> Result<(), ConnectError> {
+    cli.check_command_options()?;
     if cli.stdio {
         return meerkat_connect::stdio::run().await;
     }
@@ -159,6 +214,16 @@ async fn run(cli: Cli) -> Result<(), ConnectError> {
         display_text(storage.locator.realm.as_str()),
         display_text(&storage.locator.state_root.display().to_string())
     );
+    if let Some(Command::Credentials { action }) = cli.command {
+        use meerkat_connect::terminal_connector::{ServiceCredentialCommand, run_service_credential_command};
+        let command = match action {
+            CredentialAction::Status { after } => ServiceCredentialCommand::Status { after },
+            CredentialAction::Set { service, slots } => ServiceCredentialCommand::Set { service, slots },
+            CredentialAction::Remove { service, slots } => ServiceCredentialCommand::Remove { service, slots },
+        };
+        return run_service_credential_command(storage, command, &mut lines,
+            &mut io::stdout(), interrupt.as_mut()).await;
+    }
     println!("Preparing the supplied setup helper. You will review its access before the setup conversation opens; the agent will then help choose your service or frontend.");
     let (prepared, mut round_owner) = InstalledResources::locate()?
         .prepare_with_local_round_owner(&storage, interrupt.as_mut()).await?;
@@ -263,6 +328,9 @@ async fn run(cli: Cli) -> Result<(), ConnectError> {
     let mut finalizations: Vec<std::sync::Arc<FinalizedInstallation>> = Vec::new();
     let mut completed_actions: Vec<FinalizedAction> = Vec::new();
     let mut notice = None;
+    // Every exit after finalization passes through the retained typed outcomes,
+    // including a stop during a later round's startup or native close.
+    let result = async {
     loop {
     let composition = setup.take_composition().and_then(|(lazy, presenter)| {
         let forge = lazy.take_forge_presenter()?;
@@ -492,6 +560,8 @@ async fn run(cli: Cli) -> Result<(), ConnectError> {
     };
     notice = Some(next_notice);
     }
+    }.await;
+    FinalizedAction::finish_invocation(&completed_actions, result)
 }
 
 /// An unconfirmed close retains its native owner while awaiting an explicit
@@ -1245,6 +1315,44 @@ mod tests {
     use super::*;
     use meerkat_core::{SessionId, TurnErrorMetadata, lifecycle::InputId};
     use meerkat_runtime::input_state::InputAbandonReason;
+
+    #[test]
+    fn credential_commands_are_available_without_setup_options() {
+        for arguments in [
+            vec!["meerkat-connect", "--realm", "meta", "credentials", "status"],
+            vec!["meerkat-connect", "--realm", "meta", "credentials", "set", "cards", "--slot", "TOKEN"],
+            vec!["meerkat-connect", "--realm", "meta", "credentials", "remove", "cards", "--slot", "TOKEN"],
+        ] {
+            assert!(Cli::try_parse_from(arguments).is_ok(),
+                "credential management must be reachable without starting setup");
+        }
+    }
+
+    #[test]
+    fn credential_commands_keep_setup_options_out_of_the_direct_route() {
+        let ordinary = Cli::try_parse_from(["meerkat-connect", "--realm", "meta", "--model", "fixture"]).unwrap();
+        assert!(ordinary.command.is_none());
+        ordinary.check_command_options().unwrap();
+        for arguments in [
+            vec!["meerkat-connect", "--model", "fixture", "credentials", "status"],
+            vec!["meerkat-connect", "--model", "fixture", "credentials", "set", "cards", "--slot", "KEY"],
+            vec!["meerkat-connect", "--choose-model", "credentials", "status"],
+            vec!["meerkat-connect", "--homecore", "https://example.invalid", "credentials", "status"],
+            vec!["meerkat-connect", "--stdio", "credentials", "status"],
+        ] {
+            assert!(Cli::try_parse_from(arguments).unwrap().check_command_options().is_err());
+        }
+        assert!(Cli::try_parse_from(["meerkat-connect", "credentials", "remove", "cards"]).is_err());
+        assert!(Cli::try_parse_from(["meerkat-connect", "credentials", "remove", "cards", "--slot", "TOKEN", "--value", "not-accepted"]).is_err());
+        assert!(Cli::try_parse_from(["meerkat-connect", "credentials", "set", "cards"]).is_err());
+        assert!(Cli::try_parse_from(["meerkat-connect", "credentials", "set", "cards", "--slot", "TOKEN", "--value", "not-accepted"]).is_err());
+        assert!(Cli::try_parse_from(["meerkat-connect", "credentials", "set", "cards", "--slot", "TOKEN", "not-accepted"]).is_err());
+        let set = Cli::try_parse_from(["meerkat-connect", "--realm", "meta", "credentials", "set", "cards", "--slot", "KEY", "--slot", "TOKEN"]).unwrap();
+        assert!(matches!(set.command, Some(Command::Credentials { action: CredentialAction::Set { service, slots } })
+            if service == "cards" && slots == ["KEY", "TOKEN"]));
+        let selected = Cli::try_parse_from(["meerkat-connect", "--realm", "meta", "credentials", "status"]).unwrap();
+        assert!(matches!(selected.command, Some(Command::Credentials { action: CredentialAction::Status { .. } })));
+    }
 
     #[test]
     fn failed_turn_new_input_requires_exact_terminal_witness_and_live_invocation() {

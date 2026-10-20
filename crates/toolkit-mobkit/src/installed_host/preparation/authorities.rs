@@ -103,12 +103,26 @@ pub struct PreparedHelperMcpRequest {
     pub issuance_id: EvidenceId,
 }
 
-/// Explicit catalog-read request for the actual captured helper session. The
-/// session is supplied by the native preparation hook, never by this wire value.
+/// Explicit catalog-read request. Exact-session behavior remains the default;
+/// successor access must be selected by the trusted host administrator.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedHelperCatalogRequest {
     pub issuance_id: EvidenceId,
+    #[serde(default, skip_serializing_if = "PreparedHelperCatalogScope::is_exact_session")]
+    pub scope: PreparedHelperCatalogScope,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedHelperCatalogScope {
+    #[default]
+    ExactSession,
+    CurrentHelperSuccessors,
+}
+
+impl PreparedHelperCatalogScope {
+    fn is_exact_session(&self) -> bool { *self == Self::ExactSession }
 }
 
 impl From<PreparationAuthorities> for PreparationAuthorityIntent {
@@ -374,7 +388,7 @@ impl PreparedInstallationOwner {
             if request.member != helper.member
                 || crate::installed_host::acquisition::ConfiguredHelperReportCapability::validate_basis(&helper.operation_basis).is_err()
             { return Err(HostLifetimeError::Denied); }
-            let expected = operator_setup::configured_report::report_parent(&helper.logical_executor, &helper_audience);
+            let expected = operator_setup::configured_report::report_parent(&self.selected.native_host.grant_administrator, &helper.logical_executor, &helper_audience);
             let capability = operator_setup::configured_report::issue_or_recover(&self.source,
                 &self.selected.native_host.grant_administrator, &operator, helper, request, expected, &helper_audience)?;
             if helper.report_capability.as_ref().is_some_and(|old| old != &capability) { return Err(HostLifetimeError::Denied); }

@@ -458,7 +458,7 @@ test("concurrent original submissions keep distinct input identities when replie
 });
 
 
-for (const mode of ["legacy-cancel-state", "cancel-wrong-original"]) {
+for (const mode of ["legacy-cancel-state", "cancel-wrong-original", "cancel-cleanup-pending"]) {
   test(`${mode} cannot become durable original cancellation`, async t => {
     const { client, commands } = fixture(t, mode); await client.bootstrap(selection);
     await assert.rejects(client.cancelOriginalOperation(original), HostControlError);

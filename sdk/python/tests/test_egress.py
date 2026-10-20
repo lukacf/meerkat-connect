@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import closing
 from copy import deepcopy
 import importlib.util
 import json
@@ -16,6 +17,7 @@ import pytest
 
 from meerkat_toolkit.frontend.egress import ProactiveEgress as CurrentEgress
 from meerkat_toolkit.frontend.egress import EgressAuthorizationDecision
+from meerkat_toolkit.frontend.egress import EgressMigrationBinding
 from meerkat_toolkit.frontend.sender import SenderAuthority
 
 
@@ -61,6 +63,114 @@ def rows(path):
             "SELECT part_index,state,attempts,unknown_attempts,provider_msg_id "
             "FROM egress_parts ORDER BY part_index"
         ).fetchall()
+
+
+@pytest.mark.parametrize("schema_mode", ["legacy", "managed"])
+async def test_connections_close_before_provider_and_after_rollback_reopen(tmp_path, monkeypatch, schema_mode):
+    original_connect = sqlite3.connect
+    opened, calls = [], []
+    reject_part = False
+
+    def connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        opened.append(connection)
+        if reject_part:
+            connection.set_authorizer(lambda action, table, *_:
+                sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_INSERT and table == "egress_parts"
+                else sqlite3.SQLITE_OK)
+        return connection
+
+    def assert_closed():
+        assert opened
+        for connection in opened:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                connection.execute("SELECT 1")
+
+    async def provider(**kwargs):
+        # The committed attempt, not an open SQL connection, owns this await.
+        assert_closed()
+        calls.append(kwargs)
+        return {"outcome": "sent", "provider_message_id": "controlled-receipt"}
+
+    path = tmp_path / "outbox.sqlite3"
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    try:
+        if schema_mode == "managed":
+            CurrentEgress.migrate_format(path=path,
+                expected=CurrentEgress.inspect_format(path=path),
+                binding=EgressMigrationBinding("1" * 64, "2" * 64, "3" * 64))
+            assert_closed()
+        owner = engine(path, provider, schema_mode=schema_mode)
+        assert_closed()
+        output = commit(owner)
+        assert_closed()
+        await owner._dispatch_output(output)
+        assert owner.status(output_id=output).part_states == ("sent",)
+        assert owner.attempt_count(output_id=output) == 1
+        assert len(calls) == 1
+        assert_closed()
+
+        reject_part = True
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+            commit(owner, key="rollback")
+        reject_part = False
+        assert owner.find_output(issuer_id="issuer", logical_key="rollback") is None
+        assert_closed()
+        with closing(original_connect(path)) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM egress_outputs").fetchone()[0] == 1
+            assert connection.execute("SELECT provider_msg_id FROM egress_parts").fetchone()[0] == "controlled-receipt"
+
+        pending = commit(owner, key="cancel")
+        assert owner.cancel_output(output_id=pending, issuer_id="issuer").part_states == ("cancelled",)
+        reopened = engine(path, provider, schema_mode=schema_mode)
+        assert commit(reopened) == output
+        await reopened.recover_pending()
+        assert len(calls) == 1
+        assert reopened.status(output_id=output).part_states == ("sent",)
+        assert reopened.status(output_id=pending).part_states == ("cancelled",)
+        assert_closed()
+    finally:
+        for connection in opened:
+            connection.close()
+
+
+@pytest.mark.parametrize("pragma", ["foreign_keys", "synchronous"])
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_legacy_setup_failure_closes_real_connection_and_preserves_error(tmp_path, monkeypatch, pragma, close_fails):
+    original_connect = sqlite3.connect
+    opened, errors = [], []
+
+    class Connection(sqlite3.Connection):
+        def execute(self, *args, **kwargs):
+            try:
+                return super().execute(*args, **kwargs)
+            except sqlite3.DatabaseError as error:
+                errors.append(error)
+                raise
+
+        def close(self):
+            super().close()
+            if close_fails:
+                raise OSError("controlled close failure after actual closure")
+
+    def connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs, factory=Connection)
+        opened.append(connection)
+        connection.set_authorizer(lambda action, name, *_:
+            sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_PRAGMA and name == pragma else sqlite3.SQLITE_OK)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    try:
+        with pytest.raises(sqlite3.DatabaseError) as caught:
+            engine(tmp_path / "outbox.sqlite3")
+        assert len(opened) == 1
+        assert caught.value is errors[0]
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            opened[0].execute("SELECT 1")
+    finally:
+        for connection in opened:
+            sqlite3.Connection.close(connection)
 
 
 @pytest.mark.parametrize(

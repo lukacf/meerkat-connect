@@ -3,67 +3,18 @@
 //! signing prove this composed route, not deployed application authentication.
 use super::*;
 use axum::http::{header, HeaderMap, Uri};
-use meerkat_core::{auth::principal::TrustDomainId, PrincipalKind};
+use futures::StreamExt;
 use meerkat_mobkit::access::{AccessControlConfig, AccessRule};
-use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{oneshot, Semaphore};
 
-const ISSUER: &str = "https://controlled-console.invalid";
-const SUBJECT: &str = "controlled-subject";
-const EMAIL: &str = "different-display@example.invalid";
-const SCOPE: &str = "controlled-login-a";
-const AUDIENCE: &str = "controlled-console";
-// Public fixture material only. No deployed signing key or user credential.
-const KEY: &[u8] = b"controlled-console-fixture-key-only";
+use super::super::auth_fixture::*;
 
 #[derive(Clone, Copy)]
 enum Case { Valid, Retired, RetiredAfterSelection, MismatchedScope, TamperedSignature, WrongIssuer }
 
-fn selected_human() -> PrincipalRef {
-    PrincipalRef::in_domain(PrincipalKind::Human, SUBJECT,
-        TrustDomainId::new(format!("oidc-issuer:{ISSUER}")).unwrap()).unwrap()
-}
-
-// Minimal fixture encoding uses the target's existing sha2 dependency. Native
-// verification is always performed by Meta; this is not a second verifier.
-fn base64url(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut result = String::new();
-    for chunk in bytes.chunks(3) {
-        result.push(ALPHABET[(chunk[0] >> 2) as usize] as char);
-        result.push(ALPHABET[(((chunk[0] & 3) << 4) | chunk.get(1).copied().unwrap_or(0) >> 4) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(ALPHABET[(((chunk[1] & 15) << 2) | chunk.get(2).copied().unwrap_or(0) >> 6) as usize] as char);
-        }
-        if chunk.len() > 2 { result.push(ALPHABET[(chunk[2] & 63) as usize] as char); }
-    }
-    result
-}
-fn signed_fixture(issuer: &str, scope: &str, expires: u64) -> String {
-    let header = base64url(br#"{"alg":"HS256","typ":"JWT"}"#);
-    let claims = base64url(&serde_json::to_vec(&serde_json::json!({
-        "iss": issuer, "aud": AUDIENCE, "sub": SUBJECT, "email": EMAIL,
-        "email_verified": true, "sid": scope, "exp": expires,
-    })).unwrap());
-    let unsigned = format!("{header}.{claims}");
-    let mut inner_pad = [0x36_u8; 64];
-    let mut outer_pad = [0x5c_u8; 64];
-    assert!(KEY.len() <= inner_pad.len());
-    for (index, byte) in KEY.iter().enumerate() {
-        inner_pad[index] ^= *byte;
-        outer_pad[index] ^= *byte;
-    }
-    let mut inner = Sha256::new();
-    inner.update(inner_pad);
-    inner.update(unsigned.as_bytes());
-    let mut outer = Sha256::new();
-    outer.update(outer_pad);
-    outer.update(inner.finalize());
-    format!("Bearer {unsigned}.{}", base64url(&outer.finalize()))
-}
 
 struct RouteObservation {
     selected: AtomicUsize,
@@ -157,6 +108,39 @@ async fn post(address: std::net::SocketAddr, bearer: &str, member: &str) -> (u16
     }).await.expect("bounded real Console request")
 }
 
+// Keep only finite classifications and counts in test diagnostics. Never print
+// bearer headers, raw response strings, principal values or submitted content.
+fn require_queued_reply(reply: &(u16, serde_json::Value), observation: &RouteObservation) {
+    let error_code = match reply.1.get("error").and_then(serde_json::Value::as_str) {
+        Some("invalid_request") => "invalid_request",
+        Some("unknown_identity") => "unknown_identity",
+        Some("ambiguous_live_identity_alias") => "ambiguous_live_identity_alias",
+        Some("unqualified_console_principal") => "unqualified_console_principal",
+        Some("governed_send_refused") => "governed_send_refused",
+        Some("internal_error") => "internal_error",
+        Some(_) => "other_error_code",
+        None if reply.1.get("error").is_some() => "other_error_shape",
+        None => "no_error_field",
+    };
+    let message_class = match reply.1.get("message").and_then(serde_json::Value::as_str) {
+        Some(value) if value.contains("stale durable identity alias") => "stale_durable_identity_alias",
+        Some(value) if value.contains("ambiguous durable identity alias") => "ambiguous_durable_identity_alias",
+        Some(value) if value.contains("unknown identity") => "unknown_identity",
+        Some(_) => "other_message",
+        None => "no_message_string",
+    };
+    let observation = serde_json::json!({
+        "status": reply.0, "error_code": error_code, "message_class": message_class,
+        "attempted": observation.attempted.load(Ordering::SeqCst),
+        "selected": observation.selected.load(Ordering::SeqCst),
+        "raw_present": observation.raw.lock().unwrap().is_some(),
+        "bound_present": observation.bound.lock().unwrap().is_some(),
+        "failure_present": observation.failure.lock().unwrap().is_some(),
+    });
+    eprintln!("controlled Console response: {observation}");
+    assert!((200..300).contains(&reply.0), "Console queue acceptance refused: {observation}");
+}
+
 async fn controlled_console(case: Case) {
     let mut fixture = ContinuationFixture::for_console_input(selected_human()).await;
     let observation = Arc::new(RouteObservation::new(matches!(case, Case::RetiredAfterSelection)));
@@ -233,6 +217,11 @@ async fn controlled_console(case: Case) {
                 .await.expect("bounded Console login retirement").unwrap();
             assert!(retired.fenced && retired.reservations_drained && !retired.uncertain);
         }
+        // Subscribe before the HTTP send so positive completion is an actual
+        // native event, not a race on the provider's first request counter.
+        let mut completion = if matches!(case, Case::Valid) {
+            Some(fixture.service.subscribe_session_events(&fixture.session).await.unwrap())
+        } else { None };
         let reply = if matches!(case, Case::RetiredAfterSelection) {
             let retirement = async {
                 let permit = tokio::time::timeout(WAIT, observation.entered.acquire()).await.unwrap().unwrap();
@@ -244,9 +233,18 @@ async fn controlled_console(case: Case) {
                 assert!(human.as_ref().unwrap().current().is_ok(), "valid token does not replace retired login");
                 observation.release.add_permits(1);
             };
-            let (reply, ()) = tokio::join!(post(address, &bearer, &member), retirement);
+            let request = async {
+                let reply = post(address, &bearer, &member).await;
+                require_queued_reply(&reply, &observation);
+                reply
+            };
+            let (reply, ()) = tokio::join!(request, retirement);
             reply
-        } else { post(address, &bearer, &member).await };
+        } else {
+            let reply = post(address, &bearer, &member).await;
+            if matches!(case, Case::Valid) { require_queued_reply(&reply, &observation); }
+            reply
+        };
         if matches!(case, Case::Valid | Case::RetiredAfterSelection) {
             let permit = tokio::time::timeout(WAIT, observation.finished.acquire()).await.unwrap().unwrap();
             permit.forget();
@@ -261,15 +259,80 @@ async fn controlled_console(case: Case) {
             assert_eq!(bound.id(), raw.id());
             assert!(raw.header().idempotency_key.is_some());
             assert_eq!(bound.header().idempotency_key, raw.header().idempotency_key);
-            tokio::time::timeout(WAIT, async {
-                while fixture.inputs().await != Ok(1) || fixture.model_requests() == 0 { tokio::task::yield_now().await; }
-            }).await.expect("actual Console input and controller inference");
-            assert_eq!(fixture.model_requests(), 1);
+            let completed_run = tokio::time::timeout(WAIT, async {
+                let events = completion.as_mut().expect("positive Console subscription");
+                loop {
+                    let event = events.next().await.expect("native Console completion stream");
+                    match event.payload {
+                        meerkat_core::AgentEvent::RunCompleted { session_id, identity, result, .. } => {
+                            assert_eq!(session_id, fixture.session);
+                            assert_eq!(result, "The original request completed");
+                            break identity.run_id.expect("native completion run identity");
+                        }
+                        meerkat_core::AgentEvent::StreamTruncated { .. } => {
+                            panic!("native Console completion observation truncated");
+                        }
+                        _ => {}
+                    }
+                }
+            }).await.expect("actual Console turn completion");
+            let dispatch = fixture.probe.as_ref().unwrap().captured();
+            assert_eq!(&completed_run, dispatch.retained_work().unwrap().run_id());
+            tokio::time::timeout(WAIT,
+                fixture.machine.wait_run_settled(&fixture.session, &completed_run))
+                .await.expect("native Console run settlement");
+            assert_eq!(fixture.inputs().await, Ok(1));
+            // The first response becomes the ContextProbe call; the second
+            // response completes this same authorized native run.
+            assert_eq!(fixture.model_requests(), 2);
             let observed = observation.human.lock().unwrap().clone().unwrap();
             assert_eq!(observed.principal().unwrap(), selected_human());
             assert_eq!(observed.login_scope(), Some(SCOPE));
             let rows = fixture.store.list_records(&fixture.scope, None, 100).await.unwrap();
             assert!(rows.len() > before_rows.len(), "actual Console source was retained");
+            let held = fixture.source.retained.lock().unwrap().iter()
+                .find(|held| Some(held.original.association()) == bound.header().authority_association.as_ref())
+                .cloned().expect("actual Console binder retained its source");
+            let row = fixture.store.get(&fixture.source.key(&held.reference).unwrap()).await.unwrap().unwrap();
+            let record = fixture.source.decode_record(&row, &held.reference).unwrap();
+            assert!(record.custody_attempt.as_ref().expect("Console first attempt persisted")
+                .matches_input(&bound).unwrap());
+            assert_eq!(record.event.content_sha256, digest(&canonical_json(&raw).unwrap()));
+            assert_ne!(bound.header().idempotency_key.as_ref(),
+                Some(&cold_service_admission::source_event_key(&record).unwrap()));
+            let entry = ConsoleEntry {
+                source: fixture.source.clone(),
+                identity: fixture.source.bound_identity_runtime().unwrap()
+                    .owned_identity_for_member_alias(&member).await.unwrap(),
+                human: observed, access: None, login: login.clone(),
+            };
+            entry.validate_custody_input(&record, &raw, &bound).unwrap();
+            let Input::Prompt(mut changed) = bound.clone() else { panic!("Console prompt missing") };
+            changed.header.idempotency_key = Some(cold_service_admission::source_event_key(&record).unwrap());
+            assert!(matches!(entry.validate_custody_input(&record, &raw, &Input::Prompt(changed)),
+                Err(PrivateOriginalError::Conflict)));
+            let Input::Prompt(mut changed) = raw.clone() else { panic!("Console prompt missing") };
+            changed.header.idempotency_key = Some(IdempotencyKey::new("substituted-stock-key"));
+            assert!(matches!(entry.validate_custody_input(&record, &Input::Prompt(changed), &bound),
+                Err(PrivateOriginalError::Conflict)));
+            let mut changed = record.clone();
+            changed.event.content_sha256 = digest(b"substituted source digest");
+            assert!(matches!(entry.validate_custody_input(&changed, &raw, &bound),
+                Err(PrivateOriginalError::Conflict)));
+            let mut changed = record.clone();
+            changed.event.root_event.sha256 = digest(b"substituted root event digest");
+            assert!(matches!(entry.validate_custody_input(&changed, &raw, &bound),
+                Err(PrivateOriginalError::Conflict)));
+            // Repeat the same actual HTTP idempotency key. Queue deduplication
+            // returns existing coordinates without a second native input/effect.
+            let replay = post(address, &bearer, &member).await;
+            assert_eq!(replay.0, reply.0);
+            for coordinate in ["session_id", "interaction_id", "input_frame_id"] {
+                assert_eq!(replay.1[coordinate], reply.1[coordinate]);
+            }
+            assert_eq!(fixture.inputs().await, Ok(1));
+            assert_eq!(fixture.model_requests(), 2);
+            assert_eq!(fixture.store.get(&row.key).await.unwrap().unwrap(), row);
         } else {
             if matches!(case, Case::RetiredAfterSelection) {
                 assert!(observation.failure.lock().unwrap().is_some(), "retained login refuses inside actual binder");

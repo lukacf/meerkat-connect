@@ -11,7 +11,7 @@ An application keeps the setup request, runtime continuation and external operat
 | Record or observation | Owns |
 | --- | --- |
 | Acquisition | One original request, its required roles and per-request outcome |
-| Shared preparation | Exact reusable auth/install preparation after concrete selection |
+| Shared preparation (0.9.5) | Exact reusable auth/install preparation after concrete selection |
 | Role intent and grant | Desired service access or frontend exposure and permitted scope |
 | Runtime acknowledgment | Actual selected binding at a current revision/incarnation |
 | Original task continuation | Where the admitted task resumes |
@@ -42,6 +42,11 @@ Persist the operation and effect intent before realizing effects. Commit owner s
 An awaiting caller can disappear after a successful commit. Recover using the same canonical operation and exact input identity before attempting another mutation. Readiness still needs current grants and runtime observations when the original task resumes.
 
 ## Coalescing without merging authority
+
+<Note>
+Shared multi-caller setup is deferred to 0.9.5. The following describes that
+planned contract; ordinary 0.9.4 setup retains separate caller authority.
+</Note>
 
 Exact replay and host-authorized workflow grouping can avoid duplicate setup teams. Every distinct logical request still receives agent interpretation. After concrete package/subject/strategy selection, compatible requests can share one preparation.
 

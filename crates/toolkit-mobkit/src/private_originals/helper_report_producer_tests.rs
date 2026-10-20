@@ -1,8 +1,9 @@
 //! Joined trusted parent producer, ordinary helper child issuance and real
 //! report leaf. Fixture configuration is not Forge publication or Console auth.
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 use meerkat_authorization_contracts::{
-    constraints::{DelegationDepth, ExactRestriction},
+    constraints::DelegationDepth,
     work_association::WorkAuthorityBasis,
 };
 
@@ -117,7 +118,7 @@ async fn configured_report_parent_reaches_actual_helper_report_and_consumed_inpu
         );
         exact_report.delegation_depth = DelegationDepth::remaining(0);
         let mut parent_bounds = exact_report.clone();
-        parent_bounds.resource_domains = ExactRestriction::unrestricted();
+        parent_bounds.resource_domains = DomainRestriction::owned_by([native.grant_administrator.clone()]);
         parent_bounds.delegation_depth = DelegationDepth::remaining(1);
         assert_eq!(parent.restrictions(), &parent_bounds);
         parent.check_current().unwrap();
@@ -155,11 +156,25 @@ async fn configured_report_parent_reaches_actual_helper_report_and_consumed_inpu
         let helper_session = fixture.native.mob_handle().get_member(&helper_member).await.unwrap().unwrap()
             .bridge_session_id().cloned().unwrap();
         assert_ne!(helper_session, fixture.session);
-        assert!(context.interaction_lineage_id().is_none(), "exercise the actual optional-None context");
+        let meerkat_core::exact_operation::OperationExecutionScope::RuntimeInput {
+            canonical_input_id, ..
+        } = context.work_authorization().unwrap().execution_scope()
+        else { panic!("actual helper RuntimeInput authority required") };
+        assert_eq!(context.interaction_lineage_id().map(|id| id.to_string()),
+            Some(canonical_input_id.to_string()), "actual helper prompt retains its admitted input identity");
         assert!(context.work_authorization().is_some());
         assert!(context.retained_work().is_some());
         assert_eq!(context.origin_session_id(), Some(&helper_session));
         let source = fixture.source.setup_result_source(&context, selection).await.unwrap();
+        // Optional transcript lineage is not authority. A lookup-only clone
+        // keeps the same session, admitted work and retained native custody.
+        let without_lineage = context.clone().with_runtime_identity(helper_session.clone(), None);
+        let optional_source = fixture.source.setup_result_source(&without_lineage, selection).await.unwrap();
+        assert_eq!(optional_source.helper, source.helper);
+        assert_eq!(optional_source.source, source.source);
+        assert_eq!(optional_source.contributors, source.contributors);
+        drop(optional_source);
+        drop(without_lineage);
         let original = fixture.binding().await.unwrap().unwrap();
         assert_eq!(source.contributors, vec![original.clone()]);
         assert_eq!(source.helper.candidate().target.context.as_str(), helper_session.to_string());
@@ -235,8 +250,8 @@ async fn configured_report_parent_reaches_actual_helper_report_and_consumed_inpu
             serde_json::to_value(&source.helper.candidate().authority_basis).unwrap());
         assert_eq!(source_row.data.body["state"]["association"], serde_json::to_value(&source.helper).unwrap());
 
-        // Only negative copies alter context/selection. The positive dispatch
-        // resumes with its unchanged actual call, plan and native work custody.
+        // These additional copies exercise negative context/selection cases.
+        // The real dispatch resumes with its unchanged call, plan and custody.
         let missing = context.clone().with_work_authorization(None);
         assert!(matches!(fixture.source.setup_result_source(&missing, selection).await,
             Err(PrivateOriginalError::Unavailable)));

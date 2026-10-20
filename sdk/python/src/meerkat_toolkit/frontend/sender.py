@@ -8,7 +8,9 @@ egress outcomes and generation rollback. This module grants no request authority
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from dataclasses import dataclass, field
 import inspect
 import os
@@ -105,6 +107,13 @@ class _SenderCandidate:
     published: bool = False
 
 
+@dataclass
+class _SenderLifecycle:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    dispatch_revision: int = 0
+    deactivating: object | None = None
+
+
 @dataclass(frozen=True, eq=False)
 class SenderDispatchSelection:
     """Borrowed local selection, not permission, readiness or delivery proof."""
@@ -130,12 +139,11 @@ class SenderAuthority:
         self._candidates: WeakKeyDictionary[
             SenderActivation, _SenderCandidate
         ] = WeakKeyDictionary()
-        self._lock = asyncio.Lock()
         # Lifecycle work can affect an implementation even if it later fails.
-        # Invalidate borrowed selections without changing activation replay.
-        self._dispatch_revision = 0
+        # Only that sender's borrowed selections and lifecycle are affected.
+        self._lifecycles: dict[str, _SenderLifecycle] = defaultdict(_SenderLifecycle)
         created = not self.path.exists()
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sender_authority (
@@ -151,7 +159,15 @@ class SenderAuthority:
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
-        connection.execute("PRAGMA synchronous = FULL")
+        try:
+            connection.execute("PRAGMA synchronous = FULL")
+        except BaseException:
+            # Setup failed before the caller could acquire this connection.
+            try:
+                connection.close()
+            except BaseException:
+                pass  # Preserve the original setup failure.
+            raise
         return connection
 
     @staticmethod
@@ -171,7 +187,9 @@ class SenderAuthority:
         owner_id = self._identity(owner_id, field="owner_id")
         if not self._sender_implementation(sender):
             raise TypeError("sender has no dispatch implementation")
-        with self._connect() as connection:
+        if self._lifecycles[sender_id].deactivating is sender:
+            raise ValueError("sender implementation is still deactivating")
+        with closing(self._connect()) as connection, connection:
             existing = connection.execute(
                 "SELECT owner_id FROM sender_authority WHERE sender_id = ?",
                 (sender_id,),
@@ -199,7 +217,7 @@ class SenderAuthority:
         self._attachments[sender_id] = attachment
 
     def active_owner(self, sender_id: str) -> str | None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT owner_id FROM sender_authority WHERE sender_id = ?",
                 (sender_id,),
@@ -207,7 +225,7 @@ class SenderAuthority:
         return str(row[0]) if row is not None else None
 
     def owner_count(self, sender_id: str) -> int:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT COUNT(*) FROM sender_authority WHERE sender_id = ?",
                 (sender_id,),
@@ -253,7 +271,9 @@ class SenderAuthority:
         return candidate
 
     async def commit_activation(self, activation: SenderActivation) -> None:
-        async with self._lock:
+        self._candidate(activation)
+        lifecycle = self._lifecycles[activation.sender_id]
+        async with lifecycle.lock:
             candidate = self._candidate(activation)
             owner = self.active_owner(activation.sender_id)
             expected_owner = (
@@ -263,12 +283,12 @@ class SenderAuthority:
             )
             if owner != expected_owner:
                 raise ValueError("sender authority changed after candidate staging")
-            self._dispatch_revision += 1
+            lifecycle.dispatch_revision += 1
             await _await(candidate.sender.activate())
             # attach_active is synchronous and can run while activate awaits.
             # Its new attachment supersedes this handle even for the same owner.
             self._candidate(activation)
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 connection.execute("BEGIN IMMEDIATE")
                 if expected_owner is None:
                     cursor = connection.execute(
@@ -314,7 +334,7 @@ class SenderAuthority:
                     # Only this exact handle may retry its selected candidate.
                     candidate.selection_committed = True
             if cursor.rowcount != 1:
-                await _await(candidate.sender.deactivate())
+                await self._deactivate(activation.sender_id, candidate.sender)
                 raise ValueError("sender authority changed during activation")
             _fsync_file(self.path)
             self._publish(
@@ -323,7 +343,9 @@ class SenderAuthority:
             candidate.published = True
 
     async def close_activation(self, activation: SenderActivation) -> None:
-        async with self._lock:
+        self._candidate(activation)
+        lifecycle = self._lifecycles[activation.sender_id]
+        async with lifecycle.lock:
             candidate = self._candidate(activation)
             owner = self.active_owner(activation.sender_id)
             expected_owner = (
@@ -334,8 +356,26 @@ class SenderAuthority:
             if owner != expected_owner:
                 raise ValueError("sender authority changed after candidate activation")
             if candidate.selection_committed:
-                self._dispatch_revision += 1
-                await _await(candidate.sender.deactivate())
+                lifecycle.dispatch_revision += 1
+                await self._deactivate(activation.sender_id, candidate.sender)
+
+    async def _deactivate(self, sender_id: str, sender: Any) -> None:
+        # Both close and losing an activation CAS can deactivate an attached
+        # implementation. Fence only its route before cleanup can await or fail.
+        for key in [
+            key for key, attached in self._senders.items()
+            if key[0] == sender_id and attached is sender
+        ]:
+            del self._senders[key]
+        # Retain the attachment token for exact close retry or reactivation.
+        lifecycle = self._lifecycles[sender_id]
+        lifecycle.deactivating = sender
+        try:
+            await _await(sender.deactivate())
+        finally:
+            # A different synchronous attachment may have replaced this route
+            # during cleanup. Never remove it after the await.
+            lifecycle.deactivating = None
 
     async def send(self, *, sender_id: str, recipient: str, parts: tuple[str, ...]) -> Any:
         owner = self.active_owner(sender_id)
@@ -392,7 +432,8 @@ class SenderAuthority:
         Callers that await again must recheck ``is_current_dispatch`` before
         provider entry. No lock is held across host policy or provider calls.
         """
-        async with self._lock:
+        lifecycle = self._lifecycles[sender_id]
+        async with lifecycle.lock:
             owner = self.active_owner(sender_id)
             if owner is None:
                 raise ValueError("stable sender has no active owner")
@@ -402,16 +443,19 @@ class SenderAuthority:
             if not callable(sender):
                 raise TypeError("active sender is not ProactiveEgress-callable")
             return SenderDispatchSelection(
-                sender_id, owner, sender, self, self._attachments[sender_id], self._dispatch_revision
+                sender_id, owner, sender, self, self._attachments[sender_id],
+                lifecycle.dispatch_revision,
             )
 
     def is_current_dispatch(self, selection: SenderDispatchSelection) -> bool:
         """Synchronous local custody check; never a permission or distributed fence."""
+        if type(selection) is not SenderDispatchSelection or selection._authority is not self:
+            return False
+        lifecycle = self._lifecycles.get(selection.sender_id)
         return (
-            type(selection) is SenderDispatchSelection
-            and selection._authority is self
-            and not self._lock.locked()
-            and selection._dispatch_revision == self._dispatch_revision
+            lifecycle is not None
+            and not lifecycle.lock.locked()
+            and selection._dispatch_revision == lifecycle.dispatch_revision
             and self._attachments.get(selection.sender_id) is selection._attachment
             and self.active_owner(selection.sender_id) == selection.owner_id
             and self._senders.get((selection.sender_id, selection.owner_id)) is selection.sender

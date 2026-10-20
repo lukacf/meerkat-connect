@@ -239,13 +239,54 @@ def test_page_preserves_order_and_exposes_all_outcomes_before_cursor_commit():
     page = interpret_poll_page([
         update(text="first"), update(42, video=VIDEO, caption="watch"),
         update(43, new_chat_title="renamed"), update(44, text="last"),
-        {"update_id": 45, "edited_message": {}},
+        {"update_id": 45, "callback_query": {}},
     ], "40")
     assert [type(row) for row in page.events] == [
         TelegramEvent, TelegramUnsupportedEvent, TelegramUnsupportedEvent, TelegramEvent,
     ]
     assert [row.update_id for row in page.events] == [41, 42, 43, 44]
     assert page.next_cursor == "46" and page.ignored_updates == 1
+
+
+def edited_update(**content):
+    payload = update(**content)
+    message = payload.pop("message")
+    message["chat"] = {"id": 3, "type": "private"}
+    message.pop("message_thread_id")
+    message["edit_date"] = 1700000010
+    payload["edited_message"] = message
+    return payload
+
+
+def test_private_edit_is_content_free_unsupported_outcome_before_cursor():
+    payload = edited_update(text="private correction must not be dispatched")
+    before = deepcopy(payload)
+    page = interpret_poll_page([payload], "40")
+    assert len(page.events) == 1
+    event = page.events[0]
+    assert isinstance(event, TelegramUnsupportedEvent)
+    assert event.reason == "message_edit"
+    assert event.facts["chat_type"] == "private"
+    assert event.facts["sender_is_bot"] is False
+    assert event.facts["provider_event_id"] == 41
+    assert event.facts["provider_message_id"] == 7
+    assert event.facts["sender_id"] == event.facts["recipient_or_chat_id"] == "3"
+    assert event.facts["text"] == ""
+    assert not hasattr(event, "media")
+    assert page.next_cursor == "42" and page.ignored_updates == 0
+    assert payload == before
+
+
+@pytest.mark.parametrize("change,reason", [
+    ({"from": {"id": 3, "is_bot": True, "first_name": "Bot"}}, "sender_kind"),
+    ({"sender_chat": {"id": -99, "type": "channel", "title": "Channel"}}, "sender_kind"),
+    ({"future_field": "private"}, "unknown_fields"),
+])
+def test_edit_does_not_launder_foreign_sender_or_unknown_content(change, reason):
+    event = normalize_update(edited_update(text="private", **change))
+    assert isinstance(event, TelegramUnsupportedEvent)
+    assert event.reason == reason
+    assert event.facts["text"] == ""
 
 
 @pytest.mark.parametrize("content, mime", [

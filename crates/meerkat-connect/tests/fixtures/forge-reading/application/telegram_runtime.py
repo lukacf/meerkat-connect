@@ -34,6 +34,29 @@ async def join_task(task):
         raise asyncio.CancelledError
 
 
+class ReadingReplySender:
+    """Borrowed routing only; the existing transport owns entered send work."""
+    def __init__(self, actor, selection, sender_id, transport, presenter):
+        self.actor, self.selection, self.sender_id = actor, selection, sender_id
+        self.transport, self.presenter = transport, presenter
+
+    async def activate(self):
+        if not self.actor.current(self.selection):
+            raise BindingRefused("configuration-source-or-owner-changed")
+
+    async def deactivate(self):
+        await self.transport.close()
+
+    async def __call__(self, *, sender_id, recipient, part_index, part):
+        if (sender_id != self.sender_id or part_index != 0
+                or recipient != str(self.selection["configuration"]["telegram_dm_chat_id"])
+                or type(part) is not dict or set(part) != {"text"}):
+            raise BindingRefused("reply-selection-changed")
+        # No suspension precedes the real transport's synchronous operation
+        # retention. The presenter owns neither permission nor a background task.
+        return await self.presenter.send_text(self.transport, recipient=recipient, text=part["text"])
+
+
 class ReadingTelegram:
     def __init__(self, context, store, frontends):
         # No token resolution, Toolkit import, database or I/O in build().
@@ -47,6 +70,8 @@ class ReadingTelegram:
         self.provider = None
         self.native = None
         self.reply = None
+        self.sender_authority = None
+        self.sender_activation = None
         self.poll_interval = .25
 
     def observation(self):
@@ -289,6 +314,16 @@ class ReadingTelegram:
                 db.execute("UPDATE reading_telegram_inbox SET status='disabled-pending-stopped' WHERE binding=? AND status='queued'",
                            (encoded(selection),))
 
+    async def close_sender(self, activation=None):
+        held = self.sender_activation
+        if held is None or (activation is not None and activation is not held):
+            return
+        # Keep the actual handle through failure/cancellation. The supervisor
+        # and session remain the task owners; this is not an independent drainer.
+        await self.sender_authority.close_activation(held)
+        if self.sender_activation is held:
+            self.sender_activation = None
+
     async def _supervise(self):
         session = None
         wake = None
@@ -298,6 +333,7 @@ class ReadingTelegram:
                 self.changed.clear()
                 self.provider = self.native = self.reply = None
                 try:
+                    await self.close_sender()
                     selection = self.selected()
                     if selection is None:
                         self.state = "awaiting-configuration"
@@ -316,8 +352,12 @@ class ReadingTelegram:
                     self.session = session
                     wake = asyncio.create_task(self.changed.wait())
                     done, _ = await asyncio.wait((session, wake), return_when=asyncio.FIRST_COMPLETED)
-                    if wake in done and self.mode(selection) != "disabled":
-                        session.cancel()
+                    if wake in done:
+                        if self.mode(selection) != "disabled":
+                            session.cancel()
+                        # Detach before awaiting physical send settlement. A
+                        # disabled route preserves its already-entered receipt.
+                        await self.close_sender()
                     await join_task(session)
                     wake.cancel()
                     await join_task(wake)
@@ -333,9 +373,19 @@ class ReadingTelegram:
             for child in (wake, session):
                 if child is not None:
                     child.cancel()
-                    await join_task(child)
-            self.active_revision = None
-            self.session = None
+            try:
+                await self.close_sender()
+            finally:
+                try:
+                    if wake is not None:
+                        await join_task(wake)
+                finally:
+                    try:
+                        if session is not None:
+                            await join_task(session)
+                    finally:
+                        self.active_revision = None
+                        self.session = None
 
     def lock(self, scope):
         # Local app-scoped ownership only. Never infer external poller absence.
@@ -351,6 +401,7 @@ class ReadingTelegram:
 
     async def _session(self, selection):
         transport = None
+        activation = None
         locks = []
         try:
             if not self.current(selection):
@@ -380,6 +431,17 @@ class ReadingTelegram:
             self.recover(bot.bot_id)
             self.state = "polling"
             presenter = TelegramPresenter()
+            from meerkat_toolkit.frontend.sender import SenderAuthority
+            if self.sender_authority is None:
+                # Reuse the existing application database; no second outbox.
+                self.sender_authority = SenderAuthority(path=self.store.path)
+            sender_id = "reading:telegram:" + bot.bot_id
+            sender = ReadingReplySender(self, selection, sender_id, transport, presenter)
+            owner_id = hashlib.sha256(encoded(selection).encode()).hexdigest()
+            activation = self.sender_authority.stage_activation(
+                sender_id=sender_id, to_owner_id=owner_id, sender=sender)
+            self.sender_activation = activation
+            await self.sender_authority.commit_activation(activation)
             while self.current(selection):
                 self.state = "paused" if self.mode(selection) == "paused" else "polling"
                 await self.process_pending(bot.bot_id, selection, transport, presenter, token)
@@ -408,11 +470,15 @@ class ReadingTelegram:
             # Toolkit close joins entered blocking operations under cancellation.
             # No guessed timeout, background native shutdown or detached thread.
             try:
-                if transport is not None:
-                    await transport.close()
+                if activation is not None:
+                    await self.close_sender(activation)
             finally:
-                for fd in reversed(locks):
-                    os.close(fd)
+                try:
+                    if transport is not None:
+                        await transport.close()
+                finally:
+                    for fd in reversed(locks):
+                        os.close(fd)
 
     def cursor(self, bot_id):
         with self.frontends.connection(readonly=True) as db:
@@ -615,12 +681,28 @@ class ReadingTelegram:
             # actual ticket result and this hook cannot grant reply permission.
             await before_reply(bot_id, update_id)
         recipient = str(selection["configuration"]["telegram_dm_chat_id"])
+        sender_id = "reading:telegram:" + bot_id
+        dispatch = None
+        if self.sender_authority is not None:
+            try:
+                dispatch = await self.sender_authority.select_dispatch(sender_id=sender_id)
+            except (ValueError, TypeError):
+                # Still record the existing disabled/changed policy outcome.
+                # A detached route cannot spend the one-attempt row below.
+                pass
         with self.frontends.connection(readonly=False) as db, db:
             db.execute("BEGIN IMMEDIATE")
             mode = self.mode(selection, db)
             if mode not in {"enabled", "paused"}:
                 status = "disabled-reply-stopped" if mode == "disabled" else "old-configuration-blocked"
                 db.execute("UPDATE reading_telegram_inbox SET status=? WHERE bot_id=? AND update_id=?", (status, bot_id, update_id))
+                return
+            if (dispatch is None or not self.sender_authority.is_current_dispatch(dispatch)
+                    or type(dispatch.sender) is not ReadingReplySender
+                    or dispatch.sender.actor is not self
+                    or dispatch.sender.selection != selection
+                    or dispatch.sender.transport is not transport
+                    or dispatch.sender.presenter is not presenter):
                 return
             prior = db.execute("SELECT state FROM reading_telegram_outbound WHERE bot_id=? AND update_id=?", (bot_id, update_id)).fetchone()
             if prior:
@@ -629,7 +711,8 @@ class ReadingTelegram:
             db.execute("INSERT INTO reading_telegram_outbound VALUES(?,?,?,?,?,?,?,?,NULL)",
                        (bot_id, update_id, str(uuid.uuid4()), recipient, completion["output"], ticket, encoded(selection), "entered"))
         try:
-            receipt = await presenter.send_text(transport, recipient=recipient, text=completion["output"])
+            receipt = await dispatch.sender(sender_id=sender_id, recipient=recipient,
+                                            part_index=0, part={"text": completion["output"]})
             saved = asdict(receipt)
             if isinstance(saved.get("error"), str) and token in saved["error"]:
                 saved["error"] = "Private provider literal omitted."

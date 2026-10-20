@@ -196,14 +196,15 @@ impl OperatorSetup {
             return Err(HostLifetimeError::InvalidSelection);
         };
         let mut selected = targets.iter().map(|target| Some(target.target.clone())).collect::<Vec<_>>();
-        if base.is_some() { selected.push(None); }
+        if base.is_some() || helper.catalog_capability.is_some() { selected.push(None); }
         if let Some(report) = &helper.report_capability {
             selected.push(Some(ConfiguredHelperReportCapability::target()));
             if report.account_parent.is_some() { selected.push(Some(ConfiguredHelperReportCapability::account_target())); }
             if report.public_parent.is_some() { selected.push(Some(ConfiguredHelperReportCapability::public_target())); }
         }
         selected.sort();
-        let mut intents = setup_targets::helper_intents(&self.source, helper, &member.audience, selected)?;
+        let mut intents = setup_targets::helper_intents(&self.source, helper,
+            &self.native.grant_administrator, &member.audience, selected)?;
         for intent in &mut intents {
             intent.requested = setup_targets::child_bounds(&self.native.grant_administrator, origin,
                 &intent.target, &intent.requested)?;

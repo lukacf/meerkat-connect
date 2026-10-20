@@ -24,6 +24,12 @@ const INSTRUCTION: &str = "Read the reviewed inbox for this task";
 mod continuation_tests;
 #[path = "application_policy_tests.rs"]
 mod application_policy_tests;
+#[path = "compensation_tests.rs"]
+mod compensation_tests;
+#[path = "service_recovery_tests.rs"]
+mod service_recovery_tests;
+#[path = "batch_recovery_tests.rs"]
+pub(super) mod batch_recovery_tests;
 fn id(value: &str) -> Id { Id::new(value).unwrap() }
 fn revision(value: &str) -> Revision { Revision::new(value).unwrap() }
 
@@ -37,10 +43,19 @@ impl ContextReferenceOwner for NoReferences {
 pub(super) async fn acquisition<S>(fixture: &ContinuationFixture<S>, dispatch: &ToolDispatchContext)
     -> SetupSnapshot
 {
+    let association = fixture.binding().await.unwrap().unwrap();
+    acquisition_for_association(fixture, dispatch, association).await
+}
+
+// The caller must read this association from the actual admitted source. The
+// ordinary fixture keeps its historical source; Console fixtures use the source
+// retained by their real verified ingress instead of a synthetic login handle.
+async fn acquisition_for_association<S>(fixture: &ContinuationFixture<S>, dispatch: &ToolDispatchContext,
+    association: meerkat_authorization_contracts::work_association::InputAuthorityAssociation) -> SetupSnapshot
+{
     let tenant = id(&fixture.scope.realm);
     let deployment = id(&fixture.scope.owner);
     let policy = revision("test-policy");
-    let association = fixture.binding().await.unwrap().unwrap();
     let target = association.candidate().target.clone();
     let authorization = dispatch.work_authorization().unwrap();
     let retained = dispatch.retained_work().unwrap().clone();
@@ -66,6 +81,7 @@ pub(super) async fn acquisition<S>(fixture: &ContinuationFixture<S>, dispatch: &
     let request = validate_request(FindAndInstallRequest {
         request: INSTRUCTION.into(), user_context: vec![], caller_observations: vec![],
     }, HostSetupRequest {
+        setup_helper: None,
         target: id("agent"), correlation: id("service-admission-ack"), parent_operation: None,
         continuation: TaskContinuation {
             owner: id("service-admission-test"), task: id(&retained.run_id().to_string()),
@@ -185,14 +201,24 @@ async fn approve_b_call_with_tool_policy<S>(fixture: &ContinuationFixture<S>, sn
             .application_tool_policy;
         assert_eq!(proposal.member, member.member);
         assert_eq!(&proposal.selection, selection);
-        assert!(proposal.catalog_session.is_none() && selection.catalog.is_none());
+        assert_eq!(proposal.catalog_session, selection.catalog.as_ref().map(|_| fixture.session.to_string()));
         assert_eq!(proposal.prior.revision, meerkat_core::PolicyRevision(1));
         assert_eq!(proposal.prior.digest.as_str(), format!("sha256:{}", initial.sha256));
         assert_eq!(proposal.candidate.revision, meerkat_core::PolicyRevision(2));
         assert!(candidate.default_deny);
+        // This captured Original begins with installation discovery only.
+        // The real owner must preserve it in the complete reviewed successor.
+        let bootstrap_grant = meerkat_core::CompiledMemberToolGrant {
+            tool_name: crate::FIND_AND_INSTALL.into(),
+            action: meerkat_core::CompiledMemberToolAction::Invoke,
+            consequence: meerkat_core::CompiledToolConsequence::R2,
+        };
+        let mut expected_grants = selection.grants().unwrap();
+        expected_grants.push(bootstrap_grant);
+        expected_grants.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
         assert_eq!(candidate.members, vec![meerkat_core::CompiledMemberToolGrants {
-            member_identity: member.member.clone(), grants: selection.grants().unwrap(),
-        }], "the full reviewed successor adds only the selected member invocation");
+            member_identity: member.member.clone(), grants: expected_grants,
+        }], "the full reviewed successor preserves bootstrap and adds only the selected permissions");
         assert!(!fixture.source.service_tool_policy.get().unwrap()
             .is_observed_current(proposal.candidate_canonical_json.as_bytes()).unwrap(),
             "the proposed policy is not current before the human decision");
@@ -517,7 +543,7 @@ async fn public_mcp_review_uses_the_actual_waiting_task_and_separate_no_connecto
         let original = meerkat_authorization_contracts::work_association::OriginalWorkRef {
             authority: route.source_authority.clone(), work: b.original.clone(),
         };
-        let lineage = source.service_grant_lineage(&approved.grant,&original).await.unwrap();
+        let lineage = source.service_grant_lineage(approved.singleton_grant().unwrap(),&original).await.unwrap();
         let resolved = source.owner.grants().resolve_lineage(&lineage,&route.logical_executor,
             route.represented_subject.as_ref()).unwrap();
         let operation = crate::installed_host::application_operations::mcp_connector_operation(
@@ -538,7 +564,7 @@ async fn public_mcp_review_uses_the_actual_waiting_task_and_separate_no_connecto
     if let Err(payload) = result { std::panic::resume_unwind(payload); }
 }
 
-fn persistence_review_request(fixture: &ContinuationFixture) -> ApprovalRequest {
+fn persistence_review_request<S>(fixture: &ContinuationFixture<S>) -> ApprovalRequest {
     ApprovalRequest {
         requester: ApprovalPrincipalId::new("installed-service-fixture").unwrap(),
         owner: ApprovalOwnerRef::Session { session_id: fixture.session.clone() },
@@ -569,7 +595,7 @@ fn persistence_config() -> meerkat_core::McpServerConfig {
     config
 }
 
-async fn persistence_task(fixture: &ContinuationFixture) -> InstalledServiceTask {
+async fn persistence_task<S>(fixture: &ContinuationFixture<S>) -> InstalledServiceTask {
     let original = fixture.submit().await;
     fixture.finish(&original).await.unwrap();
     let dispatch = fixture.probe.as_ref().unwrap().captured();
@@ -741,7 +767,7 @@ async fn combined_persistence_review_binds_scope_before_grants_and_retains_exact
         let original = meerkat_authorization_contracts::work_association::OriginalWorkRef {
             authority: route.source_authority.clone(), work: fresh,
         };
-        let lineage = fixture.source.service_grant_lineage(&approved.grant, &original).await.unwrap();
+        let lineage = fixture.source.service_grant_lineage(approved.singleton_grant().unwrap(), &original).await.unwrap();
         let resolved = fixture.source.owner.grants().resolve_lineage(&lineage,
             &route.logical_executor, route.represented_subject.as_ref()).unwrap();
         let operation = crate::installed_host::application_operations::mcp_connector_operation(

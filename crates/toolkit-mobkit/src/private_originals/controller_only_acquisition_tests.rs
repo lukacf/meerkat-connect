@@ -8,6 +8,14 @@ use meerkat_core::{AgentToolDispatcher, ToolCallView, ToolDispatchContext, ToolR
 use std::sync::{Mutex, atomic::AtomicBool};
 use toolkit_store::ToolkitStore;
 
+#[path = "acquisition_custody_progress_tests.rs"]
+mod custody_progress;
+
+#[async_trait]
+trait FindDispatchProbe: Send + Sync {
+    async fn inspect(&self, call: ToolCallView<'_>, context: &ToolDispatchContext);
+}
+
 const CALL: &str = "controller-only-find-and-install";
 
 pub(super) struct Script {
@@ -36,6 +44,11 @@ impl Script {
         self.owner.lock().unwrap().as_ref().unwrap().clone()
     }
     pub(super) fn paused_for_helper_entry() -> Arc<Self> { Self::new_with_hold(true) }
+    pub(super) fn paused_for_expiring_helper_entry(timeout_ms: u64) -> Arc<Self> {
+        let mut script = Self::new_with_hold(true);
+        Arc::get_mut(&mut script).unwrap().setup_timeout_ms = Some(timeout_ms);
+        script
+    }
     pub(super) async fn first_response_waiting(&self) {
         assert!(self.hold_first_response);
         self.first_response_entered.notified().await;
@@ -55,6 +68,7 @@ impl Script {
             inner: tools.acquisition_tool(),
             resolved: AtomicUsize::new(0),
             entered: AtomicUsize::new(0),
+            probe: Mutex::new(None),
         });
         Arc::new(Self {
             tools,
@@ -77,6 +91,12 @@ impl Script {
         assert!(Arc::ptr_eq(&owner.tool(), &self.tools.acquisition_tool()));
         assert!(self.owner.lock().unwrap().replace(owner).is_none());
     }
+    // Durable fixture teardown calls this only after its actual close joins.
+    // Drop our retained acquisition owner, never native or source-owned state.
+    pub(super) fn release_owner_after_close(&self) {
+        let owner = self.owner.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        drop(owner);
+    }
     pub(super) fn provider(self: &Arc<Self>, inner: Arc<dyn LlmClient>) -> Arc<dyn LlmClient> {
         Arc::new(AcquisitionResponse {
             inner,
@@ -92,6 +112,7 @@ struct ObservedLeaf {
     inner: Arc<dyn AgentToolDispatcher>,
     resolved: AtomicUsize,
     entered: AtomicUsize,
+    probe: Mutex<Option<Arc<dyn FindDispatchProbe>>>,
 }
 #[async_trait]
 impl AgentToolDispatcher for ObservedLeaf {
@@ -166,6 +187,8 @@ impl AgentToolDispatcher for ObservedLeaf {
         context: &ToolDispatchContext,
     ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
         self.entered.fetch_add(1, Ordering::SeqCst);
+        let probe = self.probe.lock().unwrap().clone();
+        if let Some(probe) = probe { probe.inspect(call, context).await; }
         self.inner.dispatch_with_context(call, context).await
     }
     async fn dispatch_resolved_with_context(
@@ -175,6 +198,8 @@ impl AgentToolDispatcher for ObservedLeaf {
         plan: &meerkat_core::ResolvedToolExecutionPlan,
     ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
         self.entered.fetch_add(1, Ordering::SeqCst);
+        let probe = self.probe.lock().unwrap().clone();
+        if let Some(probe) = probe { probe.inspect(call, context).await; }
         self.inner
             .dispatch_resolved_with_context(call, context, plan)
             .await
@@ -282,9 +307,7 @@ impl LlmClient for AcquisitionResponse {
                 LlmEvent::Done {
                     outcome: LlmDoneOutcome::Success { .. },
                 } => LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::ToolUse,
-                    },
+                    outcome: LlmDoneOutcome::success(StopReason::ToolUse),
                 },
                 other => other,
             })

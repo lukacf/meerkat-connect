@@ -326,6 +326,7 @@ async def run(args, v):
     from meerkat_meta.builder import MetaBuilderConfig
     from meerkat_meta.identity_first_models import DurableAgentSpec
     from meerkat_toolkit.application_runtime import ToolkitApplicationRuntime
+    from meerkat_meta.errors import GatewayStartupCleanupError
     from meerkat_toolkit.frontend.telegram import TelegramBotApiTransport
     from application import build
     from application.telegram_runtime import join_task
@@ -433,7 +434,7 @@ async def run(args, v):
 
         providers = Providers()
         config = MetaBuilderConfig(gateway_bin=str(args.toolkit_gateway), init_deadline=v.INSTALLED_LIMIT,
-            gateway_init_timeout=60.0, roster_provider=providers, topology_provider=providers,
+            gateway_init_timeout=v.INSTALLED_LIMIT, roster_provider=providers, topology_provider=providers,
             persistent_state=plan["application"]["realm"]["state_root"], meerkat_config_path=str(config_path),
             http_listen="127.0.0.1:0", console_read_only=True, console_require_app_auth=False)
         runtime = Application(config, SDK.ApplicationPreparation(SDK.SelectedHostArtifact(**plan_pin), timeout=v.INSTALLED_LIMIT), finalizer)
@@ -561,6 +562,41 @@ async def run(args, v):
             frontend_submission_result=frontend_submission_result)
         integration = build(context)
         await integration.start()
+        if args.management:
+            # This is the same application's ordinary service export and Store,
+            # not a second integration or a native model-tool dispatch. Seed only
+            # this isolated fixture's local collection through its existing owner.
+            service_instance, service_store = integration, integration.store
+            service_tools = [tool for tool in integration.tools_for_agent({"identity": IDENTITY})
+                             if tool["name"] == "collection_snapshot"]
+            require(len(service_tools) == 1 and callable(service_tools[0]["handler"]),
+                    "Reading service export is missing or ambiguous")
+            service_tool = service_tools[0]
+            service_handler, service_arguments = service_tool["handler"], {}
+            service_selection = {key: copy.deepcopy(service_tool[key])
+                                 for key in ("name", "description", "schema")}
+            seed = service_store.apply({"operation": "add", "request_id": "reading-role-isolation-seed",
+                "title": "Persistent Reading fixture", "author": "Synthetic fixture author",
+                "evidence": "Isolated service-role fixture data, not a user action or approval"})
+            require(seed.get("status") == "saved" and seed.get("revision") == 1,
+                    "Reading service fixture seed did not commit")
+            service_path = service_store.path.resolve()
+            service_file = service_path.stat()
+            before_service = service_handler(service_arguments)
+            require(isinstance(before_service, dict) and len(before_service.get("books", [])) == 1,
+                    "Reading service did not return its nonempty stored collection")
+            book = before_service["books"][0]
+            require(book.get("id") == seed["book_id"] and book.get("revision") == 1
+                    and book.get("title") == "Persistent Reading fixture"
+                    and book.get("author") == "Synthetic fixture author"
+                    and book.get("status") == "wishlist"
+                    and len(book.get("events", [])) == 1
+                    and book["events"][0]["id"] == seed["event_id"],
+                    "Reading service result did not retain the actual seeded item and event")
+            report["service_role"] = {
+                "scope": "same application service export and Store; not native tool authorization or model dispatch",
+                "selection": service_selection, "arguments": copy.deepcopy(service_arguments),
+                "seed_receipt": seed, "before_frontend_setup": copy.deepcopy(before_service)}
         front = ConsoleFront(context.root, v.vacant_port(), "fixture-human", PASSWORD, runtime_namespace="meta")
         front.frontend_host = context.frontend_host
         front.frontend_private_fields = ("READING_TELEGRAM_BOT_TOKEN",)
@@ -823,6 +859,29 @@ async def run(args, v):
                     "Reading management changed another configured native identity")
             require(os.environ.get("READING_TELEGRAM_BOT_TOKEN") == TOKEN,
                     "Reading removal changed the shared declared private field")
+            # Invoke the retained service callable only after the real frontend
+            # removal and (in CLI mode) the management process have settled.
+            require(integration is service_instance and integration.store is service_store
+                    and service_store.path.resolve() == service_path,
+                    "Reading frontend removal replaced the service instance or Store")
+            current_file = service_path.stat()
+            require((current_file.st_dev, current_file.st_ino) == (service_file.st_dev, service_file.st_ino),
+                    "Reading frontend removal replaced the service database")
+            current_tools = [tool for tool in integration.tools_for_agent({"identity": IDENTITY})
+                             if tool["name"] == service_selection["name"]]
+            require(len(current_tools) == 1 and current_tools[0]["handler"] == service_handler
+                    and {key: current_tools[0][key] for key in service_selection} == service_selection,
+                    "Reading frontend removal changed the independently selected service export")
+            after_service = service_handler(service_arguments)
+            require(service_arguments == {} and after_service == before_service,
+                    "Reading service call after frontend removal lost its stored item or history")
+            require(final_inventory["configuration"] is None
+                    and final_inventory["management"]["state"] == "removed"
+                    and len(admissions) == len(provider.requests) == 3 and len(telegram.sends) == 2,
+                    "Reading service call restarted frontend work or changed native delivery")
+            report["service_role"].update(after_frontend_removal=after_service,
+                same_instance=True, same_store=True, same_database=True, same_export=True,
+                frontend_state="removed", application_service_calls=2)
             report["management"].update(pending_completion=pending_completion, native_close=closed,
                 final_inventory=final_inventory, owner_survived_management_clients=True,
                 unrelated_identity_before=unrelated_selection, unrelated_identity_after=unrelated_observed,
@@ -830,6 +889,16 @@ async def run(args, v):
         report.update(status="passed", phase="completed", activation=integration.telegram.observation())
     except BaseException as error:
         report.update(status="failed", failure=failure(error, report["phase"]))
+        if report["phase"] == "native_connect":
+            # Preserve typed startup causes without formatting errors or payloads.
+            if isinstance(error, GatewayStartupCleanupError):
+                report["failure"]["startup_error_type"] = type(error.startup_error).__name__[:128]
+                report["failure"]["cleanup_error_type"] = type(error.cleanup_error).__name__[:128]
+            attempt = runtime.preparation_attempt if runtime is not None else None
+            if attempt is not None and attempt.settlement is not None:
+                native_result = attempt.settlement.native
+                if isinstance(native_result, BaseException):
+                    report["failure"]["preparation_native_error_type"] = type(native_result).__name__[:128]
     finally:
         # A failed assertion must not strand the actor behind the fixture barrier.
         release_reply.set()

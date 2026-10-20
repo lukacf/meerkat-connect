@@ -12,10 +12,10 @@ use super::service_approved_input::ServiceInputAdmission;
 /// its typed roundtrip; no deserialization restores those handles.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(super) struct RetainedBoundInput(serde_json::Value);
+pub(crate) struct RetainedBoundInput(serde_json::Value);
 
 impl RetainedBoundInput {
-    fn from_bound(input: &Input) -> Result<Self, PrivateOriginalError> {
+    pub(crate) fn from_bound(input: &Input) -> Result<Self, PrivateOriginalError> {
         if input.header().ingress_context.is_none() || input.header().retained_resume.is_some() {
             return Err(PrivateOriginalError::Conflict);
         }
@@ -24,7 +24,20 @@ impl RetainedBoundInput {
         Ok(value)
     }
 
-    pub(super) fn decode(&self) -> Result<Input, PrivateOriginalError> {
+    /// Retain first-input bytes under the existing live source. Retry matching
+    /// uses native replay equivalence, but returns the original exact ID/time.
+    /// The caller must rebind current process ingress/controller before use.
+    pub(super) fn retain_for_attempt(
+        slot: &OnceLock<Self>, input: &Input,
+    ) -> Result<Option<Input>, PrivateOriginalError> {
+        let candidate = Self::from_bound(input)?;
+        if slot.set(candidate).is_ok() { return Ok(None); }
+        let retained = slot.get().ok_or(PrivateOriginalError::Unavailable)?;
+        if !retained.same_binding(input)? { return Err(PrivateOriginalError::Conflict); }
+        retained.decode().map(Some)
+    }
+
+    pub(crate) fn decode(&self) -> Result<Input, PrivateOriginalError> {
         let input: Input = serde_json::from_value(self.0.clone()).map_err(|_| PrivateOriginalError::Conflict)?;
         if !matches!(input, Input::Prompt(_))
             || input.header().authority_association.is_none()
@@ -58,7 +71,8 @@ pub(super) fn source_event_key(record: &SourceRecord) -> Result<IdempotencyKey, 
 pub(super) fn validate_retained_input(record: &SourceRecord) -> Result<(), PrivateOriginalError> {
     let Some(saved) = &record.bound_service_input else { return Ok(()); };
     let Input::Prompt(input) = saved.decode()? else { return Err(PrivateOriginalError::Conflict); };
-    if (record.approved_task.is_none() && record.setup_request.is_none() && record.configured_setup.is_none())
+    if (record.approved_task.is_none() && record.setup_request.is_none()
+        && record.configured_setup.is_none())
         || input.header.authority_association != record.final_association
         || input.header.idempotency_key.as_ref() != Some(&source_event_key(record)?)
         || !matches!(&input.content, meerkat_core::ContentInput::Text(text)
@@ -92,7 +106,7 @@ impl PrivateOriginals {
     pub(super) async fn retain_bound_service_input(
         &self, reference: &PrivateOriginalRef, original: &Arc<RetainedToolkitOriginal>, input: &Input,
     ) -> Result<(), PrivateOriginalError> {
-        let _writer = self.owner.try_source_writer().map_err(writer_error)?;
+        let _writer = self.owner.source_writer().await;
         self.owner.check_bound_source(original).map_err(writer_error)?;
         let key = self.key(reference)?;
         let stored = self.store.get(&key).await.map_err(store_error)?.ok_or(PrivateOriginalError::Unavailable)?;
@@ -143,7 +157,15 @@ impl PrivateOriginals {
         if snapshot.approved_service() != Some(&self.service_selection(&stored, &record)?) {
             return Err(PrivateOriginalError::Conflict);
         }
-        let mcp = self.historical_task_access(reference, &task.grant, association).await?;
+        let mcp = match task {
+            service_approved_input::ApprovedTaskLink::Single(member) =>
+                vec![self.historical_task_access(reference, &member.grant, association).await?],
+            service_approved_input::ApprovedTaskLink::Batch(_) => {
+                let (basis, mcp) = self.service_batch_basis(reference, task, false).await?;
+                if association.candidate().authority_basis != basis { return Err(PrivateOriginalError::Conflict); }
+                mcp
+            }
+        };
         // Reopen the exact source and its complete canonical cancellation chain
         // under the existing writer. Pending local cancellation is checked again
         // synchronously inside native's callback, not inferred from this read.
@@ -216,7 +238,7 @@ impl PrivateOriginals {
         };
         // The callback has released native locks. This existing holder retains
         // the same original and exact MCP decision; it is no finish receipt.
-        self.hold_binding_with_mcp(reference.clone(), retained, Some(mcp)).await?;
+        self.hold_binding_with_mcp(reference.clone(), retained, mcp).await?;
         Ok(Some(admission))
     }
 }

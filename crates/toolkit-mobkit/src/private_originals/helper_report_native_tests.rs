@@ -3,6 +3,8 @@
 //! Neither fixture is a Console approval or account-provider interaction.
 use super::*;
 use crate::installed_host::acquisition::InstalledSetupSelection;
+use crate::installed_host::acquisition::InstalledServiceTaskSource;
+use crate::private_originals::InstalledServiceTask;
 use futures::StreamExt;
 use meerkat_core::{AgentToolDispatcher, ToolCallView, ToolDispatchContext, ToolResult};
 use meerkat_toolkit::setup::SETUP_REPORT;
@@ -12,6 +14,20 @@ use toolkit_store::ToolkitStore;
 const REPORT_CALL: &str = "actual-helper-unavailable-report";
 const DETAIL: &str = "The report fixture has no account or installed service available";
 type Fixture = FirstFixture<meerkat::PersistentSessionService<FactoryAgentBuilder>>;
+
+#[derive(Clone, Copy)]
+enum ReportPreparation {
+    Software,
+    CapturedConsumer,
+    ExplicitConsumer,
+    PublicService,
+}
+
+struct ReportPreparationRequest {
+    source: InstalledServiceTaskSource,
+    kind: ReportPreparation,
+    reply: tokio::sync::oneshot::Sender<Result<Option<InstalledServiceTask>, PrivateOriginalError>>,
+}
 
 pub(super) struct Report {
     leaf: Arc<ReportLeaf>,
@@ -23,6 +39,7 @@ impl Report {
     fn new(inner: Arc<dyn AgentToolDispatcher>) -> Arc<Self> {
         Arc::new(Self {
             leaf: Arc::new(ReportLeaf { inner, context: Mutex::new(None),
+                preparation: Mutex::new(None),
                 arrived: tokio::sync::Notify::new(), released: AtomicBool::new(false),
                 resume: tokio::sync::Notify::new() }),
             selection: OnceLock::new(), first: AtomicBool::new(true), feedback: Mutex::new(vec![]),
@@ -46,6 +63,20 @@ impl Report {
         self.leaf.released.store(true, Ordering::SeqCst);
         self.leaf.resume.notify_one();
     }
+    /// Ask the held real leaf to prepare while it still borrows the exact
+    /// native call and resolved plan. Copies of those values are not custody.
+    async fn prepare_task(
+        &self, source: &InstalledServiceTaskSource, kind: ReportPreparation,
+    ) -> Result<InstalledServiceTask, PrivateOriginalError> {
+        assert!(!self.leaf.released.load(Ordering::SeqCst));
+        let (reply, received) = tokio::sync::oneshot::channel();
+        assert!(self.leaf.preparation.lock().unwrap().replace(ReportPreparationRequest {
+            source: source.clone(), kind, reply,
+        }).is_none());
+        self.leaf.resume.notify_one();
+        received.await.expect("held report dispatch must settle preparation")?
+            .ok_or(PrivateOriginalError::Unavailable)
+    }
 }
 
 /// Forward every native dispatcher seam unchanged. The pause retains the
@@ -53,6 +84,7 @@ impl Report {
 struct ReportLeaf {
     inner: Arc<dyn AgentToolDispatcher>,
     context: Mutex<Option<ToolDispatchContext>>,
+    preparation: Mutex<Option<ReportPreparationRequest>>,
     arrived: tokio::sync::Notify,
     released: AtomicBool,
     resume: tokio::sync::Notify,
@@ -127,7 +159,7 @@ impl AgentToolDispatcher for ReportLeaf {
         call: ToolCallView<'_>,
         context: &ToolDispatchContext,
     ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
-        self.pause(context).await;
+        self.pause(call, context, None).await;
         self.inner.dispatch_with_context(call, context).await
     }
     async fn dispatch_resolved_with_context(
@@ -136,7 +168,9 @@ impl AgentToolDispatcher for ReportLeaf {
         context: &ToolDispatchContext,
         plan: &meerkat_core::ResolvedToolExecutionPlan,
     ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
-        self.pause(context).await;
+        // Borrow the native plan only. Its root-dispatcher lease owns this
+        // leaf, so retaining a clone here would keep the old route alive.
+        self.pause(call, context, Some(plan)).await;
         self.inner
             .dispatch_resolved_with_context(call, context, plan)
             .await
@@ -180,11 +214,40 @@ impl AgentToolDispatcher for ReportLeaf {
 }
 
 impl ReportLeaf {
-    async fn pause(&self, context: &ToolDispatchContext) {
+    async fn pause(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
+    ) {
         assert!(self.context.lock().unwrap().replace(context.clone()).is_none());
         self.arrived.notify_one();
         loop {
             let resumed = self.resume.notified();
+            let preparation = self.preparation.lock().unwrap().take();
+            if let Some(request) = preparation {
+                assert_eq!(call.id, REPORT_CALL);
+                assert_eq!(call.name, SETUP_REPORT);
+                let copied_args = serde_json::value::RawValue::from_string(call.args.get().to_owned()).unwrap();
+                assert!(context.check_tool_authorization(ToolCallView {
+                    id: call.id, name: call.name, args: &copied_args,
+                }, plan).is_err(), "equal argument bytes are not native call custody");
+                if let Some(plan) = plan {
+                    let copied_plan = plan.clone();
+                    assert!(context.check_tool_authorization(call, Some(&copied_plan)).is_err(),
+                        "equal resolved plan values are not native plan custody");
+                }
+                let result = match context.check_tool_authorization(call, plan) {
+                    Err(_) => Err(PrivateOriginalError::Denied),
+                    Ok(_) => match request.kind {
+                        ReportPreparation::Software => request.source.prepare_software(call, context, plan).await,
+                        ReportPreparation::CapturedConsumer => request.source.prepare_captured_consumer(call, context, plan).await,
+                        ReportPreparation::ExplicitConsumer => request.source.prepare(call, context, plan, MEMBER).await,
+                        ReportPreparation::PublicService => request.source.prepare_public_service(call, context, plan).await,
+                    },
+                };
+                // A timed-out test may have dropped its receiver; it still
+                // releases and joins this real dispatch through normal cleanup.
+                let _ = request.reply.send(result);
+            }
             if self.released.load(Ordering::SeqCst) { return; }
             resumed.await;
         }
@@ -233,7 +296,7 @@ impl LlmClient for ReportResponse {
                 args: serde_json::json!({"kind":"unavailable","detail":DETAIL}), meta: None,
             },
             LlmEvent::Done { outcome: LlmDoneOutcome::Success { .. } } => LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
+                outcome: LlmDoneOutcome::success(StopReason::ToolUse),
             },
             other => other,
         })))
@@ -309,3 +372,12 @@ async fn narrow_original_report_scope_refuses_locally_and_helper_turn_completes(
 // The configured producer control separately supplies A's correlated targets.
 #[path = "helper_report_producer_tests.rs"]
 mod configured_parent;
+
+#[path = "helper_report_preparation_tests.rs"]
+mod legacy_preparation;
+
+#[path = "warm_service_issuance_tests.rs"]
+mod warm_service_issuance;
+
+#[path = "warm_reacquisition_native_tests.rs"]
+mod warm_reacquisition;

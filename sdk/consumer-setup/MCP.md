@@ -187,9 +187,14 @@ The agent still researches the integration and obtains actual current host
 references. Example values must not be treated as evidence or permission.
 
 For an ordinary Agent Plugins package already in host staging, the optional
-`setup_inspect_plugin` tool reads explicitly selected public files through the
-canonical anchored reader. It returns guidance and MCP declarations without
-requiring a Toolkit namespace. The agent supplies missing declarations and
+`setup_inspect_plugin` tool accepts either `inventory` or explicit `files`
+through the same canonical anchored reader. Inventory starts at `./` and walks
+observed directories one level per request, returning complete sorted names,
+kinds and file byte lengths without content or retained provenance. The agent
+then selects the discovered public files, including `./plugin.json`, to read
+exact guidance and MCP declarations without requiring a Toolkit namespace.
+Unsupported inventory is an unavailable observation, not a package validity or
+readiness result. The agent supplies missing declarations and
 passes the returned source reference to the existing selected installer.
 `setup_plugin_source` reads the retained evidence after installation or restart.
 See [selected-package setup](SELECTED.md) for the host opt-in and exact boundary.
@@ -390,6 +395,16 @@ host-selected manifest into readback-only history. It lists requests in reverse
 manifest order, not original execution order. The legacy single-request mode
 retains its two-tool interface.
 
+In development source, `setup_job` accepts optional integer `wait_ms` from 0 to
+10000. For example, `setup_job {"job_id":"0123456789abcdef0123456789abcdef","wait_ms":10000}`
+requests a bounded observation interval for that exact retained job; replace the
+example ID with the returned job ID. While the job runs, the adapter re-reads its
+current snapshot until it observes a terminal status or the interval expires.
+Omitting `wait_ms` or setting it to `0` preserves the immediate response. Existing
+caller and read deadlines still apply. Cancelling the observation leaves the
+installation running; `setup_stop` remains the explicit stop action. A terminal
+job observation establishes neither Toolkit readiness nor worker cleanup.
+
 ## Stop one local setup job
 
 When `setup_state.stop.available` is true, call `setup_stop {"job_id": "EXACT_JOB_ID"}`
@@ -460,6 +475,24 @@ fields are preserved. See the [handoff contract](README.md#validated-credential-
 The rows neither read credentials nor grant permission to inject environment
 variables. Reconciliation and recovered sessions do not return a current
 reference projection or rerun the configuration validator.
+
+## Acquired archive research
+
+When the host enables acquired inspection, `setup_inspect_acquired` accepts the
+exact acquisition `job_id` and `receipt_sha256`, plus either `after` for a member
+listing or `member` and `offset` for bounded UTF-8 text. The primary archive is
+the default. To inspect a retained dependency, add `archive_sha256` using the
+exact digest from that same job's `artifacts` array. Keep that selector on
+subsequent pages and reads. No path, URL or additional tool grant is needed.
+
+The host revalidates the complete receipt and retained inputs before and after
+the read. The result identifies the selected filename and archive digest, with
+scope `acquired_primary_archive_only` or `acquired_dependency_archive_only`.
+This reads inert package contents; it does not download dependencies, run
+lifecycle scripts, install a package or validate runtime compatibility. See the
+[archive inspection contract](ACQUIRED-INSPECTION.md) for bounds and the separate
+explicitly enabled recovery behavior. Older frozen adapters retain their
+advertised schema; use the dependency selector only when it is exposed.
 
 ## Package metadata corrections
 

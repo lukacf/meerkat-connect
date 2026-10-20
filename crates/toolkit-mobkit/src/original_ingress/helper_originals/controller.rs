@@ -2,6 +2,7 @@
 //! source row. It authenticates no original and supplies no admission custody.
 use super::*;
 mod report;
+mod catalog;
 use meerkat_authorization::grants::ChildGrantIntent;
 use meerkat_authorization_contracts::constraints::{DelegationDepth, LifetimeBound};
 
@@ -21,6 +22,8 @@ pub(crate) struct HelperControllerIntent {
     account: Option<report::HelperReportIntent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     public: Option<report::HelperReportIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    catalog: Option<catalog::HelperCatalogIntent>,
 }
 
 impl HelperControllerIntent {
@@ -33,9 +36,10 @@ impl HelperControllerIntent {
         let report = report::HelperReportIntent::for_target(admitted, &target)?;
         let account = report::HelperReportIntent::for_account(admitted, &target)?;
         let public = report::HelperReportIntent::for_public(admitted, &target)?;
+        let catalog = catalog::HelperCatalogIntent::for_target(admitted, &target)?;
         let value = Self {
             id: child_id(admitted.realm(), &admitted.original_work()?)?,
-            target, controller_model, requested, report, account, public,
+            target, controller_model, requested, report, account, public, catalog,
         };
         value.validate(admitted)?;
         Ok(value)
@@ -53,6 +57,9 @@ impl HelperControllerIntent {
         if self.report != report::HelperReportIntent::for_target(admitted, &self.target)?
             || self.account != report::HelperReportIntent::for_account(admitted, &self.target)?
             || self.public != report::HelperReportIntent::for_public(admitted, &self.target)? {
+            return Err(OriginalWriterError::Conflict);
+        }
+        if self.catalog != catalog::HelperCatalogIntent::for_target(admitted, &self.target)? {
             return Err(OriginalWriterError::Conflict);
         }
         Ok(())
@@ -77,7 +84,9 @@ impl HelperControllerIntent {
             || !binding.controller_grant_lineage.starts_with(&intent.parent_lineage)
             || binding.controller_grant_lineage.last().map(|leaf| &leaf.grant_id) != Some(&intent.id)
         { return Err(OriginalWriterError::Conflict); }
-        report::check_record_basis(self.report.as_ref(), self.account.as_ref(), self.public.as_ref(), facts, &binding.authority_basis)?;
+        let operation_basis = catalog::operation_basis(self.catalog.as_ref(), facts, &binding.target, &binding.authority_basis)?;
+        report::check_record_basis(self.report.as_ref(), self.account.as_ref(), self.public.as_ref(), facts,
+            &operation_basis, &binding.authority_basis)?;
         Ok(())
     }
 
@@ -114,6 +123,9 @@ impl HelperControllerIntent {
         if let Some(public) = &self.public {
             public.check_public_current(owner, &admitted.facts, &binding.authority_basis)?;
         }
+        if let Some(catalog) = &self.catalog {
+            catalog.check_current(owner, &admitted.facts, &binding.authority_basis)?;
+        }
         parent.check_current().map_err(|_| OriginalWriterError::Unavailable)?;
         child.check_current().map_err(|_| OriginalWriterError::Unavailable)?;
         Ok(())
@@ -145,28 +157,28 @@ impl ToolkitOriginalOwner {
         controller: HelperControllerIntent,
     ) -> Result<(ChildGrantIntent, Option<ChildGrantIntent>), OriginalWriterError> {
         self.retain_helper_operation_intents(store, admitted, controller).await
-            .map(|(controller, report, _, _)| (controller, report))
+            .map(|(controller, report, _, _, _)| (controller, report))
     }
 
     pub(crate) async fn retain_helper_operation_intents(
         self: &Arc<Self>, store: &dyn ToolkitStore, admitted: &AdmittedHelperWork,
         controller: HelperControllerIntent,
-    ) -> Result<(ChildGrantIntent, Option<ChildGrantIntent>, Option<ChildGrantIntent>, Option<ChildGrantIntent>), OriginalWriterError> {
+    ) -> Result<(ChildGrantIntent, Option<ChildGrantIntent>, Option<ChildGrantIntent>, Option<ChildGrantIntent>, Option<ChildGrantIntent>), OriginalWriterError> {
+        self.check_canonical_source(store, &admitted.source_scope)?;
         store.capabilities().require_durable_contract()
             .map_err(|_| OriginalWriterError::Unavailable)?;
         let _mutation = self.mutation.try_lock().map_err(|_| OriginalWriterError::Unavailable)?;
         self.check_admitted_helper(admitted)?;
         controller.validate(admitted)?;
         let key = admitted.source_key()?;
-        let candidate = HelperSourceRecord { facts: admitted.facts.clone(), controller,
+        let candidate = HelperSourceRecord { custody_attempt: None, bound_input: None, facts: admitted.facts.clone(), controller,
             state: HelperSourceState::ControllerPending };
         let saved = match store.get(&key).await.map_err(store_error)? {
             Some(saved) => saved,
             None => store.admit(AdmissionRequest {
                 key: key.clone(), admission_key: source_admission_key(
                     &admitted.facts.realm, &admitted.facts.namespace, &admitted.facts.admission.key,
-                )?, data: RecordData { schema: SCHEMA.into(), version: SOURCE_VERSION,
-                    body: serde_json::to_value(&candidate).map_err(|_| OriginalWriterError::Conflict)? },
+                )?, data: candidate.encode()?,
                 events: vec![], effects: vec![],
             }).await.map_err(store_error)?.record().clone(),
         };
@@ -183,7 +195,9 @@ impl ToolkitOriginalOwner {
             .map(|value| value.native_account(&retained.facts)).transpose()?;
         let public = retained.controller.public.as_ref()
             .map(|value| value.native_public(&retained.facts)).transpose()?;
-        Ok((retained.controller.native(&retained.facts), report, account, public))
+        let catalog = retained.controller.catalog.as_ref()
+            .map(|value| value.native(&retained.facts)).transpose()?;
+        Ok((retained.controller.native(&retained.facts), report, account, public, catalog))
     }
 }
 

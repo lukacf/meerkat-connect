@@ -14,7 +14,7 @@ async fn account_and_report_partial_issuance_keep_one_pending_row_until_all_chil
     for first_account in [false, true] {
         let f = Fixture::with_account().await;
         let candidate = f.candidate();
-        let (controller, report, account, public) = f.owner.retain_helper_operation_intents(
+        let (controller, report, account, public, _catalog) = f.owner.retain_helper_operation_intents(
             &f.store, &f.admitted, candidate.clone()).await.unwrap();
         let report = report.unwrap(); let account = account.unwrap(); assert!(public.is_none());
         assert_ne!(report.id, account.id);
@@ -32,7 +32,7 @@ async fn account_and_report_partial_issuance_keep_one_pending_row_until_all_chil
         assert!(f.owner.bind_admitted_helper(&f.store, &f.admitted, binding.clone()).await.is_err());
         assert_eq!(f.row().await.unwrap(), pending);
         let again = f.owner.retain_helper_operation_intents(&f.store, &f.admitted, candidate).await.unwrap();
-        assert_eq!(again, (controller, Some(report.clone()), Some(account.clone()), None));
+        assert_eq!(again, (controller, Some(report.clone()), Some(account.clone()), None, None));
         let report_lineage = issue(&f, &report); let account_lineage = issue(&f, &account);
         assert_eq!(issue(&f, first), first_lineage);
         let cap = f.admitted.selection().helper.report_capability.as_ref().unwrap();
@@ -50,7 +50,7 @@ async fn account_and_report_partial_issuance_keep_one_pending_row_until_all_chil
 #[tokio::test]
 async fn account_selection_refuses_report_parent_and_retains_narrow_target_revocation() {
     let f = Fixture::with_account().await;
-    let (controller, report, account, public) = f.owner.retain_helper_operation_intents(
+    let (controller, report, account, public, _catalog) = f.owner.retain_helper_operation_intents(
         &f.store, &f.admitted, f.candidate()).await.unwrap();
     let report = report.unwrap(); let account = account.unwrap(); assert!(public.is_none());
     let report_lineage = issue(&f, &report); let account_lineage = issue(&f, &account);
@@ -91,7 +91,7 @@ async fn public_request_child_is_independent_and_partial_settlement_recovers_the
     for first_public in [false, true] {
         let f = Fixture::with_public(true).await;
         let candidate = f.candidate();
-        let (controller, report, account, public) = f.owner.retain_helper_operation_intents(
+        let (controller, report, account, public, _catalog) = f.owner.retain_helper_operation_intents(
             &f.store, &f.admitted, candidate.clone()).await.unwrap();
         let report = report.unwrap(); let account = account.unwrap(); let public = public.unwrap();
         for other in [&report, &account] {
@@ -111,7 +111,7 @@ async fn public_request_child_is_independent_and_partial_settlement_recovers_the
         assert!(f.owner.retain_helper_operation_intents(&f.store, &f.admitted, changed).await.is_err());
         assert_eq!(f.row().await.unwrap(), pending);
         assert_eq!(f.owner.retain_helper_operation_intents(&f.store, &f.admitted, candidate).await.unwrap(),
-            (controller, Some(report.clone()), Some(account.clone()), Some(public.clone())));
+            (controller, Some(report.clone()), Some(account.clone()), Some(public.clone()), None));
         let report_lineage = issue(&f, &report); let account_lineage = issue(&f, &account);
         let public_lineage = issue(&f, &public);
         assert_eq!(issue(&f, first), first_lineage);
@@ -170,7 +170,7 @@ async fn public_only_selection_never_infers_account_and_legacy_rows_omit_public(
     assert_eq!(serde_json::to_value(&restored).unwrap(), value);
 
     let f = Fixture::with_public(false).await;
-    let (_, report, account, public) = f.owner.retain_helper_operation_intents(
+    let (_, report, account, public, _catalog) = f.owner.retain_helper_operation_intents(
         &f.store, &f.admitted, f.candidate()).await.unwrap();
     assert!(account.is_none());
     let helper = &f.admitted.selection().helper;

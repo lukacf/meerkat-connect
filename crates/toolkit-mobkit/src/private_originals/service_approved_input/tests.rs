@@ -19,6 +19,12 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
         let parent_stored = source.store.get(&source.key(&parent).unwrap()).await.unwrap().unwrap();
         let parent_record = source.decode_record(&parent_stored, &parent).unwrap();
         let dispatch = fixture.probe.as_ref().unwrap().captured();
+        // The cancellation sweep also projects the linked setup. Retain its
+        // real canonical acquisition without reserving or authorizing B.
+        let acquisition = admission_tests::acquisition(&fixture, &dispatch).await;
+        assert!(acquisition.approved_service().is_none());
+        let original_task = acquisition.request().host().continuation.native_original
+            .as_ref().unwrap().clone();
         let event = PrivateAuthenticatedEvent {
             route: parent.route.clone(), original: EvidenceId::new("linked-b").unwrap(),
             occurrence: EvidenceId::new("linked-b").unwrap(),
@@ -30,22 +36,21 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
                 resource_id: EvidenceId::new("linked-b").unwrap(), revision: EvidenceId::new("1").unwrap(),
                 sha256: digest(b"linked-b"),
             },
-            contributors: parent_record.event.contributors.clone(), content_sha256: digest(b"proposed instruction"),
+            contributors: parent_record.event.contributors.clone(),
+            content_sha256: digest(acquisition.request().request().request.as_bytes()),
         };
         let reference = PrivateOriginalRef { route: event.route.clone(), original: event.original.clone(),
             event_sha256: digest(&canonical_json(&event).unwrap()) };
         let key = source.key(&reference).unwrap();
-        let link = ApprovedTaskLink {
-            parent: parent.clone(), acquisition: StoreKey { realm: source.scope.realm.clone(), owner: source.scope.owner.clone(), id: "fixture-acquisition".into() },
-            original_task: NativeOriginalTask { origin_session_id: fixture.session.clone(),
-                retained_work: dispatch.retained_work().unwrap().clone(), member: None },
+        let link = ApprovedTaskLink::single(ApprovedTaskHeader {
+            parent: parent.clone(), acquisition: acquisition.key().clone(), original_task, before_ms: u64::MAX },
             // Deliberately unresolved: cancellation may not require a current
             // grant, and these coordinates cannot admit or authorize B.
-            grant: PrivateServiceGrantRef { route: parent.route.clone(), decision: Id::new("unissued-b").unwrap(),
-                decision_sha256: "0".repeat(64) }, before_ms: u64::MAX,
-        };
-        let record = SourceRecord { bound_service_input: None, setup_request: None, configured_setup: None, source: parent_record.source.clone(), event,
-            final_association: None, operation_cancelled: false, approved_task: Some(link),
+            PrivateServiceGrantRef { route: parent.route.clone(), decision: Id::new("unissued-b").unwrap(),
+                decision_sha256: "0".repeat(64) });
+        let record = SourceRecord { custody_attempt: None, bound_service_input: None, setup_request: None, configured_setup: None, service_setup_children: vec![], source: parent_record.source.clone(), event,
+            final_association: None, operation_cancelled: false, service_attachment_failure: None, service_attachment_observation: None,
+            service_attachment_member: None, approved_task: Some(link),
             // This exercises the actual canonical admitted-field branch. It
             // does not fabricate native B acceptance or a usable B grant.
             service_admission: admitted_partial_write.is_some().then(|| ServiceInputAdmission {
@@ -65,8 +70,8 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
                 };
                 old.event.occurrence = old.event.original.clone();
                 let old_link = old.approved_task.as_mut().unwrap();
-                old_link.parent.route = old.event.route.clone();
-                old_link.parent.original = EvidenceId::new("unrelated-old-parent").unwrap();
+                old_link.header_mut().parent.route = old.event.route.clone();
+                old_link.header_mut().parent.original = EvidenceId::new("unrelated-old-parent").unwrap();
                 old.service_admission = completed.then(|| ServiceInputAdmission {
                     session_id: "historical-session".into(), input_id: "historical-input".into(),
                 });
@@ -86,6 +91,18 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
             evidence.digest = EvidenceDigest::of_bytes(b"linked-b");
         }
         let b = InputAuthorityAssociation::new(candidate).unwrap();
+        let mut result_ancestors = Vec::new();
+        source.extend_result_ancestor_sources(&record, &mut result_ancestors).await.unwrap();
+        assert_eq!(result_ancestors.len(), 1);
+        assert_eq!(result_ancestors[0].key, parent_stored.key);
+        assert_eq!(result_ancestors[0].revision, parent_stored.revision);
+        assert_eq!(result_ancestors[0].content_digest, parent_stored.content_digest);
+        source.extend_result_ancestor_sources(&record, &mut result_ancestors).await.unwrap();
+        assert_eq!(result_ancestors.len(), 1, "identical ancestor reads deduplicate");
+        let mut conflicting = result_ancestors.clone();
+        conflicting[0].revision += 1;
+        assert!(matches!(source.extend_result_ancestor_sources(&record, &mut conflicting).await,
+            Err(PrivateOriginalError::Conflict)));
         if let Some(persist_child_before_error) = admitted_partial_write {
             let child_stored = source.store.get(&key).await.unwrap().unwrap();
             let affected = [parent_stored, child_stored].into_iter().map(|stored| {
@@ -127,6 +144,8 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
             assert!(source.decode_record(&before_a, &parent).unwrap().operation_cancelled);
             let before_b = source.decode_record(&before_b, &reference).unwrap();
             assert_eq!(before_b.operation_cancelled, persist_child_before_error);
+            assert!(matches!(source.extend_result_ancestor_sources(&before_b, &mut Vec::new()).await,
+                Err(PrivateOriginalError::Denied)), "durable parent cancellation fences result before child repair");
             assert!(before_b.service_admission.is_some());
             for association in [&a, &b] {
                 assert!(matches!(source.owner.original_disposition(
@@ -181,6 +200,8 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
             source.persist_source_cancellation(Arc::new(parent_stored)).await.unwrap();
             let b_before = source.store.get(&key).await.unwrap().unwrap();
             assert!(!source.decode_record(&b_before, &reference).unwrap().operation_cancelled);
+            assert!(matches!(source.extend_result_ancestor_sources(&record, &mut Vec::new()).await,
+                Err(PrivateOriginalError::Denied)), "unchanged child cannot conceal a cancelled parent");
             assert!(matches!(source.owner.original_disposition(
                 &a.candidate().ingress_namespace, &a.candidate().original_work,
             ), Ok(OriginalDisposition::Active)));
@@ -212,11 +233,11 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
             assert!(matches!(late, Err(OriginalWriterError::OperationCancelled)));
             assert!(!entered.load(Ordering::SeqCst), "cancelled A refuses before B publication callback");
         }
-        // Use a fresh source projection over the same canonical store; it has
-        // no local retained B handle. The actual binder must reopen A's row.
-        let reopened = PrivateOriginals::new(source.scope.clone(), source.store.clone(),
-            source.owner.clone(), source.routes().unwrap().to_vec()).await.unwrap();
-        let outcome = reopened.persist_or_observe_binding(&reference, &b, true).await;
+        // B has no local retained handle. The actual binder rereads canonical
+        // B and its cancelled parent A through this same source owner.
+        assert!(!source.retained.lock().unwrap().iter()
+            .any(|held| held.reference == reference));
+        let outcome = source.persist_or_observe_binding(&reference, &b, true).await;
         assert!(matches!(outcome, Err(OriginalWriterError::OperationCancelled)));
         let stored_b = source.store.get(&key).await.unwrap().unwrap();
         let b_after = source.decode_record(&stored_b, &reference).unwrap();
@@ -235,7 +256,7 @@ async fn service_instruction_cancellation_fences_existing_and_future_linked_sour
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_instruction_parent_only_commit_refuses_reopened_unbound_b() {
+async fn service_instruction_parent_only_commit_refuses_unbound_b_after_canonical_reread() {
     cancellation_case(true, false, None).await;
 }
 

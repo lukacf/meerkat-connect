@@ -64,7 +64,7 @@ async fn withdrawn_retry_candidate_refuses_without_promoting_source() {
     assert!(matches!(wait.await, Err(OriginalWriterError::WrongOwner)));
     assert!(matches!(owner.check_admitted_helper(&admitted), Err(OriginalWriterError::WrongOwner)));
     let claims = original.association().candidate();
-    assert!(owner.retained_original(&claims.ingress_namespace, &claims.original_work).unwrap().is_none());
+    assert!(owner.admitted_original_basis(&claims.ingress_namespace, &claims.original_work).unwrap().is_none());
 }
 
 #[tokio::test]
@@ -80,7 +80,7 @@ async fn canonical_admitted_replay_survives_dropped_dedup_guard() {
     ).now_or_never(), Some(Ok(()))));
     owner.check_admitted_helper(&admitted).unwrap();
     let claims = original.association().candidate();
-    assert!(owner.retained_original(&claims.ingress_namespace, &claims.original_work).unwrap().is_some());
+    assert!(owner.admitted_original_basis(&claims.ingress_namespace, &claims.original_work).unwrap().is_some());
     assert_eq!(owner.originals.lock().unwrap().len(), 1);
 }
 

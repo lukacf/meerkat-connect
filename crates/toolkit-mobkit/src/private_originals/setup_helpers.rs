@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use meerkat_authorization_contracts::{
     constraints::ExecutionRestrictions, grant::GrantLineageRef, work_association::{NativeWorkTarget, WorkAuthorityBasis},
 };
-use meerkat_core::{ControllerModelClient, SessionId, ToolDispatchContext, lifecycle::InputId, types::ToolCallView};
+use meerkat_core::{ControllerModelClient, SessionId, ToolDispatchContext, types::ToolCallView};
 use meerkat_mobkit::identity_first::{
     BoundGovernedInput, GovernedAdmission, GovernedBindContext, GovernedInputBinder,
     GovernedInputError, GovernedSettlement, IdentityRuntimeError, TurnTracking,
@@ -47,11 +47,32 @@ impl PreparedHelperController {
     }
 }
 
+/// Helper-local admission observation. Exhausted reprepare proves only that
+/// this exact invocation was not admitted; it starts no background replay.
+pub(crate) enum SetupHelperSubmission {
+    Native(PrivateOriginalSubmission),
+    ReprepareRequired,
+}
+
 /// Kept by the existing source adapter when native cannot settle admission.
 /// Its guard owns only source custody. Native remains the input/turn owner.
 pub(crate) struct HeldSetupHelper {
-    source: RetainedHelperSource,
-    unresolved: Mutex<Vec<Box<dyn GovernedSettlement>>>,
+    pub(super) source: RetainedHelperSource,
+    first_input: OnceLock<cold_service_admission::RetainedBoundInput>,
+    pub(super) first_custody: Mutex<Option<Arc<PendingHelperAdmission>>>,
+    unresolved: Mutex<Vec<UnresolvedHelperAdmission>>,
+    // Bound once from the canonical live setup before input admission. Never
+    // reconstructed from source history or refreshed by human approval.
+    operation_deadline_ms: OnceLock<u64>,
+}
+
+#[cfg(test)]
+pub(crate) struct HelperHandoffObservation {
+    pub session: SessionId,
+    pub input: serde_json::Value,
+    pub first_candidate: bool,
+    pub native_admission: Option<GovernedAdmission>,
+    pub source_acknowledged: Option<bool>,
 }
 
 impl HeldSetupHelper {
@@ -61,6 +82,75 @@ impl HeldSetupHelper {
     pub(crate) fn source_record(&self) -> &Arc<StoredRecord> {
         &self.source.source_record
     }
+
+    pub(super) fn check_result_record(
+        &self, saved: &toolkit_store::StoredRecord, session: &SessionId,
+    ) -> Result<(), PrivateOriginalError> {
+        // First-input bytes are retained even without optional recovery
+        // enrollment. Native result lookup has already checked this session.
+        self.source.check_result_record(saved,
+            self.first_input.get().map(|input| (input, session))).map_err(helper_error)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handoffs_for_test(&self) -> Vec<Option<HelperHandoffObservation>> {
+        self.unresolved.lock().unwrap().iter().map(|retained| {
+            let pending = retained.pending.as_ref()?;
+            let publication = pending.publication.lock().unwrap();
+            Some(HelperHandoffObservation {
+                session: pending.session.clone(), input: serde_json::to_value(&pending.input).unwrap(),
+                first_candidate: pending.first_candidate,
+                native_admission: publication.native_admission.clone(),
+                source_acknowledged: match &publication.source {
+                    governed_submit::SourcePublication::Pending(_) => None,
+                    governed_submit::SourcePublication::Settled { source_acknowledged, .. } =>
+                        Some(*source_acknowledged),
+                },
+            })
+        }).collect()
+    }
+
+    fn bind_setup_deadline(
+        &self,
+        snapshot: &meerkat_toolkit::setup::SetupSnapshot,
+    ) -> Result<(), PrivateOriginalError> {
+        let operation = self.source.policy_source().map_err(helper_error)?.operation;
+        retain_setup_snapshot_deadline(&self.operation_deadline_ms, &operation, snapshot)
+    }
+}
+
+fn retain_setup_snapshot_deadline(
+    held: &OnceLock<u64>, operation: &HelperOperation,
+    snapshot: &meerkat_toolkit::setup::SetupSnapshot,
+) -> Result<(), PrivateOriginalError> {
+    let input = canonical_json(snapshot.request().request())
+        .map_err(|_| PrivateOriginalError::Conflict)?;
+    if operation.acquisition != *snapshot.key()
+        || operation.input_digest != ContentDigest::of_bytes(&input)
+        || snapshot.state().terminal_revision != 0
+    {
+        return Err(PrivateOriginalError::Denied);
+    }
+    retain_exact_setup_deadline(held, snapshot.request().host().limits.deadline_ms)
+}
+
+// Expose only the production data-binding check to existing canonical-store
+// controls. This cannot construct a helper or establish runtime custody.
+#[cfg(test)]
+pub(crate) fn bind_snapshot_deadline_fixture(
+    held: &OnceLock<u64>, operation: &HelperOperation,
+    snapshot: &meerkat_toolkit::setup::SetupSnapshot,
+) -> Result<(), PrivateOriginalError> {
+    retain_setup_snapshot_deadline(held, operation, snapshot)
+}
+
+// Idempotence preserves the original deadline; replay cannot extend it.
+fn retain_exact_setup_deadline(
+    held: &OnceLock<u64>, deadline_ms: u64,
+) -> Result<(), PrivateOriginalError> {
+    let retained = held.get_or_init(|| deadline_ms);
+    if *retained != deadline_ms { return Err(PrivateOriginalError::Conflict); }
+    Ok(())
 }
 
 impl PrivateOriginals {
@@ -73,10 +163,34 @@ impl PrivateOriginals {
     /// This neither promotes input custody nor installs a permissive owner.
     #[cfg(test)]
     pub(crate) fn retain_helper_policy_fixture(&self, source: RetainedHelperSource) {
+        self.retain_helper_policy_deadline_fixture(source, Some(u64::MAX));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retain_helper_policy_deadline_fixture(
+        &self, source: RetainedHelperSource, deadline_ms: Option<u64>,
+    ) {
         source.policy_source().unwrap();
+        let operation_deadline_ms = OnceLock::new();
+        if let Some(deadline) = deadline_ms { operation_deadline_ms.set(deadline).unwrap(); }
         self.helper_sources.lock().unwrap().push(Arc::new(HeldSetupHelper {
-            source, unresolved: Mutex::new(Vec::new()),
+            source, first_input: OnceLock::new(), first_custody: Mutex::new(None),
+            unresolved: Mutex::new(Vec::new()), operation_deadline_ms,
         }));
+    }
+
+    /// Live operation limit of this exact held helper, not a historical grant.
+    /// Missing live binding refuses helper effects; it is never synthesized.
+    pub(crate) fn helper_operation_deadline(
+        &self,
+        association: &meerkat_authorization_contracts::work_association::InputAuthorityAssociation,
+    ) -> Result<Option<u64>, PrivateOriginalError> {
+        let held = self.helper_sources.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+        let mut matches = held.iter().filter(|source| source.original().association() == association);
+        let Some(source) = matches.next() else { return Ok(None); };
+        if matches.next().is_some() { return Err(PrivateOriginalError::Conflict); }
+        source.operation_deadline_ms.get().copied().map(Some)
+            .ok_or(PrivateOriginalError::Unavailable)
     }
 
     /// Exact immutable source facts from a handle this source owner retained.
@@ -91,6 +205,35 @@ impl PrivateOriginals {
         let Some(source) = matches.next() else { return Ok(None); };
         if matches.next().is_some() { return Err(PrivateOriginalError::Conflict); }
         source.source.policy_source().map(Some).map_err(helper_error)
+    }
+
+    /// Pure currentness check for the retained private owner. No callback or
+    /// disclosure runs here; actual invocation and native binding remain the
+    /// enrolled leaf's separate entry checks.
+    pub(crate) fn validate_private_setup_owner(
+        &self,
+        realm: &str,
+        source_owner: &str,
+    ) -> Result<(), PrivateOriginalError> {
+        if self.scope.realm != realm || self.scope.owner != source_owner {
+            return Err(PrivateOriginalError::Denied);
+        }
+        let lifetime = self
+            .host_lifetime
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        // Enrollment recovers the same retained owner; it does not disclose
+        // policy or authorize an invocation. Ordinary setup issuance leaves
+        // that owner current. Keep the separate native and source-entry checks.
+        lifetime
+            .validate_current_selection()
+            .map_err(|error| match error {
+                meerkat_toolkit::host_lifetime::control::HostLifetimeError::Unavailable => {
+                    PrivateOriginalError::Unavailable
+                }
+                _ => PrivateOriginalError::Denied,
+            })
     }
 
     /// Selected application's private settlement custody only. The caller is
@@ -385,16 +528,17 @@ impl PrivateOriginals {
             .iter()
             .find(|prior| prior.source.source_record.key == source.source_record.key)
         {
-            if prior.source.source_record != source.source_record
-                || !Arc::ptr_eq(&prior.source.original, &source.original)
-            {
+            if !prior.source.same_bound_source(&source).map_err(helper_error)? {
                 return Err(PrivateOriginalError::Conflict);
             }
             return Ok(prior.clone());
         }
         let source = Arc::new(HeldSetupHelper {
             source,
+            first_input: OnceLock::new(),
+            first_custody: Mutex::new(None),
             unresolved: Mutex::new(Vec::new()),
+            operation_deadline_ms: OnceLock::new(),
         });
         held.push(source.clone());
         Ok(source)
@@ -499,8 +643,13 @@ impl PrivateOriginals {
         self: &Arc<Self>,
         prepared: &PreparedHelperController,
         held: Arc<HeldSetupHelper>,
+        snapshot: &meerkat_toolkit::setup::SetupSnapshot,
         content: String,
-    ) -> Result<PrivateOriginalSubmission, PrivateOriginalError> {
+        source_deadline: tokio::time::Instant,
+    ) -> Result<SetupHelperSubmission, PrivateOriginalError> {
+        if tokio::time::Instant::now() >= source_deadline {
+            return Err(PrivateOriginalError::Denied);
+        }
         if !prepared
             .source
             .upgrade()
@@ -522,6 +671,7 @@ impl PrivateOriginals {
             .check_admitted_helper(&prepared.admitted)
             .map_err(helper_error)?;
         self.require_helper_selection(prepared.admitted.selection())?;
+        held.bind_setup_deadline(snapshot)?;
         // Capture every actual contributing login before later identity/member
         // awaits. The same handles order final native entry against retirement.
         let entry_fence = entry::for_logins(self.helper_controller_logins(&prepared.admitted)?);
@@ -542,16 +692,42 @@ impl PrivateOriginals {
             session_id: prepared.session_id.clone(),
             controller: prepared.controller.clone(),
             entry_fence,
+            source_deadline,
+            pending: Mutex::new(Weak::new()),
         });
-        let result = runtime
-            .dispatch_governed_with_turn_ticket(
-                &identity,
-                Some(alias),
-                Input::Prompt(PromptInput::new(content, None)),
-                binder,
-            )
-            .await;
-        Ok(match result {
+        // Keep one raw input identity and event content. A definite policy
+        // change may rebuild its current binding once, never its source/key.
+        let input = Input::Prompt(PromptInput::new(content, None));
+        let mut reprepared = false;
+        let result = loop {
+            // Meta may await the current member/controller before calling the
+            // binder. Check here as well as inside that actual binder.
+            if tokio::time::Instant::now() >= source_deadline {
+                return Err(PrivateOriginalError::Denied);
+            }
+            let result = runtime
+                .dispatch_governed_with_turn_ticket(
+                    &identity,
+                    Some(alias),
+                    input.clone(),
+                    binder.clone(),
+                )
+                .await;
+            if result.as_ref().err().is_some_and(|error| {
+                helper_admission_reprepare_required(error, &prepared.session_id)
+            }) {
+                if let Some(pending) = binder.pending.lock().map_err(|_| PrivateOriginalError::Unavailable)?.upgrade() {
+                    pending.handoff.record_definite_refusal();
+                }
+                if reprepared {
+                    return Ok(SetupHelperSubmission::ReprepareRequired);
+                }
+                reprepared = true;
+                continue;
+            }
+            break result;
+        };
+        Ok(SetupHelperSubmission::Native(match result {
             Ok(outcome) => PrivateOriginalSubmission::Admitted {
                 session_id: outcome.admission.session_id.to_string(),
                 input_id: outcome.admission.input_id.to_string(),
@@ -577,7 +753,88 @@ impl PrivateOriginals {
                 aa1_helper_send_failure(&error);
                 PrivateOriginalSubmission::NativeOutcomeUnavailable
             }
-        })
+        }))
+    }
+}
+
+// The selected Meta governed door propagates this native error only after
+// NotAdmitted drops native retry custody; the source owner retains the exact candidate. Uncertain/admitted/missing receipts are
+// AdmissionUnresolved instead. A bare runtime readiness error is not sufficient.
+fn helper_admission_reprepare_required(
+    error: &IdentityRuntimeError,
+    expected_session: &SessionId,
+) -> bool {
+    matches!(error,
+        IdentityRuntimeError::GovernedInput(GovernedInputError::Mob(error))
+        if matches!(error.as_ref(), meerkat_mob::MobError::MemberInputRefused {
+            session_id,
+            error: meerkat_runtime::RuntimeDriverError::ControllerReadinessUnavailable {
+                reason: meerkat_runtime::traits::ControllerReadinessFailure::PolicyChanged,
+            },
+        } if session_id == expected_session))
+}
+
+#[cfg(test)]
+mod reprepare_tests {
+    use super::*;
+    use meerkat_runtime::traits::ControllerReadinessFailure;
+
+    #[test]
+    fn reprepare_requires_exact_session_policy_changed_nonadmission() {
+        let expected = SessionId::new();
+        let readiness = |session_id, reason| {
+            IdentityRuntimeError::GovernedInput(GovernedInputError::Mob(Box::new(
+                meerkat_mob::MobError::MemberInputRefused {
+                    session_id,
+                    error: meerkat_runtime::RuntimeDriverError::ControllerReadinessUnavailable {
+                        reason,
+                    },
+                },
+            )))
+        };
+        assert!(helper_admission_reprepare_required(
+            &readiness(expected.clone(), ControllerReadinessFailure::PolicyChanged),
+            &expected,
+        ));
+        assert!(!helper_admission_reprepare_required(
+            &readiness(SessionId::new(), ControllerReadinessFailure::PolicyChanged),
+            &expected,
+        ));
+        for reason in [
+            ControllerReadinessFailure::PolicyUnavailable,
+            ControllerReadinessFailure::ExecutorUnavailable,
+            ControllerReadinessFailure::FactsUnavailable,
+            ControllerReadinessFailure::Busy,
+            ControllerReadinessFailure::AuthorityUnavailable,
+            ControllerReadinessFailure::AuthorityChanged,
+            ControllerReadinessFailure::UnsupportedScope,
+            ControllerReadinessFailure::CredentialUnusable {
+                disposition: meerkat_core::handles::CredentialUseDisposition::LeaseAbsent,
+            },
+            ControllerReadinessFailure::CredentialPreparationFailed {
+                kind: meerkat_core::auth::AuthErrorKind::LeaseAbsent,
+            },
+            ControllerReadinessFailure::ReplacementNotEmpty,
+        ] {
+            assert!(!helper_admission_reprepare_required(
+                &readiness(expected.clone(), reason),
+                &expected,
+            ));
+        }
+        for error in [
+            GovernedInputError::AdmissionUnresolved {
+                detail: "acceptance answer unavailable".into(),
+            },
+            GovernedInputError::Bind("binding unavailable".into()),
+            GovernedInputError::Unsupported("no governed controller".into()),
+            GovernedInputError::BindingChanged,
+            GovernedInputError::Unbound,
+        ] {
+            assert!(!helper_admission_reprepare_required(
+                &IdentityRuntimeError::GovernedInput(error),
+                &expected,
+            ));
+        }
     }
 }
 
@@ -654,6 +911,19 @@ struct SubmitHelperBinder {
     session_id: SessionId,
     controller: ControllerModelClient,
     entry_fence: Option<Arc<dyn meerkat_mobkit::identity_first::GovernedEntryFence>>,
+    source_deadline: tokio::time::Instant,
+    // One invocation per binder. Only the actual Box keeps it alive; the
+    // bounded definite-refusal retry can bind a new invocation afterwards.
+    // Shared source-owner locks separately exclude competing Candidates.
+    pending: Mutex<Weak<PendingHelperAdmission>>,
+}
+
+impl Drop for SubmitHelperBinder {
+    fn drop(&mut self) {
+        if let Some(pending) = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade() {
+            pending.handoff.foreground_finished();
+        }
+    }
 }
 
 #[async_trait]
@@ -663,6 +933,9 @@ impl GovernedInputBinder for SubmitHelperBinder {
         context: &GovernedBindContext,
         input: Input,
     ) -> Result<BoundGovernedInput, String> {
+        if tokio::time::Instant::now() >= self.source_deadline {
+            return Err("Toolkit helper submission deadline elapsed".into());
+        }
         if context.session_id != self.session_id
             || context.controller.selection() != self.controller.selection()
         {
@@ -685,10 +958,13 @@ impl GovernedInputBinder for SubmitHelperBinder {
                 crate::aa1_failure("helper.bind.selection", "Unavailable");
                 "Toolkit helper selection is unavailable"
             })?;
-        let (input, pending) = self
+        self.source.restore_promoted_custody(
+            &self.held.source.source_record.key, &self.held.source.original,
+        ).await.map_err(|_| "Toolkit historical helper custody is unavailable")?;
+        let mut prepared = self
             .source
             .owner
-            .bind_authenticated_input(
+            .prepare_authenticated_input(
                 &self.held.source.original,
                 &context.session_id,
                 input,
@@ -701,11 +977,79 @@ impl GovernedInputBinder for SubmitHelperBinder {
                 crate::aa1_failure("helper.bind.input", aa1_helper_runtime_variant(&_error));
                 "Toolkit helper input binding is unavailable"
             })?;
+        let admitted = prepared.admitted().map_err(|_| "Toolkit admitted helper is unavailable")?;
+        if admitted.is_none() {
+            if let Some(exact) = cold_service_admission::RetainedBoundInput::retain_for_attempt(
+                &self.held.first_input, prepared.input(),
+            ).map_err(|_| "Toolkit first helper input changed")? {
+                prepared = self.source.owner.prepare_authenticated_input(
+                    &self.held.source.original, &context.session_id, exact,
+                    self.held.source.event_key.clone(), self.held.source.authentication.clone(),
+                    context.controller.clone(),
+                ).map_err(|_| "Toolkit could not rebind the exact first helper input")?;
+            }
+            self.source.owner.persist_helper_custody_attempt(
+                self.source.store.as_ref(), &self.admitted, &self.held.source,
+                &context.session_id, prepared.input(),
+            ).await.map_err(|_| "Toolkit could not persist the first helper attempt")?;
+        }
+        if tokio::time::Instant::now() >= self.source_deadline {
+            return Err("Toolkit helper submission deadline elapsed".into());
+        }
+        self.source.owner.check_admitted_helper(&self.admitted)
+            .map_err(|_| "Toolkit helper source is unavailable")?;
+        self.source.require_helper_selection(self.admitted.selection())
+            .map_err(|_| "Toolkit helper selection is unavailable")?;
+        let (input, pending) = self.source.custody_recovery.enroll(|selected| {
+            // Refuse overlap before staging: dropping a newly staged guard
+            // must never withdraw the earlier invocation's Candidate.
+            let mut invocation = self.pending.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            let mut retained = self.held.first_custody.lock().map_err(|_| PrivateOriginalError::Unavailable)?;
+            let prior = retained.as_ref().filter(|_| selected);
+            if let Some(invoked) = invocation.upgrade() {
+                if !prior.is_some_and(|prior| Arc::ptr_eq(prior, &invoked)) {
+                    return Err(PrivateOriginalError::Unavailable);
+                }
+            }
+            let (input, pending, handoff) = match admitted {
+                Some((input, pending)) => {
+                    if invocation.upgrade().is_some() { return Err(PrivateOriginalError::Unavailable); }
+                    (input, pending, custody_recovery::CustodyHandoff::new(false, &self.source))
+                }
+                None => match prior {
+                    Some(prior) => {
+                        if prior.session != context.session_id { return Err(PrivateOriginalError::Conflict); }
+                        let ((input, pending), handoff) = prior.handoff.rebind(|| {
+                            prior.publication.lock().map_err(|_| PrivateOriginalError::Unavailable)?
+                                .source.rebind_candidate(prepared, &prior.input)
+                        })?;
+                        (input, pending, handoff)
+                    }
+                    None => {
+                        let (input, pending) = prepared.stage().map_err(|_| PrivateOriginalError::Unavailable)?;
+                        let handoff = custody_recovery::CustodyHandoff::new(selected && pending.is_first_candidate(), &self.source);
+                        (input, pending, handoff)
+                    }
+                },
+            };
+            let enrolled = handoff.enrolled();
+        pending.enroll_settlement(&handoff).map_err(|_| PrivateOriginalError::Unavailable)?;
+            let pending = Arc::new(PendingHelperAdmission {
+                handoff,
+                held: Arc::downgrade(&self.held), admitted: self.admitted.clone(),
+                session: context.session_id.clone(), input: input.clone(),
+                first_candidate: pending.is_first_candidate(),
+                publication: Mutex::new(HelperPublication {
+                    native_admission: None,
+                    source: governed_submit::SourcePublication::Pending(pending),
+                }),
+            });
+            *invocation = Arc::downgrade(&pending);
+            if enrolled { *retained = Some(pending.clone()); }
+            Ok((input, pending))
+        }).map_err(|_| "Toolkit helper recovery enrollment is unavailable")?;
         let settlement = HelperSettlement {
-            expected_session: context.session_id.clone(),
-            expected_input: input.id().clone(),
-            pending: Some(pending),
-            held: Arc::downgrade(&self.held),
+            pending, held: Arc::downgrade(&self.held),
         };
         Ok(BoundGovernedInput {
             input,
@@ -715,41 +1059,99 @@ impl GovernedInputBinder for SubmitHelperBinder {
     }
 
     fn retain_unresolved(&self, settlement: Box<dyn GovernedSettlement>, _detail: &str) {
-        self.held
-            .unresolved
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(settlement);
+        // Meta transfers this one Box only after its native operation has
+        // stopped owning the decision. A reader/timer never manufactures it.
+        let pending = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade();
+        if let Some(pending) = &pending { pending.handoff.release(); }
+        self.held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(UnresolvedHelperAdmission { pending, settlement });
     }
 }
 
+/// Exact per-invocation input, kept with the actual guard. The helper's first
+/// serialized Input cannot stand in for later admitted-only invocations.
+pub(super) struct PendingHelperAdmission {
+    pub(super) handoff: Arc<custody_recovery::CustodyHandoff>,
+    pub(super) held: Weak<HeldSetupHelper>,
+    pub(super) admitted: Arc<AdmittedHelperWork>,
+    pub(super) session: SessionId,
+    pub(super) input: Input,
+    first_candidate: bool,
+    pub(super) publication: Mutex<HelperPublication>,
+}
+
+pub(super) struct HelperPublication {
+    // Only the actual matching fresh callback records this native receipt.
+    pub(super) native_admission: Option<GovernedAdmission>,
+    pub(super) source: governed_submit::SourcePublication,
+}
+
+/// Actual handoff custody. Even a missing typed pointer retains the native Box
+/// as unavailable evidence; it cannot be dropped as proof of nonadmission.
+struct UnresolvedHelperAdmission {
+    pending: Option<Arc<PendingHelperAdmission>>,
+    settlement: Box<dyn GovernedSettlement>,
+}
+
 struct HelperSettlement {
-    expected_session: SessionId,
-    expected_input: InputId,
-    pending: Option<PendingToolkitOriginal>,
+    pending: Arc<PendingHelperAdmission>,
     held: Weak<HeldSetupHelper>,
 }
 
+impl Drop for HelperSettlement {
+    fn drop(&mut self) { self.pending.handoff.native_box_finished(); }
+}
 impl GovernedSettlement for HelperSettlement {
-    fn accepted(mut self: Box<Self>, admission: &GovernedAdmission) -> Result<(), String> {
+    fn accepted(self: Box<Self>, admission: &GovernedAdmission) -> Result<(), String> {
         if admission.deduplicated
-            || admission.session_id != self.expected_session
-            || admission.input_id != self.expected_input
+            || admission.session_id != self.pending.session
+            || admission.input_id != *self.pending.input.id()
         {
+            self.pending.handoff.release();
             if let Some(held) = self.held.upgrade() {
-                held.unresolved
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(self);
+                let pending = Some(self.pending.clone());
+                held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(UnresolvedHelperAdmission { pending, settlement: self });
             }
             return Err("Toolkit helper source acknowledgement did not match".into());
         }
-        self.pending
-            .take()
-            .ok_or_else(|| "Toolkit helper source settlement was already consumed".to_owned())?
-            .admit()
-            .map(|_| ())
-            .map_err(|_| "Native helper was admitted but source publication failed".into())
+        use governed_submit::SourcePublication;
+        let unavailable = || "Native helper was admitted but source publication failed".to_owned();
+        self.pending.publication.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .native_admission = Some(admission.clone());
+        let result = self.pending.handoff.accepted(|| {
+            let mut publication = self.pending.publication.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let prior = std::mem::replace(&mut publication.source, SourcePublication::Settled {
+                source_acknowledged: false, result: Err(unavailable()),
+            });
+            let result = match prior {
+                SourcePublication::Pending(pending) => {
+                    let result = pending.admit().map(|_| ()).map_err(|_| unavailable());
+                    publication.source = SourcePublication::Settled {
+                        source_acknowledged: result.is_ok(), result: result.clone(),
+                    };
+                    result
+                }
+                settled @ SourcePublication::Settled { .. } => {
+                    publication.source = settled;
+                    Err("Toolkit helper source settlement was already consumed".into())
+                }
+            };
+            result
+        });
+        if result.is_err() {
+            // Native acceptance is final even when this later source step
+            // fails. Keep the same consumed Box and exact Input with its
+            // existing owner; never call accepted again or dispatch a retry.
+            self.pending.handoff.release();
+            if let Some(held) = self.held.upgrade() {
+                let pending = Some(self.pending.clone());
+                held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(UnresolvedHelperAdmission { pending, settlement: self });
+            }
+        }
+        result
     }
 }
 
@@ -783,8 +1185,6 @@ fn aa1_helper_send_failure(error: &IdentityRuntimeError) {
         IdentityRuntimeError::ActorAdmissionTimeout { .. } => "IdentityRuntimeError::ActorAdmissionTimeout",
         IdentityRuntimeError::ActorLoopStalled { .. } => "IdentityRuntimeError::ActorLoopStalled",
         IdentityRuntimeError::ActorTerminated { .. } => "IdentityRuntimeError::ActorTerminated",
-        IdentityRuntimeError::NoActiveLease(_) => "IdentityRuntimeError::NoActiveLease",
-        IdentityRuntimeError::LeaseLost(_) => "IdentityRuntimeError::LeaseLost",
         IdentityRuntimeError::InvalidState { .. } => "IdentityRuntimeError::InvalidState",
         IdentityRuntimeError::StaleRuntimeAlias { .. } => "IdentityRuntimeError::StaleRuntimeAlias",
         _ => "IdentityRuntimeError::Other",
@@ -820,5 +1220,23 @@ fn helper_error(error: OriginalWriterError) -> PrivateOriginalError {
             PrivateOriginalError::Denied
         }
         _ => PrivateOriginalError::Unavailable,
+    }
+}
+
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn helper_review_lifetime_deadline_is_bound_once_without_replay_renewal() {
+        let held = OnceLock::new();
+        assert!(held.get().is_none());
+        retain_exact_setup_deadline(&held, 180_000).unwrap();
+        retain_exact_setup_deadline(&held, 180_000).unwrap();
+        for changed in [179_999, 180_001, u64::MAX] {
+            assert!(matches!(retain_exact_setup_deadline(&held, changed), Err(PrivateOriginalError::Conflict)));
+            assert_eq!(held.get(), Some(&180_000));
+        }
     }
 }

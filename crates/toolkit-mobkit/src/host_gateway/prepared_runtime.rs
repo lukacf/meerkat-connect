@@ -136,11 +136,23 @@ impl PreparedGatewayRuntime {
                 .map_err(|_| GatewayHostError::Denied)?;
         }
         self.originals.bind_identity_runtime(&identities).map_err(|_| GatewayHostError::Denied)?;
+        self.originals.start_custody_recovery(runtime.mob_runtime().continuation_source_announcer())
+            .map_err(|_| GatewayHostError::Unavailable)?;
         self.access.set(runtime.access_controller().cloned()).map_err(|_| GatewayHostError::Denied)?;
         // The native router retains this same participant. Until final owner
         // adoption it refuses; it cannot select an ungoverned Console path.
         runtime.set_console_governed_ingress(self.console.clone());
         Ok(())
+    }
+
+    /// Stop the same source-owned recovery task even if final host adoption
+    /// never succeeds. Stop confers no native cancellation acknowledgement.
+    pub fn begin_custody_close(&self) { self.originals.stop_custody_recovery(); }
+
+    /// Retain the entered task across cancellation of this join. Adoption and
+    /// prepared failure paths share the same idempotent joined result.
+    pub async fn join_custody_close(&self) -> Result<(), GatewayHostError> {
+        self.originals.join_custody_recovery().await.map_err(|_| GatewayHostError::Unavailable)
     }
 
     /// Adopt the already bound native construction after exact compiler output

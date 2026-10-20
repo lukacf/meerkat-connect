@@ -196,6 +196,15 @@ Empty text is unsupported; an empty caption with valid media is preserved.
 The parser does not turn service data, bot-authored messages, anonymous-chat
 senders or business conversations into human instructions.
 
+The development adapter also interprets `edited_message` as an unsupported
+outcome, never as a replacement agent turn. Recognized human edits use reason
+`message_edit`; service-message, unknown-field and sender-context refusals retain
+their own reasons.
+Edit facts retain routing identities, chat type and sender-kind observations,
+but omit the changed text, caption and downloadable media. A host may use these
+facts under its own policy to authorize a fixed notice. The parser grants no
+permission to send one.
+
 Unknown fields remain explicit even when the pinned PTB parser does not know
 them. Known contradictory content and malformed shapes refuse normalization.
 Telegram's documented animation/document, venue/location and live-photo/photo
@@ -211,10 +220,11 @@ inbox owner. `events` retains supported and unsupported outcomes in provider
 order; the host must durably admit or reject every outcome before committing
 the cursor. A valid unsupported message does not block later supported rows.
 Fallback notices, if offered, use the host's authorized delivery owner; the
-parser does not send anything. Valid update IDs for update types with no `message`
-field remain deliberately ignored. A present malformed `message`, including
-null or a non-object value, refuses the whole page before any events are
-returned. This corrects the donor's silent omission of those malformed rows;
+parser does not send anything. Valid update IDs for update types with neither
+`message` nor `edited_message` remain deliberately ignored. A present malformed
+message or edit, including null or a non-object value, refuses the whole page
+before any events are returned. This corrects the donor's silent omission of
+those malformed rows;
 no earlier good row or candidate cursor may escape that refused page.
 
 `validate_media_request` checks the local reference and positive byte bound

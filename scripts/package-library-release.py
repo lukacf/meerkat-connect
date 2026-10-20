@@ -916,6 +916,7 @@ PYTHON_SOURCES = {
     "selected/contracts/ACQUIRED-INSPECTION.md": ("sdk/consumer-setup/ACQUIRED-INSPECTION.md", "0e5c53aabf39a78197aa5572664940a1b73e3557a304fa00ea35e3189508f591"),
     "setup/acquired_inspection.py": ("sdk/consumer-setup/acquired_inspection.py", "2fa1b271c2f0627a56f582658ceb42ff7fccf8922a3f9dd50221d7ada4f0a67c"),
     "setup/node_acquisition.py": ("sdk/consumer-setup/node_acquisition.py", "ac54a5dcc7f7ddd4e1deeca9c8ca115f7a81e3da9a90e4031a4cb3caa0227949"),
+    "setup/node_prebuilt_acquisition.py": ("sdk/consumer-setup/node_prebuilt_acquisition.py", "ebd591645466042c98689ba71d9d4c37978a7a9cd973f9ffd9b4cf2b0bbf2b48"),
     "selected/contracts/NODE-ACQUISITION.md": ("sdk/consumer-setup/NODE-ACQUISITION.md", "1083ccda5619b55e1055fa0969d56f9049fad4169aaebb9378dfc67456a3a35d"),
     "setup/local_session.py": ("sdk/consumer-setup/local_session.py", "79836ebe618fcf52efde781e1b5d3afdff45062f12c87761ce7eaeadee7c7ee2"),
     "setup/prepare_host.py": ("sdk/consumer-setup/prepare_host.py", "a31de9e408930c0e05ec8ec0994a0a879d546bdbdd16703439502295377895fa"),
@@ -2095,10 +2096,10 @@ def selected_inputs(root: Path, target: str, path: Path | None, expected: str | 
     # This already shipped Python program is source, not a compiled tool with
     # a Cargo build record. Its old donor pin remains the default.
     installer_source = "selected/bin/install-library-consumer.py"
-    # This shipped contract may follow an explicitly selected Python planner.
+    # These shipped contracts may follow explicitly selected package planners.
     # Omission keeps the historical donor contract and its provenance intact.
-    python_contract = "selected/contracts/PYTHON-INSTALL.md"
-    known_sources = sources.keys() | python_sources.keys() | {installer_source, python_contract}
+    package_contracts = {"selected/contracts/PYTHON-INSTALL.md", "selected/contracts/NODE-INSTALL.md"}
+    known_sources = sources.keys() | python_sources.keys() | {installer_source} | package_contracts
     if (not isinstance(overrides, dict) or not set(overrides) <= known_sources):
         raise PackageError("unknown_selected_source")
     for name, row in overrides.items():
@@ -2108,7 +2109,7 @@ def selected_inputs(root: Path, target: str, path: Path | None, expected: str | 
         value = (relative_path(row["path"]), row["sha256"])
         if name in sources or name == installer_source:
             sources[name] = value
-        if name in python_sources or name == python_contract:
+        if name in python_sources or name in package_contracts:
             python_sources[name] = value
     tools = declared["tools"]
     known = donor["tools"].keys() | donor.get("tool_additions", {}).keys()

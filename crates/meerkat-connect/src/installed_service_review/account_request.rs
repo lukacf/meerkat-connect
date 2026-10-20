@@ -615,7 +615,7 @@ pub fn installed_account_request_definition() -> ToolDef {
     ]});
     ToolDef::new(
         SETUP_ACCOUNT_REQUEST,
-        "Request account access for this exact checked software job and waiting task. For native connector OAuth, propose the nonsecret connector descriptor and operations. For a package with declared secret slots, use authentication.kind=declared_secret_slots and exact raw operation names; the current protected Console human reviews saving configuration/credentials plus task access and enters values separately. Never send credential values or slot names. The selected host may use application policy only for the existing native-connector branch. A requires_action result is not success. Authorized access may retain a fresh instruction and task-scoped grant; native attachment, input admission, provider authentication and readiness remain separate.",
+        "Request account access for this exact checked software job and waiting task. For native connector OAuth, propose the nonsecret connector descriptor and operations. For a package with declared secret slots, use authentication.kind=declared_secret_slots and exact raw operation names; the current protected Console human reviews saving configuration/credentials plus task access and enters values separately. That Console path requires explicit tool_policy with a non-null catalog consequence and coverage of every selected exposed tool name; consequences are proposals for the same protected review. Never send credential values or slot names. The selected host may use application policy only for the existing native-connector branch. A requires_action result is not success. Authorized access may retain a fresh instruction and task-scoped grant; native attachment, input admission, provider authentication and readiness remain separate.",
         schema,
     )
 }
@@ -632,11 +632,30 @@ fn oauth_proposal_schema() -> Value {
                     "required":["required_scopes","destination_origin"],"properties":{"required_scopes":{"type":"array","items":{"type":"string"},"uniqueItems":true},"destination_origin":{"type":"string"}}}}}})
 }
 
+/// The captured-Original Console path needs both parts of the proposed
+/// successor: native task catalog scope and ordinary exposed-tool invocation.
+/// This validates a proposal only; the existing owner still constructs and
+/// reviews the whole successor and issues any native grant.
+fn require_console_tool_policy(name: &str, config: &meerkat_core::McpServerConfig,
+    operations: &std::collections::BTreeSet<String>, selection: Option<&ServiceToolPolicySelection>,
+) -> Result<(), ToolError> {
+    let required = operations.iter().map(|raw|
+        config.tool_names.get(raw).unwrap_or(raw).as_str()).collect::<std::collections::BTreeSet<_>>();
+    let covered = selection.into_iter().flat_map(|policy| policy.tools.iter())
+        .map(|tool| tool.name.as_str()).collect::<std::collections::BTreeSet<_>>();
+    let missing = required.difference(&covered).copied().collect::<Vec<_>>();
+    if selection.is_some_and(|policy| policy.catalog.is_some()) && missing.is_empty() { return Ok(()); }
+    let names = serde_json::to_string(&required).map_err(|_| unavailable())?;
+    Err(ToolError::InvalidArguments { name: name.into(), reason: format!(
+        "This captured-original Console setup requires explicit tool_policy: select a catalog consequence (r0-r3, not null) and tools with consequences covering these exact exposed names: {names}. Raw operations and exposed tool names are separate; do not use declaration IDs. Keep the same checked job, consumer and requested lifetime. Existing member policy cannot supply the new task's catalog grant. The same protected review covers the whole resulting member policy until superseded and catalog metadata for the Original conversation, not only this integration. This request has not entered access review."
+    ) })
+}
+
 /// Optional proposal only. The canonical owner supplies the member, complete
 /// candidate, version and task/session scopes before the same approval.
 fn tool_policy_schema() -> Value {
     json!({"type":"object","additionalProperties":false,"required":["tools","catalog"],
-        "description":"Propose exact observed model-facing tool names for the waiting original agent. The same approval covers the complete resulting member policy, including preserved permissions, until superseded. Native service and catalog grants remain task-scoped. Catalog access lets the waiting original agent find tools available in the original conversation; it is not limited to this plugin. Omit when the existing policy already authorizes these names.",
+        "description":"Propose exact observed model-facing tool names for the waiting original agent. The same approval covers the complete resulting member policy, including preserved permissions, until superseded. Native service and catalog grants remain task-scoped. Catalog access lets the waiting original agent find tools available in the original conversation; it is not limited to this plugin. The protected Console public-service and declared-secret-slot paths require an explicit non-null catalog consequence and tools covering every selected operation's exact exposed name from checked tool_names, or the raw name when unmapped, even if member policy already permits it. Trusted application delegation and other lower-level paths retain their own selection contract.",
         "properties":{"tools":{"type":"array","maxItems":128,"items":{"type":"object","additionalProperties":false,
             "required":["name","consequence"],"properties":{"name":{"type":"string","minLength":1,"maxLength":512},
                 "consequence":{"enum":["r0","r1","r2","r3"]}}}},"catalog":{"enum":[null,"r0","r1","r2","r3"]}}})

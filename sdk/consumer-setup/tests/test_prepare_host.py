@@ -829,6 +829,89 @@ command = [str(runtime), '-I', '-m', 'meerkat_toolkit_agno.agno_mcp']
         self.args.selected_node, self.args.selected_node_sha256 = str(node), sha(node.read_bytes())
         self.args.selected_npm_cli, self.args.selected_npm_cli_sha256 = str(npm), sha(npm.read_bytes())
 
+    def test_node_build_transport_options_are_absent_or_exact_bounded_regular_bytes(self):
+        self.assertIsNone(host.node_build_options(self.args))
+        profile = self.base / "build-profile.json"
+        raw = b'{ "external_tool": "/host/selected/tool" }\n'
+        profile.write_bytes(raw)
+        expected = sha(raw)
+        self.args.node_build_profile = str(profile)
+        self.args.node_build_profile_sha256 = expected
+        self.assertEqual(host.node_build_options(self.args), (profile, expected, raw))
+        for path, digest in ((str(profile), None), (None, expected),
+                             (str(profile), "0" * 64), ("relative.json", expected)):
+            with self.subTest(path=path, digest=digest):
+                self.args.node_build_profile, self.args.node_build_profile_sha256 = path, digest
+                with self.assertRaises((host.PreparationError, OSError)):
+                    host.node_build_options(self.args)
+        link = self.base / "build-profile-link.json"
+        link.symlink_to(profile)
+        self.args.node_build_profile, self.args.node_build_profile_sha256 = str(link), expected
+        with self.assertRaises(OSError): host.node_build_options(self.args)
+        self.args.node_build_profile = str(profile)
+        for raw in (b"", b"x" * 65537):
+            profile.write_bytes(raw)
+            self.args.node_build_profile_sha256 = sha(raw)
+            with self.assertRaises(host.PreparationError): host.node_build_options(self.args)
+
+    def test_node_build_profile_cannot_enable_node_or_network_implicitly(self):
+        profile = self.base / "build-profile.json"
+        profile.write_bytes(b'{}\n')
+        self.args.node_build_profile, self.args.node_build_profile_sha256 = str(profile), sha(profile.read_bytes())
+        with patch.object(subprocess, "Popen", side_effect=AssertionError("no child allowed")):
+            self.refuse("node_build_requires_selected_node_validator")
+        self.assertFalse(self.args.allow_public_npm)
+        self.assertFalse(self.args.allow_public_pypi)
+
+    def node_build_profile(self):
+        # Transport-only JSON. Installer schema validation is a separate
+        # owner boundary before a selected build can be reviewed or executed.
+        path = self.base / "build-profile.json"
+        path.write_bytes(b'{ "scope": "transport_fixture", "external_tool": "/host/selected/tool" }\n')
+        self.args.node_build_profile = str(path)
+        self.args.node_build_profile_sha256 = sha(path.read_bytes())
+        return path
+
+    def test_node_build_snapshot_preserves_bytes_and_does_not_enable_acquisition(self):
+        self.selected_node()
+        source = self.node_build_profile()
+        original = source.read_bytes()
+        with patch.object(subprocess, "Popen", side_effect=AssertionError("no child allowed")):
+            result = host.prepare(self.args)
+        output = Path(result["directory"])
+        receipt = json.loads((output / "prepared.json").read_bytes())
+        selected = json.loads((output / "selected-install.json").read_bytes())
+        self.assertEqual((output / "node-build-profile.json").read_bytes(), original)
+        self.assertEqual(selected["node_build"], {"path": str(output / "node-build-profile.json"), "sha256": sha(original)})
+        self.assertEqual(receipt["files"]["node-build-profile.json"], sha(original))
+        self.assertEqual(receipt["runtimes"]["node_build_profile"]["sha256"], sha(original))
+        self.assertEqual(set(selected["validators"]), {"python", "node"})
+        self.assertFalse(receipt["public_npm_enabled"])
+        self.assertFalse(receipt["public_pypi_enabled"])
+        self.assertFalse(Path(self.args.workspace).exists())
+        source.write_bytes(b"later external mutation")
+        self.assertEqual((output / "node-build-profile.json").read_bytes(), original)
+
+    def test_node_build_mutation_before_publication_retains_no_success(self):
+        self.selected_node()
+        source = self.node_build_profile()
+        recheck = host.recheck_pins
+        def mutate(pins):
+            recheck(pins)
+            source.write_bytes(b"changed after input-pin recheck")
+        with patch.object(host, "recheck_pins", side_effect=mutate):
+            self.refuse("node_build_profile_changed")
+
+    def test_node_build_profile_overlap_refuses_even_through_parent_alias(self):
+        profile = self.staging / "build-profile.json"
+        profile.write_bytes(b'{}\n')
+        alias = self.base / "staging-alias"
+        alias.symlink_to(self.staging, target_is_directory=True)
+        self.args.node_build_profile = str(alias / profile.name)
+        self.args.node_build_profile_sha256 = sha(profile.read_bytes())
+        self.refuse("node_build_profile_overlaps_host_paths")
+        self.assertEqual(profile.read_bytes(), b'{}\n')
+
     def mcpb(self, *, inspection=False):
         self.files[host.MCPB_TOOL] = (b"# inert MCPB owner, never executed\n", 0o755)
         selection = {"platform": self.args.target, "scope": "retained_selected_tools"}
