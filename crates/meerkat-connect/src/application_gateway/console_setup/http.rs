@@ -22,6 +22,12 @@ pub(super) fn router(panel: ConsoleSetup) -> Router {
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(panel)
 }
+pub(super) fn status_disclosure_failure(error: meerkat_toolkit::host_lifetime::control::HostLifetimeError) -> StatusCode {
+    match error {
+        meerkat_toolkit::host_lifetime::control::HostLifetimeError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::FORBIDDEN,
+    }
+}
 fn failure(status: StatusCode) -> Response {
     response(status, "application/json", "{\"error\":\"Protected setup is unavailable\"}")
 }
@@ -168,7 +174,7 @@ async fn data_from(panel: ConsoleSetup, headers: HeaderMap, uri: Uri, request: O
                     HostLifetimeError::WrongOwner => "WrongOwner",
                     HostLifetimeError::NotSettled => "NotSettled",
                 });
-                return Err(StatusCode::SERVICE_UNAVAILABLE);
+                return Err(status_disclosure_failure(error));
             },
         };
         if current().is_none() { return Err(StatusCode::FORBIDDEN); }
@@ -215,7 +221,9 @@ async fn data_from(panel: ConsoleSetup, headers: HeaderMap, uri: Uri, request: O
         envelope["operator_recovery"] = value;
     }
     if current().is_none() { return failure(StatusCode::FORBIDDEN); }
-    if panel.0.binding.check_status_page(&page, &current).is_err() { return failure(StatusCode::FORBIDDEN); }
+    if let Err(error) = panel.0.binding.check_status_page(&page, &current) {
+        return failure(status_disclosure_failure(error));
+    }
     let mut pages = match panel.0.pages.lock() { Ok(value) => value, Err(_) => {
         status_read_refused("http.data.offer_pages_lock", "poisoned");
         return failure(StatusCode::SERVICE_UNAVAILABLE);

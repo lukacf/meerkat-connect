@@ -770,6 +770,18 @@ async fn operator_recovery_requires_actual_verified_human_admin_member_and_same_
         let binding = binding.with_recovery_policy(Some(ConsoleRecoveryPolicy::OperatorUnpublishedServiceApprovals));
         let page = binding.status_page(&current, None).await.unwrap();
         let offer = page.recovery().unwrap(); let row_id = offer.projection()["rows"][0]["id"].as_str().unwrap().to_owned();
+        assert!(old_page.access().is_some());
+        // Both actual Console visibility wrappers retain Unavailable when an
+        // owner publication invalidates the read. Refresh rebuilds from owners.
+        controller.replace_config(config(true, true)).unwrap();
+        assert!(matches!(requester_only.check_status_page(&old_page, &current),
+            Err(meerkat_toolkit::host_lifetime::control::HostLifetimeError::Unavailable)));
+        assert!(matches!(binding.check_status_page(&page, &current),
+            Err(meerkat_toolkit::host_lifetime::control::HostLifetimeError::Unavailable)));
+        let refreshed = binding.status_page(&current, None).await.unwrap();
+        assert!(binding.check_status_page(&refreshed, &current).is_ok());
+        let page = refreshed;
+        let offer = page.recovery().unwrap();
         let before = journal(&fixture);
         assert!(requester_only.recover_service_approval(offer, &row_id, &current).await.is_err());
         assert!(binding.recover_service_approval(offer, &row_id, &|| resolver.resolve(&other_headers, &uri)).await.is_err());

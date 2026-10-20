@@ -1211,3 +1211,90 @@ test("operator refresh preserves keyboard focus only within the same scope and c
   recovery.suspend(); recovery.update(recoveryOffer(), "viewer"); assert.equal(container.ownerDocument.activeElement, container.querySelector("button"));
   recovery.suspend(); recovery.update(recoveryOffer(), "another-viewer"); assert.equal(container.ownerDocument.activeElement, container.ownerDocument.body);
 });
+
+
+test("503 clears stale setup actions and the existing poll refreshes the retained page; 403 still pauses", async t => {
+  for (const status of [503, 403]) {
+    const { container, timers } = pageFixture(t); const calls = []; let reads = 0;
+    const fetcher = async (path, options) => {
+      calls.push({path, options});
+      if (++reads === 2) return new Response('{"error":"Protected setup is unavailable"}',
+        {status, headers:{"content-type":"application/json"}});
+      return new Response(JSON.stringify({projection:snapshot(), review:review("Current review"),
+        page:{page_id:17 + reads, first:reads === 1, has_next:true}}),
+        {headers:{"content-type":"application/json"}});
+    };
+    const page = mountSourceStatusPage(container, undefined, fetcher); t.after(() => page.dispose());
+    const tick = async () => { assert.equal(timers.size, 1); const callback = [...timers.values()][0]; timers.clear(); await callback(); };
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(container.querySelector(".toolkit-account-review button"));
+    await tick();
+    assert.equal(container.querySelector(".toolkit-view .toolkit-task"), null);
+    assert.equal(container.querySelector(".toolkit-account-review button"), null);
+    assert.equal(container.querySelector(".toolkit-application-access button"), null);
+    assert.equal(container.querySelector(".toolkit-operator-recovery button"), null);
+    assert.doesNotMatch(container.textContent, /Current review|Reviewed task/);
+    assert.equal(calls.length, 2, "a failed read cannot enter an immediate retry");
+    await tick();
+    assert.equal(calls.length, status === 503 ? 3 : 2);
+    if (status === 503) {
+      assert.deepEqual(calls.map(call => call.options.body && JSON.parse(call.options.body)),
+        [undefined, {page_id:18,direction:"refresh"}, {page_id:18,direction:"refresh"}]);
+      assert.ok(container.querySelector(".toolkit-account-review button"));
+    } else {
+      assert.match(container.textContent, /Use First page/);
+      assert.equal([...container.querySelectorAll("button")].find(button => button.textContent === "Refresh status").disabled, true);
+    }
+    assert.ok(calls.every(call => call.path === "/host/toolkit/setup/data"), "no protected action or login is replayed");
+    assert.ok(calls.every(call => call.options.credentials === "same-origin"));
+    page.dispose(); assert.equal(timers.size, 0);
+  }
+});
+
+test("an initial 503 leaves only the existing next status poll eligible", async t => {
+  const { container, timers } = pageFixture(t); const calls = [];
+  const page = mountSourceStatusPage(container, undefined, async (path, options) => {
+    calls.push({path, options});
+    return calls.length === 1 ? new Response("unavailable", {status:503})
+      : new Response(JSON.stringify({projection:snapshot(), page:{page_id:4,first:true,has_next:false}}),
+        {headers:{"content-type":"application/json"}});
+  }); t.after(() => page.dispose());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1); assert.match(container.textContent, /temporarily unavailable/);
+  const tick = [...timers.values()][0]; assert.ok(tick); timers.clear(); await tick();
+  assert.equal(calls.length, 2); assert.ok(calls.every(call => call.options.method === "GET"));
+  assert.match(container.textContent, /Reviewed task/);
+});
+
+test("503 recovery never overlaps or replays a protected submission", async t => {
+  const { container, timers } = pageFixture(t); const held = deferred(); let reads = 0; let posts = 0;
+  const page = mountSourceStatusPage(container, undefined, async (path) => {
+    if (path !== "/host/toolkit/setup/data") { assert.equal(path, "/host/toolkit/setup/answer"); posts++; return held.promise; }
+    if (++reads === 2) return new Response("unavailable", {status:503});
+    return new Response(JSON.stringify({projection:snapshot(), review:reads === 1 ? review() : undefined,
+      page:{page_id:reads,first:true,has_next:false}}), {headers:{"content-type":"application/json"}});
+  }); t.after(() => page.dispose());
+  const tick = async () => { const callback = [...timers.values()][0]; assert.ok(callback); timers.clear(); await callback(); };
+  await new Promise(resolve => setImmediate(resolve));
+  container.querySelector(".toolkit-account-review button").click();
+  assert.equal(posts, 1); await tick(); assert.equal(reads, 1);
+  held.resolve(new Response("{}", {status:202})); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(posts, 1); assert.equal(reads, 2); assert.match(container.textContent, /temporarily unavailable/);
+  await tick(); assert.equal(reads, 3); assert.equal(posts, 1);
+});
+
+
+test("an explicit First after denial can receive 503 and resume the existing read loop", async t => {
+  const { container, timers } = pageFixture(t); let reads = 0;
+  const page = mountSourceStatusPage(container, undefined, async () => {
+    reads++;
+    return reads < 3 ? new Response("unavailable", {status:reads === 1 ? 403 : 503})
+      : new Response(JSON.stringify({projection:snapshot()}), {headers:{"content-type":"application/json"}});
+  }); t.after(() => page.dispose());
+  await new Promise(resolve => setImmediate(resolve));
+  [...container.querySelectorAll("button")].find(button => button.textContent === "First page").click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 2); assert.match(container.textContent, /temporarily unavailable/);
+  const tick = [...timers.values()][0]; assert.ok(tick); timers.clear(); await tick();
+  assert.equal(reads, 3); assert.match(container.textContent, /Reviewed task/);
+});

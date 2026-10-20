@@ -179,3 +179,13 @@ fn mounted_operator_recovery_requires_separate_pinned_policy_and_opaque_offer() 
     assert_ne!(serde_json::to_vec(&selected).unwrap(), serde_json::to_vec(&requester).unwrap(), "the existing artifact fingerprint includes the explicit selection");
     assert!(http::access_request(&selected, body.as_bytes()).is_ok(), "requester-leaf selection retains its own unchanged meaning");
 }
+
+#[test]
+fn final_status_disclosure_preserves_unavailable_without_authorizing_a_response() {
+    use meerkat_toolkit::host_lifetime::control::HostLifetimeError;
+    assert_eq!(http::status_disclosure_failure(HostLifetimeError::Unavailable), StatusCode::SERVICE_UNAVAILABLE);
+    for error in [HostLifetimeError::Denied, HostLifetimeError::InvalidSelection,
+        HostLifetimeError::WrongOwner, HostLifetimeError::NotSettled] {
+        assert_eq!(http::status_disclosure_failure(error), StatusCode::FORBIDDEN);
+    }
+}

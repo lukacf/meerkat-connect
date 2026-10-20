@@ -74,10 +74,18 @@ export function mountSourceStatusPanel(container, read, account = { clear() {}, 
                 status.textContent = selected ? selected.has_next
                     ? "Showing one page. More history remains to inspect; later pages may have no matching entries."
                     : "End of the history observed in this read. Use First page to check for new entries." : "";
-            } catch {
+            } catch (error) {
                 if (disposed || current !== request) return;
-                clear(); page = undefined; needsFirst = true;
-                status.textContent = "Task setup status is unavailable. Use First page to read current status. One status view is current per sign-in; another tab may have replaced this page. Your agent reports the task result separately.";
+                clear();
+                if (error?.status === 503) {
+                    needsFirst = false;
+                    // The host disclosed no page. Retain only its opaque position
+                    // for the existing next status poll, never an action or view.
+                    status.textContent = "Task setup status is temporarily unavailable. The next status refresh will check again.";
+                } else {
+                    page = undefined; needsFirst = true;
+                    status.textContent = "Task setup status is unavailable. Use First page to read current status. One status view is current per sign-in; another tab may have replaced this page. Your agent reports the task result separately.";
+                }
             }
         }).finally(() => { pending = undefined; if (!disposed) buttons(false); });
         return pending;
@@ -111,7 +119,12 @@ export async function readSourceStatus(fetcher = fetch, selection) {
                 ...(selection ? { body: JSON.stringify(selection) } : {}), signal: controller.signal,
             });
             if (controller.signal.aborted) throw new Error("Task setup status read expired");
-            if (!response.ok || !response.headers.get("content-type")?.startsWith("application/json")) throw new Error("Task setup status read was not authorized or available");
+            if (!response.ok) {
+                const error = new Error("Task setup status read was not authorized or available");
+                error.status = response.status;
+                throw error;
+            }
+            if (!response.headers.get("content-type")?.startsWith("application/json")) throw new Error("Task setup status read was not authorized or available");
             const envelope = await response.json();
             if (controller.signal.aborted) throw new Error("Task setup status read expired");
             validateProjection(envelope.projection); checkedPage(envelope.page);

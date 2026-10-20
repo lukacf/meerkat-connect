@@ -19,6 +19,19 @@ fn status_owner_refused(stage: &'static str, error: HostLifetimeError) {
     });
 }
 
+// An unavailable owner observation cannot establish either visibility or denial.
+fn status_visibility_error(stage: &'static str, error: PrivateOriginalError) -> HostLifetimeError {
+    status_read_refused(stage, match error {
+        PrivateOriginalError::Unavailable => "Unavailable",
+        PrivateOriginalError::Conflict => "Conflict",
+        PrivateOriginalError::Denied => "Denied",
+    });
+    match error {
+        PrivateOriginalError::Unavailable => HostLifetimeError::Unavailable,
+        PrivateOriginalError::Conflict | PrivateOriginalError::Denied => HostLifetimeError::Denied,
+    }
+}
+
 pub type ConsoleRouteComposition = Arc<dyn Fn(ConsoleViewerResolver)
     -> Result<axum::Router, HostLifetimeError> + Send + Sync>;
 
@@ -124,7 +137,10 @@ impl ConsoleSetupBinding {
                     PrivateOriginalError::Conflict => "Conflict",
                     PrivateOriginalError::Denied => "Denied",
                 });
-                HostLifetimeError::Unavailable
+                match error {
+                    PrivateOriginalError::Denied => HostLifetimeError::Denied,
+                    PrivateOriginalError::Unavailable | PrivateOriginalError::Conflict => HostLifetimeError::Unavailable,
+                }
             })?;
         // Every selected projection shares this bounded canonical slice.
         // Absent recovery selection preserves the original page membership.
@@ -135,7 +151,10 @@ impl ConsoleSetupBinding {
                     PrivateOriginalError::Conflict => "Conflict",
                     PrivateOriginalError::Denied => "Denied",
                 });
-                HostLifetimeError::Unavailable
+                match error {
+                    PrivateOriginalError::Denied => HostLifetimeError::Denied,
+                    PrivateOriginalError::Unavailable | PrivateOriginalError::Conflict => HostLifetimeError::Unavailable,
+                }
             })?;
         let access = match self.application_access_rows(current, Some(&page.rows)).await {
             Ok(value) => value.map(Ok),
@@ -299,14 +318,7 @@ impl ConsoleServiceRecoverySnapshot {
         self.read.check_visible(|member| self.members.iter().find(|(selected, _)| selected == member)
             .is_some_and(|(_, identity)| viewer.access_view.as_ref().is_some_and(|access|
                 !access.enforced() || access.can_view_agent(identity.as_str()))))
-            .map_err(|error| {
-                status_read_refused("recovery.check_visible.read", match error {
-                    PrivateOriginalError::Unavailable => "Unavailable",
-                    PrivateOriginalError::Conflict => "Conflict",
-                    PrivateOriginalError::Denied => "Denied",
-                });
-                HostLifetimeError::Denied
-            })
+            .map_err(|error| status_visibility_error("recovery.check_visible.read", error))
     }
     pub fn projection(&self) -> serde_json::Value {
         serde_json::json!({"scope":"operator_service_recovery",
@@ -335,14 +347,7 @@ impl ConsoleAccessSnapshot {
         self.read.check_visible(|member| self.members.iter().find(|(selected, _)| selected == member)
             .is_some_and(|(_, identity)| !viewer.access_view.as_ref().is_some_and(|view|
                 view.enforced() && !view.can_view_agent(identity.as_str()))))
-            .map_err(|error| {
-                status_read_refused("access.check_visible.read", match error {
-                    PrivateOriginalError::Unavailable => "Unavailable",
-                    PrivateOriginalError::Conflict => "Conflict",
-                    PrivateOriginalError::Denied => "Denied",
-                });
-                HostLifetimeError::Denied
-            })
+            .map_err(|error| status_visibility_error("access.check_visible.read", error))
     }
     pub fn projection(&self) -> serde_json::Value {
         serde_json::json!({"scope":"application_issued_access",
@@ -463,7 +468,7 @@ impl ConsoleSetupBinding {
         read.check_visible(|member| members.iter().find(|(selected, _)| selected == member)
             .is_some_and(|(_, identity)| !fresh.access_view.as_ref().is_some_and(|view|
                 view.enforced() && !view.can_view_agent(identity.as_str()))))
-            .map_err(|_| HostLifetimeError::Denied)?;
+            .map_err(|error| status_visibility_error("access.read.check_visible", error))?;
         Ok(Some(ConsoleAccessSnapshot { source:self.source.clone(), login, scope, read, members,
             used:std::sync::atomic::AtomicBool::new(false), result:Mutex::new(None) }))
     }
@@ -533,5 +538,42 @@ impl ConsoleSetupBinding {
             Err(ExpectedRevokeRefusal::Grant(GrantRefusal::Unavailable)) => "unavailable",
         };
         Ok(serde_json::json!({"scope":"application_issued_access","state":state}))
+    }
+}
+
+#[cfg(test)]
+mod status_visibility_tests {
+    use super::*;
+    use meerkat_authorization::publication::{LocalAuthorizationPublication, PublicationError};
+
+    #[test]
+    fn changed_and_poisoned_publication_remain_unavailable_at_visibility_boundary() {
+        // Real publication transitions and actual read checks. This conveys no
+        // synthetic viewer, grant or protected-action authority.
+        for poison in [false, true] {
+            let owner = LocalAuthorizationPublication::new();
+            let (_, stamp) = owner.observe(|| ()).unwrap();
+            let human = meerkat_core::PrincipalRef::in_domain(meerkat_core::PrincipalKind::Human,
+                "visibility-fixture", meerkat_core::TrustDomainId::new("visibility-test").unwrap()).unwrap();
+            let access = crate::private_originals::service_grants::console::ApplicationAccessRead {
+                human: human.clone(), publication: stamp.clone(), rows: vec![],
+            };
+            let recovery = crate::private_originals::service_recovery::ServiceRecoveryRead {
+                human, publication: stamp.clone(), rows: vec![],
+            };
+            assert!(access.check_visible(|_| true).is_ok());
+            assert!(recovery.check_visible(|_| true).is_ok());
+            if poison { owner.poison(); } else { drop(owner.begin_owner_change().unwrap()); }
+            assert!(matches!((poison, stamp.check_current()),
+                (false, Err(PublicationError::Changed)) | (true, Err(PublicationError::Unavailable))));
+            for (stage, result) in [("access.check_visible.read", access.check_visible(|_| true)),
+                ("recovery.check_visible.read", recovery.check_visible(|_| true))] {
+                assert!(matches!(result.map_err(|error| status_visibility_error(stage, error)),
+                    Err(HostLifetimeError::Unavailable)));
+            }
+        }
+        for error in [PrivateOriginalError::Denied, PrivateOriginalError::Conflict] {
+            assert!(matches!(status_visibility_error("visibility.fixture", error), HostLifetimeError::Denied));
+        }
     }
 }
