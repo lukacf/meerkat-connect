@@ -787,3 +787,64 @@ def test_foreign_private_path_inside_attested_closure_still_refuses(fixture):
     with pytest.raises(ValueError, match='foreign/private provenance'):
         c.accept()
     assert len(c.commands) == 2 and not c.reader_calls
+
+
+@pytest.mark.parametrize("url", [
+    "https://registry.npmjs.org/npm/-/npm-12.2.0.tgz",
+    "https://bootstrap.pypa.io/pip/zipapp/pip-26.2.1.pyz",
+])
+def test_existing_resource_official_versioned_urls_are_selectable(url):
+    p.public_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    "http://registry.npmjs.org/npm/-/npm-12.2.0.tgz",
+    "https://user:secret@registry.npmjs.org/npm/-/npm-12.2.0.tgz",
+    "https://registry.npmjs.org/npm/-/npm-12.2.0.tgz?token=secret",
+    "https://registry.npmjs.org/npm/-/npm-12.2.0.tgz#fragment",
+    "https://registry.npmjs.org:444/npm/-/npm-12.2.0.tgz",
+    "https://registry.npmjs.org.evil.invalid/npm/-/npm-12.2.0.tgz",
+    "https://registry.npmjs.org/other/-/other-12.2.0.tgz",
+    "https://registry.npmjs.org/npm/-/npm-latest.tgz",
+    "https://registry.npmjs.org/npm/-/npm-12.2.1.tgz",
+    "https://registry.npmjs.org/npm/-/%6epm-12.2.0.tgz",
+    "https://registry.npmjs.org/npm/else/../-/npm-12.2.0.tgz",
+    "http://bootstrap.pypa.io/pip/zipapp/pip-26.2.1.pyz",
+    "https://user:secret@bootstrap.pypa.io/pip/zipapp/pip-26.2.1.pyz",
+    "https://bootstrap.pypa.io/pip/zipapp/pip-26.2.1.pyz?token=secret",
+    "https://bootstrap.pypa.io/pip/zipapp/pip-26.2.1.pyz#fragment",
+    "https://bootstrap.pypa.io:444/pip/zipapp/pip-26.2.1.pyz",
+    "https://bootstrap.pypa.io.evil.invalid/pip/zipapp/pip-26.2.1.pyz",
+    "https://bootstrap.pypa.io/pip/pip.pyz",
+    "https://bootstrap.pypa.io/get-pip.py",
+    "https://bootstrap.pypa.io/pip/zipapp/pip-26.2.2.pyz",
+    "https://bootstrap.pypa.io/pip/zipapp/%70ip-26.2.1.pyz",
+    "https://bootstrap.pypa.io/pip/else/../zipapp/pip-26.2.1.pyz",
+])
+def test_resource_url_additions_do_not_admit_other_locators(url):
+    with pytest.raises(ValueError):
+        p.public_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    "https://registry.npmjs.org/npm/-/npm-12.2.0.tgz",
+    "https://bootstrap.pypa.io/pip/zipapp/pip-26.2.1.pyz",
+])
+@pytest.mark.parametrize("received", [b"selected bytes", b"short", b"selected bytes extra", b"different data"])
+def test_new_resource_hosts_still_require_exact_download_bytes(tmp_path, monkeypatch, url, received):
+    expected = b"selected bytes"
+    selected = {"url": url, "size": len(expected), "sha256": hashlib.sha256(expected).hexdigest()}
+    p.public_url(url)
+    calls = []
+    def response(actual_url, timeout):
+        calls.append((actual_url, timeout))
+        return io.BytesIO(received)
+    monkeypatch.setattr(p.urllib.request, "urlopen", response)
+    target = tmp_path / "download"
+    if received == expected:
+        p.download(target, selected)
+        assert target.read_bytes() == expected
+    else:
+        with pytest.raises(ValueError, match="public input"):
+            p.download(target, selected)
+    assert calls == [(url, 60)]

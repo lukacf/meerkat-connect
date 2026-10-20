@@ -88,8 +88,11 @@ The existing owners must supply all of the following separately for each target:
   remains unchanged.
 - A complete `files` inventory. Each key is a safe relative locator and each
   value is exactly `{url, size, sha256}`. Only pinned GitHub release assets from
-  the named public repositories, PyPI file URLs, and versioned Node downloads
-  are accepted. No private bucket, local path or expiring input is accepted.
+  the named public repositories, PyPI file URLs and versioned Node downloads
+  are accepted, plus the existing resource owner's exact official npm 12.2.0
+  tarball and pip 26.2.1 zipapp URLs. HTTPS, credential/query/fragment exclusion,
+  exact size and SHA-256 checks still apply. No private bucket, local path or
+  expiring input is accepted.
 - The complete selected library archive, Python/Node/pip upstream runtime files
   required by the existing resource packager, acquisition
   Node/npm archives, and selected Node prebuilt policy. `node_build_profile` is
@@ -256,14 +259,16 @@ Actions artifact alone is not that handoff.
 
 The candidate workflow was checked by source reading, Python AST parsing,
 JSON parsing, YAML parsing and exact patch roundtrip. The publication commands
-also passed 180 offline controls using controlled verifier results, a controlled
+also passed 212 offline controls using controlled verifier results, a controlled
 reader and transport responses. Those controls include input substitution,
 conflicting assets at each position, partial writes, repository visibility
 changes, commit-only/tagged native selection, and real local Git fetches that
 refuse commit/tag mismatches before checkout. Both targets exercise the existing
 acceptance and publication controls. Additional checks cover native host/target
 mismatches, data-only attestation, private or foreign producer paths, target
-binding mismatches and preserving the other target's release assets. They do
+binding mismatches and preserving the other target's release assets. The exact
+npm/pip additions also reject alternate locators and mismatched downloaded bytes.
+They do
 not establish actual signature verification, selected Meta-reader acceptance,
 public upload or Forge inclusion. No Cargo, packager, native verifier, native
 binary, GitHub job or remote host was executed for this draft. Actual attested

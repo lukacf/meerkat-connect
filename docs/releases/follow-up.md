@@ -89,11 +89,13 @@ routing. The realm is retained and physical owners join; the read remains open.
 Independent source review identifies a Core mismatch between synthetic
 environment credential resolution, which skips lease publication, and governed
 input admission, which requires that lease. The newer offered Core `d4d31d8a`
-retains the same paths. The Core lead accepts the issue for 0.9.4, with owner
-reproduction and review and a proposed RC1 correction; no fixed revision is
-offered yet. No
-credential or authority workaround is applied, and the exact absent-lease
-disposition remains inferred rather than observed in CLI output.
+retains the same paths. The Core lead confirms the bug on current main and
+accepts it for 0.9.4/RC1. The intended fix makes synthetic environment-default
+credentials without an auth binding lease-free, while configured bindings still
+require their lease. Non-governed realms are unaffected. No fixed revision is
+offered yet. Controller grant policy remains independent. No credential or
+authority workaround is applied; the exact absent-lease disposition remains
+inferred from source rather than observed in CLI output.
 
 The latest diagnostic gateway and shared-test builds pass. Both Original
 bindings succeed in the first shared case, which later fails at B's selected

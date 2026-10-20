@@ -129,7 +129,11 @@ def public_url(value):
         r"/releases/download/[^/]+/[^/]+", parsed.path))
     pypi = parsed.hostname == "files.pythonhosted.org" and parsed.path.startswith("/packages/")
     node = parsed.hostname == "nodejs.org" and re.fullmatch(r"/dist/v[0-9.]+/[^/]+", parsed.path)
-    require(github or pypi or node, "input URL is outside the selected public release hosts")
+    # Existing resource-owner pins, exposed at their official versioned URLs.
+    # Keep these bounded to the selected artifacts; byte pins are checked below.
+    npm = (parsed.netloc == "registry.npmjs.org" and parsed.path == "/npm/-/npm-12.2.0.tgz")
+    pip = (parsed.netloc == "bootstrap.pypa.io" and parsed.path == "/pip/zipapp/pip-26.2.1.pyz")
+    require(github or pypi or node or npm or pip, "input URL is outside the selected public release hosts")
 
 
 def source_state():
