@@ -146,6 +146,27 @@ manifest, source and license tree. Keep those hashed upstream inputs intact.
 
 ## Source checks and documentation
 
+The default GitHub Actions check uses Python 3.12 and Node 22. Run the same
+lightweight checks from the repository root:
+
+```sh
+python3 -m unittest -v \
+  scripts.test_package_connect_resources \
+  scripts.test_assemble_connect_product
+python3 scripts/check-docs.py
+npm --prefix sdk/typescript ci --ignore-scripts --no-audit --no-fund
+node --test sdk/typescript/tests/console-setup-panel.test.mjs
+```
+
+The Python tests use only the standard library and temporary inert archives.
+The panel tests use the locked JSDOM dependency and import the embedded
+JavaScript directly, without a TypeScript build. These checks do not build or
+run native executables, install integration donors, or contact live providers.
+Platform-specific Python controls may skip when the host lacks their filesystem
+behavior. Native builds and installed-product acceptance remain separate.
+
+Run the Rust source tests separately:
+
 ```sh
 ./scripts/repo-cargo +1.97.0 test --manifest-path Cargo.toml --locked \
   -p toolkit-package -p toolkit-store
