@@ -714,6 +714,64 @@ function applicationAccess(state = "grant_issued") {
 function accessResponse(state) { return new Response(JSON.stringify({ scope: "application_issued_access", state }),
   { headers: { "content-type": "application/json" } }); }
 
+// No accessible-name package is installed. Resolve this explicit text-only
+// aria-labelledby contract against the real DOM; no screen-reader claim.
+function managementActionName(button) {
+  const ids = button.getAttribute("aria-labelledby")?.split(/\s+/) ?? [];
+  assert.ok(ids.length > 1, "management action must reference its visible target facts");
+  assert.equal(ids[0], button.id, "the visible action text leads the accessible name");
+  const card = button.closest("article");
+  return ids.map(id => {
+    const node = button.ownerDocument.getElementById(id);
+    assert.ok(node && card.contains(node), "each reference belongs to this action's visible card");
+    return node.textContent;
+  }).join(" ");
+}
+
+test("access action names distinguish visible targets, accounts and lifetimes", async t => {
+  const container = fixture(t); const calls = [];
+  const panel = mountApplicationAccess(container, async () => {}, async (path, options) => {
+    calls.push({ path, body: JSON.parse(options.body) }); return accessResponse("revoked");
+  });
+  t.after(() => panel.dispose());
+  const value = applicationAccess();
+  value.rows.push({ ...value.rows[0], id: "b".repeat(64), target: "other-agent",
+    selected_account: "other-account", resource: "other-inbox", operations: ["read", "list"] });
+  value.rows.push({ ...value.rows[0], id: "c".repeat(64),
+    lifetime: { scope: { kind: "task", task: "private-task-key" }, expires_at_ms: 1800000000000 } });
+  value.rows.push({ ...value.rows[0], id: "d".repeat(64), selected_account: null });
+  panel.update(value, "person");
+  const buttons = [...container.querySelectorAll("button")];
+  assert.deepEqual(buttons.map(managementActionName), [
+    "Revoke this access mail Agent selected-agent Operations read Resource mail Selected account selected-account Access scope member Expiry No expiry declared in this scope",
+    "Revoke this access mail Agent other-agent Operations read, list Resource other-inbox Selected account other-account Access scope member Expiry No expiry declared in this scope",
+    "Revoke this access mail Agent selected-agent Operations read Resource mail Selected account selected-account Access scope task Expiry 2027-01-15T08:00:00.000Z",
+    "Revoke this access mail Agent selected-agent Operations read Resource mail Access scope member Expiry No expiry declared in this scope",
+  ]);
+  assert.ok(buttons.every(button => button.textContent === "Revoke this access"));
+  buttons[1].click(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [{ path: "/host/toolkit/setup/access/revoke",
+    body: { offer_id: 9, row_id: "b".repeat(64) } }]);
+});
+
+test("management label references remain unique across mounts and replacement", t => {
+  const container = fixture(t);
+  const access = [mountApplicationAccess(container, async () => {}), mountApplicationAccess(container, async () => {})];
+  const recovery = [mountOperatorRecovery(container, async () => {}), mountOperatorRecovery(container, async () => {})];
+  t.after(() => [...access, ...recovery].forEach(panel => panel.dispose()));
+  const seen = new Set();
+  for (let replacement = 0; replacement < 2; replacement++) {
+    for (const panel of access) panel.update(applicationAccess(), "person");
+    for (const panel of recovery) panel.update(recoveryOffer(), "person");
+    for (const button of container.querySelectorAll("button")) managementActionName(button);
+    for (const node of container.querySelectorAll("[id]")) {
+      assert.match(node.id, /^toolkit-setup-label-\d+$/);
+      assert.equal(seen.has(node.id), false, "presentation IDs cannot collide or be reused after replacement");
+      seen.add(node.id);
+    }
+  }
+});
+
 test("application-issued access is distinct from account status and unknown grants cannot be revoked", t => {
   const container = fixture(t); const panel = mountApplicationAccess(container, async () => {});
   t.after(() => panel.dispose());
@@ -1179,6 +1237,25 @@ test("operator recovery is absent without selection and never offers cleanup for
   assert.equal(container.querySelectorAll("button").length, 0); assert.match(container.textContent, /matching task source is retained/);
   recovery.clear(); assert.equal(container.textContent, "");
   assert.equal(container.querySelector(".toolkit-view"), null, "retirement removes the recovery panel");
+});
+test("recovery action names identify each visible service target without changing dispatch", async t => {
+  const container = fixture(t); const calls = [];
+  const recovery = mountOperatorRecovery(container, async () => {}, async (path, options) => {
+    calls.push({ path, body: JSON.parse(options.body) });
+    return new Response("{}", { status: 503 });
+  });
+  t.after(() => recovery.dispose());
+  const value = recoveryOffer();
+  value.rows.push({ ...value.rows[0], id: "c".repeat(64), target: "other-agent",
+    resource: "other-inbox", operations: ["read", "list"] });
+  recovery.update(value, "person");
+  const buttons = [...container.querySelectorAll("button")];
+  assert.deepEqual(buttons.map(managementActionName), value.rows.map(row =>
+    `Revoke this unresolved approval ${row.service} Agent ${row.target} Operations ${row.operations.join(", ")} Resource ${row.resource}`));
+  assert.ok(buttons.every(button => button.textContent === "Revoke this unresolved approval"));
+  buttons[1].click(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [{ path: "/host/toolkit/setup/recovery/revoke",
+    body: { offer_id: 31, row_id: "c".repeat(64) } }]);
 });
 test("operator cleanup posts only the opaque offer once and reports partial native outcomes without claiming policy rollback", async t => {
   const container = fixture(t); const held = deferred(); const calls = []; let refreshes = 0; const submission = { sending:false };

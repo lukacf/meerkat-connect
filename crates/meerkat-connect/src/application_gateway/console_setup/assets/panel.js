@@ -1,6 +1,20 @@
 import { validateProjection } from "./projection.js";
 import { mountToolkitView } from "./view.js";
 export const SOURCE_STATUS_DATA_PATH = "/host/toolkit/setup/data";
+const presentationIds = new WeakMap();
+function labelManagementAction(button, context) {
+    const doc = button.ownerDocument;
+    const ids = [button, ...context].map(node => {
+        let next = presentationIds.get(doc) ?? 0;
+        let id;
+        do { id = `toolkit-setup-label-${++next}`; } while (doc.getElementById(id));
+        node.id = id;
+        presentationIds.set(doc, next);
+        return id;
+    });
+    // Use visible facts, never an opaque offer/row key or inferred authority.
+    button.setAttribute("aria-labelledby", ids.join(" "));
+}
 function checkedPage(value) {
     if (value === undefined) return undefined; // Earlier whole-view envelopes.
     if (!value || Object.keys(value).some(key => !["page_id", "first", "has_next"].includes(key))
@@ -605,17 +619,20 @@ export function mountApplicationAccess(container, refresh, fetcher = fetch, subm
                 const card = document.createElement("article");
                 const title = document.createElement("h3"); title.textContent = row.service;
                 const facts = document.createElement("dl");
-                const fact = (name, value) => { const dt = document.createElement("dt"); dt.textContent = name;
-                    const dd = document.createElement("dd"); dd.textContent = value; facts.append(dt, dd); };
+                const context = [title];
+                const fact = (name, value, describesTarget = true) => { const dt = document.createElement("dt"); dt.textContent = name;
+                    const dd = document.createElement("dd"); dd.textContent = value; facts.append(dt, dd);
+                    if (describesTarget) context.push(dt, dd); };
                 fact("Agent", row.target); fact("Operations", row.operations.join(", ")); fact("Resource", row.resource);
                 if (row.selected_account !== null) fact("Selected account", row.selected_account);
                 fact("Access scope", row.lifetime.scope.kind);
                 fact("Expiry", row.lifetime.expires_at_ms === null ? "No expiry declared in this scope"
                     : new Date(row.lifetime.expires_at_ms).toISOString());
-                fact("Status", labels[row.state]); card.append(title, facts);
+                fact("Status", labels[row.state], false); card.append(title, facts);
                 if (row.can_revoke) {
                     const button = document.createElement("button"); button.type = "button";
                     button.textContent = "Revoke this access"; button.disabled = submission.sending;
+                    labelManagementAction(button, context);
                     controls.set(row.id, button);
                     button.addEventListener("click", async () => {
                         if (disposed || epoch !== current || submission.sending) return;
@@ -715,13 +732,16 @@ export function mountOperatorRecovery(container, refresh, fetcher = fetch, submi
             for (const row of value.rows) {
                 const card = doc.createElement("article"); const title = doc.createElement("h3"); title.textContent = row.service;
                 const facts = doc.createElement("dl");
-                const fact = (name, text) => { const dt = doc.createElement("dt"); dt.textContent = name;
-                    const dd = doc.createElement("dd"); dd.textContent = text; facts.append(dt, dd); };
-                fact("Agent", row.target); fact("Operations", row.operations.join(", ")); fact("Resource", row.resource);
+                const context = [title];
+                const fact = (name, text, describesTarget = false) => { const dt = doc.createElement("dt"); dt.textContent = name;
+                    const dd = doc.createElement("dd"); dd.textContent = text; facts.append(dt, dd);
+                    if (describesTarget) context.push(dt, dd); };
+                fact("Agent", row.target, true); fact("Operations", row.operations.join(", "), true); fact("Resource", row.resource, true);
                 fact("Publication", states[row.state]); fact("Parent access", parents[row.parent]); fact("Application access", children[row.child]); fact("Tool policy", policies[row.policy]);
                 card.append(title, facts);
                 if (row.can_recover) {
                     const button = doc.createElement("button"); button.type = "button"; button.textContent = "Revoke this unresolved approval"; button.disabled = submission.sending;
+                    labelManagementAction(button, context);
                     controls.set(row.id, button);
                     button.addEventListener("click", async () => {
                         if (disposed || current !== epoch || submission.sending) return;
