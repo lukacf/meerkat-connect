@@ -7,8 +7,10 @@ and Python SDK artifacts, a synthetic issuer and `TOKIO_WORKER_THREADS=2`. The
 original startup failure remains retained. That result does not qualify the later
 registered-HTTPS additions or repin Toolkit dependencies. Real provider login,
 protected browser and authenticated requester admission remain unverified.
-Production `find_and_install` remains unavailable and original-task continuation
-remains separate native work.
+These are the qualification limits of this callback adapter. Connect's broader
+acquisition and original-task continuation have their own
+[current results and remaining work](../../docs/PRODUCT-PLAN.md); a completed
+service-acquisition case does not qualify this MCP OAuth transport.
 
 For generic service connector OAuth, see [CONNECTOR-AUTH.md](CONNECTOR-AUTH.md).
 That adapter has separate slot/account target and result types, including
@@ -21,7 +23,7 @@ Toolkit calls those methods; it adds no JSON-RPC protocol or credential store.
 Native auth owns target admission, PKCE, one-time state, account/scope
 verification, credential persistence and attempt lifecycle.
 
-The released Meerkat 0.8.51 native implementation requires an HTTP loopback
+The Meerkat 0.8.51 build used in that qualification requires an HTTP loopback
 callback. By default this adapter binds `127.0.0.1` on an ephemeral port before
 start, accepts the callback, and joins its socket tasks on settlement. Rust
 embedding hosts can instead use `HostAuthService::mcp_begin_loopback_login`.
@@ -32,8 +34,9 @@ inbox using the existing SDK start/complete signatures. This does not make
 HTTPS login available on released loopback-only native builds. The native
 owner has accepted [#1808](https://github.com/lukacf/meerkat/issues/1808), recorded
 in the [exact contract receipt](../../docs/coordination/20261006-homecore-presenter/20261006T082420.307696-claude-gcp-lead-28b77d.json),
-for per-target callback admission and client registration. That contract is
-accepted but unreleased here. This source adds no native configuration or
+for per-target callback admission and client registration. That receipt records
+contract acceptance, without qualifying a released-native HTTPS consumer.
+This source adds no native configuration or
 capability override, future attempt-status method, persisted recovery, HTTPS
 server or protected presenter. Native support and actual host admission are
 prerequisites to production use; an unsupported start is never retried through
