@@ -16,9 +16,16 @@ artifact and execution references with their narrower qualifications and failure
 | --- | --- |
 | Standalone CLI setup followed by normal agent use | Pass with a real model on derived development inputs: Hacker News setup, four normal reviews, /quit, then a fresh ordinary rkat session returns three actual stories. Canonical messages and finalized completion verify the answer. The optional post-run ATIF exporter fails separately. |
 | Installed SDK acquisition/use | Pass: the same Original acquires Hacker News and reads one story. Corrupted resources are refused before setup. |
-| Shared setup | UUID-corrected compilation and two focused controls pass. Shared1 fails at helper A catalog load with authorization unavailable. One-helper shared execution remains isolated source implementation; full completion is unqualified. |
+| Shared setup (Connect 0.9.5) | UUID-corrected compilation and two focused controls pass. Shared1 fails at helper A catalog load with authorization unavailable. One-helper shared execution remains isolated source implementation; full completion is unqualified. |
 | Console approval/recovery | Actual producer loss and restart reaches protected recovery. Stale, foreign, retired-login and published-A refusals pass. B revoke returns parent unavailable, child not entered and uncertainty, with no persisted grant change. Exact native branch attribution is pending. |
 | Ordinary live-model read | Pass: fresh setup normally authorizes the actual OpenAI route; a fresh ordinary rkat searches, loads and calls the installed HN operation. Read leaves config/grants unchanged; physical owners join. Final 0.9.4 artifact qualification remains pending. |
+
+Shared setup is assigned to **Connect 0.9.5**. It lets overlapping requests share
+one setup assistant while preserving each caller's approval, access, cancellation
+and result. It is not a 0.9.4 release gate. Individual CLI/Console setup,
+agent-led discovery and authorized reuse of installed integrations remain in
+0.9.4, including fixes for ordinary isolation and Console restart/revoke.
+The complete shared workflow remains an end-state requirement.
 
 The one-helper shared workflow still needs production execution and per-original
 completion wiring. Its current path delivers planning context, but does not call
