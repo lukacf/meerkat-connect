@@ -5,183 +5,60 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
-Current development work consumes the r9 offer:
+Connect 0.9.4 is not yet qualified. Current development uses
 [Core `9281f3b0`](https://github.com/lukacf/meerkat/commit/9281f3b05b846ff31f9d74a146b8020c507aa818)
-and [Meta `2ea41584`](https://github.com/lukacf/meerkat-meta/commit/2ea415849867ad2cfddee4090a9685c9ec11457e).
-Connect has adapted its existing bounded recovery owner to retained-custody #14.
-Both native test targets compile, and all eleven affected controls execute:
-nine custody/recovery checks pass and both shared-setup Driver cases fail.
-The shared cancellation case first fails during Original binding. The planning
-case passes native tool-policy entry before an inner access_denied. Their retained
-audits do not yet identify the exact failing Connect branches. Physical owners
-join, but the first case also reports unsettled semantic cleanup.
-A later diagnostic-only run identifies SourceBinding at the first Original's
-admission in the cancellation case. The planning case passes without a behavior
-change, so it remains open as an intermittent failure. The rerun enters both
-cases, joins physical owners and restores source and lock; it compiles but does
-not execute the three-story CLI fixture.
-These are development refs; the
-host refusal observer and initialized Console-reset correction remain outside
-this offer. Fresh stores are required because r9 event/audit writes cannot be
-safely downgraded to r8.
+and [Meta `2ea41584`](https://github.com/lukacf/meerkat-meta/commit/2ea415849867ad2cfddee4090a9685c9ec11457e)
+with matching SDK source trees. Published 0.9.0 assets remain unchanged.
+The [earlier development evidence](#earlier-development-evidence) retains source,
+artifact and execution references with their narrower qualifications and failures.
 
-The reviewed r9 source and exact graph are adopted locally as work in progress,
-with 51 selected paths per checkout and intentional private evidence variants
-preserved. The nine passing controls do not qualify a complete shared journey.
-The ordinary Linux development gateway build now passes, including the static
-Console 503 diagnostics. Independent review verifies compiler/version success,
-the exact graph, source preservation and joined cleanup, with no test-support
-features in production artifacts. The separate Bind/AA1 diagnostic overlays are
-not included. The reviewed [installed r9 SDK case](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-r9-product-fj8toe75/FINAL.json)
-passes (record SHA-256
-`daf4ec908bd4c7808eb7cea346d8e26a6fdcaf467f81cd13c4e9465b954de696`):
-a controlled model acquires Hacker News and reads one story in the same original
-session. Resource corruption is refused before setup/model work, and both cases
-join physical owners without forced cleanup. CLI setup -> exit -> fresh ordinary
-rkat in the same realm -> three stories remains unverified. Console approval and
-both shared cases remain open. This is not 0.9.4 release qualification.
-The ordinary meerkat-connect CLI binary now also builds on the exact r9 graph
-and passes independent artifact review without test-support features. It reports
-version 0.9.0. The matching stock rkat build now passes at exact Core `9281f3b0`,
-with stock default features and its unchanged lock. Receipt-only recovery joins
-the installed binary to the retained compiled executable after correcting two
-Cargo packaging assumptions; no rebuild or source change is involved. The
-binary reports 0.9.3. The actual CLI journey reaches setup but Connect's worker
-overflows its stack before installation review; fresh rkat is not reached.
-Connect used default Tokio startup instead of Core's existing measured
-host-stack runner. The minimal entrypoint correction is now adopted, with the
-fixture environment unchanged. Its ordinary production build passes independent
-review on the same graph: all 68 retained references verify, production features
-exclude test-support, and physical owners join. The unchanged rerun now completes
-both service setups, approvals and setup exit. Fresh ordinary rkat reaches catalog
-search/load, then the fixture rejects a native deferred-catalog notice before the
-story read. Independent review establishes fixture drift: the assertion expects
-the old removed label where exact r9 now says the tool is available to call. The
-reviewed correction is adopted; the complete journey remains unqualified pending
-rerun. Supplied production CLI bytes can now be pinned explicitly in the fixture,
-avoiding a redundant production rebuild after test compilation. Existing task,
-isolation and actual-read checks remain intact. Physical command groups from the
-failed run join naturally.
-The corrected fixture now compiles and its canonical fresh-input control passes.
-A separate diagnostic-only negative control mistakes a valid two-name display
-for malformed input. The reviewed one-character delimiter correction is adopted
-for the next affected compile. Diagnostic fragments do not decide acceptance,
-so the actual journey proceeds with its existing compiled oracle while retaining
-that negative-control failure.
+| Result | Current evidence |
+| --- | --- |
+| Standalone CLI setup followed by normal agent use | Pass: setup installs Hacker News and Wikipedia, exits and joins its helpers; fresh ordinary stock rkat in the same realm returns three real HTTPS Hacker News stories with exact IDs/titles. The model schedule is scripted. |
+| Installed SDK acquisition/use | Pass: the same Original acquires Hacker News and reads one story. Corrupted resources are refused before setup. |
+| Shared setup | Nine custody/recovery controls pass. The latest shared pair has one `ConfiguredSelection: Unavailable` binding failure and one pass with earlier intermittent failures. The complete shared journey remains unqualified. |
+| Console approval/recovery | The latest run returns setup-data HTTP 403 before approval. Login retirement and physical cleanup settle in that run; earlier uncertain retirement remains separate. Second-run completion and deliberate process-loss recovery are unqualified. |
+| Ordinary live-model read | Admission fails with `CredentialUnusable` before a model request. The Core lead independently reproduced `LeaseAbsent` at 01:16 UTC on 2026-10-20; a reviewed fixed SHA is pending. No credential or grant workaround is used. |
 
-The corrected [actual CLI journey](/var/folders/9q/3xq99h1s29g68492lry5f3rm0000gn/T/connect-r9-cli-consumer-0h57sh2n/FINAL.json) now passes independent review:
-Connect installs Hacker News and Wikipedia, exits setup and joins its helpers;
-a fresh ordinary stock rkat session in the same realm then reads three real
-Hacker News stories. Its final IDs and titles match the service results, and
-realm configuration is unchanged. The scripted loopback model is explicit.
-This proves the CLI lifecycle and actual service calls; the separate normal
-live-model read remains blocked at Core credential admission. The successful
-realm is retained for that affected read, with all physical owners joined.
+Adopted source corrections are awaiting affected native execution:
 
-An independently reviewed live-read wrapper can verify the completed setup in
-that retained realm and start a third ordinary rkat session with a real model.
-It preserves the scripted failure and requires three actual Hacker News results,
-unchanged configuration/grants and owned cleanup. That execution is independent
-of rebuilding the scripted fixture. The actual live attempt starts ordinary rkat
-but fails before a model request because its controller credential is not
-currently usable. Private provider-key presence does not establish correct auth
-routing. The realm is retained and physical owners join; the read remains open.
-Independent source review identifies a Core mismatch between synthetic
-environment credential resolution, which skips lease publication, and governed
-input admission, which requires that lease. The newer offered Core `d4d31d8a`
-retains the same paths. The Core lead confirms the bug on current main and
-accepts it for 0.9.4/RC1. The intended fix makes synthetic environment-default
-credentials without an auth binding lease-free, while configured bindings still
-require their lease. Non-governed realms are unaffected. No fixed revision is
-offered yet. Controller grant policy remains independent. No credential or
-authority workaround is applied; the exact absent-lease disposition remains
-inferred from source rather than observed in CLI output.
+- Console status handling (`6cff5eb`) preserves unavailable reads as 503 and
+  explicit denials as 403. The panel clears stale actions, retains page position
+  and uses its existing scheduled refresh after 503; it does not retry protected
+  actions. All 55 JavaScript controls pass; Rust/runtime acceptance is pending.
+- The verifier (`3a41ea7`) permits only the exact 503 status-read response to remain
+  pending within its existing deadline. Protected writes are never retried, and
+  stateful readiness observations remain single-entry. All 33 offline controls
+  pass. The failed run's native `Changed` versus `Unavailable` cause is still unknown.
+- Standalone CLI staging/assembly (`d14c71d`) now reuses the candidate producer,
+  preserves production bytes before test compilation and consumes the existing
+  independent shutdown review. The 240 offline controls pass, with one
+  case-sensitive Linux filesystem check skipped locally. Actual candidate
+  production, review, assembly and installed qualification remain pending.
 
-The latest shared diagnostic run compiles, but the first case fails at
-`ConfiguredSelection: Unavailable` while binding B, before child issuance.
-The second case passes again; earlier intermittent failures remain open. Existing
-audits cannot distinguish parent resolution/currentness from selection mutation
-or store failure. Owner-wide nonblocking lock contention is a source possibility,
-not an observed cause. Split those diagnostic labels in the next required build;
-do not add a retry or change authorization semantics without evidence.
+The selection-writer-v2 correction is adopted after independent source review
+(`9743bde`), using the existing async writer and preserving source/cancellation
+checks. Its combined affected native batch is authorized but has no runtime result.
+The next necessary build carries the focused corrections and closed diagnostic
+labels; unaffected passes are retained. A source checkpoint does not qualify an installed
+journey. The next live-model read consumes the exact reviewed Core fix when offered.
 
-An earlier approval consumer passes the previous setup-data HTTP 403 boundary
-and submits one actual software approval. Preparation and installation succeed,
-then its controlled access request omits required `tool_policy`; the tool rejects
-the invalid arguments before access review. Independent review establishes this
-fixture defect as the first refusal before the scripted model schedule stops.
-The fixture correction is reviewed: it supplies the intended service/catalog
-policy and checks the complete native review candidate while preserving prior
-grants and both decisions. The affected rerun approves software review 60 and
-access review 83, then fails a stale verifier assertion: accepted Console
-submission and native run IDs need not match under Meta's governed ingress.
-Native envelope and payload agree, and the first original run completes. The
-reviewed correction now retains the exact accepted submission, session,
-business input, ordering and stable per-run native lineage. Both tracked
-verifier corrections are adopted. That run did not establish second-run completion,
-deliberate process loss or successor recovery, and its login retirement remains
-uncertain despite natural physical cleanup.
+Release selection still needs exact Core/Meta/Toolkit 0.9.4 artifacts, matching
+SDKs, the native graph and the actual selected Meta reader. Linux x86_64 and macOS
+arm64 use the existing independent target orchestration; neither target has new
+release qualification here. Exact commit selection permits an optional tag only
+when it resolves to that commit, with no branch/HEAD fallback. Existing public
+source, byte, archive, attestation and reader checks remain. Descriptive producer
+paths do not force rebuilding an otherwise unchanged library artifact.
 
-The subsequent corrected Console run fails earlier: five setup-data reads
-succeed, then one returns HTTP 403, before any approval decision or setup start.
-Independent review traces the read refusal to recovery publication currentness,
-whose unavailable result is converted to denied/403. The retained evidence does
-not distinguish a changed publication from an unavailable owner, or establish
-its relationship to the original-request access denial. No second-run completion
-or process-loss recovery is established. This run retires the login with
-`fenced=true`, `reservations_drained=true`, `uncertain=false`; physical owners
-join naturally. This does not erase the previous run's uncertain retirement.
-
-The planned successor package selection uses Toolkit 0.9.4 with
-`meerkat-meta==0.9.4` for the native-host extra. Current development metadata and
-produced artifacts have not yet moved to that selection. Published 0.9.0 assets
-remain immutable. The existing candidate producer will supply Forge's runtime
-selection and paths; historical v44 artifacts are format/layout rehearsal inputs
-only. Linux x86_64 is the first target, with macOS qualification separate.
-
-The existing public-development release producer now supports explicit Linux
-x86_64 and macOS arm64 dispatches with separate target-qualified assets. Its six
-changed files pass independent source review and 180 offline controls. It reuses
-the existing packager, assembler, verifier and Meta reader. The exact release
-inputs remain unbound; no native candidate build or publication has run.
-
-A reviewed simplification is now checkpointed as public development `c00d862`:
-producer paths retained in metadata are descriptive data, not a reason to rebuild
-unchanged integrations. The library archive passes inspection byte-for-byte
-unchanged, and 201 offline controls pass. Actual byte, archive, source, SDK,
-native graph and selected-reader checks remain. Exact 0.9.4 inputs, public library
-and policy URLs, actual reader/consumer acceptance and standalone CLI candidate
-orchestration are still unfinished. The existing candidate workflow currently
-builds the Forge gateway; that is not a complete Connect release.
-
-The latest executed r8 compatibility and Console custody changes
-compile. Five of seven affected controls pass: both Console custody checks, both
-configured-parent isolation/restore checks, and same-conversation finalization.
-Two shared-setup Driver cases fail on Find/install refusals and remain open.
-All recorded command/process/cache owners join. These are development results,
-not complete shared-setup or 0.9.4 release qualification.
-
-The reviewed r8 source and resolved graph are checkpointed locally as `12c4d2ff`
-(private `91a1ec6a`). The production changes adapt existing owner contracts,
-adding 117 lines and removing 48, without introducing another lifecycle or
-framework. Both shared-case failures remain recorded in the checkpoint.
-
-The earlier installed Hacker News case remains recorded as blocked by native pre-entry
-ReprepareRequired on catalog search. It performs no HN read; the corruption case
-is unentered. The verifier now exposes actual refusal envelopes instead of
-masking them with success-field indexing. The reviewed 49-path recovery and
-verifier slice is checkpointed locally as `be5fad83` (private `addf77b4`).
-
-The independent approval consumer previously failed before approval because
-Console enrollment incorrectly demanded the toolkit-origin input contract.
-That owner-specific validation is corrected and its two focused controls pass.
-The ordinary and development gateway builds and stage-only packaging pass. The
-actual approval run then fails after 105 seconds on setup/data HTTP 503 at the
-final status currentness check, before model work or approval. The subsequent
-original-retention failure may be cleanup-induced; the exact failing check is
-not established. Process-loss recovery and semantic login retirement remain
-unqualified. Neither depends on a successful HN read. No changes have been
-pushed or released.
+CLI candidate commands retain the same CI producer directory; `stage-cli` requires the
+existing CI preflight. Direct native production/assembly on a retained host remains
+a development route. The lead requires clean GitHub-hosted, attested production
+for installed-scope Connect selections in the 0.9.4 installer; standalone CLI
+coverage of that requirement is being clarified. Cross-job artifact transport is
+an orchestration choice. Actual selected builds and consumer qualification remain
+required; no CI run, successor publication or public readback is claimed. The released
+breadth limits below remain separate from the service-read development journey.
 
 ### Earlier development evidence
 
