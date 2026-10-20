@@ -137,3 +137,6 @@ async fn old_unbound_child_cannot_acquire_new_targets_and_legacy_scope_remains_e
     let closed = fixture.shutdown().await; assert!(closed.is_ok(), "{closed:?}");
     if let Err(payload) = result { std::panic::resume_unwind(payload); }
 }
+
+#[path = "selection_writer_tests.rs"]
+mod writer_tests;

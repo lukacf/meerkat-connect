@@ -1538,8 +1538,10 @@ impl ToolkitOriginalOwner {
     }
 
     /// Serialize the existing canonical selection of one still-unbound source
-    /// with this owner's first binding and cancellation. No human interaction
-    /// runs under this custody, and the callback must not enter this owner again.
+    /// with this owner's first binding and cancellation. The ordinary async
+    /// caller waits on the existing source writer; native callbacks do not.
+    /// No human interaction runs under this custody, and the callback must not
+    /// enter this owner again.
     /// Absence is not permission: the callback still validates the retained
     /// decision, current native parent and exact source row before its CAS.
     pub(crate) async fn with_unbound_source_selection<T, F, Fut>(
@@ -1549,8 +1551,7 @@ impl ToolkitOriginalOwner {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = T>,
     {
-        let _mutation = self.mutation.try_lock()
-            .map_err(|_| OriginalWriterError::Unavailable)?;
+        let _mutation = self.source_writer().await;
         {
             let originals = self.originals.try_lock()
                 .map_err(|_| OriginalWriterError::Unavailable)?;
