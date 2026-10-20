@@ -48,9 +48,17 @@ the installed binary to the retained compiled executable after correcting two
 Cargo packaging assumptions; no rebuild or source change is involved. The
 binary reports 0.9.3. The actual CLI journey reaches setup but Connect's worker
 overflows its stack before installation review; fresh rkat is not reached.
-Connect still uses default Tokio startup instead of Core's existing measured
-host-stack runner. A minimal entrypoint correction passes source review, with the
-fixture environment unchanged. The journey remains unqualified pending rerun.
+Connect used default Tokio startup instead of Core's existing measured
+host-stack runner. The minimal entrypoint correction is now adopted, with the
+fixture environment unchanged. Its ordinary production build passes independent
+review on the same graph: all 68 retained references verify, production features
+exclude test-support, and physical owners join. The unchanged rerun now completes
+both service setups, approvals and setup exit. Fresh ordinary rkat reaches catalog
+search/load, then the fixture rejects a native deferred-catalog notice before the
+story read. Independent review establishes fixture drift: the assertion expects
+the old removed label where exact r9 now says the tool is available to call. The
+complete journey remains unqualified pending correction and rerun. Physical
+command groups join naturally.
 
 The r9 approval development gateway build also passes. Its affected consumer
 fails at setup-data HTTP 403 before intentional process loss or successor
