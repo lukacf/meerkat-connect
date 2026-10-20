@@ -14,17 +14,20 @@ artifact and execution references with their narrower qualifications and failure
 
 | Result | Current evidence |
 | --- | --- |
-| Standalone CLI setup followed by normal agent use | Pass: setup installs Hacker News and Wikipedia, exits and joins its helpers; fresh ordinary stock rkat in the same realm returns three real HTTPS Hacker News stories with exact IDs/titles. The model schedule is scripted. |
+| Standalone CLI setup followed by normal agent use | Pass with a real model on derived development inputs: Hacker News setup, four normal reviews, /quit, then a fresh ordinary rkat session returns three actual stories. Canonical messages and finalized completion verify the answer. The optional post-run ATIF exporter fails separately. |
 | Installed SDK acquisition/use | Pass: the same Original acquires Hacker News and reads one story. Corrupted resources are refused before setup. |
-| Shared setup | Nine custody/recovery controls and all three new writer controls pass. A smaller correction in two existing test files handles one fresh check and requires exact native refusal evidence after settlement. Its next build fails before tests on an undeclared test dependency; reviewed correction `15bf196` reuses the existing Core type. Focused and complete-case execution remain pending. Shared1 uses two helpers sharing an installer; the separate planning-admission case covers one shared setup helper. |
-| Console approval/recovery | Both native completions and the corrected exact two-block input check pass. The next observer incorrectly compares a raw source idempotency key with Core's qualified stored key. The exact consumed input and completed run exist. The corrected observer passes 26 controls; the actual rerun is underway. Process-loss recovery remains unentered in settled evidence and cleanup joins naturally. |
-| Ordinary live-model read | The ordinary rkat build with the approved Core credential correction passes. The live run is refused before model output. Its retained realm authorizes the scripted model route, not the selected OpenAI route. Correct the fresh setup scenario to select and normally authorize the same live route from the start. The earliest typed refusal remains unproven; no existing grants or credentials are changed. |
+| Shared setup | UUID-corrected compilation and two focused controls pass. Shared1 fails at helper A catalog load with authorization unavailable. One-helper shared execution remains isolated source implementation; full completion is unqualified. |
+| Console approval/recovery | Actual producer loss and restart reaches protected recovery. Stale, foreign, retired-login and published-A refusals pass. B revoke returns parent unavailable, child not entered and uncertainty, with no persisted grant change. Exact native branch attribution is pending. |
+| Ordinary live-model read | Pass: fresh setup normally authorizes the actual OpenAI route; a fresh ordinary rkat searches, loads and calls the installed HN operation. Read leaves config/grants unchanged; physical owners join. Final 0.9.4 artifact qualification remains pending. |
 
 The one-helper shared workflow still needs production execution and per-original
 completion wiring. Its current path delivers planning context, but does not call
 the existing per-waiter operation staging method; setup-result lookup only
 recognizes ordinary helpers. Policy refuses unstaged calls. This is an
-implementation gap, so expanding planning tests alone cannot close it.
+implementation gap, so expanding planning tests alone cannot close it. Isolated
+source candidates now address the per-caller execution/result paths; native bundle
+staging still needs the lead-approved seam after actual target/account registration.
+No duplicate registration or fabricated account is accepted.
 
 Adopted source corrections have these affected results:
 
@@ -53,8 +56,8 @@ eight passing: B's native continuation is terminal, but the combined
 preparation-completion, delivery-acknowledgement and fixture-finished condition
 times out. Its unsatisfied term and the earlier binding failure's cause remain
 unknown. Source restoration and physical process joins pass; the failed journey
-remains unqualified. The reviewed Core fix is built, but the live scenario's
-route mismatch must be corrected before rerunning its read.
+remains unqualified. The subsequent real-model CLI journey now passes with
+consistent route selection; earlier route failures remain historical evidence.
 
 Release selection still needs exact Core/Meta/Toolkit 0.9.4 artifacts, matching
 SDKs, the native graph and the actual selected Meta reader. Linux x86_64 and macOS
