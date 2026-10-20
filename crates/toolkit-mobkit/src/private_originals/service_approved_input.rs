@@ -55,6 +55,35 @@ impl PrivateOriginals {
         Ok(cancelled)
     }
 
+    /// Capture existing approved-task ancestry for the same result write.
+    /// These conditions fence parent-first cancellation, not native permission.
+    pub(in crate::private_originals) async fn extend_result_ancestor_sources(
+        &self, record: &SourceRecord, sources: &mut Vec<toolkit_store::RecordCondition>,
+    ) -> Result<(), PrivateOriginalError> {
+        let mut next = record.approved_task.as_ref().map(|link| link.parent.clone());
+        let mut visited = vec![];
+        while let Some(parent) = next {
+            let key = self.key(&parent)?;
+            if visited.contains(&key) || visited.len() >= 64 {
+                return Err(PrivateOriginalError::Conflict);
+            }
+            visited.push(key.clone());
+            let row = self.store.get(&key).await.map_err(store_error)?
+                .ok_or(PrivateOriginalError::Unavailable)?;
+            let parent_record = self.decode_record(&row, &parent)?;
+            if parent_record.operation_cancelled { return Err(PrivateOriginalError::Denied); }
+            let condition = toolkit_store::RecordCondition {
+                key: row.key, revision: row.revision, content_digest: row.content_digest,
+                claim: None, dispatch_claim: None,
+            };
+            if let Some(prior) = sources.iter().find(|prior| prior.key == condition.key) {
+                if prior != &condition { return Err(PrivateOriginalError::Conflict); }
+            } else { sources.push(condition); }
+            next = parent_record.approved_task.map(|link| link.parent.clone());
+        }
+        Ok(())
+    }
+
     pub(super) async fn persist_source_cancellation(
         &self,
         validated: Arc<StoredRecord>,

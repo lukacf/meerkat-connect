@@ -91,6 +91,18 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
             evidence.digest = EvidenceDigest::of_bytes(b"linked-b");
         }
         let b = InputAuthorityAssociation::new(candidate).unwrap();
+        let mut result_ancestors = Vec::new();
+        source.extend_result_ancestor_sources(&record, &mut result_ancestors).await.unwrap();
+        assert_eq!(result_ancestors.len(), 1);
+        assert_eq!(result_ancestors[0].key, parent_stored.key);
+        assert_eq!(result_ancestors[0].revision, parent_stored.revision);
+        assert_eq!(result_ancestors[0].content_digest, parent_stored.content_digest);
+        source.extend_result_ancestor_sources(&record, &mut result_ancestors).await.unwrap();
+        assert_eq!(result_ancestors.len(), 1, "identical ancestor reads deduplicate");
+        let mut conflicting = result_ancestors.clone();
+        conflicting[0].revision += 1;
+        assert!(matches!(source.extend_result_ancestor_sources(&record, &mut conflicting).await,
+            Err(PrivateOriginalError::Conflict)));
         if let Some(persist_child_before_error) = admitted_partial_write {
             let child_stored = source.store.get(&key).await.unwrap().unwrap();
             let affected = [parent_stored, child_stored].into_iter().map(|stored| {
@@ -132,6 +144,8 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
             assert!(source.decode_record(&before_a, &parent).unwrap().operation_cancelled);
             let before_b = source.decode_record(&before_b, &reference).unwrap();
             assert_eq!(before_b.operation_cancelled, persist_child_before_error);
+            assert!(matches!(source.extend_result_ancestor_sources(&before_b, &mut Vec::new()).await,
+                Err(PrivateOriginalError::Denied)), "durable parent cancellation fences result before child repair");
             assert!(before_b.service_admission.is_some());
             for association in [&a, &b] {
                 assert!(matches!(source.owner.original_disposition(
@@ -186,6 +200,8 @@ async fn cancellation_case(parent_only_commit: bool, historical_obstacles: bool,
             source.persist_source_cancellation(Arc::new(parent_stored)).await.unwrap();
             let b_before = source.store.get(&key).await.unwrap().unwrap();
             assert!(!source.decode_record(&b_before, &reference).unwrap().operation_cancelled);
+            assert!(matches!(source.extend_result_ancestor_sources(&record, &mut Vec::new()).await,
+                Err(PrivateOriginalError::Denied)), "unchanged child cannot conceal a cancelled parent");
             assert!(matches!(source.owner.original_disposition(
                 &a.candidate().ingress_namespace, &a.candidate().original_work,
             ), Ok(OriginalDisposition::Active)));

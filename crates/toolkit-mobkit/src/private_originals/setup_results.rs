@@ -15,6 +15,8 @@ pub(crate) struct SetupResultSource {
     pub helper: InputAuthorityAssociation,
     pub source: RecordCondition,
     pub contributors: Vec<InputAuthorityAssociation>,
+    pub contributor_sources: Vec<(InputAuthorityAssociation, RecordCondition)>,
+    pub ancestor_sources: Vec<RecordCondition>,
     pub context: HostAdmissionContext,
 }
 
@@ -116,6 +118,8 @@ impl PrivateOriginals {
         // retained handles, then re-read that exact source. Native liveness is
         // checked again below; the typed snapshot is not an atomic permission.
         let mut originals = Vec::new();
+        let mut contributor_sources = Vec::new();
+        let mut ancestor_sources = Vec::new();
         for contributor in &facts.contributors {
             let original = {
                 let retained = self
@@ -147,6 +151,11 @@ impl PrivateOriginals {
             if record.operation_cancelled {
                 return Err(PrivateOriginalError::Denied);
             }
+            self.extend_result_ancestor_sources(&record, &mut ancestor_sources).await?;
+            contributor_sources.push((contributor.clone(), RecordCondition {
+                key: row.key, revision: row.revision, content_digest: row.content_digest,
+                claim: None, dispatch_claim: None,
+            }));
             originals.push(original);
         }
         for original in &originals {
@@ -222,6 +231,8 @@ impl PrivateOriginals {
                 dispatch_claim: None,
             },
             contributors: facts.contributors,
+            contributor_sources,
+            ancestor_sources,
             context: current,
         })
     }

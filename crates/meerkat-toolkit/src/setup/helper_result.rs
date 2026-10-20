@@ -51,6 +51,11 @@ pub struct SetupHelperResultAccess<'a> {
     /// writes may advance it beyond the historical publication condition.
     pub source: &'a RecordCondition,
     pub contributors: &'a [InputAuthorityAssociation],
+    /// Exact current source rows paired by the installed source owner with
+    /// every canonical contributor, in the same order as `contributors`.
+    pub contributor_sources: &'a [(InputAuthorityAssociation, RecordCondition)],
+    /// Current approved-task ancestors captured by the same source owner.
+    pub ancestor_sources: &'a [RecordCondition],
     pub effect: &'a toolkit_store::EffectKey,
     pub input_digest: &'a ContentDigest,
     pub context: &'a SetupUseContext<'a>,
@@ -171,7 +176,29 @@ impl SetupStore<'_> {
             let (mut record, effects) = apply(&current, input)?;
             record.detail = Some(reference);
             record.helper_detail = Some(detail);
-            let saved = self.commit(&current, record, effects, Some(&lease)).await?;
+            // Fence cancellation at the same write boundary as the terminal
+            // acquisition and continuation outbox. A later source reread cannot
+            // undo a canonical result already committed for a cancelled caller.
+            let deadline = current.request().host().limits.deadline_ms
+                .min(current.request().constraints().expires_at_ms)
+                .min(exact.child().constraints().expires_at_ms);
+            let mut direct = vec![access.source.clone()];
+            direct.extend(access.contributor_sources.iter().map(|(_, source)| source.clone()));
+            let conditions = result_conditions(direct, access.ancestor_sources)?;
+            validate_record(&record, current.request())?;
+            let (events, effects) = handoffs(&record, effects)?;
+            let before_ms = i64::try_from(deadline).map_err(|_| SetupError::InvalidRecord)?;
+            let stored = self.conditional_store
+                .ok_or(SetupError::NativeExecutionUnavailable)?
+                .compare_and_swap_conditionally(toolkit_store::ConditionalTransition {
+                    transition: Transition {
+                        key: current.key().clone(), expected_revision: current.stored.revision,
+                        expected_digest: Some(current.stored.content_digest.clone()),
+                        claim: Some(lease.clone()), data: encode_record(&record)?, events, effects,
+                    },
+                    conditions, before_ms,
+                }).await?;
+            let saved = self.recover(stored)?;
             control_receipt(&saved)
         }
         .await;
@@ -231,24 +258,56 @@ impl SetupStore<'_> {
         {
             return Err(SetupError::Denied);
         }
-        // Publication remains historical. The installed source owner validated
-        // this current condition; re-read it so intervening changes still fail.
-        let actual = self
-            .store
-            .get(&access.source.key)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        if actual.revision != access.source.revision
-            || actual.content_digest != access.source.content_digest
-            || actual.content_digest != actual.data.digest()?
-        {
-            return Err(SetupError::InvalidRecord);
+        if access.contributor_sources.len() != access.contributors.len() {
+            return Err(SetupError::Denied);
+        }
+        for (index, (association, expected)) in access.contributor_sources.iter().enumerate() {
+            if association != &access.contributors[index]
+                || expected.key == access.source.key
+                || access.contributor_sources[..index].iter().any(|(_, prior)| prior.key == expected.key)
+                || expected.claim.is_some() || expected.dispatch_claim.is_some()
+            {
+                return Err(SetupError::Denied);
+            }
+        }
+        // Publication remains historical. Reopen every captured source and
+        // approved-task ancestor; the final transaction checks these same rows.
+        let mut direct = vec![access.source.clone()];
+        direct.extend(access.contributor_sources.iter().map(|(_, source)| source.clone()));
+        for expected in result_conditions(direct, access.ancestor_sources)? {
+            let actual = self.store.get(&expected.key).await?.ok_or(StoreError::NotFound)?;
+            if actual.revision != expected.revision
+                || actual.content_digest != expected.content_digest
+                || actual.content_digest != actual.data.digest()?
+            {
+                return Err(SetupError::InvalidRecord);
+            }
         }
         let now =
             u64::try_from(self.store.now_ms().await?).map_err(|_| SetupError::InvalidRecord)?;
         check_helper_context(published.child(), access.context, now)?;
         Ok((snapshot, published))
     }
+}
+
+// Multiple callers may share an approved-task ancestor. Identical predicates
+// collapse; conflicting snapshots of the same row must never select a winner.
+fn result_conditions(
+    mut direct: Vec<RecordCondition>, ancestors: &[RecordCondition],
+) -> Result<Vec<RecordCondition>, SetupError> {
+    direct.extend_from_slice(ancestors);
+    let mut conditions: Vec<RecordCondition> = Vec::with_capacity(direct.len());
+    for condition in direct {
+        if condition.claim.is_some() || condition.dispatch_claim.is_some() {
+            return Err(SetupError::Denied);
+        }
+        if let Some(prior) = conditions.iter().find(|prior| prior.key == condition.key) {
+            if prior != &condition { return Err(SetupError::Denied); }
+        } else {
+            conditions.push(condition);
+        }
+    }
+    Ok(conditions)
 }
 
 fn check_helper_context(

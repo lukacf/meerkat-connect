@@ -81,6 +81,8 @@ impl InstalledAcquisition {
                     helper: &source.helper,
                     source: &source.source,
                     contributors: &source.contributors,
+                    contributor_sources: &source.contributor_sources,
+                    ancestor_sources: &source.ancestor_sources,
                     effect: &effect,
                     input_digest: &source.operation.input_digest,
                     context: &current,
@@ -102,6 +104,8 @@ impl InstalledAcquisition {
         if after.helper != source.helper
             || after.source != source.source
             || after.contributors != source.contributors
+            || after.contributor_sources != source.contributor_sources
+            || after.ancestor_sources != source.ancestor_sources
             || after.operation != source.operation
             || after.context.policy_revision != source.context.policy_revision
         {
@@ -153,6 +157,8 @@ impl InstalledAcquisition {
         if after.helper != source.helper
             || after.source != source.source
             || after.contributors != source.contributors
+            || after.contributor_sources != source.contributor_sources
+            || after.ancestor_sources != source.ancestor_sources
             || after.operation != source.operation
             || after.context.policy_revision != source.context.policy_revision
         {

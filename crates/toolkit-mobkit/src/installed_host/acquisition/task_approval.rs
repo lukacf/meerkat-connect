@@ -135,7 +135,9 @@ impl InstalledServiceTaskSource {
         let (snapshot, _) = store.helper_result_snapshot(&operation,
             &meerkat_toolkit::setup::SetupHelperResultAccess {
                 helper: &source.helper, source: &source.source,
-                contributors: &source.contributors, effect: &effect,
+                contributors: &source.contributors,
+                contributor_sources: &source.contributor_sources,
+                ancestor_sources: &source.ancestor_sources, effect: &effect,
                 input_digest: &source.operation.input_digest, context: &current,
             }, &owner.work_backend).await.map_err(|_| PrivateOriginalError::Unavailable)?;
         let selected = owner.selected_helper(snapshot.request()).map_err(|_| PrivateOriginalError::Denied)?;
