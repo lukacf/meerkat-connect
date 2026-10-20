@@ -237,8 +237,32 @@ async fn configured_report_parent_reaches_actual_helper_report_and_consumed_inpu
             exact
         };
         let source_row = fixture.store.get(&retained_source.key).await.unwrap().unwrap();
-        assert!(source_row == *retained_source.as_ref());
-        assert_eq!(source_row.revision, 2);
+        // Enrollment advances the canonical row without changing its Bound
+        // facts. The result carries the current CAS condition, not the snapshot
+        // retained before the first native input was enrolled.
+        assert_eq!(retained_source.data.version, 3);
+        assert_eq!(retained_source.revision, 2);
+        assert_eq!(source_row.key, retained_source.key);
+        assert_eq!(source_row.data.schema, retained_source.data.schema);
+        assert_eq!(source_row.data.version, 5);
+        assert!(source_row.revision > retained_source.revision);
+        assert_eq!(source_row.content_digest, source_row.data.digest().unwrap());
+        assert_eq!(source.source.key, source_row.key);
+        assert_eq!(source.source.revision, source_row.revision);
+        assert_eq!(source.source.content_digest, source_row.content_digest);
+        let mut unchanged = source_row.data.body.clone();
+        let attempt: crate::original_ingress::custody_attempt::CustodyAttempt =
+            serde_json::from_value(unchanged.as_object_mut().unwrap()
+                .remove("custody_attempt").unwrap()).unwrap();
+        attempt.validate_binding(&source.helper).unwrap();
+        assert_eq!(attempt.session(), &helper_session);
+        assert_eq!(attempt.input_id().to_string(), canonical_input_id.to_string());
+        assert!(attempt.decision() != crate::original_ingress::custody_attempt::CustodyDecision::Withdrawn);
+        let retained_input: meerkat_runtime::Input = serde_json::from_value(
+            unchanged.as_object_mut().unwrap().remove("bound_input").unwrap()).unwrap();
+        assert!(attempt.matches_input(&retained_input).unwrap());
+        assert_eq!(retained_input.header().authority_association.as_ref(), Some(&source.helper));
+        assert_eq!(unchanged, retained_source.data.body);
         assert_eq!(source_row.data.body["state"]["phase"], "bound");
         assert_eq!(source_row.data.body["facts"]["selection"]["helper"], serde_json::to_value(selection).unwrap());
         assert_eq!(source_row.data.body["controller"]["report"]["id"], serde_json::to_value(&child.grant_id).unwrap());
