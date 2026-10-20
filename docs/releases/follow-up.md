@@ -97,13 +97,15 @@ offered yet. Controller grant policy remains independent. No credential or
 authority workaround is applied; the exact absent-lease disposition remains
 inferred from source rather than observed in CLI output.
 
-The latest diagnostic gateway and shared-test builds pass. Both Original
-bindings succeed in the first shared case, which later fails at B's selected
-check with authorization unavailable before tool entry. The second shared case
-passes again without a behavior correction. Earlier intermittent failures remain
-unresolved. All source rows are restored and physical/cache owners join.
+The latest shared diagnostic run compiles, but the first case fails at
+`ConfiguredSelection: Unavailable` while binding B, before child issuance.
+The second case passes again; earlier intermittent failures remain open. Existing
+audits cannot distinguish parent resolution/currentness from selection mutation
+or store failure. Owner-wide nonblocking lock contention is a source possibility,
+not an observed cause. Split those diagnostic labels in the next required build;
+do not add a retry or change authorization semantics without evidence.
 
-The latest approval consumer passes the previous setup-data HTTP 403 boundary
+An earlier approval consumer passes the previous setup-data HTTP 403 boundary
 and submits one actual software approval. Preparation and installation succeed,
 then its controlled access request omits required `tool_policy`; the tool rejects
 the invalid arguments before access review. Independent review establishes this
@@ -116,10 +118,19 @@ submission and native run IDs need not match under Meta's governed ingress.
 Native envelope and payload agree, and the first original run completes. The
 reviewed correction now retains the exact accepted submission, session,
 business input, ordering and stable per-run native lineage. Both tracked
-verifier corrections are adopted; the affected native consumer remains pending. No second-run completion, deliberate
-process loss or successor recovery is established. Login retirement remains
-uncertain; all physical owners join naturally. Earlier failures remain recorded,
-and approval/restart recovery is unqualified.
+verifier corrections are adopted. That run did not establish second-run completion,
+deliberate process loss or successor recovery, and its login retirement remains
+uncertain despite natural physical cleanup.
+
+The subsequent corrected Console run fails earlier: five setup-data reads
+succeed, then one returns HTTP 403, before any approval decision or setup start.
+Independent review traces the read refusal to recovery publication currentness,
+whose unavailable result is converted to denied/403. The retained evidence does
+not distinguish a changed publication from an unavailable owner, or establish
+its relationship to the original-request access denial. No second-run completion
+or process-loss recovery is established. This run retires the login with
+`fenced=true`, `reservations_drained=true`, `uncertain=false`; physical owners
+join naturally. This does not erase the previous run's uncertain retirement.
 
 The planned successor package selection uses Toolkit 0.9.4 with
 `meerkat-meta==0.9.4` for the native-host extra. Current development metadata and
@@ -133,6 +144,15 @@ x86_64 and macOS arm64 dispatches with separate target-qualified assets. Its six
 changed files pass independent source review and 180 offline controls. It reuses
 the existing packager, assembler, verifier and Meta reader. The exact release
 inputs remain unbound; no native candidate build or publication has run.
+
+A reviewed simplification is now checkpointed as public development `c00d862`:
+producer paths retained in metadata are descriptive data, not a reason to rebuild
+unchanged integrations. The library archive passes inspection byte-for-byte
+unchanged, and 201 offline controls pass. Actual byte, archive, source, SDK,
+native graph and selected-reader checks remain. Exact 0.9.4 inputs, public library
+and policy URLs, actual reader/consumer acceptance and standalone CLI candidate
+orchestration are still unfinished. The existing candidate workflow currently
+builds the Forge gateway; that is not a complete Connect release.
 
 The latest executed r8 compatibility and Console custody changes
 compile. Five of seven affected controls pass: both Console custody checks, both
