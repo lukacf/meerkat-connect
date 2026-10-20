@@ -429,6 +429,75 @@ test("build summaries retain unknown change and format limits", t => {
   assert.equal(container.querySelector(".toolkit-build-review"), null);
 });
 
+test("refresh layout placeholder survives only the pending read, with no retained review controls", async t => {
+  for (const outcome of ["same", "changed", "absent", "invalid", "denied", "unavailable"]) {
+    const container = fixture(t); const held = deferred(); let posts = 0;
+    container.style.setProperty("min-height", "12px", "important");
+    container.getBoundingClientRect = () => ({ height: 1600 });
+    let response = { projection: snapshot(), review: review() }; let panel;
+    const account = mountAccountReview(container, () => panel.refresh(), async () => { posts++; return new Response(); });
+    panel = mountSourceStatusPanel(container, () => response, account);
+    t.after(() => { panel.dispose(); account.dispose(); });
+    await panel.refresh();
+    const oldApprove = [...container.querySelectorAll("button")].find(button => button.textContent === "Approve");
+    response = held.promise; const pending = panel.refresh();
+    assert.equal(container.style.minHeight, "1600px", outcome);
+    assert.equal(container.querySelector(".toolkit-account-review").textContent, "", outcome);
+    assert.equal(container.querySelector("details"), null, outcome);
+    assert.equal(container.querySelector(".toolkit-account-review button"), null, outcome);
+    oldApprove.click(); assert.equal(posts, 0, "removed controls remain fenced during the layout placeholder");
+    if (outcome === "denied" || outcome === "unavailable") {
+      held.reject(Object.assign(Error("status unavailable"), { status: outcome === "denied" ? 403 : 503 }));
+    } else {
+      const next = { projection: snapshot(), review: outcome === "absent" ? null : review() };
+      if (outcome === "changed") { next.projection.scope = "another-viewer"; next.review.review_id++; }
+      if (outcome === "invalid") next.projection = {};
+      held.resolve(next);
+    }
+    await pending;
+    assert.equal(container.style.minHeight, "12px", outcome);
+    assert.equal(container.style.getPropertyPriority("min-height"), "important", outcome);
+    oldApprove.click(); assert.equal(posts, 0, "settlement does not revive a removed review control");
+  }
+});
+
+test("refresh layout placeholder is released on disposal without clearing a successor's placeholder", async t => {
+  const container = fixture(t); const firstRead = deferred(); const nextRead = deferred();
+  let height = 1200;
+  container.getBoundingClientRect = () => ({ height });
+  const first = mountSourceStatusPanel(container, () => firstRead.promise);
+  const pending = first.refresh(); await Promise.resolve();
+  assert.equal(container.style.minHeight, "1200px");
+  first.dispose(); assert.equal(container.style.minHeight, "");
+  height = 900;
+  const successor = mountSourceStatusPanel(container, () => nextRead.promise);
+  t.after(() => successor.dispose());
+  const next = successor.refresh(); await Promise.resolve();
+  assert.equal(container.style.minHeight, "900px");
+  firstRead.resolve({ projection: snapshot("stale") }); await pending;
+  assert.equal(container.style.minHeight, "900px", "retired read cannot release the current mount's layout");
+  nextRead.resolve({ projection: snapshot("current") }); await next;
+  assert.equal(container.style.minHeight, "");
+  assert.match(container.textContent, /current/); assert.doesNotMatch(container.textContent, /stale/);
+});
+
+test("same-review restoration requests focus without scrolling", async t => {
+  const container = fixture(t); let response = { projection: snapshot(), review: review() }; let panel;
+  const account = mountAccountReview(container, () => panel.refresh());
+  panel = mountSourceStatusPanel(container, () => response, account);
+  t.after(() => { panel.dispose(); account.dispose(); });
+  await panel.refresh(); container.querySelector("summary").focus();
+  const prototype = container.ownerDocument.defaultView.HTMLElement.prototype;
+  const originalFocus = prototype.focus; const calls = [];
+  prototype.focus = function(options) { calls.push({ node: this, options }); return originalFocus.call(this, options); };
+  await panel.refresh();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].node, container.querySelector("summary"));
+  assert.deepEqual(calls[0].options, { preventScroll: true });
+  response = { projection: { ...snapshot(), scope: "another-viewer" }, review: review() };
+  await panel.refresh(); assert.equal(calls.length, 1, "changed viewer cannot inherit focus");
+});
+
 test("serialized refresh clears private DOM and restores only the fresh same-review presentation", async t => {
   const container = fixture(t); const held = deferred();
   const responses = [{projection:snapshot(),review:review()}, held.promise]; let reads = 0; let panel;

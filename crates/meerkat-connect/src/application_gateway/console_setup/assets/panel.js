@@ -36,6 +36,19 @@ export function mountSourceStatusPanel(container, read, account = { clear() {}, 
     const navigation = doc.createElement("div"); navigation.append(first, next);
     const root = doc.createElement("section"); root.append(status, refresh, content); container.append(root);
     let request = 0; let disposed = false; let view; let page; let pending; let needsFirst = false;
+    let layout;
+    const releaseLayout = () => {
+        if (!layout) return;
+        container.style.setProperty("min-height", layout.value, layout.priority); layout = undefined;
+    };
+    const retainLayout = () => {
+        const height = container.getBoundingClientRect().height;
+        if (!Number.isFinite(height) || height <= 0) return;
+        layout = { value: container.style.getPropertyValue("min-height"), priority: container.style.getPropertyPriority("min-height") };
+        // Keep only empty layout space while the old private DOM is removed.
+        // Shrinking the document during the read would clamp its scroll position.
+        container.style.setProperty("min-height", `${height}px`);
+    };
     const clear = (forRead = false) => {
         view?.dispose(); view = undefined; content.replaceChildren();
         if (forRead && typeof account.suspend === "function") account.suspend(); else account.clear();
@@ -63,6 +76,7 @@ export function mountSourceStatusPanel(container, read, account = { clear() {}, 
         if (direction === "next" && page?.has_next !== true) return Promise.resolve();
         const selection = direction === "first" || !page ? undefined : { page_id: page.page_id, direction };
         const current = ++request;
+        retainLayout();
         clear(true); status.textContent = "Reading current task setup status..."; buttons(true);
         // Start in a microtask so even a synchronous throw cannot race assignment
         // of the shared pending read. No later poll creates another request.
@@ -101,14 +115,14 @@ export function mountSourceStatusPanel(container, read, account = { clear() {}, 
                     status.textContent = "Task setup status is unavailable. Use First page to read current status. One status view is current per sign-in; another tab may have replaced this page. Your agent reports the task result separately.";
                 }
             }
-        }).finally(() => { pending = undefined; if (!disposed) buttons(false); });
+        }).finally(() => { releaseLayout(); pending = undefined; if (!disposed) buttons(false); });
         return pending;
     }
     refresh.addEventListener("click", () => { void update(); });
     first.addEventListener("click", () => { void update("first"); });
     next.addEventListener("click", () => { void update("next"); });
     return { refresh: () => update(), first: () => update("first"), next: () => update("next"),
-        dispose() { disposed = true; ++request; page = undefined; clear(); root.remove(); } };
+        dispose() { disposed = true; ++request; page = undefined; releaseLayout(); clear(); root.remove(); } };
 }
 /** Same-origin authentication remains with the actual host on every read. */
 export async function readSourceStatus(fetcher = fetch, selection) {
@@ -209,7 +223,7 @@ export function mountAccountReview(container, refresh, fetcher = fetch, submissi
                 if (details) details.open = previous.open;
                 const focus = controls.get(previous.focus);
                 if (focus && !focus.disabled && document.activeElement === document.body)
-                    focus.focus();
+                    focus.focus({ preventScroll: true });
             };
             const status = document.createElement("p"); status.setAttribute("role", "status");
             status.textContent = "Service setup needs your attention."; root.append(status);

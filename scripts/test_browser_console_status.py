@@ -1,4 +1,5 @@
 """Inert controls for the real Browser observer, not browser/native acceptance."""
+import asyncio
 import contextlib
 import dataclasses
 import importlib.util
@@ -50,6 +51,9 @@ class ObserverHarness:
     def __init__(self, directory, batches, late):
         self.directory, self.batches, self.late = directory, list(batches), late
         self.clock, self.reads, self.closes = 0, 0, 0
+        self.retirements = 0
+        self.close_error = self.retire_error = None
+        self.retirement = Retirement()
         self.events = mock.Mock()
         self.process = SimpleNamespace(poll=lambda: None)
         self.provider = SimpleNamespace(lock=contextlib.nullcontext(), requests=[],
@@ -86,7 +90,10 @@ class ObserverHarness:
         report.update(status="passed", completion=completion)
 
     async def retire(self):
-        return Retirement()
+        self.retirements += 1
+        if self.retire_error is not None:
+            raise self.retire_error
+        return self.retirement
 
     def application(self, _native_url):
         async def app(scope, receive, send):
@@ -128,6 +135,8 @@ class ObserverHarness:
     async def close(self):
         self.closes += 1
         await self.emit(self.late)
+        if self.close_error is not None:
+            raise self.close_error
 
     def run(self):
         error = None
@@ -141,7 +150,7 @@ class ObserverHarness:
                 work.send(None)
             except StopIteration:
                 pass
-            except AssertionError as caught:
+            except BaseException as caught:
                 error = caught
             finally:
                 work.close()
@@ -209,6 +218,123 @@ class BrowserStatusTests(unittest.TestCase):
         self.assertEqual(report["cleanup_failure_phase"], "post_close_observation")
         self.assertEqual(report["http"], [ready, pending])
         harness.events.add.assert_not_called()
+
+
+class BrowserCleanupTests(unittest.TestCase):
+    def test_original_failure_survives_front_close_failure_and_login_is_observed(self):
+        with tempfile.TemporaryDirectory(prefix="inert-browser-cleanup-") as scratch:
+            harness = ObserverHarness(Path(scratch), [[observation(403)]], [])
+            harness.close_error = RuntimeError("private exception payload must not be retained")
+            report, error = harness.run()
+        self.assertRegex(str(error), "observed public Browser request failed")
+        self.assertEqual((harness.closes, harness.retirements), (1, 1))
+        self.assertEqual(report["login_retirement"], [dataclasses.asdict(Retirement())])
+        self.assertEqual(report["cleanup_failure_phase"], "front_close")
+        self.assertEqual(report["cleanup_failure_category"], "other_error")
+        self.assertFalse(report["front_joined"])
+        self.assertEqual(report["status"], "failed")
+        self.assertNotIn("private exception payload", json.dumps(report))
+        harness.events.add.assert_not_called()
+
+    def test_front_close_failure_is_not_masked_by_successful_login_retirement(self):
+        with tempfile.TemporaryDirectory(prefix="inert-browser-cleanup-") as scratch:
+            harness = ObserverHarness(Path(scratch), [[observation()]], [])
+            failure = RuntimeError("Console access cleanup is unconfirmed.")
+            harness.close_error = failure
+            report, error = harness.run()
+        self.assertIs(error, failure)
+        self.assertEqual((harness.closes, harness.retirements), (1, 1))
+        self.assertEqual(report["cleanup_failure_category"], "access_cleanup_unconfirmed")
+        self.assertFalse(report["front_joined"])
+        self.assertEqual(report["status"], "failed")
+        harness.events.add.assert_not_called()
+
+    def test_failed_login_does_not_skip_other_retained_login_results(self):
+        class Refusal(RuntimeError):
+            code = "cleanup_unconfirmed"
+        with tempfile.TemporaryDirectory(prefix="inert-browser-cleanup-") as scratch:
+            harness = ObserverHarness(Path(scratch), [[observation(403)]], [])
+            failure = Refusal("private enrollment details")
+            first_calls = []
+            async def first_close():
+                first_calls.append("closed")
+                raise failure
+            owners = iter((SimpleNamespace(close=first_close), SimpleNamespace(close=harness.retire)))
+            harness.scenario.login_module.NativeConsoleLogin = lambda *args, **kwargs: next(owners)
+            original_start = harness.start
+            async def start(native_url):
+                await original_start(native_url)
+                harness.front.console_login_factory(object())
+            harness.front.start = start
+            report, error = harness.run()
+        self.assertRegex(str(error), "observed public Browser request failed")
+        self.assertEqual(first_calls, ["closed"])
+        self.assertEqual(harness.retirements, 1)
+        self.assertEqual(report["login_retirement"], [dataclasses.asdict(Retirement())])
+        self.assertEqual(report["login_retirement_failures"], {"native_login_cleanup_unconfirmed": 1})
+        self.assertEqual(report["cleanup_failure_phase"], "login_retirement")
+        self.assertFalse(report["front_joined"])
+        self.assertNotIn("private enrollment", json.dumps(report))
+        harness.events.add.assert_not_called()
+
+    def test_uncertain_retirement_is_retained_and_remains_failure(self):
+        with tempfile.TemporaryDirectory(prefix="inert-browser-cleanup-") as scratch:
+            harness = ObserverHarness(Path(scratch), [[observation()]], [])
+            harness.retirement = Retirement(uncertain=True)
+            report, error = harness.run()
+        self.assertRegex(str(error), "shipping login retirement unconfirmed")
+        self.assertEqual(report["login_retirement"], [dataclasses.asdict(Retirement(uncertain=True))])
+        self.assertEqual(report["login_retirement_failures"], {"assertion_failed": 1})
+        self.assertFalse(report["front_joined"])
+        self.assertEqual(report["status"], "failed")
+        harness.events.add.assert_not_called()
+
+    def test_front_cancellation_stays_cancelled_after_retained_login_observation(self):
+        with tempfile.TemporaryDirectory(prefix="inert-browser-cleanup-") as scratch:
+            harness = ObserverHarness(Path(scratch), [[observation()]], [])
+            failure = asyncio.CancelledError()
+            harness.close_error = failure
+            report, error = harness.run()
+        self.assertIs(error, failure)
+        self.assertEqual(harness.retirements, 1)
+        self.assertEqual(report["cleanup_failure_category"], "cancelled")
+        self.assertFalse(report["front_joined"])
+        harness.events.add.assert_not_called()
+
+    def test_child_snapshot_observes_original_tasks_without_reentry(self):
+        async def check():
+            calls = []
+            async def succeeded():
+                calls.append("succeeded")
+            async def failed():
+                calls.append("failed")
+                raise RuntimeError("Console upstream cleanup is unconfirmed.")
+            async def pending():
+                await asyncio.Event().wait()
+            good, bad, cancelled, waiting = (
+                asyncio.create_task(operation(), name="private task identifier")
+                for operation in (succeeded, failed, pending, pending))
+            try:
+                cancelled.cancel()
+                await asyncio.gather(good, bad, cancelled, return_exceptions=True)
+                front = SimpleNamespace(_close_task=bad, task=waiting)
+                login = SimpleNamespace(retirement_task=bad, console_login_close=good)
+                subscription = SimpleNamespace(task=cancelled, close_task=bad)
+                rows = C.BrowserConsoleScenario.cleanup_children(front, [login], [subscription])
+                self.assertEqual(rows, {
+                    "front_close": {"upstream_cleanup_unconfirmed": 1},
+                    "server": {"pending": 1},
+                    "retirement_task": {"upstream_cleanup_unconfirmed": 1},
+                    "console_login_close": {"succeeded": 1},
+                    "subscription": {"cancelled": 1},
+                    "subscription_close": {"upstream_cleanup_unconfirmed": 1}})
+                self.assertEqual(calls, ["succeeded", "failed"])
+                self.assertFalse(waiting.done())
+                self.assertNotIn("private", json.dumps(rows))
+            finally:
+                waiting.cancel()
+                await asyncio.gather(waiting, return_exceptions=True)
+        asyncio.run(check())
 
 
 if __name__ == "__main__":

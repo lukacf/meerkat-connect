@@ -771,6 +771,57 @@ class BrowserConsoleScenario(ConsoleScenario):
                             for secret in (self.front.key if self.front else None,)),
                         "private Forge value reached retained evidence")
 
+    @staticmethod
+    def cleanup_category(error):
+        # Only closed labels reach evidence. Exception text, task names and
+        # login identifiers may contain private values.
+        if isinstance(error, asyncio.CancelledError):
+            return "cancelled"
+        if isinstance(error, TimeoutError):
+            return "timeout"
+        if getattr(error, "code", None) == "cleanup_unconfirmed":
+            return "native_login_cleanup_unconfirmed"
+        for message, category in (
+            ("Console subscription cleanup is unconfirmed.", "subscription_cleanup_unconfirmed"),
+            ("Console upstream cleanup is unconfirmed.", "upstream_cleanup_unconfirmed"),
+            ("Console access retirement is unconfirmed.", "access_retirement_unconfirmed"),
+            ("Console access cleanup is unconfirmed.", "access_cleanup_unconfirmed"),
+            ("Console login cleanup is unconfirmed.", "login_cleanup_unconfirmed"),
+        ):
+            if isinstance(error, RuntimeError) and error.args == (message,):
+                return category
+        if isinstance(error, AssertionError):
+            return "assertion_failed"
+        return "other_error"
+
+    @classmethod
+    def cleanup_children(cls, front, front_logins, subscriptions):
+        # Observe the original retained tasks only. Never await, cancel, retry
+        # or replace them. Counts keep the output bounded by fixed categories.
+        rows = {}
+        def observe(role, task):
+            if task is None:
+                return
+            if not task.done():
+                category = "pending"
+            elif task.cancelled():
+                category = "cancelled"
+            else:
+                error = task.exception()
+                category = "succeeded" if error is None else cls.cleanup_category(error)
+            counts = rows.setdefault(role, {})
+            counts[category] = counts.get(category, 0) + 1
+        observe("front_close", getattr(front, "_close_task", None))
+        observe("server", getattr(front, "task", None))
+        for login in front_logins:
+            for role in ("retirement_task", "connect_close", "controller_review_close",
+                         "console_login_close", "controller_review_start"):
+                observe(role, getattr(login, role, None))
+        for subscription in subscriptions:
+            observe("subscription", subscription.task)
+            observe("subscription_close", subscription.close_task)
+        return rows
+
     async def run(self, private, provider, directory, events, process, base_url):
         v, front = self.v, self.front
         require(front is not None and base_url.rstrip("/") != self.origin,
@@ -987,13 +1038,36 @@ class BrowserConsoleScenario(ConsoleScenario):
         finally:
             report["observation_errors"] = observer_errors
             cleanup_phase = "front_close"
+            # Retain references before successful cleanup clears owner lists.
+            front_logins = tuple(getattr(front, "_logins", {}).values())
+            subscriptions = tuple(item for login in front_logins for item in login.subscriptions)
             try:
-                await front.close()
+                front_error = login_error = None
+                try:
+                    await front.close()
+                except BaseException as error:
+                    front_error = error
+                # front.close already owns these retirements. Observe every
+                # retained result even if its aggregate close failed.
                 for owner in logins:
-                    retired = await owner.close()  # The same idempotent, joined owner result.
-                    require(retired is not None and retired.fenced and retired.reservations_drained
-                            and not retired.uncertain, "shipping login retirement unconfirmed")
-                    report["login_retirement"].append(dataclasses.asdict(retired))
+                    try:
+                        retired = await owner.close()  # The same idempotent, joined owner result.
+                        if retired is not None:
+                            report["login_retirement"].append(dataclasses.asdict(retired))
+                        require(retired is not None and retired.fenced and retired.reservations_drained
+                                and not retired.uncertain, "shipping login retirement unconfirmed")
+                    except BaseException as error:
+                        if login_error is None:
+                            login_error = error
+                        counts = report.setdefault("login_retirement_failures", {})
+                        category = self.cleanup_category(error)
+                        counts[category] = counts.get(category, 0) + 1
+                report["cleanup_children"] = self.cleanup_children(front, front_logins, subscriptions)
+                if front_error is not None:
+                    raise front_error
+                cleanup_phase = "login_retirement"
+                if login_error is not None:
+                    raise login_error
                 report["front_joined"] = True
                 cleanup_phase = "post_close_observation"
                 if original_error is None:
@@ -1012,7 +1086,8 @@ class BrowserConsoleScenario(ConsoleScenario):
                                 "late Browser action changed the result")
             except BaseException as error:
                 report.update(status="failed", front_joined=report.get("front_joined", False),
-                              cleanup_failure_phase=cleanup_phase, cleanup_error_type=type(error).__name__)
+                              cleanup_failure_phase=cleanup_phase, cleanup_error_type=type(error).__name__,
+                              cleanup_failure_category=self.cleanup_category(error))
                 if original_error is None:
                     v.save_json(directory / "console-journey.json", self.wire_value(report))
                     raise
