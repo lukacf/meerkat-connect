@@ -752,6 +752,7 @@ class BrowserConsoleScenario(ConsoleScenario):
         observations, inputs, logins = [], [], []
         frames, by_id, by_sequence, reviews = [], {}, {}, {}
         accepted = context = None
+        status_pending = False
         observer_errors = []
         deadline = time.monotonic() + v.ACQUISITION_LIMIT
         release = directory / "browser-release.json"
@@ -793,11 +794,16 @@ class BrowserConsoleScenario(ConsoleScenario):
                 observer_errors.append({"method": method, "path": path, "error_type": type(error).__name__})
 
         async def consume_observations(results):
-            nonlocal frames, context
+            nonlocal frames, context, status_pending
             while observations:
                 observation = observations.pop(0)
                 report["http"].append(observation)
                 path, method, body, value = (observation[key] for key in ("path", "method", "request", "response"))
+                if path == PANEL + "/data" and method in ("GET", "POST") and observation["status"] == 503:
+                    require(value == {"error": "Protected setup is unavailable"},
+                            "malformed unavailable Browser status response")
+                    status_pending = True
+                    continue
                 require(observation["status"] == (202 if path in (PANEL + "/answer", PANEL + "/start") else 200),
                         "observed public Browser request failed")
                 if path == PANEL + "/data":
@@ -805,6 +811,7 @@ class BrowserConsoleScenario(ConsoleScenario):
                     if review is not None:
                         key = (review["review_id"], review["prompt"].get("approval_id") if review["prompt"] else None)
                         reviews[key] = review
+                    status_pending = False
                 elif path == PANEL + "/answer":
                     require(accepted is not None, "approval preceded accepted Browser Send")
                     review = reviews[(body["review_id"], body["approval_id"])]
@@ -900,7 +907,7 @@ class BrowserConsoleScenario(ConsoleScenario):
                     results, business = dict(provider.results), provider.business_observation
                 await consume_observations(results)
                 completion = self.completed(frames, accepted, context, business) if accepted else None
-                if completion is not None and provider.finished.is_set():
+                if completion is not None and provider.finished.is_set() and not status_pending:
                     require(any(row == {"method": "GET", "path": "/login", "status": 200}
                                 for row in report["front_routes"])
                             and sum(row == {"method": "POST", "path": "/login", "status": 303}
@@ -952,6 +959,7 @@ class BrowserConsoleScenario(ConsoleScenario):
                         require(not provider.errors, "late controlled model failure")
                         results, business = dict(provider.results), provider.business_observation
                     await consume_observations(results)
+                    require(not status_pending, "Browser status remained unavailable after completion")
                     require(self.completed(frames, accepted, context, business) == report["completion"],
                             "late Browser timeline observation changed completion")
                     for suffix, count in (("/answer", 2), ("/start", 1)):
