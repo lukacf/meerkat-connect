@@ -470,7 +470,10 @@ class ConsoleScenario:
         original_error = None
         token = None
 
-        def request(method, path, body=None, *, bearer=True, origin=None, expected=200, text=False):
+        def request(method, path, body=None, *, bearer=True, origin=None, expected=200, text=False, status_poll=False):
+            if status_poll:
+                require(method == "GET" and path == PANEL + "/data" and body is None and expected == 200 and not text,
+                        "pending allowance is only for the existing status poll")
             require(time.monotonic() < deadline and process.poll() is None,
                     "actual Console owner or acquisition deadline ended")
             connection = HTTPConnection("127.0.0.1", self.port,
@@ -491,6 +494,9 @@ class ConsoleScenario:
                 report["http"].append({"method": method, "path": path, "request": self.report_value(body),
                     "status": response.status, "response": self.report_value(value)})
                 self.check_response(value)
+                if status_poll and response.status == 503:
+                    require(value == {"error": "Protected setup is unavailable"}, "malformed unavailable status response")
+                    return None
                 require(response.status == expected, "actual " + path + " returned " + str(response.status))
                 return value
             finally:
@@ -558,7 +564,12 @@ class ConsoleScenario:
                 if completion is not None and provider.finished.is_set():
                     self.finish_report(report, results, provider, completion)
                     break
-                data = await http("GET", PANEL + "/data")
+                data = await http("GET", PANEL + "/data", status_poll=True)
+                if data is None:
+                    # Only the next existing bounded observation is eligible.
+                    # Never replay Send, Start or an approval after a failed POST.
+                    await asyncio.sleep(0.1)
+                    continue
                 review = data["review"]
                 if review is not None:
                     if review["can_start"]:
