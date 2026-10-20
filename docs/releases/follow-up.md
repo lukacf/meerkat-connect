@@ -17,7 +17,7 @@ artifact and execution references with their narrower qualifications and failure
 | Standalone CLI setup followed by normal agent use | Pass: setup installs Hacker News and Wikipedia, exits and joins its helpers; fresh ordinary stock rkat in the same realm returns three real HTTPS Hacker News stories with exact IDs/titles. The model schedule is scripted. |
 | Installed SDK acquisition/use | Pass: the same Original acquires Hacker News and reads one story. Corrupted resources are refused before setup. |
 | Shared setup | Nine custody/recovery controls and all three new writer controls pass. The latest shared pair passes planning admission but times out at B's readback/continuation after passing the former binding failure point. Earlier failures remain recorded; the complete shared journey is unqualified. |
-| Console approval/recovery | The latest run returns setup-data HTTP 403 before approval. Login retirement and physical cleanup settle in that run; earlier uncertain retirement remains separate. Second-run completion and deliberate process-loss recovery are unqualified. |
+| Console approval/recovery | The corrected run approves software/access and starts setup. One status 503 is followed by fresh 200 reads, with no 403s or protected-action retries. Its fixture then rejects two genuine native catalog notices as extra user input. Login retirement and physical cleanup settle; the fixture correction and complete continuation/recovery run remain pending. |
 | Ordinary live-model read | Admission fails with `CredentialUnusable` before a model request. The Core lead independently reproduced `LeaseAbsent` at 01:16 UTC on 2026-10-20; a reviewed fixed SHA is pending. No credential or grant workaround is used. |
 
 Adopted source corrections have these affected results:
@@ -26,11 +26,14 @@ Adopted source corrections have these affected results:
   explicit denials as 403. The panel clears stale actions, retains page position
   and uses its existing scheduled refresh after 503; it does not retry protected
   actions. All 55 JavaScript controls and three affected Rust controls pass. The
-  corrected development gateway builds; installed approval/recovery is pending.
+  corrected development gateway builds. Its actual status/approval sequence now
+  passes; the whole journey remains unqualified after a later model-oracle failure.
 - The verifier (`3a41ea7`) permits only the exact 503 status-read response to remain
   pending within its existing deadline. Protected writes are never retried, and
   stateful readiness observations remain single-entry. All 33 offline controls
-  pass. The failed run's native `Changed` versus `Unavailable` cause is still unknown.
+  pass. Actual corrected execution observes native `Changed` mapped to 503 and
+  successful later reads without repeating protected submissions. The earlier
+  failure's precise native cause remains unknown.
 - Standalone CLI staging/assembly (`d14c71d`) now reuses the candidate producer,
   preserves production bytes before test compilation and consumes the existing
   independent shutdown review. The 240 offline controls pass, with one
