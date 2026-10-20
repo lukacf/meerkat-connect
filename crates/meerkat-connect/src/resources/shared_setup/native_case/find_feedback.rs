@@ -1,5 +1,5 @@
-//! This controlled model may propose one fresh local Find after exact native
-//! authorization feedback. It is not a product retry or a generic classifier.
+//! Bounded fresh proposals in the controlled model, with native authorization
+//! unchanged and settled audit qualification. This is not product retry policy.
 use super::*;
 use meerkat_authorization::grant_policy::{ControllerAdmissionAllowance, OperationPolicyOwner};
 use meerkat_authorization::policy::{LocalPolicyAllowance, LocalPolicyPurpose};
@@ -457,6 +457,77 @@ impl Case {
     }
 }
 
+// Only this controlled model may propose one new check. Public feedback is
+// deliberately lossy; qualification uses the settled native audit below.
+pub(super) fn canonical_check_refusal(result: &ToolResult) -> bool {
+    result.is_error && result.settlement_failures.is_empty()
+        && *result == meerkat_core::ops::terminal_tool_outcome_for_error(
+            result.tool_use_id.clone(), ToolError::AuthorizationRefused {
+                refusal: meerkat_core::OperationRefused::new(meerkat_core::OperationRefusalKind::ReprepareRequired),
+            }).result
+}
+impl Script {
+    pub(super) fn check_suffix(&self, prefix: &str) -> &'static str {
+        if self.seen_results.lock().unwrap().get(&format!("{prefix}-check"))
+            .is_some_and(|result| result.is_error) { "check-fresh" } else { "check" }
+    }
+}
+
+fn exact_check_change(records: &[meerkat_authorization_contracts::audit::StoredAuthorizationAuditObservation],
+    scope: &meerkat_core::OperationExecutionScope, run: &meerkat_core::RunId, call: &str) -> bool {
+    use meerkat_authorization_contracts::audit::{AuditObservation, AuditRefusalBasis, AuditTarget};
+    let matching = records.iter().filter(|record| match &record.observation.observation {
+        AuditObservation::Prepared { target, .. } | AuditObservation::Refused { target, .. }
+        | AuditObservation::AuthorizationUnavailable { target } =>
+            matches!(target.as_ref(), AuditTarget::Tool { call_id, .. } if call_id == call),
+        _ => false,
+    }).collect::<Vec<_>>();
+    let [record] = matching.as_slice() else { return false; };
+    let observation = &record.observation;
+    if &observation.execution_scope != scope || observation.run_id.as_ref() != Some(run)
+        || records.iter().filter(|row| row.observation.operation_id == observation.operation_id).count() != 1 {
+        return false;
+    }
+    matches!(&observation.observation,
+        AuditObservation::Refused { target, reason: meerkat_core::OperationRefusalKind::ReprepareRequired, read: Some(read) }
+        if matches!(target.as_ref(), AuditTarget::Tool { tool_name, .. } if tool_name == "setup_selected_check")
+            && read.basis == AuditRefusalBasis::PublicationChanged
+            && read.live_sequence.is_some_and(|live| live > read.publication_sequence))
+}
+impl Case {
+    pub(super) async fn assert_check_feedback(&self) {
+        let calls = self.script.calls.lock().unwrap().clone();
+        let seen = self.script.seen_results.lock().unwrap().clone();
+        let inputs = self.script.check_inputs.lock().unwrap().clone();
+        for tag in ["a", "b"] {
+            let prefix = format!("{tag}-helper");
+            let checks = calls.iter().filter(|(key, name, _)| key.starts_with(&format!("{prefix}-"))
+                && name == "setup_selected_check").collect::<Vec<_>>();
+            assert!(!checks.is_empty() && checks.len() <= 2);
+            for (index, (key, _, args)) in checks.iter().enumerate() {
+                assert_eq!(key, &format!("{prefix}-{}", if index == 0 { "check" } else { "check-fresh" }));
+                assert_eq!(args, self.script.selected.get().unwrap());
+            }
+            assert!(!seen.get(&checks.last().unwrap().0).unwrap().is_error);
+            if checks.len() == 2 {
+                let first = &checks[0].0;
+                assert!(canonical_check_refusal(seen.get(first).unwrap()));
+                let (scope, run) = inputs.get(first).expect("actual emitted check input and run");
+                assert_eq!(inputs.get(&checks[1].0), inputs.get(first));
+                let session = self.audit_sessions.get(&format!("helper-{tag}")).unwrap();
+                assert!(matches!(scope, meerkat_core::OperationExecutionScope::RuntimeInput { owner_session_id, .. }
+                    if owner_session_id == session));
+                // Cleanup has joined native input owners; one existing read, no wait.
+                let audit = self.session_audits(session, &prefix, false).await;
+                assert!(exact_check_change(&audit, scope, run, first),
+                    "fresh check qualifies only after exact pre-entry PublicationChanged, never denial or an entered effect");
+                eprintln!("{}", json!({"event":"sdk_check_settled_proof", "call_id":first,
+                    "fresh_call_id":checks[1].0, "pre_entry_publication_changed":true}));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,5 +739,134 @@ mod tests {
     #[test]
     fn actual_persistent_find_refusal_stops_after_two_proposals() {
         native_control(RefusalMode::Both);
+    }
+}
+
+#[cfg(test)]
+mod check_tests {
+    use super::*;
+    use meerkat_authorization_contracts::audit::{AuditObservation, AuditPolicyRead, AuditRefusalBasis,
+        AuditRefusalRead, AuditTarget, AuthorizationAuditObservation, StoredAuthorizationAuditObservation};
+    use meerkat_core::{InputId, OperationExecutionScope, OperationId, OperationRefusalKind, RunId, RuntimeEpochId};
+    fn observed(call: &str) -> StoredAuthorizationAuditObservation {
+        let input = InputId::new();
+        StoredAuthorizationAuditObservation { contributors: Arc::from([]), observation: AuthorizationAuditObservation {
+            operation_id: OperationId::new(),
+            execution_scope: OperationExecutionScope::RuntimeInput { owner_session_id: SessionId::new(),
+                runtime_epoch_id: RuntimeEpochId::new(), submitted_input_id: input.clone(), canonical_input_id: input },
+            run_id: Some(RunId::new()), context_revision: None, review_attribution: None, delegate_attribution: None,
+            observation: AuditObservation::Refused {
+                target: Arc::new(AuditTarget::Tool { call_id:call.into(), tool_name:"setup_selected_check".into(),
+                    arguments_digest:meerkat_authorization_contracts::evidence::EvidenceDigest::of_bytes(b"{}"), owners:vec![] }),
+                reason: OperationRefusalKind::ReprepareRequired,
+                read: Some(AuditRefusalRead::new(1, AuditRefusalBasis::PublicationChanged, 146, Some(148), uuid::Uuid::new_v4())),
+            },
+        } }
+    }
+    #[test]
+    fn settled_check_proof_rejects_wrong_late_and_ambiguous_evidence() {
+        let expected = observed("b-helper-check");
+        let accepts = |records: &[StoredAuthorizationAuditObservation]| exact_check_change(records,
+            &expected.observation.execution_scope, expected.observation.run_id.as_ref().unwrap(), "b-helper-check");
+        assert!(accepts(&[expected.clone()]));
+        assert!(!accepts(&[]));
+        let mut variants = Vec::new();
+        let mut wrong = expected.clone(); wrong.observation.execution_scope = OperationExecutionScope::Domain; variants.push(wrong);
+        let mut wrong = expected.clone(); wrong.observation.run_id = Some(RunId::new()); variants.push(wrong);
+        for input in [true, false] {
+            let mut wrong = expected.clone();
+            if let OperationExecutionScope::RuntimeInput { canonical_input_id, owner_session_id, .. } = &mut wrong.observation.execution_scope {
+                if input { *canonical_input_id = InputId::new(); } else { *owner_session_id = SessionId::new(); }
+            }
+            variants.push(wrong);
+        }
+        for reason in [OperationRefusalKind::Denied, OperationRefusalKind::MalformedFacts] {
+            // The model cannot distinguish these; the final audit must.
+            assert!(canonical_check_refusal(&meerkat_core::ops::terminal_tool_outcome_for_error(
+                "b-helper-check", ToolError::AuthorizationRefused { refusal:meerkat_core::OperationRefused::new(reason) }).result));
+            let mut wrong = expected.clone();
+            if let AuditObservation::Refused { reason:actual, .. } = &mut wrong.observation.observation { *actual = reason; }
+            variants.push(wrong);
+        }
+        for field in ["tool", "call", "read", "basis", "sequence"] {
+            let mut wrong = expected.clone();
+            if let AuditObservation::Refused { target, read, .. } = &mut wrong.observation.observation {
+                if let AuditTarget::Tool { tool_name, call_id, .. } = Arc::make_mut(target) {
+                    if field == "tool" { *tool_name = "setup_selected_install".into(); }
+                    if field == "call" { *call_id = "other-check".into(); }
+                }
+                if field == "basis" { read.as_mut().unwrap().basis = AuditRefusalBasis::OwnerAnswer; }
+                if field == "sequence" { read.as_mut().unwrap().live_sequence = Some(146); }
+                if field == "read" { *read = None; }
+            }
+            variants.push(wrong);
+        }
+        for wrong in variants { assert!(!accepts(&[wrong])); }
+        let target = match &expected.observation.observation { AuditObservation::Refused { target, .. } => target.clone(), _ => unreachable!() };
+        for extra in [
+            AuditObservation::Prepared { target:target.clone(), policy:AuditPolicyRead { publication_sequence:146,
+                observed_at_ms:1, operation_authorities:vec![], controller_lineages:vec![], publication_instance:None } },
+            AuditObservation::Entry { boundary:Some(meerkat_core::OperationEntryBoundary::ToolEffect) },
+            AuditObservation::Outcome { outcome:meerkat_core::authorization::OperationObservedOutcome::HttpResponse { status:200 } },
+            AuditObservation::AuthorizationUnavailable { target },
+            expected.observation.observation.clone(),
+        ] {
+            let mut extra_record = expected.clone(); extra_record.observation.observation = extra;
+            assert!(!accepts(&[expected.clone(), extra_record]));
+        }
+        let mut ambiguous = expected.clone(); ambiguous.observation.operation_id = OperationId::new();
+        assert!(!accepts(&[expected.clone(), ambiguous]));
+    }
+
+    fn request(results: &[ToolResult]) -> LlmRequest {
+        let mut request = LlmRequest::new(MODEL, vec![
+            Message::User(meerkat_core::UserMessage::text("sdk-child-b: controlled setup")),
+            Message::tool_results(results.to_vec()),
+        ]);
+        for name in [meerkat_core::tool_catalog::TOOL_CATALOG_LOAD_NAME, "setup_selected_check",
+            "setup_selected_install", "setup_job", meerkat_toolkit::setup::SETUP_REPORT] {
+            request.tools.push(Arc::new(ToolDef::new(name, "Existing controlled helper tool", json!({"type":"object"}))));
+        }
+        request
+    }
+    fn call(events: &[LlmEvent]) -> Option<(&str, &Value)> {
+        events.iter().find_map(|event| match event {
+            LlmEvent::ToolCallComplete { id, args, .. } => Some((id.as_str(), args)), _ => None,
+        })
+    }
+    #[test]
+    fn controlled_check_has_one_fresh_proposal_and_one_install() {
+        for fail_fresh in [false, true] {
+            let script = Script::default();
+            script.selected.set(json!({"software":"selected-inert-worker"})).unwrap();
+            script.find_deadline.set(tokio::time::Instant::now() + BOUND).unwrap();
+            assert_eq!(call(&script.response(&request(&[]))).unwrap().0, "b-helper-load");
+            let names = ["setup_selected_check", "setup_selected_install", "setup_job"];
+            let mut results = vec![ToolResult::new("b-helper-load".into(), json!({"catalog_exact":true,
+                "accepted_names":names,"noop_names":[], "resolutions":names.iter().map(|name|
+                    json!({"name":name,"accepted":true,"accepted_noop":false})).collect::<Vec<_>>()}).to_string(), false)];
+            assert_eq!(call(&script.response(&request(&results))).unwrap().0, "b-helper-check");
+            let refused = |id: &str| meerkat_core::ops::terminal_tool_outcome_for_error(id,
+                ToolError::AuthorizationRefused { refusal:meerkat_core::OperationRefused::new(OperationRefusalKind::ReprepareRequired) }).result;
+            results.push(refused("b-helper-check"));
+            let next = script.response(&request(&results));
+            assert_eq!(call(&next), Some(("b-helper-check-fresh", script.selected.get().unwrap())));
+            if fail_fresh {
+                results.push(refused("b-helper-check-fresh"));
+                assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| script.response(&request(&results)))).is_err());
+                assert_eq!(script.calls.lock().unwrap().len(), 3, "no third check or install");
+            } else {
+                let fresh = json!({"validation_id":"fresh-validation","effect_sha256":"fresh-effect"});
+                results.push(ToolResult::new("b-helper-check-fresh".into(), fresh.to_string(), false));
+                assert_eq!(call(&script.response(&request(&results))), Some(("b-helper-install", &fresh)));
+                results.push(ToolResult::new("b-helper-install".into(), json!({"job":{"id":"one-job"}}).to_string(), false));
+                assert_eq!(call(&script.response(&request(&results))).unwrap().0, "b-helper-job");
+                assert_eq!(script.calls.lock().unwrap().iter().filter(|(_, name, _)| name == "setup_selected_install").count(), 1);
+            }
+        }
+        for error in [ToolError::OperationAuthorizationUnavailable, ToolError::access_denied("setup_selected_check"),
+            ToolError::OutcomeUncertain { name:"setup_selected_check".into(), reason:"controlled".into() }] {
+            assert!(!canonical_check_refusal(&meerkat_core::ops::terminal_tool_outcome_for_error("b-helper-check", error).result));
+        }
     }
 }

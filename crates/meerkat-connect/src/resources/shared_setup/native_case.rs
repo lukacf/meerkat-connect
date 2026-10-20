@@ -160,6 +160,7 @@ struct Script {
     selected: std::sync::OnceLock<Value>,
     seen_results: Mutex<BTreeMap<String, meerkat_core::ToolResult>>,
     find_deadline: std::sync::OnceLock<tokio::time::Instant>,
+    check_inputs: Mutex<BTreeMap<String, (meerkat_core::OperationExecutionScope, meerkat_core::RunId)>>,
     find_only: bool,
     find_refusals: find_feedback::RefusalMode,
     injected_find: Mutex<BTreeMap<String, String>>,
@@ -287,7 +288,13 @@ impl Script {
                         let bounded_find_feedback = !helper
                             && operation == toolkit_mobkit::FIND_AND_INSTALL
                             && find_feedback::canonical_unavailable(result);
-                        assert!(!result.is_error || bounded_find_feedback,
+                        // The public refusal does not identify its cause. The
+                        // settled test audit must prove pre-entry change later.
+                        let bounded_check_feedback = helper
+                            && operation == "setup_selected_check"
+                            && result.tool_use_id == format!("{prefix}-check")
+                            && find_feedback::canonical_check_refusal(result);
+                        assert!(!result.is_error || bounded_find_feedback || bounded_check_feedback,
                             "{prefix}: native call {} refused with {code}: {refusal}", result.tool_use_id);
                         if !result.is_error {
                             returned.insert(result.tool_use_id.clone(), value.clone());
@@ -380,14 +387,16 @@ impl Script {
             );
         }
         Self::require_loaded_catalog(&prefix, get("load"), &names);
-        if !has("check") {
+        let check = self.check_suffix(&prefix);
+        if !has(check) {
+            assert!(tokio::time::Instant::now() < *self.find_deadline.get().unwrap());
             return call(
-                "check",
+                check,
                 "setup_selected_check",
                 self.selected.get().unwrap().clone(),
             );
         }
-        let checked = get("check");
+        let checked = get(check);
         if !has("install") {
             return call(
                 "install",
@@ -463,6 +472,8 @@ impl LlmClient for Script {
                 )]));
             }
         };
+        let check_input = (prepared.binding().facts().execution_scope.clone(),
+            prepared.binding().facts().run_id.clone());
         let current = match prepared.current() {
             Ok(value) => value,
             Err(error) => {
@@ -483,9 +494,16 @@ impl LlmClient for Script {
                 LlmError::from_operation_observation(error),
             )]));
         }
-        Box::pin(futures_util::stream::iter(
-            self.response(request.request()).into_iter().map(Ok),
-        ))
+        let events = self.response(request.request());
+        for event in &events {
+            if let LlmEvent::ToolCallComplete { id, name, .. } = event
+                && name == "setup_selected_check"
+            {
+                assert!(self.check_inputs.lock().unwrap().insert(id.clone(),
+                    (check_input.0.clone(), check_input.1.clone().expect("actual helper run"))).is_none());
+            }
+        }
+        Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
     }
     fn provider(&self) -> Provider {
         Provider::Anthropic
@@ -1619,7 +1637,7 @@ impl Case {
                 let matching = emitted.iter().filter(|(id, _, _)| id == &call_id).collect::<Vec<_>>();
                 assert_eq!(matching.len(), 1, "each approval must match one emitted call");
                 assert_eq!(matching[0].1, "setup_selected_install");
-                let check_id = format!("{tag}-helper-check");
+                let check_id = format!("{tag}-helper-{}", self.script.check_suffix(&format!("{tag}-helper")));
                 let checks = emitted.iter().filter(|(id, _, _)| id == &check_id).collect::<Vec<_>>();
                 assert_eq!(checks.len(), 1, "each proposal must retain its actual check call");
                 assert_eq!(checks[0].1, "setup_selected_check");
@@ -1854,5 +1872,8 @@ fn two_sdk_children_share_one_preparation_and_cancel_independently() {
         if let Err(payload) = result {
             std::panic::resume_unwind(payload);
         }
+        // Native shutdown above commits the completed helper inputs. No model
+        // store read, polling or extra execution is needed to qualify feedback.
+        case.assert_check_feedback().await;
     });
 }
