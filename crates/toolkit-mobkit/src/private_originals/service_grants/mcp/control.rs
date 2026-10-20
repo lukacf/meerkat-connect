@@ -102,6 +102,7 @@ impl PrivateOriginals {
         self: &Arc<Self>, reference: &PrivateOriginalRef, server: McpServerConfig,
         publication: LocalPublicationStamp,
     ) -> Result<Arc<McpAttachmentControlRequest>, PrivateOriginalError> {
+        attachment_preparation_diagnostic::<()>("canonical_records", None);
         let stored = self
             .store
             .get(&self.key(reference)?)
@@ -131,7 +132,12 @@ impl PrivateOriginals {
         let parent_record = self.decode_record(&parent_stored, &task.parent)?;
         let parent = parent_record
             .final_association
-            .ok_or(PrivateOriginalError::Unavailable)?;
+            .ok_or_else(|| {
+                attachment_preparation_diagnostic::<()>(
+                    "canonical_parent_association", Some(&Err(PrivateOriginalError::Unavailable)),
+                );
+                PrivateOriginalError::Unavailable
+            })?;
         let access_stored = self
             .store
             .get(&self.access_key(&grant)?)
@@ -165,18 +171,24 @@ impl PrivateOriginals {
             }),
         )
         .map_err(|_| PrivateOriginalError::Denied)?;
+        attachment_preparation_diagnostic("canonical_records", Some(&Ok(())));
         let binding = control.effect_binding(McpAttachmentEffect::Apply);
         // Reuse the existing canonical task decoder and A-completed checks,
         // including cancellation ancestors and exact reviewed descriptor.
-        self.observe_service_mcp_attachment(reference, &control, &binding)
-            .await?;
-        let now = self
+        let observation = self.observe_service_mcp_attachment(reference, &control, &binding)
+            .await;
+        attachment_preparation_diagnostic("canonical_task_observation", Some(&observation));
+        observation?;
+        let clock = self
             .owner
             .clock()
             .now()
-            .map_err(|_| PrivateOriginalError::Unavailable)?
-            .unix_ms;
-        self.current_service_mcp_control(&control, &binding, now, false)?;
+            .map_err(|_| PrivateOriginalError::Unavailable);
+        attachment_preparation_diagnostic("canonical_clock", Some(&clock));
+        let now = clock?.unix_ms;
+        let current = self.current_service_mcp_control(&control, &binding, now, false);
+        attachment_preparation_diagnostic("canonical_current_control", Some(&current));
+        current?;
         Ok(control)
     }
 
@@ -211,7 +223,12 @@ impl PrivateOriginals {
         }
         held.publication
             .check_current()
-            .map_err(|_| PrivateOriginalError::Unavailable)?;
+            .map_err(|_| {
+                attachment_preparation_diagnostic::<()>(
+                    "control_publication_before", Some(&Err(PrivateOriginalError::Unavailable)),
+                );
+                PrivateOriginalError::Unavailable
+            })?;
         let apply = control.effect_binding(McpAttachmentEffect::Apply);
         let facts = binding.facts();
         let server = control.server_target();
@@ -263,6 +280,9 @@ impl PrivateOriginals {
             return Err(PrivateOriginalError::Denied);
         }
         let IssuanceObservation::Issued { lineage } = &held.access.issuance else {
+            attachment_preparation_diagnostic::<()>(
+                "control_issued_lineage", Some(&Err(PrivateOriginalError::Unavailable)),
+            );
             return Err(PrivateOriginalError::Unavailable);
         };
         let resolved = self
@@ -276,7 +296,12 @@ impl PrivateOriginals {
             .map_err(|_| PrivateOriginalError::Denied)?;
         resolved
             .check_current()
-            .map_err(|_| PrivateOriginalError::Unavailable)?;
+            .map_err(|_| {
+                attachment_preparation_diagnostic::<()>(
+                    "control_lineage_currentness", Some(&Err(PrivateOriginalError::Unavailable)),
+                );
+                PrivateOriginalError::Unavailable
+            })?;
         let values = selection
             .attachment_operation(route, decision)?
             .ok_or(PrivateOriginalError::Denied)?;
@@ -292,7 +317,12 @@ impl PrivateOriginals {
         }
         held.publication
             .check_current()
-            .map_err(|_| PrivateOriginalError::Unavailable)?;
+            .map_err(|_| {
+                attachment_preparation_diagnostic::<()>(
+                    "control_publication_after", Some(&Err(PrivateOriginalError::Unavailable)),
+                );
+                PrivateOriginalError::Unavailable
+            })?;
         Ok(CurrentServiceMcpControl {
             connection: decision.permission.connection.clone(),
             resource: decision.permission.resource.clone(),
