@@ -10,9 +10,9 @@ source, whose merge and release are pending. The sole unpublished Core crate,
 [Core release revision `e91835c5`](https://github.com/lukacf/meerkat/commit/e91835c5fea0170d0dfc1d297d70269234fd4a16).
 Its Core and schema dependencies resolve to the same registry 0.9.4 packages.
 The retained `vendor/core-codegen` tree is a v0.9.0 release input and is not selected
-by this candidate. The final manifests and normally generated locks are being
-validated together in the isolated build lane; the final gateway build and fresh
-Console acceptance remain pending.
+by this candidate. The checked-in manifests and normally generated locks passed
+locked/offline metadata replay and the final gateway build. Fresh Console
+acceptance remains pending.
 
 The selected Meta source includes the Console navigation and idle-state fixes.
 Its [Python SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/python)

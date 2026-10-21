@@ -61,8 +61,8 @@ pending. Its
 [Python SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/python)
 and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/typescript)
 trees are independently verified unchanged, so reviewed artifacts remain reusable
-when their exact inputs match. The final gateway build and fresh Console
-acceptance are pending; earlier business results retain their exact execution
+when their exact inputs match. The final gateway build passed; fresh Console
+acceptance remains pending. Earlier business results retain their exact execution
 provenance and are not repeated by these source and artifact checks.
 
 ### Retained development evidence
