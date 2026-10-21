@@ -5,7 +5,8 @@ Connect has two Rust workspaces. The root owns `toolkit-package`;
 Both use their checked-in dependency locks. The final 0.9.4 candidate uses the
 published Core 0.9.4 crates from crates.io and exact
 [Meta `324f5ff3`](https://github.com/lukacf/meerkat-meta/commit/324f5ff3157424e722a402b5593faee69fc3d682)
-source, whose merge and release are pending. The sole unpublished Core crate,
+source. It is included in [Meta merge `9c13361f`](https://github.com/lukacf/meerkat-meta/commit/9c13361f9b103e941f419c1a6b0ac041ffe05489),
+whose full source tree is identical; release publication remains pending. The sole unpublished Core crate,
 `meerkat-machine-codegen`, comes from the exact
 [Core release revision `e91835c5`](https://github.com/lukacf/meerkat/commit/e91835c5fea0170d0dfc1d297d70269234fd4a16).
 Its Core and schema dependencies resolve to the same registry 0.9.4 packages.

@@ -15,7 +15,8 @@ integrations can still be reused when the caller is authorized.
 Known limitation: Forge cannot update an existing Connect application in place in
 0.9.4, including an application that completed setup and ran successfully.
 Rebuilding an accepted application does not update the installed application;
-the Stage/Apply path remains unsupported and refuses the change. Preserve the
+the Stage/Apply path remains unsupported and refuses the change. The upstream
+update producer and lineage correction is assigned to 0.9.4.1. Preserve the
 existing installation and its saved state. Fresh application
 installation and normal agent-led discovery, protected installation and
 authorized use of integrations are separate supported paths; this limitation
@@ -50,20 +51,33 @@ library archive, so a new gateway combined with an older mixed archive would
 still contain the deferred entry points. Preserve the existing source, artifact
 and resource checks when selecting the ordinary release inputs.
 
-Connect 0.9.4 final acceptance remains pending. The final candidate selects
+The final Connect 0.9.4 Console functional check passed. The final candidate selects
 published Core 0.9.4 registry packages, with only the unpublished
 `meerkat-machine-codegen` crate taken from the exact
 [Core release revision `e91835c5`](https://github.com/lukacf/meerkat/commit/e91835c5fea0170d0dfc1d297d70269234fd4a16).
 Its Core and schema dependencies use those same registry packages.
 [Meta `324f5ff3`](https://github.com/lukacf/meerkat-meta/commit/324f5ff3157424e722a402b5593faee69fc3d682)
-contains the Console navigation and idle-state fixes; its merge and release are
-pending. Its
+contains the Console navigation and idle-state fixes. It merged as
+[`9c13361f`](https://github.com/lukacf/meerkat-meta/commit/9c13361f9b103e941f419c1a6b0ac041ffe05489)
+with an identical full source tree; publication remains pending. Its
 [Python SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/python)
 and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/typescript)
 trees are independently verified unchanged, so reviewed artifacts remain reusable
-when their exact inputs match. The final gateway build passed; fresh Console
-acceptance remains pending. Earlier business results retain their exact execution
-provenance and are not repeated by these source and artifact checks.
+when their exact inputs match. The final gateway build, fresh installation, normal
+setup navigation and protected setup completed. The original conversation resumed
+automatically and returned to idle. One actual follow-up sent through the Console
+returned exactly `OK` and returned to idle, with no reload or manual wake. Canonical
+records contain exactly the setup request, its automatic continuation and the
+follow-up, all finalized; no database operation ran and the database stayed unchanged.
+
+The official Browser tool could not target the rendered setup iframe, so the
+approvals were clicked in the same observed protected page opened in a separate
+task tab. Normal sidebar discovery and rendering passed; an in-iframe approval
+click was not exercised. Both test grants were revoked and normal Stop ended the
+application while preserving its files. Logout remains unconfirmed: the single
+Sign out navigation returned `ERR_BLOCKED_BY_CLIENT`. No bypass or retry was used.
+Earlier business results retain their exact execution provenance; this check did
+not repeat the ledger business task.
 
 ### Retained development evidence
 
