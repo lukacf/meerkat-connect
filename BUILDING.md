@@ -2,21 +2,24 @@
 
 Connect has two Rust workspaces. The root owns `toolkit-package`;
 `native-candidate/Cargo.toml` owns the CLI, native host adapters and `toolkit-store`.
-Both use their checked-in dependency locks. The native workspace selects the 0.9.4
-development graph at exact
-[Core `00b3f3da`](https://github.com/lukacf/meerkat/commit/00b3f3da28707d6ae5332334749c30b4dca406da)
-and [Meta `e934e156`](https://github.com/lukacf/meerkat-meta/commit/e934e156f53a5b7efc33a8800c4d2816a7b950fc)
-Git revisions. The unpublished `meerkat-machine-codegen` crate comes directly
-from that same Core revision. The retained `vendor/core-codegen` tree is a
-v0.9.0 release input and is not selected by the development native workspace.
-These immutable pins support development testing; they are not final release
-qualification. The selected Meta revision includes the Console identity priming
-correction and the Forge Toolkit 0.9.4 wheel-reader correction. Its
-[Python SDK](https://github.com/lukacf/meerkat-meta/tree/e934e156f53a5b7efc33a8800c4d2816a7b950fc/sdk/python)
-and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/e934e156f53a5b7efc33a8800c4d2816a7b950fc/sdk/typescript)
-source trees are unchanged from the reviewed candidate artifacts, permitting
-their reuse with exact input checks. Canonical TypeScript metadata/lock selection
-and installed native runtime acceptance remain separate.
+Both use their checked-in dependency locks. The final 0.9.4 candidate uses the
+published Core 0.9.4 crates from crates.io and exact
+[Meta `324f5ff3`](https://github.com/lukacf/meerkat-meta/commit/324f5ff3157424e722a402b5593faee69fc3d682)
+source, whose merge and release are pending. The sole unpublished Core crate,
+`meerkat-machine-codegen`, comes from the exact
+[Core release revision `e91835c5`](https://github.com/lukacf/meerkat/commit/e91835c5fea0170d0dfc1d297d70269234fd4a16).
+Its Core and schema dependencies resolve to the same registry 0.9.4 packages.
+The retained `vendor/core-codegen` tree is a v0.9.0 release input and is not selected
+by this candidate. The final manifests and normally generated locks are being
+validated together in the isolated build lane; the final gateway build and fresh
+Console acceptance remain pending.
+
+The selected Meta source includes the Console navigation and idle-state fixes.
+Its [Python SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/python)
+and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/typescript)
+trees are unchanged from the reviewed candidate artifacts, permitting reuse with
+exact input checks. Canonical TypeScript metadata/lock selection and installed
+native runtime acceptance remain separate.
 
 ## Prerequisites
 

@@ -50,16 +50,20 @@ library archive, so a new gateway combined with an older mixed archive would
 still contain the deferred entry points. Preserve the existing source, artifact
 and resource checks when selecting the ordinary release inputs.
 
-Connect 0.9.4 is not yet qualified. The checked-in development workspace selects
-[Core `00b3f3da`](https://github.com/lukacf/meerkat/commit/00b3f3da28707d6ae5332334749c30b4dca406da)
-and [Meta `e934e156`](https://github.com/lukacf/meerkat-meta/commit/e934e156f53a5b7efc33a8800c4d2816a7b950fc).
-The selected Meta revision includes the Console identity priming and Forge
-Toolkit 0.9.4 wheel-reader corrections. Its
-[Python SDK](https://github.com/lukacf/meerkat-meta/tree/e934e156f53a5b7efc33a8800c4d2816a7b950fc/sdk/python)
-and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/e934e156f53a5b7efc33a8800c4d2816a7b950fc/sdk/typescript)
-trees are unchanged; reviewed artifacts remain reusable when their exact inputs
-match. Final release selection, native validation and installed artifact
-qualification remain separate.
+Connect 0.9.4 final acceptance remains pending. The final candidate selects
+published Core 0.9.4 registry packages, with only the unpublished
+`meerkat-machine-codegen` crate taken from the exact
+[Core release revision `e91835c5`](https://github.com/lukacf/meerkat/commit/e91835c5fea0170d0dfc1d297d70269234fd4a16).
+Its Core and schema dependencies use those same registry packages.
+[Meta `324f5ff3`](https://github.com/lukacf/meerkat-meta/commit/324f5ff3157424e722a402b5593faee69fc3d682)
+contains the Console navigation and idle-state fixes; its merge and release are
+pending. Its
+[Python SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/python)
+and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/typescript)
+trees are independently verified unchanged, so reviewed artifacts remain reusable
+when their exact inputs match. The final gateway build and fresh Console
+acceptance are pending; earlier business results retain their exact execution
+provenance and are not repeated by these source and artifact checks.
 
 ### Retained development evidence
 
