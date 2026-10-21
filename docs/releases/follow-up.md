@@ -12,6 +12,15 @@ individual setup, agent-led acquisition, protected credentials, cancellation,
 recovery, installation and continuation of the original task. Existing installed
 integrations can still be reused when the caller is authorized.
 
+Known limitation: Forge cannot update an existing Connect application in place in
+0.9.4, including an application that completed setup and ran successfully.
+Rebuilding an accepted application does not update the installed application;
+the Stage/Apply path remains unsupported and refuses the change. Preserve the
+existing installation and its saved state. Fresh application
+installation and normal agent-led discovery, protected installation and
+authorized use of integrations are separate supported paths; this limitation
+does not prevent installing an integration into a running application.
+
 Shared multi-caller setup belongs to the separate `codex/connect-0.9.5-shared-setup`
 branch. It combines overlapping requests under one setup assistant while retaining
 independent approval, access, cancellation and results for each caller. Deferring
