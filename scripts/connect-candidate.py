@@ -337,7 +337,7 @@ def wheel_expectation(path, selected, source):
         return {"distribution": selected["distribution"], "version": selected["version"],
                 "sha256": digest(path), "size": path.stat().st_size,
                 "source_payload": rows(payload),
-                "metadata": rows([name for name in names if name.startswith(prefix)], prefix)}
+                "metadata": rows([name for name in names if name.startswith(prefix) and name != prefix + "RECORD"], prefix)}
 
 
 def copy_exact(source, destination):
