@@ -88,7 +88,8 @@ class HostedMcpAuthBinding:
     accepted. GET is a fixed landing only. POST must carry the browser Origin
     and an already bounded, unmodified body. Never log callback URLs or bodies.
 
-    shutdown() belongs to whole-host disposal, never panel/request disposal.
+    shutdown() belongs to owning-login/attempt retirement or whole-host
+    disposal, never panel/request disposal.
     Cancellation of a begin/wait caller leaves the existing custodian running.
     """
 
