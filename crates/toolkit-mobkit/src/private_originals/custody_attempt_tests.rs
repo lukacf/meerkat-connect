@@ -77,9 +77,9 @@ impl Fixture {
                             Err(OriginalWriterError::Unavailable)));
                         assert!(adapter.store.get(&key).await.unwrap().unwrap() == before);
                         assert_eq!(faults.association_refusals.load(Ordering::SeqCst), 1);
-                        // Changed immutable source content cannot borrow the entered-write witness.
+                        // Changed immutable purpose cannot borrow the entered-write witness.
                         let mut changed = adapter.decode_record(&before, &reference).unwrap();
-                        changed.event.content_sha256 = digest(b"different authenticated source content");
+                        changed.planning_source_evidence = Some(planning_source_evidence::PlanningSourceEvidence::Parent);
                         assert!(adapter.owner.retain_first_binding_write(adapter.store.as_ref(),
                             &adapter.scope, &key, Arc::new(rewritten(&before, encode(changed).unwrap())), &association).is_err());
                         // A current writer may advance revision without changing any source facts.
@@ -218,20 +218,6 @@ async fn source_schema_versions_and_immutable_purpose_remain_exact() {
     let f = Fixture::new().await;
     let before = f.row().await;
     assert_eq!(encode(decode_source_record(&before).unwrap()).unwrap(), before.data);
-    assert!(before.data.body.get("shared_preparations").is_none());
-    assert!(before.data.body.get("planning_source_evidence").is_none());
-    let canonical = canonical_json(&before.data.body).unwrap();
-    let decoded = decode_source_record(&before).unwrap();
-    assert_eq!(canonical_json(&decoded).unwrap(), canonical);
-    assert_eq!(encode(decoded).unwrap().digest().unwrap(), before.content_digest);
-    // Shared development records are outside this release's source contract.
-    // Unknown fields must refuse, never disappear during canonicalization.
-    for shared in [serde_json::json!([{"source":"shared-development-row"}]), serde_json::json!([])] {
-        let mut data = before.data.clone();
-        data.body["shared_preparations"] = shared;
-        let injected = rewritten(&before, data);
-        assert!(decode_source_record(&injected).is_err());
-    }
     let data = f.enrollment(&before).data;
     let enrolled = rewritten(&before, data.clone());
     assert!(decode_source_record(&enrolled).is_ok());
@@ -251,7 +237,7 @@ async fn source_schema_versions_and_immutable_purpose_remain_exact() {
     let mut data = enrolled.data.clone(); data.body["final_association"] = serde_json::Value::Null;
     assert!(decode_source_record(&rewritten(&enrolled, data)).is_err());
     let mut changed = decode_source_record(&f.unbound).unwrap();
-    changed.event.content_sha256 = digest(b"different authenticated source content");
+    changed.planning_source_evidence = Some(planning_source_evidence::PlanningSourceEvidence::Parent);
     let changed = rewritten(&f.unbound, encode(changed).unwrap());
     assert!(decode_source_record(&changed).is_ok());
     assert!(!same_source_origin(&f.unbound, &changed));

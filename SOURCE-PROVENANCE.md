@@ -24,6 +24,11 @@ dependency layout without changing its implementation source.
 
 ### Ordinary 0.9.4 and deferred shared setup
 
+This branch restores only the deferred shared-setup delta on top of ordinary
+0.9.4. It preserves the candidate for 0.9.5 development without reopening that
+feature as a 0.9.4 release gate. No shared native or end-to-end qualification is
+claimed by the branch split.
+
 The ordinary 0.9.4 branch is extracted from the public mixed draft
 [`ffeb622f9d06a0190ba87eb2290d67909ee1dfe1`](https://github.com/lukacf/meerkat-connect/commit/ffeb622f9d06a0190ba87eb2290d67909ee1dfe1).
 That original branch and its complete history remain intact. Shared multi-caller

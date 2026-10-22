@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -12,6 +13,7 @@ from pathlib import Path
 import re
 import select
 import socket
+import signal
 import tempfile
 import stat
 import sys
@@ -526,7 +528,354 @@ def controller_factory(backend, root, record, reopened):
     return create
 
 
+class _SharedPeerTransport:
+    """The existing peer's listener, serve tasks and one retained close task."""
+    def __init__(self, adapter_module, peer):
+        self.module, self.peer = adapter_module, peer
+        self.loop = asyncio.get_running_loop()
+        self.listener = None
+        self.openings = set()
+        self.tasks = set()
+        self.writers = set()
+        self.accepted = False
+        self.closing = False
+        self.failed = False
+        self.close_task = None
+        if peer._transport_owner is not None:
+            raise LocalSetupError("local_setup_owner_changed")
+        peer._transport_owner = self
+
+    def listen(self, listener):
+        if self.listener is not None or self.closing:
+            raise LocalSetupError("local_setup_owner_changed")
+        # Publish only after successful registration. On construction failure
+        # the caller still closes its raw socket and drains all earlier peers.
+        self.loop.add_reader(listener.fileno(), self.accept_ready)
+        self.listener = listener
+
+    def accept_ready(self):
+        # Acceptance and ownership transfer are synchronous on this loop. A
+        # queued readiness callback after fencing cannot create a late stream.
+        if self.closing:
+            return
+        try:
+            connection, _ = self.listener.accept()
+        except (BlockingIOError, InterruptedError):
+            return
+        except OSError:
+            self.failed = True
+            self.retirement(True)
+            return
+        if self.accepted:
+            connection.close()
+            return
+        self.accepted = True
+        connection.setblocking(False)
+        task = asyncio.create_task(self.open_socket(connection))
+        self.openings.add(task)
+        task.add_done_callback(self.completed_opening)
+
+    async def open_socket(self, connection):
+        # The close task joins this retained handoff without cancelling it.
+        # Stream construction may have accepted the socket before returning.
+        try:
+            reader, writer = await asyncio.open_unix_connection(sock=connection,
+                limit=2 * self.module.backend.MAX_BODY)
+        except BaseException:
+            connection.close()
+            raise
+        self.start(reader, writer)
+
+    def completed_opening(self, task):
+        self.openings.discard(task)
+        if task.cancelled() or task.exception() is not None:
+            self.failed = True
+
+    def start(self, reader, writer):
+        # Retain the actual stream before scheduling its coroutine. A close can
+        # cancel a serve task before its first poll; that still must join the
+        # transport instead of relying on a never-entered finally.
+        self.writers.add(writer)
+        accepted = not self.closing
+        if not accepted:
+            writer.close()
+        task = asyncio.create_task(self.serve(reader, writer, accepted))
+        self.tasks.add(task)
+        task.add_done_callback(self.completed)
+
+    def completed(self, task):
+        self.tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            self.failed = True
+
+    async def serve(self, reader, writer, accepted):
+        try:
+            if accepted:
+                await self.module.socket_stdio(self.peer, reader, writer)
+        finally:
+            try:
+                if accepted:
+                    await self.peer.aclose()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                self.writers.discard(writer)
+
+    def retirement(self, close=False):
+        # No asyncio task, Event or stream is manipulated from the inherited
+        # owner's worker-thread dispatch path.
+        if asyncio.get_running_loop() is not self.loop:
+            raise self.module.backend.SetupError("shared_peer_unavailable", 409)
+        if close and self.close_task is None:
+            self.closing = True
+            self.peer.close_admission()
+            if self.listener is not None:
+                self.loop.remove_reader(self.listener.fileno())
+                self.listener.close()
+            self.close_task = asyncio.create_task(self.drain())
+            # Keep the actual task and retrieve its result even if the command
+            # receiver disappears. Readback never starts a replacement drain.
+            self.close_task.add_done_callback(self.completed_close)
+        if self.close_task is None:
+            return "not_requested"
+        if not self.close_task.done():
+            return "pending"
+        if self.close_task.cancelled() or self.close_task.exception() is not None or self.failed:
+            return "failed"
+        return "joined"
+
+    def completed_close(self, task):
+        if not task.cancelled():
+            task.exception()
+
+    async def drain(self):
+        # Only this peer is fenced. An entered selected-install dispatch drains,
+        # but its physical worker remains with ControllerConnections.job_wait.
+        # Keep socket cleanup owned even if the adapter drain reports failure.
+        # Reader removal fences all future acceptance. Every socket already
+        # accepted is represented by one opening task before any await.
+        if self.openings:
+            opened = await asyncio.gather(*tuple(self.openings), return_exceptions=True)
+            if any(isinstance(result, BaseException) for result in opened):
+                self.failed = True
+        try:
+            await self.peer.aclose()
+        except BaseException:
+            self.failed = True
+        while self.tasks or self.writers:
+            # Close the actual streams as well as cancelling their serve tasks.
+            # This includes a queued accept whose coroutine never started.
+            writers, active = tuple(self.writers), tuple(self.tasks)
+            for writer in writers:
+                writer.close()
+            for task in active:
+                task.cancel()
+            await asyncio.gather(*active, return_exceptions=True)
+            closed = await asyncio.gather(*(writer.wait_closed() for writer in writers),
+                                          return_exceptions=True)
+            if any(isinstance(result, BaseException) for result in closed):
+                self.failed = True
+            self.writers.difference_update(writers)
+        if self.failed:
+            raise LocalSetupError("local_setup_connection_failed")
+
+    async def aclose(self):
+        self.retirement(True)
+        await self.module._joined(self.close_task)
+
+
+async def shared_connections(adapter_module, controller, count, stopped, ready, *, _owner=None):
+    """One live host owns Controller and a distinct MCP connection per helper.
+
+    Native attachment and resolved-call admission remain per helper. These
+    private sockets carry bytes only; their paths are not caller authority.
+    """
+    if type(count) is not int or not 2 <= count <= 8:
+        raise LocalSetupError("local_setup_connection_count")
+    owner = _owner if _owner is not None else adapter_module.ControllerConnections(controller)
+    if owner.controller is not controller:
+        raise LocalSetupError("local_setup_owner_changed")
+    # AF_UNIX paths are short even when the installed resource root is long.
+    directory = Path(tempfile.mkdtemp(prefix="connect-setup-", dir="/tmp")).resolve()
+    transports, paths = [], []
+    failures = []
+    try:
+        for index in range(count):
+            transport = _SharedPeerTransport(adapter_module, owner.open())
+            transports.append(transport)
+            path = directory / (str(index) + ".sock")
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                listener.bind(str(path))
+                os.chmod(path, 0o600)
+                info = path.lstat()
+                paths.append((path, info.st_dev, info.st_ino))
+                listener.listen(1)
+                listener.setblocking(False)
+                transport.listen(listener)
+            except BaseException:
+                listener.close()
+                raise
+        await ready([str(path) for path, _, _ in paths])
+        await stopped()
+    finally:
+        # Global shutdown still belongs to this host. Explicit per-peer close
+        # above never calls either of these Controller owner methods.
+        owner.close_admission()
+        for transport in transports:
+            transport.retirement(True)
+        failures = await asyncio.gather(*(transport.aclose() for transport in transports),
+                                        return_exceptions=True)
+        await owner.aclose()
+        for path, device, inode in paths:
+            info = path.lstat()
+            if not stat.S_ISSOCK(info.st_mode) or (info.st_dev, info.st_ino) != (device, inode):
+                raise LocalSetupError("local_setup_connection_changed")
+            path.unlink()
+        directory.rmdir()
+    if any(isinstance(result, BaseException) for result in failures):
+        raise LocalSetupError("local_setup_connection_failed")
+
+
+async def shared_owner_requests(adapter_module, owner, reader, writer):
+    """Bounded inherited owner frames. MCP peers never receive this channel."""
+    sequence = 0
+    while True:
+        try:
+            raw = await reader.readline()
+        except (ValueError, asyncio.LimitOverrunError):
+            raise LocalSetupError("local_setup_owner_input") from None
+        if not raw:
+            return
+        if len(raw) > 256 * 1024 or not raw.endswith(b"\n"):
+            raise LocalSetupError("local_setup_owner_input")
+        value = decode(raw)
+        if (type(value) is not dict or set(value) != {"id", "command"}
+                or type(value["id"]) is not int or value["id"] != sequence + 1):
+            raise LocalSetupError("local_setup_owner_input")
+        sequence = value["id"]
+        try:
+            # A cancelled pipe reader still joins the finite private owner
+            # operation. Its response may be unknown; no effect is replayed.
+            command = value["command"]
+            if isinstance(command, dict) and command.get("operation") in ("close_peer", "observe_peer"):
+                # Fencing and task retention run on the owning event loop.
+                # The command returns a bounded observation, never waits for
+                # drain while holding the serialized inherited channel.
+                result = owner.peer_control(command)
+            else:
+                task = asyncio.create_task(asyncio.to_thread(owner.owner_control, command))
+                result = await adapter_module._joined(task)
+            response = {"id": sequence, "result": result}
+        except adapter_module.backend.SetupError:
+            response = {"id": sequence, "error": "shared_selection_unavailable"}
+        payload = encoded(response)
+        if len(payload) > LIMIT:
+            raise LocalSetupError("local_setup_owner_output")
+        writer.write(payload)
+        await asyncio.wait_for(writer.drain(), 30)
+
+
+async def shared_stdio_owner(adapter_module, controller, count):
+    """The inherited owner pipe retains lifetime and exact private handoffs."""
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader(limit=256 * 1024)
+    pipe = os.fdopen(os.dup(sys.stdin.fileno()), "rb", buffering=0)
+    output = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)
+    transport = write_transport = writer = None
+    task = asyncio.current_task()
+    owner = adapter_module.ControllerConnections(controller)
+    def stop():
+        task.cancel()
+    async def stopped():
+        await shared_owner_requests(adapter_module, owner, reader, writer)
+    async def ready(paths):
+        writer.write(encoded({"shared_setup": 1, "peers": paths}))
+        await asyncio.wait_for(writer.drain(), 30)
+    try:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(signum, stop)
+        transport, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), pipe)
+        protocol = asyncio.StreamReaderProtocol(asyncio.StreamReader())
+        write_transport, _ = await loop.connect_write_pipe(lambda: protocol, output)
+        writer = asyncio.StreamWriter(write_transport, protocol, None, loop)
+        await shared_connections(adapter_module, controller, count, stopped, ready, _owner=owner)
+    finally:
+        if transport is not None:
+            transport.close()
+        else:
+            pipe.close()
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        elif write_transport is not None:
+            write_transport.close()
+        else:
+            output.close()
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            loop.remove_signal_handler(signum)
+
+
+def stdio_bridge(path):
+    """Copy native-owned stdio to one exact live host-selected peer, once."""
+    path = absolute(path)
+    directory, info = path.parent.lstat(), path.lstat()
+    if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid()
+            or directory.st_mode & 0o077 or not stat.S_ISSOCK(info.st_mode)
+            or info.st_uid != os.getuid() or info.st_mode & 0o077):
+        raise LocalSetupError("local_setup_connection_unavailable")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(str(path))
+        selected = path.lstat()
+        if (selected.st_dev, selected.st_ino) != (info.st_dev, info.st_ino):
+            raise LocalSetupError("local_setup_connection_changed")
+        incoming = outgoing = b""
+        input_open = output_open = True
+        half_closed = False
+        connection.setblocking(False)
+        while output_open or incoming:
+            reads = []
+            writes = []
+            if input_open and len(outgoing) < 65536:
+                reads.append(sys.stdin.fileno())
+            if output_open and len(incoming) < 65536:
+                reads.append(connection)
+            if incoming:
+                writes.append(sys.stdout.fileno())
+            if outgoing:
+                writes.append(connection)
+            readable, writable, _ = select.select(reads, writes, [])
+            if sys.stdin.fileno() in readable:
+                value = os.read(sys.stdin.fileno(), 65536 - len(outgoing))
+                outgoing += value
+                input_open = bool(value)
+            if connection in readable:
+                value = connection.recv(65536 - len(incoming))
+                incoming += value
+                output_open = bool(value)
+                if not output_open:
+                    input_open = False
+                    outgoing = b""
+            if sys.stdout.fileno() in writable:
+                incoming = incoming[os.write(sys.stdout.fileno(), incoming):]
+            if connection in writable and outgoing:
+                outgoing = outgoing[connection.send(outgoing):]
+            if not input_open and not outgoing and not half_closed:
+                connection.shutdown(socket.SHUT_WR)
+                half_closed = True
+    return 0
+
+
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["--shared-peer"]:
+        try:
+            if len(argv) != 2:
+                raise LocalSetupError("local_setup_connection_unavailable")
+            return stdio_bridge(argv[1])
+        except Exception:
+            print("local_setup_connection_unavailable", file=sys.stderr)
+            return 2
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--configuration", type=Path, required=True)
     parser.add_argument("--configuration-sha256", required=True)
@@ -534,6 +883,7 @@ def main(argv=None):
     parser.add_argument("--adapter-sha256", required=True)
     parser.add_argument("--backend-sha256", required=True)
     parser.add_argument("--state-root", type=Path, required=True)
+    parser.add_argument("--shared-peers", type=int, choices=range(2, 9))
     args = parser.parse_args(argv)
     try:
         helper = Path(__file__).resolve()
@@ -547,7 +897,11 @@ def main(argv=None):
                    "adapter_sha256": args.adapter_sha256, "backend_sha256": args.backend_sha256}
         with session_owner(args.state_root, binding) as (root, record, reopened):
             factory = controller_factory(adapter.backend, root, record, reopened)
-            return adapter.main(server["args"][7:], controller_factory=factory)
+            runner = None
+            if args.shared_peers is not None:
+                async def runner(controller):
+                    await shared_stdio_owner(adapter, controller, args.shared_peers)
+            return adapter.main(server["args"][7:], controller_factory=factory, run_controller=runner)
     except LocalSetupError as error:
         print(str(error), file=sys.stderr)
         return 2

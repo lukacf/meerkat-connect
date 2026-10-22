@@ -5,6 +5,11 @@ acquisition goals while limiting supported deployment breadth.
 
 ## Unreleased development progress
 
+This branch retains the deferred **0.9.5 shared setup candidate** on top of the
+ordinary 0.9.4 branch. Its shared execution remains unfinished and unqualified;
+it is not an ordinary 0.9.4 merge or release candidate. The release separation
+and 0.9.4 checks below describe the base branch.
+
 ### Release separation
 
 The `codex/connect-0.9.4` branch contains the ordinary CLI and Console work:

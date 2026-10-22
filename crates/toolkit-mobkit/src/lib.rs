@@ -379,6 +379,7 @@ fn same_installed_admission(first: &HostToolAdmission, replay: &HostToolAdmissio
         && first.host.correlation == replay.host.correlation
         && first.host.parent_operation == replay.host.parent_operation
         && first.host.setup_helper == replay.host.setup_helper
+        && first.host.work_context == replay.host.work_context
         && first.host.continuation == replay.host.continuation
         && first.host.environment_revision == replay.host.environment_revision
         && first.host.limits.max_workers == replay.host.limits.max_workers

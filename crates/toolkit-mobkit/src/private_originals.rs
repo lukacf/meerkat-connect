@@ -16,15 +16,23 @@ use toolkit_store::{
     AdmissionRequest, RecordData, StoreKey, StoreScope, StoredRecord, ToolkitStore, Transition,
 };
 
+#[cfg(test)]
+pub(crate) mod recovery_probe;
 pub(crate) mod acquisition;
 pub(crate) mod setup_results;
 mod setup_admission;
 pub(crate) mod setup_helpers;
+pub(crate) mod setup_workflow;
+#[cfg(test)]
+pub(crate) use setup_workflow::OwnedTransferCommit;
+pub use setup_workflow::{InstalledWorkflowPlanning, InstalledWorkflowMember, InstalledWorkflowContextTransfer, InstalledWorkflowContext, WorkflowContextObservation, WorkflowDeliveryObservation};
+pub(crate) use setup_workflow::WorkflowLaunchObservation;
 pub(crate) mod service_grants;
 mod governed_submit;
 mod cold_service_admission;
 pub(crate) use cold_service_admission::RetainedBoundInput;
 mod cold_setup_admission;
+mod planning_source_evidence;
 mod console_ingress;
 mod controller_setup;
 mod setup_request;
@@ -33,6 +41,8 @@ pub(crate) use configured_setup::service::ServiceSetupSelection;
 mod setup_targets;
 pub use setup_request::PrivateSetupRequestSelection;
 mod first_input;
+#[cfg(test)]
+mod source_locator_tests;
 #[cfg(test)]
 mod custody_attempt_tests;
 pub(crate) mod custody_recovery;
@@ -43,7 +53,7 @@ pub use service_input_receipt::{PrivateServiceInputObservation, PrivateServiceIn
 pub(crate) mod source_status;
 pub(crate) mod service_recovery;
 pub use service_approved_input::{
-    InstalledServiceTask, PreparedServiceInstruction, ServiceMcpPersistenceProposal,
+    InstalledServiceTask, InstalledSharedEntry, InstalledSharedPreparation, SharedPreparationLeave, SharedPreparationResource, PreparedServiceInstruction, ServiceMcpPersistenceProposal,
     PublicServiceBatchEntry, PreparedPublicServiceBatch, PreparedPublicInstruction,
 };
 pub use crate::installed_host::tool_policy::{ServiceToolPolicySelection, ServiceToolInvocation,
@@ -83,7 +93,8 @@ pub(crate) fn same_source_origin(left: &StoredRecord, right: &StoredRecord) -> b
         (Some(left), Some(right)) => left.source == right.source && left.event == right.event
             && left.approved_task == right.approved_task
             && left.setup_request == right.setup_request
-            && left.configured_setup == right.configured_setup,
+            && left.configured_setup == right.configured_setup
+            && left.planning_source_evidence == right.planning_source_evidence,
         _ => false,
     }
 }
@@ -146,6 +157,10 @@ pub struct PrivateOriginalRef {
 #[serde(rename_all = "snake_case")]
 pub enum PrivateOriginalCancellation {
     OperationsCancelled,
+    /// Source cancellation and workflow departure succeeded. An unresolved
+    /// workflow close obligation remains for host-owned recovery. This is not
+    /// a runtime, process, controller or descendant settlement observation.
+    OperationsCancelledCleanupPending,
     OperationGrantRevoked,
 }
 
@@ -248,6 +263,11 @@ struct SourceRecord {
     /// Absence is legacy/unenrolled, never proof of native non-entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     custody_attempt: Option<crate::original_ingress::custody_attempt::CustodyAttempt>,
+    /// Cleanup custody for exact shared preparations admitted by this source.
+    /// The SetupStore P record owns membership and delivery. These locators
+    /// are retained before join and never authorize an effect or disclosure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    shared_preparations: Vec<meerkat_toolkit::setup::SharedPreparationMember>,
     /// Explicit reviewed setup-only choice for this still-unbound original.
     /// Native resolution and the retained operator decision remain authoritative.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -280,7 +300,11 @@ struct SourceRecord {
     approved_task: Option<service_approved_input::ApprovedTaskLink>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     service_admission: Option<service_approved_input::ServiceInputAdmission>,
-    /// Exact bound B or selected stock-operator setup A retained before
+    /// Explicit host selection to retain planning-source input evidence.
+    /// It grants neither source custody nor permission to deliver context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    planning_source_evidence: Option<planning_source_evidence::PlanningSourceEvidence>,
+    /// Exact bound B, selected stock-operator setup A or selected planning input retained before
     /// native submission. The legacy field name remains stable on disk. This
     /// is historical evidence, with no process ingress or resume capability.
     /// Older rows without it cannot be used for cold admission recovery.
@@ -309,6 +333,10 @@ struct HeldPrivateOriginal {
     first_custody: Mutex<Option<Arc<governed_submit::PendingOriginalAdmission>>>,
     unresolved: Mutex<Vec<Arc<governed_submit::PendingOriginalAdmission>>>,
     service_attachments: Mutex<Vec<Arc<service_approved_input::attachment::HeldServiceAttachment>>>,
+    shared_preparations: Mutex<Vec<service_approved_input::shared_preparation::HeldSharedPreparation>>,
+    setup_workflow: OnceLock<Arc<setup_workflow::HeldSetupWorkflow>>,
+    workflow_selections: Mutex<Vec<setup_workflow::InvocationPlanning>>,
+    workflow_plans: Mutex<Vec<Arc<setup_workflow::InstalledWorkflowPlanning>>>,
 }
 
 /// Exact software selection retained with an application access decision.
@@ -390,6 +418,8 @@ pub trait ServiceInstallationReadback: Send + Sync {
 }
 
 pub struct PrivateOriginals {
+    #[cfg(test)]
+    pub(crate) metadata_probe: OnceLock<Arc<recovery_probe::MetadataRecoveryProbe>>,
     custody_recovery: custody_recovery::CustodyRecovery,
     scope: StoreScope,
     store: Arc<dyn ToolkitStore>,
@@ -518,6 +548,8 @@ impl PrivateOriginals {
             .map_err(|_| PrivateOriginalError::Unavailable)?;
         let value = Self {
             custody_recovery: Default::default(),
+            #[cfg(test)]
+            metadata_probe: OnceLock::new(),
             scope,
             store,
             owner,
@@ -708,6 +740,7 @@ impl PrivateOriginals {
         let key = self.key(&reference)?;
         let data = encode(SourceRecord {
             custody_attempt: None,
+            shared_preparations: Vec::new(),
             setup_request: None,
             configured_setup: None,
             service_setup_children: vec![],
@@ -721,6 +754,7 @@ impl PrivateOriginals {
             approved_task: None,
             service_admission: None,
             bound_service_input: None,
+            planning_source_evidence: None,
         })?;
         // An existing final binding changes the record, but not the original
         // admission payload. The store compares that frozen initial request.
@@ -911,6 +945,26 @@ impl PrivateOriginals {
         Ok(event)
     }
 
+    /// Return this owner's canonical historical record locator for an exact
+    /// retained reference, including equivalent route aliases and cancelled
+    /// rows. A missing or mismatched row in this owner's scope is refused.
+    ///
+    /// Use this locator for `SetupWorkflowTerms::planning_source`; callers must
+    /// not reproduce the private key layout. It supplies no current source
+    /// authority, grant, member reservation or native admission evidence.
+    pub async fn source_record_key(
+        &self,
+        reference: &PrivateOriginalRef,
+    ) -> Result<StoreKey, PrivateOriginalError> {
+        let stored = self
+            .store
+            .get(&self.key(reference)?)
+            .await
+            .map_err(store_error)?
+            .ok_or(PrivateOriginalError::Unavailable)?;
+        self.decode_record(&stored, reference)?;
+        Ok(stored.key)
+    }
 
     /// Historical binding for explicit authenticated restore/replay. Reading
     /// this value cannot reconstruct source custody or an accepted InputId.
@@ -952,15 +1006,26 @@ impl PrivateOriginals {
         association: &meerkat_authorization_contracts::work_association::InputAuthorityAssociation,
         allow_existing: bool,
     ) -> Result<Option<Arc<StoredRecord>>, OriginalWriterError> {
-        self.persist_or_observe_selected_binding(reference, association, allow_existing).await
+        self.persist_or_observe_selected_binding(reference, association, allow_existing, None).await
     }
 
+    /// The live planning owner selects its own issued lineage. It cannot enter
+    /// through configured setup discovery or a portable association alone.
+    pub(super) async fn persist_or_observe_workflow_binding(
+        &self,
+        reference: &PrivateOriginalRef,
+        association: &meerkat_authorization_contracts::work_association::InputAuthorityAssociation,
+        planning: &InstalledWorkflowPlanning,
+    ) -> Result<Option<Arc<StoredRecord>>, OriginalWriterError> {
+        self.persist_or_observe_selected_binding(reference, association, true, Some(planning)).await
+    }
 
     async fn persist_or_observe_selected_binding(
         &self,
         reference: &PrivateOriginalRef,
         association: &meerkat_authorization_contracts::work_association::InputAuthorityAssociation,
         allow_existing: bool,
+        planning: Option<&InstalledWorkflowPlanning>,
     ) -> Result<Option<Arc<StoredRecord>>, OriginalWriterError> {
         let key = self
             .key(reference)
@@ -991,7 +1056,10 @@ impl PrivateOriginals {
                 ).await
             }.map_err(|_| OriginalWriterError::Unavailable)?;
         }
-        self.check_configured_setup_binding(reference, &record, association)?;
+        match planning {
+            Some(planning) => planning.check_persistence_binding(self, reference, &record, association)?,
+            None => self.check_configured_setup_binding(reference, &record, association)?,
+        }
         if self.approved_task_is_cancelled(&record).await
             .map_err(|_| OriginalWriterError::Unavailable)?
         {
@@ -1042,6 +1110,8 @@ impl PrivateOriginals {
     ) -> Result<(), OriginalWriterError> {
         let c = association.candidate();
         self.check_setup_source_binding(record, association)?;
+        planning_source_evidence::check_binding(record, association)
+            .map_err(|_| OriginalWriterError::Conflict)?;
         let route = &record.source;
         let evidence_matches =
             |actual: &meerkat_authorization_contracts::evidence::HistoricalEvidenceRef,
@@ -1153,8 +1223,11 @@ impl PrivateOriginals {
         &self,
         reference: &PrivateOriginalRef,
     ) -> Result<PrivateOriginalCancellation, PrivateOriginalError> {
-        self.record_cancelled_source_set(reference, None, None, None).await?;
-        Ok(PrivateOriginalCancellation::OperationsCancelled)
+        let cancelled = self.record_cancelled_source_set(reference, None, None, None).await?;
+        // Source cancellation and existing physical preparation leave have
+        // completed. The outer channel retains this follow-on work through
+        // caller loss; no initial native binder waits for workflow close.
+        self.depart_cancelled_workflows(&cancelled).await
     }
 
     /// Attach only the actual source owner's returned handle, after its durable
@@ -1185,7 +1258,8 @@ impl PrivateOriginals {
         if record.final_association.as_ref() != Some(original.association()) {
             return Err(PrivateOriginalError::Conflict);
         }
-        let retain_bound_input = record.approved_task.is_some()
+        let retain_bound_input = record.planning_source_evidence.is_some()
+            || record.approved_task.is_some()
             || self.stock_setup_source(&record, &reference)?;
         let mut retained = self
             .retained
@@ -1214,6 +1288,10 @@ impl PrivateOriginals {
             first_custody: Mutex::new(None),
             unresolved: Mutex::new(Vec::new()),
             service_attachments: Mutex::new(Vec::new()),
+            shared_preparations: Mutex::new(Vec::new()),
+            setup_workflow: OnceLock::new(),
+            workflow_selections: Mutex::new(Vec::new()),
+            workflow_plans: Mutex::new(Vec::new()),
         }));
         Ok(())
     }
@@ -1373,6 +1451,7 @@ fn decode_source_record(stored: &StoredRecord) -> Result<SourceRecord, PrivateOr
     {
         return Err(PrivateOriginalError::Conflict);
     }
+    planning_source_evidence::validate(&value)?;
     cold_service_admission::validate_retained_input(&value)?;
     configured_setup::service::ServiceSetupChildObservation::validate_set(&value)?;
     if let Some(task) = &value.approved_task { task.validate()?; }

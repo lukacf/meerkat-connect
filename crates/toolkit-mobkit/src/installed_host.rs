@@ -460,6 +460,16 @@ impl InstalledToolkitHost {
         Ok(self)
     }
 
+    /// Select private historical context reads as trusted host assembly. The
+    /// callback is frozen before bootstrap but receives later canonical terms,
+    /// so it does not freeze a roster of workflows. It grants no input, effect
+    /// or payload-delivery authority and is never decoded from model input.
+    pub fn with_workflow_context_recovery(mut self,
+        selector: acquisition::InstalledWorkflowContextSelector,
+    ) -> Result<Self, HostLifetimeError> {
+        self.acquisition.select_context_recovery(selector)?;
+        Ok(self)
+    }
 
     pub fn compose(
         mut self,
@@ -1087,6 +1097,12 @@ impl OperationPolicyOwner for InstalledApplicationPolicy {
                 error
             })?;
         }
+        // The workflow owner stages A's exact call relationship before native
+        // preparation. This contributes only a current narrowing grant; native
+        // policy still resolves this unchanged G association and admitted ceiling.
+        let workflow_call = if purpose == LocalPolicyPurpose::Operation {
+            self.originals.workflow_call_for_policy(association, binding).map_err(mcp_control_error)?
+        } else { None };
         let claims = association.candidate();
         let mut connector_value = None;
         let values = match (&binding.facts().operation, purpose) {
@@ -1277,12 +1293,15 @@ impl OperationPolicyOwner for InstalledApplicationPolicy {
             }
             _ => return Err(OperationAuthorizationError::Unavailable),
         };
-        let allowance = LocalPolicyAllowance {
+        let mut allowance = LocalPolicyAllowance {
             operation_values: std::iter::once(values).chain(connector_value).collect(),
             restrictions: ExecutionRestrictions::unrestricted(),
             expires_at_ms: self.allowance_deadline(association, purpose, now_ms)?,
             review_tier: OperationReviewTier::R1,
         };
+        if let Some(call) = workflow_call {
+            call.narrow_allowance(&mut allowance, now_ms)?;
+        }
         Ok(allowance)
     }
 }

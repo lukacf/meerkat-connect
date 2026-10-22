@@ -269,7 +269,51 @@ pub struct ApprovalPresenter {
 }
 
 impl LocalApprovals {
+    #[cfg(unix)]
+    pub(crate) async fn reserve_shared_entry(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
+        member: Option<&toolkit_mobkit::private_originals::InstalledSharedPreparation>,
+    ) -> Result<toolkit_mobkit::private_originals::InstalledSharedEntry, ToolError> {
+        self.service_tasks.as_ref().ok_or_else(|| ToolError::access_denied(call.name))?
+            .reserve_shared_entry(call, context, plan, member).await
+            .map_err(|_| ToolError::access_denied(call.name))
+    }
 
+    #[cfg(unix)]
+    pub(crate) async fn join_shared_preparation(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
+        selection: &meerkat_toolkit::setup::SharedPreparationSelection,
+        resource: Arc<dyn toolkit_mobkit::private_originals::SharedPreparationResource>,
+    ) -> Result<toolkit_mobkit::private_originals::InstalledSharedPreparation, ToolError> {
+        self.check_session(context.origin_session_id()
+            .ok_or_else(|| ToolError::access_denied(call.name))?)
+            .map_err(|_| ToolError::access_denied(call.name))?;
+        self.service_tasks.as_ref().ok_or_else(|| ToolError::access_denied(call.name))?
+            .join_shared_preparation(call, context, plan, selection, resource).await
+            .map_err(|_| ToolError::access_denied(call.name))
+    }
+    #[cfg(unix)]
+    pub(crate) async fn leave_shared_preparation(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
+        member: &toolkit_mobkit::private_originals::InstalledSharedPreparation,
+    ) -> Result<serde_json::Value, ToolError> {
+        self.service_tasks.as_ref().ok_or_else(|| ToolError::access_denied(call.name))?
+            .leave_shared_preparation(call, context, plan, member).await
+            .map_err(|_| ToolError::access_denied(call.name))
+    }
+    #[cfg(unix)]
+    pub(crate) async fn complete_shared_preparation(
+        &self, call: ToolCallView<'_>, context: &ToolDispatchContext,
+        plan: Option<&meerkat_core::ResolvedToolExecutionPlan>,
+        member: &toolkit_mobkit::private_originals::InstalledSharedPreparation,
+    ) -> Result<(), ToolError> {
+        self.service_tasks.as_ref().ok_or_else(|| ToolError::access_denied(call.name))?
+            .complete_shared_preparation(call, context, plan, member).await
+            .map_err(|_| ToolError::access_denied(call.name))
+    }
     // Exercise the existing per-request deadline after the exact prompt is
     // acknowledged. This is not owner retirement or operation-grant revocation.
     #[cfg(test)]

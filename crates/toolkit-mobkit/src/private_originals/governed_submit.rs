@@ -352,7 +352,8 @@ impl PrivateOriginals {
             return Err(PrivateOriginalError::Conflict);
         }
         let publication = pending.admit();
-        if publication.is_ok() && pending.service_grant.is_none() && pending.service_batch.is_none() {
+        if publication.is_ok() && pending.service_grant.is_none() && pending.service_batch.is_none()
+            && pending.workflow.is_none() {
             held.unresolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                 .retain(|retained| !Arc::ptr_eq(retained, &pending));
         }
@@ -573,15 +574,26 @@ impl GovernedInputBinder for OriginalBinder {
 }
 
 impl OriginalBinder {
+    async fn bind_retained(&self, context: &GovernedBindContext, input: Input)
+        -> Result<BoundGovernedInput, String>
+    {
+        self.bind_retained_with_workflow(context, input, None).await
+    }
 
-    async fn bind_retained(
+    pub(super) async fn bind_retained_with_workflow(
         &self, context: &GovernedBindContext, input: Input,
+        planning: Option<&setup_workflow::PreparedWorkflowLaunch>,
     ) -> Result<BoundGovernedInput, String> {
         if let Some(entry) = &self.console { entry.check()?; }
         if let Some(login) = &self.approved_login {
             login.check().map_err(|_| "The approved Console login is unavailable")?;
         }
-        let held = match &self.grant {
+        let held = if let Some(planning) = planning {
+            if self.grant.is_some() || self.batch.is_some() || self.console.is_some()
+                || self.approved_login.is_some()
+            { return Err("The workflow launch has conflicting source custody".into()); }
+            self.source.binding_for_workflow_input(&self.original, context, planning.selection()).await
+        } else { match &self.grant {
             None if self.batch.is_some() => self.source.binding_for_batch_input(
                 &self.original, context, self.batch.as_ref().unwrap(), self.approved_login.clone()).await,
             Some(grant) => self.source.binding_for_access_input(
@@ -591,7 +603,7 @@ impl OriginalBinder {
                 Some(entry) => self.source.binding_for_console_input(&self.original, context, entry.clone()).await,
                 None => self.source.binding_for_input(&self.original, context).await,
             },
-        }.map_err(|_error| {
+        }}.map_err(|_error| {
             #[cfg(test)]
             PrivateOriginals::synthetic_admission_diagnostic("original.binding.refused", _error);
             "Toolkit could not retain this authenticated original".to_owned()
@@ -654,7 +666,11 @@ impl OriginalBinder {
                 ).map_err(|_| "Toolkit could not rebind the exact first original input")?;
             }
         }
-        if self.grant.is_some() || self.batch.is_some() || held.retain_bound_input {
+        // Native's tracked foreground retains this prepared Input and every
+        // entered write. The planning holder is not Candidate publication.
+        let workflow = planning.map(|planning| planning.stage(&held, context))
+            .transpose().map_err(|_| "The planning workflow could not retain pending source custody".to_owned())?;
+        if self.grant.is_some() || self.batch.is_some() || held.retain_bound_input || workflow.is_some() {
             self.source.retain_bound_service_input(&self.original, &held.original, prepared.input())
                 .await.map_err(|_error| {
                     #[cfg(test)]
@@ -705,6 +721,7 @@ impl OriginalBinder {
             native_admission: Mutex::new(None),
             pending: Mutex::new(SourcePublication::Pending(pending)),
             held: Arc::downgrade(&held),
+            workflow,
         });
         if enrolled { *retained = Some(pending.clone()); }
         Ok((input, pending))
@@ -748,14 +765,15 @@ pub(super) struct PendingOriginalAdmission {
     pub(super) native_admission: Mutex<Option<GovernedAdmission>>,
     pub(super) pending: Mutex<SourcePublication>,
     pub(super) held: Weak<HeldPrivateOriginal>,
+    workflow: Option<Arc<setup_workflow::HeldSetupWorkflow>>,
 }
 
 /// The result of consuming this one guard stays with that guard's custody.
 /// It is process-local settlement, not a native admission or permission cache.
 pub(super) enum SourcePublication {
     Pending(PendingToolkitOriginal),
-    // This is the actual guard's acknowledgement. It is not a native receipt
-    // or a durable CAS.
+    // This is the actual guard's acknowledgement, separate from a later
+    // workflow publication error. It is not a native receipt or durable CAS.
     Settled { source_acknowledged: bool, result: Result<(), String> },
 }
 
@@ -795,6 +813,21 @@ impl SourcePublication {
 }
 
 impl PendingOriginalAdmission {
+    /// Read-only identity for this retained workflow input. This does not
+    /// promote source custody, rebind an input, or authorize another dispatch.
+    pub(super) fn workflow_input(
+        &self,
+        workflow: &Arc<setup_workflow::HeldSetupWorkflow>,
+    ) -> Result<(SessionId, Input), PrivateOriginalError> {
+        if self.service_grant.is_some() || self.service_batch.is_some()
+            || !self.workflow.as_ref().is_some_and(|held| Arc::ptr_eq(held, workflow))
+            || !self.held.upgrade().is_some_and(|held|
+                held.setup_workflow.get().is_some_and(|actual| Arc::ptr_eq(actual, workflow)))
+        {
+            return Err(PrivateOriginalError::Conflict);
+        }
+        Ok((self.session.clone(), self.input.clone()))
+    }
 
     /// Inspect this same source guard without replaying native acceptance or
     /// consuming pending custody. The caller has already checked disclosure.
@@ -829,7 +862,15 @@ impl PendingOriginalAdmission {
     pub(super) fn admit(&self) -> Result<(), String> {
         let mut publication = self.pending.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        publication.admit_then(|| Ok(()))
+        // The source guard releases its publication reservation before this
+        // callback takes the same owner's writer. Neither step awaits.
+        publication.admit_then(|| {
+            if let Some(workflow) = &self.workflow {
+                workflow.accepted().map_err(|_|
+                    "Native work was admitted but Toolkit source publication failed".to_owned())?;
+            }
+            Ok(())
+        })
     }
 }
 
@@ -848,7 +889,8 @@ impl GovernedSettlement for OriginalSettlement {
         }
         *self.0.native_admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(admission.clone());
         let result = self.0.handoff.accepted(|| self.0.admit());
-        if result.is_err() || self.0.service_grant.is_some() || self.0.service_batch.is_some() {
+        if result.is_err() || self.0.service_grant.is_some() || self.0.service_batch.is_some()
+            || self.0.workflow.is_some() {
             self.0.retain_unresolved();
         }
         result

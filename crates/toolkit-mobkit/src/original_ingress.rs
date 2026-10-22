@@ -45,6 +45,9 @@ pub(crate) use service_set_shape::ServiceSetBindingTargets;
 pub(crate) mod helper_originals;
 mod retained_resume;
 mod historical_admission;
+pub(crate) mod shared_entry;
+pub(crate) mod workflow_custody;
+pub(crate) mod workflow_member;
 
 pub(crate) fn controller_only_basis(basis: &WorkAuthorityBasis) -> bool {
     matches!(basis, WorkAuthorityBasis::TargetedGrantLineages { base: None, targets } if targets.is_empty())
@@ -409,6 +412,10 @@ pub struct ToolkitOriginalOwner {
     source_writer_wait: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     originals: Mutex<Vec<OriginalRecord>>,
     canonical_source: Mutex<Option<CanonicalSourceBinding>>,
+    // Ephemeral native-send to Controller-decision custody, never permission.
+    shared_entries: Mutex<Vec<Arc<shared_entry::SharedEntry>>>,
+    // Restrictive selections captured by the real registration owner.
+    workflow_members: Mutex<Vec<workflow_member::SelectedWorkflowMember>>,
 }
 
 impl toolkit_store::RecordChangePublication for ToolkitOriginalOwner {
@@ -485,6 +492,8 @@ impl ToolkitOriginalOwner {
             source_writer_wait: Mutex::new(None),
             originals: Mutex::new(Vec::new()),
             canonical_source: Mutex::new(None),
+            shared_entries: Mutex::new(Vec::new()),
+            workflow_members: Mutex::new(Vec::new()),
         }
     }
 
@@ -638,7 +647,7 @@ impl ToolkitOriginalOwner {
         operation_owner: Arc<dyn OperationPolicyOwner>,
         retained_resume: Option<Arc<NativeRetainedResumeCheck>>,
     ) -> NativeGrantWorkConfiguration {
-        ScopedGrantComposition {
+        let mut configuration = ScopedGrantComposition {
             grants: self.grants.clone(),
             ingress_domain: self.ingress_domain.clone(),
             originals: self.clone(),
@@ -646,7 +655,15 @@ impl ToolkitOriginalOwner {
             operation_owner,
             retained_resume,
         }
-        .into_configuration()
+        .into_configuration();
+        let ordinary = configuration.ingress.clone();
+        let owner = Arc::downgrade(self);
+        configuration.ingress = Arc::new(move |runtime, input, ingress, association| {
+            let owner = owner.upgrade().ok_or_else(workflow_member::unavailable)?;
+            owner.check_workflow_member(runtime, association, ingress.controller_client())?;
+            ordinary(runtime, input, ingress, association)
+        });
+        configuration
     }
 
     /// Create an original-specific child under the host-selected operation base.
@@ -1467,6 +1484,7 @@ impl ToolkitOriginalOwner {
             }
         };
         let source_record = validate_source(binding.clone(), prior_source).await?;
+        let entries;
         {
             let _publication = self
                 .publication
@@ -1495,6 +1513,7 @@ impl ToolkitOriginalOwner {
                     first_binding: None, withdrawn_association: None,
                 });
             }
+            entries = self.close_shared_entries(&binding.into_iter().collect::<Vec<_>>())?;
         }
         let cancellation_record = persist(source_record).await?;
         {
@@ -1515,7 +1534,7 @@ impl ToolkitOriginalOwner {
             };
         }
         drop(_mutation);
-        Ok(())
+        Self::drain_shared_entries(entries).await
     }
 
     /// Serialize the existing canonical selection of one still-unbound source
@@ -1654,10 +1673,14 @@ impl ToolkitOriginalOwner {
             // there is no change to invalidate unrelated authorization reads.
             settled = all_settled;
         }
+        let associations = sources.iter().filter_map(|source| source.association.clone()).collect::<Vec<_>>();
         if settled {
+            let entries = self.close_shared_entries(&associations)?;
             drop(_mutation);
+            Self::drain_shared_entries(entries).await?;
             return Ok(sources.into_iter().map(|source| source.record).collect());
         }
+        let entries;
         {
             let _publication = self.publication.begin_owner_change()
                 .map_err(|_| OriginalWriterError::Unavailable)?;
@@ -1679,6 +1702,9 @@ impl ToolkitOriginalOwner {
                     });
                 }
             }
+            // Close the same final-entry gates at validated Pending, before
+            // any durable cancellation await. A lost write never reopens them.
+            entries = self.close_shared_entries(&associations)?;
         }
         // The canonical parent is first. This ordering makes a partially
         // persisted cancellation visible to every linked source on cold bind.
@@ -1697,6 +1723,7 @@ impl ToolkitOriginalOwner {
             }
         }
         drop(_mutation);
+        Self::drain_shared_entries(entries).await?;
         Ok(committed)
     }
 

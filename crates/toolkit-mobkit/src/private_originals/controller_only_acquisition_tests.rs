@@ -483,3 +483,6 @@ async fn controller_only_original_denies_enrolled_acquisition_in_its_real_turn()
         Err(payload) => std::panic::resume_unwind(payload),
     }
 }
+
+#[path = "controller_only_acquisition_tests/context_transfer_tests.rs"]
+mod context_transfer_tests;
