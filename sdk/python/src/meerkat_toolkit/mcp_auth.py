@@ -182,7 +182,14 @@ async def _join(task: asyncio.Task):
             interrupted = True
 
 
-def _receive_query(query, state, callback) -> bool:
+@dataclass(frozen=True, repr=False)
+class _HostedCallbackResult:
+    """Private callback fields, retained without inventing a native wire shape."""
+    code: str | None
+    issuer: str | None
+
+
+def _receive_query(query, state, callback, *, hosted=False) -> bool:
     """Accept one bounded callback; provider extras never become authority."""
     try:
         if (not isinstance(query, str) or not 0 < len(query) <= 8192
@@ -202,7 +209,10 @@ def _receive_query(query, state, callback) -> bool:
         code, error = params.get("code"), params.get("error")
         if (code is None) == (error is None) or not _text(code if code is not None else error):
             return False
-        callback.set_result(code)
+        issuer = params.get("iss")
+        if hosted and issuer is not None and not _text(issuer):
+            return False
+        callback.set_result(_HostedCallbackResult(code, issuer) if hosted else code)
         return True
     except (ValueError, UnicodeError):
         return False
@@ -276,7 +286,7 @@ class RegisteredHttpsCallback:
         """
         if self._closed or redirect_uri != self._redirect:
             return False
-        return _receive_query(query, self._state, self._callback)
+        return _receive_query(query, self._state, self._callback, hosted=True)
 
     async def close(self):
         """Retire only this inbox. The custodian owns this lifecycle call."""
@@ -444,8 +454,15 @@ class StartedMcpLogin:
         observation, error = None, None
         state = self._listener.state
         try:
-            code = await asyncio.wait_for(asyncio.shield(self._listener.callback), callback_timeout)
-            if code is None:
+            callback = await asyncio.wait_for(asyncio.shield(self._listener.callback), callback_timeout)
+            issuer = callback.issuer if isinstance(callback, _HostedCallbackResult) else None
+            code = callback.code if isinstance(callback, _HostedCallbackResult) else callback
+            if code is not None and issuer is not None:
+                # The owner's hosted completion contract is not bound yet. Keep
+                # issuer bytes intact and refuse instead of silently dropping
+                # RFC 9207 evidence into the old loopback-only client call.
+                error = "hosted_issuer_binding_unavailable"
+            elif code is None:
                 error = "authorization_denied"
             else:
                 error = "completion_uncertain"
