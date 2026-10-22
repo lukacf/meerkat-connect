@@ -492,8 +492,9 @@ def build():
     for key, option in (("library", "library"), ("acquisition_node", "acquisition-node"), ("npm", "npm")):
         row = value["files"][resource[key]]
         locator = option + "-archive" if key in ("acquisition_node", "npm") else option
-        args += ["--" + locator, inputs / resource[key], "--" + option + "-sha256", row["sha256"],
-                 "--" + option + "-bytes", str(row["size"])]
+        pin_option = locator if key == "npm" else option
+        args += ["--" + locator, inputs / resource[key], "--" + pin_option + "-sha256", row["sha256"],
+                 "--" + pin_option + "-bytes", str(row["size"])]
     for key, option in (("node_prebuilt_policy", "node-prebuilt-policy"), ("node_build_profile", "node-build-profile")):
         if resource.get(key):
             args += ["--" + option, inputs / resource[key], "--" + option + "-sha256",
