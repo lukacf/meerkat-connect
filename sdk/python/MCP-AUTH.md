@@ -178,6 +178,50 @@ custodian through settlement. No callback server is stopped by this inbox.
 There is no new attempt-status or restart implementation; credential status
 cannot substitute for the future native attempt read.
 
+## Hosted application binding (development)
+
+`meerkat_toolkit.mcp_auth_host.HostedMcpAuthBinding` adds a mountable callback
+handler around the existing custodian. It binds one exact target and configured
+HTTPS URI to a retained, authenticated host login. Every admitted call takes
+that same login object and checks its currentness. Matching identity strings
+or request JSON cannot substitute for the retained object.
+
+The host creates the binding with `client`, `target`, `login_context`,
+`redirect_uri` and an optional `protected_presenter`. It retains the binding
+through `begin`, `present`, `wait` and explicit `shutdown`. For Forge, the login
+comes from `ConsoleFront` and the native authority must belong to the installed
+`ToolkitMobKitRuntime`; a separate setup runtime cannot authenticate that
+application's MCP tools.
+
+Mount `handle_callback` at the exact configured URL. Its public GET returns a
+fixed page that removes the query from browser history and submits `{query}`
+by same-origin POST. The host authenticates that POST, selects the retained
+login, bounds the body before reading it, and supplies its actual Origin.
+The handler accepts no browser-selected realm, account, target or redirect.
+The URI argument comes from route configuration, never Host or forwarded
+headers. A 202 means local receipt only. Response bodies contain no callback
+values; responses disable caching and referrers. Host and proxy access logs
+must also omit callback query strings and bodies.
+
+Host login retirement must call and join `shutdown`, including when the login
+can no longer make an admitted request. Cancelling a request waiter does not
+retire the ceremony. The installed-runtime bridge must retain the same native
+login owner and honor its retirement. Test cancellation against native
+completion: Python checks before dispatch and after waiting do not prove that
+a credential write was prevented. Closing the binding does not log out an
+account whose native completion already won the race.
+
+This is a transport candidate, not a completed hosted login implementation.
+Core's registered callback API, its secret attempt handle and the private
+installed-runtime bridge remain integration dependencies. The final host-only
+redirect registration shape is owned by Core. An `iss` value is retained
+exactly, but currently refuses completion as
+`hosted_issuer_binding_unavailable` instead of discarding it through the old
+client API. Loopback behavior is unchanged. `McpTarget` currently supports
+known account selection only; do not infer a provider account from the Console
+user or claim Discover/Unverified support. A real provider callback registration,
+account mode and protected browser test are still required.
+
 ## Low-level use
 
 The host owns an already-connected, compatible Meerkat client. This module

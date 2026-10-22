@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   checks:
-    name: Packaging, Console panel and docs
+    name: Packaging, host adapters, Console panel and docs
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -36,6 +36,13 @@ jobs:
           scripts.test_assemble_connect_product
       - name: Check documentation
         run: python3 scripts/check-docs.py
+      - name: Check hosted MCP callback transport and lifecycle
+        env:
+          PYTHONPATH: sdk/python/src:sdk/python/tests
+        run: >-
+          python3 -m unittest -v
+          test_mcp_auth_https test_mcp_auth_custody
+          test_mcp_auth_host test_hosted_mcp_endpoint_adversarial
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
