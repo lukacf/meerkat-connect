@@ -2632,7 +2632,8 @@ dependencies = [
 [[package]]
 name = "meerkat-meta"
 version = "0.9.4"
-source = "git+https://github.com/lukacf/meerkat-meta.git?rev=324f5ff3157424e722a402b5593faee69fc3d682#324f5ff3157424e722a402b5593faee69fc3d682"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "defcec028d3004272a5e3be2c092bcd5969033cf705a4269ff9b5671ece2466c"
 dependencies = [
  "anyhow",
  "async-stream",

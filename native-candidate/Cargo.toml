@@ -27,7 +27,7 @@ toolkit-store = { path = "../crates/toolkit-store" }
 toolkit-catalog = { path = "../crates/toolkit-catalog" }
 meerkat-toolkit = { path = "../crates/meerkat-toolkit" }
 indexmap = "2"
-# Published Core 0.9.4; Meta remains an immutable development selection until release.
+# Published Core and Meta 0.9.4.
 meerkat = { version = "=0.9.4", default-features = false }
 meerkat-machine-dsl = { version = "=0.9.4" }
 meerkat-machine-schema = { version = "=0.9.4" }
@@ -42,7 +42,7 @@ meerkat-tools = { version = "=0.9.4" }
 
 meerkat-mob = { version = "=0.9.4" }
 meerkat-mob-mcp = { version = "=0.9.4" }
-meerkat-mobkit = { package = "meerkat-meta", git = "https://github.com/lukacf/meerkat-meta.git", rev = "324f5ff3157424e722a402b5593faee69fc3d682" }
+meerkat-mobkit = { package = "meerkat-meta", version = "=0.9.4" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

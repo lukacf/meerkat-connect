@@ -1,5 +1,20 @@
 # Connect native candidates and publication
 
+## Selected 0.9.4 release route
+
+The release lead permits direct retained-host production for Connect 0.9.4,
+including the gateway artifacts consumed by Forge. Linux and macOS retain their
+exact source, dependency, SDK, artifact and consumer-verification records. These
+direct artifacts do not claim GitHub-hosted build attestation. The complete
+Connect asset set is first published as a prerelease that is not latest; that same
+release becomes final after the required verdicts. Forge receives the actual
+product selection, file pins and relocation paths for those published bytes.
+
+The hosted workflow below remains available as a separate production route. It
+is not a prerequisite for the selected direct 0.9.4 release.
+
+## Hosted native candidate workflow
+
 This manual-only workflow is source preparation for the Core/Meta 0.9.4 installed
 selection. It does not publish, tag, install on a user host, dispatch another
 workflow, or qualify any bytes until its actual producer and verifier succeed.
@@ -55,8 +70,8 @@ workflow SHA and dispatch SHA must agree. There is no restored Cargo/target
 cache and no secret needed for downloads or native execution. The attestation
 job alone receives OIDC/attestation permissions. The GitHub-hosted runner's
 actual tool versions and package inventory are retained (dpkg on Linux;
-Homebrew and Xcode SDK on macOS). Python 3.12 and Rust 1.97.0 are selected on
-both hosts. macOS requires the native Xcode tools, zstd, pkg-config and OpenSSL;
+Homebrew and Xcode SDK on macOS). Python 3.11 and Rust 1.97.0 are selected on
+both hosts, matching the selected application dependency closure. macOS requires the native Xcode tools, zstd, pkg-config and OpenSSL;
 the workflow records the selected OpenSSL location. The runner image and
 system package set are observed, not claimed reproducible from this draft.
 
@@ -66,8 +81,9 @@ The gateway workflow above does not constitute the standalone Connect release.
 For 0.9.4, the standalone CLI may use the existing retained native producer,
 independent shutdown review and assembler route, retaining checksums, the review
 record and the assembler input inventory. It does not require a new CI pipeline.
-Clean GitHub-hosted production and attestation remain required for every Forge
-input, including the CLI if Forge consumes it.
+The selected 0.9.4 direct route also permits the resulting artifacts as Forge
+inputs. Preserve original build and verification evidence; do not describe a
+retained-host artifact as GitHub-hosted or attested.
 
 The optional CI wrapper below reuses the gateway producer's exact prepared source,
 native graph and resource closure. `stage-cli` still requires its CI preflight;

@@ -16,7 +16,7 @@ Known limitation: Forge cannot update an existing Connect application in place i
 0.9.4, including an application that completed setup and ran successfully.
 Rebuilding an accepted application does not update the installed application;
 the Stage/Apply path remains unsupported and refuses the change. The upstream
-update producer and lineage correction is assigned to 0.9.4.1. Preserve the
+update producer and lineage correction is assigned to 0.9.5. Preserve the
 existing installation and its saved state. Fresh application
 installation and normal agent-led discovery, protected installation and
 authorized use of integrations are separate supported paths; this limitation
@@ -59,7 +59,8 @@ Its Core and schema dependencies use those same registry packages.
 [Meta `324f5ff3`](https://github.com/lukacf/meerkat-meta/commit/324f5ff3157424e722a402b5593faee69fc3d682)
 contains the Console navigation and idle-state fixes. It merged as
 [`9c13361f`](https://github.com/lukacf/meerkat-meta/commit/9c13361f9b103e941f419c1a6b0ac041ffe05489)
-with an identical full source tree; publication remains pending. Its
+with an identical full source tree. The later published release is described
+below. Its
 [Python SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/python)
 and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/typescript)
 trees are independently verified unchanged, so reviewed artifacts remain reusable
@@ -78,6 +79,33 @@ application while preserving its files. Logout remains unconfirmed: the single
 Sign out navigation returned `ERR_BLOCKED_BY_CLIENT`. No bypass or retry was used.
 Earlier business results retain their exact execution provenance; this check did
 not repeat the ledger business task.
+
+### Published upstream selection and remaining production
+
+Meta 0.9.4 is published at
+[`3c3af34f`](https://github.com/lukacf/meerkat-meta/commit/3c3af34f0a12bfab3d33183f65da9fd2578d58e3).
+The scoped installer review preserves the Connect helper route and guarded login;
+Console, embedded bundle, SDK and Connect startup sources match the accepted
+candidate. New early Python ABI refusal and Debian venv installation handling
+are deliberate fixes. The ordinary-app path cannot take over a Connect helper
+plan. No repeated SQLite business task is required by that review.
+
+The released Rust crates include a compaction-retention correction after the
+accepted build. Current manifests select the published Core/Meta 0.9.4 packages,
+with the existing exact-source exception for unpublished Core codegen. New final
+candidate production must build and verify this final graph. The previous
+`340b8620` gateway remains development acceptance evidence, not a final-release
+binary. The R1 Forge handoff requires actual final candidates and their provenance.
+The release owner selected direct Linux and macOS builds for 0.9.4, followed by
+one `v0.9.4` prerelease that is not marked latest. After the target verdicts, the
+same release can become full without changing its URLs or bytes. Earlier
+development outputs cannot be relabeled as those new final candidates.
+
+Current packaged Linux dependencies require CPython 3.11, and the retained native
+Linux gateway requires glibc 2.39 or newer. Generic Python SDK compatibility does
+not widen compiled-wheel ABI compatibility. The producer uses Python 3.11 to
+match this selected closure. Remote product deployment and in-place application
+updates remain follow-up work for 0.9.5. There is no 0.9.4.1 release in this plan.
 
 ### Retained development evidence
 

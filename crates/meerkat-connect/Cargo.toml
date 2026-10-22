@@ -22,7 +22,7 @@ meerkat-authorization = { version = "=0.9.4" }
 axum = { version = "0.8", optional = true }
 meerkat-authorization-contracts = { version = "=0.9.4" }
 meerkat-mob = { version = "=0.9.4", optional = true }
-meerkat-mobkit = { package = "meerkat-meta", git = "https://github.com/lukacf/meerkat-meta.git", rev = "324f5ff3157424e722a402b5593faee69fc3d682", optional = true }
+meerkat-mobkit = { package = "meerkat-meta", version = "=0.9.4", optional = true }
 meerkat = { version = "=0.9.4", features = ["local-authorization", "session-store", "mcp", "skills", "native-keyring"] }
 meerkat-core = { version = "=0.9.4" }
 meerkat-mcp = { version = "=0.9.4" }

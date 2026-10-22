@@ -2,25 +2,29 @@
 
 Connect has two Rust workspaces. The root owns `toolkit-package`;
 `native-candidate/Cargo.toml` owns the CLI, native host adapters and `toolkit-store`.
-Both use their checked-in dependency locks. The final 0.9.4 candidate uses the
-published Core 0.9.4 crates from crates.io and exact
-[Meta `324f5ff3`](https://github.com/lukacf/meerkat-meta/commit/324f5ff3157424e722a402b5593faee69fc3d682)
-source. It is included in [Meta merge `9c13361f`](https://github.com/lukacf/meerkat-meta/commit/9c13361f9b103e941f419c1a6b0ac041ffe05489),
-whose full source tree is identical; release publication remains pending. The sole unpublished Core crate,
+Both use checked-in dependency locks. The current source selects the published
+Core and Meta 0.9.4 crates. The sole unpublished Core crate,
 `meerkat-machine-codegen`, comes from the exact
 [Core release revision `e91835c5`](https://github.com/lukacf/meerkat/commit/e91835c5fea0170d0dfc1d297d70269234fd4a16).
 Its Core and schema dependencies resolve to the same registry 0.9.4 packages.
-The retained `vendor/core-codegen` tree is a v0.9.0 release input and is not selected
-by this candidate. The checked-in manifests and normally generated locks passed
-locked/offline metadata replay and the final gateway build. Fresh Console
-acceptance remains pending.
+The retained `vendor/core-codegen` tree belongs to v0.9.0 and is not selected.
 
-The selected Meta source includes the Console navigation and idle-state fixes.
-Its [Python SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/python)
-and [TypeScript SDK](https://github.com/lukacf/meerkat-meta/tree/324f5ff3157424e722a402b5593faee69fc3d682/sdk/typescript)
-trees are unchanged from the reviewed candidate artifacts, permitting reuse with
-exact input checks. Canonical TypeScript metadata/lock selection and installed
-native runtime acceptance remain separate.
+[Meta 0.9.4](https://github.com/lukacf/meerkat-meta/releases/tag/v0.9.4) was
+published from
+[`3c3af34f`](https://github.com/lukacf/meerkat-meta/commit/3c3af34f0a12bfab3d33183f65da9fd2578d58e3).
+Its Console, embedded bundle, SDKs and Connect startup modules match the accepted
+candidate. A scoped review found no change requiring a repeat of the accepted
+Connect setup journey. The released Rust crates include a later compaction
+retention correction, so the earlier gateway is not a build of this final source.
+Final production and package verification must bind the current dependency graph
+and selected resources before those new artifacts can be published.
+
+The earlier fresh Console acceptance passed on
+[Meta `324f5ff3`](https://github.com/lukacf/meerkat-meta/commit/324f5ff3157424e722a402b5593faee69fc3d682):
+normal setup navigation, protected approvals, automatic continuation, cleared
+working state and a sent follow-up returning `OK`. That execution keeps its
+original source and artifact identity. See
+[follow-up scope](docs/releases/follow-up.md) for its recorded limitations.
 
 ## Prerequisites
 
@@ -131,17 +135,12 @@ See the [Python](docs/site/sdks/python.mdx) and
 GitHub release assets; no Toolkit registry upload is required.
 
 For current development, use the source under `sdk/python` and `sdk/typescript`.
-The Python candidate targets Toolkit 0.9.4 with `meerkat-meta==0.9.4` in its
-optional native-host extra. This is an unreleased target, not installed-pair
-qualification. TypeScript still has Toolkit 0.9.0, optional `@rkat/meta-sdk`
-0.9.1 and `@rkat/sdk` 0.9.0 metadata; its final manifest and generated lock must
-be selected together. The Core SDK dependency supplies the public `Session`
-type. These TypeScript pins do not select the preview SDKs linked above.
-Development tests use explicitly versioned candidate packages from exact source.
-Native binary and resource compatibility still
-requires an assembled candidate and installed-host verification. Do not assume
-the older Toolkit release wheel or tarball contains the current source merely
-because its version matches.
+The Python SDK targets Toolkit 0.9.4 with `meerkat-meta==0.9.4` in its
+optional native-host extra. The TypeScript package and its generated lock select
+Toolkit 0.9.4 with `@rkat/meta-sdk` and `@rkat/sdk` 0.9.4. Core supplies the public
+`Session` type. Exact release SDK source and wheel payload checks remain part of
+candidate production; a version label alone does not establish installed-pair
+compatibility.
 
 Python optional extras select service and native-host dependencies.
 `sdk/agno/stage.py` and `sdk/services/stage.py` project explicit source allowlists
