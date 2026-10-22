@@ -252,6 +252,19 @@ fn selected_application_body(body: &Value, configuration: &McpServerConfig,
 impl ServiceInstallationReadback for ProductInstallationReadback {
     async fn readback_source(&self, source: &ServiceInstallationReadbackSource)
         -> Result<McpServerConfig, PrivateOriginalError> {
+        if let ServiceInstallationReadbackSource::ReviewedBatchMember(source) = source {
+            let body = source.document();
+            let resources = super::readback_process::locate_readback_resources("resources_before").await.map_err(|_| unavailable())?;
+            if body.get("remote_export").is_some() {
+                let (selected, reviewed, request) = selected_remote_body(body, &self.storage.locator)?;
+                let value = resources.readback(&self.storage, &request).await.map_err(|_| unavailable())?;
+                if value != selected.export { return Err(denied()); }
+                return Ok(reviewed);
+            }
+            let (selected, reviewed, request) = selected_body(body, &self.storage.locator)?;
+            let value = resources.readback(&self.storage, &request).await.map_err(|_| unavailable())?;
+            return checked_readback(&selected, &reviewed, &value, request.get("public_service"), request.get("credential_service"));
+        }
         let ServiceInstallationReadbackSource::ApplicationPolicy(source) = source else {
             let ServiceInstallationReadbackSource::SettledReview(review) = source else { return Err(denied()); };
             return self.readback(review).await;

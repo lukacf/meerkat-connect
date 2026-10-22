@@ -27,6 +27,26 @@ pub(super) struct ConsoleEntry {
 }
 impl ConsoleEntry {
     pub(super) fn login(&self) -> &ConsoleLoginHandle { &self.login }
+    pub(super) fn validate_custody_input(
+        &self, record: &SourceRecord, raw: &Input, bound: &Input,
+    ) -> Result<(), PrivateOriginalError> {
+        self.check().map_err(|_| PrivateOriginalError::Denied)?;
+        let key = stock_console_event_key(raw).map_err(|_| PrivateOriginalError::Conflict)?;
+        let raw_digest = digest(&canonical_json(raw).map_err(|_| PrivateOriginalError::Conflict)?);
+        let (Input::Prompt(raw_prompt), Input::Prompt(bound_prompt)) = (raw, bound)
+            else { return Err(PrivateOriginalError::Conflict); };
+        if record.event.original.as_str() != raw.id().to_string()
+            || record.event.occurrence != record.event.original
+            || record.event.root_event.resource_id != record.event.original
+            || record.event.root_event.sha256 != raw_digest
+            || record.event.content_sha256 != raw_digest
+            || bound.id() != raw.id()
+            || bound.header().idempotency_key.as_ref() != Some(&key)
+            || canonical_json(&bound_prompt.content).map_err(|_| PrivateOriginalError::Conflict)?
+                != canonical_json(&raw_prompt.content).map_err(|_| PrivateOriginalError::Conflict)?
+        { return Err(PrivateOriginalError::Conflict); }
+        Ok(())
+    }
     pub(super) fn check(&self) -> Result<(), String> {
         self.login.check().map_err(|_| "The Console login is unavailable")?;
         let subject = self.human.current().map_err(|_| "The Console human is no longer current")?;
@@ -165,7 +185,7 @@ impl GovernedInputBinder for ConsoleBinder {
             .map_err(|_| "The Console original could not be retained")?;
         self.entry.check()?;
         reservation.settled();
-        let binder = Arc::new(OriginalBinder { source: self.source.clone(), grant: None, original,
+        let binder = Arc::new(OriginalBinder { source: self.source.clone(), grant: None, batch: None, original,
             held: OnceLock::new(), pending: OnceLock::new(),
             authentication: evidence(&route.authentication_domain, &authentication)
                 .map_err(|_| "The Console authentication evidence is invalid")?,
@@ -187,5 +207,7 @@ fn stock_console_event_key(input: &Input) -> Result<IdempotencyKey, String> {
         .ok_or_else(|| "The stock Console input has no idempotency key".to_owned())
 }
 
+#[cfg(test)]
+pub(crate) mod auth_fixture;
 #[cfg(test)]
 mod tests;

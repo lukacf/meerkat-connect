@@ -26,6 +26,8 @@ from .telegram import (
 JsonObject = dict[str, Any]
 _PROVIDER_REF_LIMIT_BYTES = 4096
 _FILENAME_LIMIT_BYTES = 1024
+# Interpretation only; a host must separately authorize any edit notice.
+TELEGRAM_EDIT_OUTCOME_VERSION = 1
 
 
 class TelegramAdapterError(ValueError):
@@ -81,7 +83,7 @@ class TelegramUnsupportedEvent:
     """
 
     update_id: int
-    reason: Literal["service_message", "content_type", "unknown_fields", "sender_kind"]
+    reason: Literal["service_message", "content_type", "unknown_fields", "sender_kind", "message_edit"]
     facts: JsonObject
 
 
@@ -320,7 +322,7 @@ _SERVICE_FLAGS = frozenset({
 
 
 def _message_reason(
-    payload: JsonObject, raw_message: Mapping[str, Any], message: Any,
+    payload: JsonObject, raw_message: Mapping[str, Any], message: Any, *, kind: str = "message",
 ) -> Literal["service_message", "content_type", "unknown_fields", "sender_kind"] | None:
     for key in ("is_automatic_forward", "is_from_offline"):
         if key in raw_message and type(raw_message[key]) is not bool:
@@ -365,7 +367,7 @@ def _message_reason(
     ):
         raise _adapter_error("invalid_request", "Telegram message content is contradictory")
     if (set(raw_message) - _CONTENT_FIELDS - _SERVICE_FIELDS - _METADATA_FIELDS
-            or set(payload) - {"update_id", "message"}):
+            or set(payload) - {"update_id", kind}):
         return "unknown_fields"
     if caption is not None and not content.intersection({
         "animation", "audio", "document", "paid_media", "photo", "video", "voice", "live_photo",
@@ -403,10 +405,11 @@ def normalize_update(payload: JsonObject) -> TelegramEvent | TelegramUnsupported
         raise _adapter_error("runtime_not_ready", "Telegram optional parser is unavailable")
     if sum(payload.get(kind) is not None for kind in Update.ALL_TYPES) > 1:
         raise _adapter_error("invalid_request", "Telegram update variants are contradictory")
+    kind = "edited_message" if payload.get("edited_message") is not None else "message"
     malformed = False
     try:
         provider_payload = deepcopy(payload)
-        provider_message = provider_payload.get("message")
+        provider_message = provider_payload.get(kind)
         if isinstance(provider_message, dict):
             # Only the referenced message id crosses the host envelope.
             # Avoid recursively parsing a large reply body, and accept the
@@ -421,7 +424,7 @@ def normalize_update(payload: JsonObject) -> TelegramEvent | TelegramUnsupported
         raise _adapter_error("invalid_request", "Telegram update is malformed")
 
     update_id = getattr(update, "update_id", None)
-    message = getattr(update, "message", None)
+    message = getattr(update, kind, None)
     user = getattr(update, "effective_user", None)
     chat = getattr(update, "effective_chat", None)
     if (
@@ -449,10 +452,10 @@ def normalize_update(payload: JsonObject) -> TelegramEvent | TelegramUnsupported
 
     chat_type = str(getattr(chat, "type", ""))
     is_group = chat_type in {"group", "supergroup"}
-    raw_message = payload.get("message")
+    raw_message = payload.get(kind)
     if not isinstance(raw_message, Mapping):
         raise _adapter_error("invalid_request", "Telegram message update is malformed")
-    reason = _message_reason(payload, raw_message, message)
+    reason = _message_reason(payload, raw_message, message, kind=kind)
     raw_reply = raw_message.get("reply_to_message") if isinstance(raw_message, Mapping) else None
     reply_message_id = raw_reply.get("message_id") if isinstance(raw_reply, Mapping) else None
     thread_id = getattr(message, "message_thread_id", None)
@@ -474,6 +477,24 @@ def normalize_update(payload: JsonObject) -> TelegramEvent | TelegramUnsupported
         "text": text,
         "timestamp": int(date.timestamp()),
     }
+    if kind == "edited_message":
+        # Edits are never replacement turns. Retain only rejection/routing facts,
+        # not the changed text, captions, reply body or downloadable media.
+        envelope["text"] = ""
+        envelope["chat_type"] = chat_type
+        raw_sender = raw_message.get("from")
+        envelope["sender_is_bot"] = (
+            raw_sender.get("is_bot") if isinstance(raw_sender, Mapping) else None
+        )
+        if reason in (None, "content_type"):
+            human = envelope["sender_is_bot"] is False and not any(
+                raw_message.get(key) is not None for key in (
+                    "sender_chat", "business_connection_id", "sender_business_bot",
+                    "direct_messages_topic",
+                )
+            ) and not raw_message.get("is_automatic_forward") and not raw_message.get("is_from_offline")
+            reason = "message_edit" if human else "sender_kind"
+        return TelegramUnsupportedEvent(update_id, reason, envelope)
     if reason is not None:
         return TelegramUnsupportedEvent(update_id, reason, envelope)
     media = _telegram_media(message)
@@ -502,7 +523,7 @@ def poll_cursor_offset(cursor: str | None) -> int | None:
 def interpret_poll_page(updates: Sequence[JsonObject], cursor: str | None) -> TelegramPage:
     """Interpret one complete response without saving a cursor or admitting input.
 
-    Non-message updates are counted as ignored. Valid unsupported messages are
+    Other update kinds are counted as ignored. Valid unsupported messages/edits are
     explicit ordered outcomes, so they cannot starve later supported messages.
     A malformed message refuses the whole page, including any earlier good row.
     """
@@ -517,9 +538,13 @@ def interpret_poll_page(updates: Sequence[JsonObject], cursor: str | None) -> Te
         value = item.get("update_id")
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise _adapter_error("invalid_request", "Telegram update id is invalid")
-        if "message" in item and not isinstance(item["message"], Mapping):
-            raise _adapter_error("invalid_request", "Telegram message update is malformed")
-    events = tuple(normalize_update(item) for item in updates if "message" in item)
+        for kind in ("message", "edited_message"):
+            if kind in item and not isinstance(item[kind], Mapping):
+                raise _adapter_error("invalid_request", "Telegram message update is malformed")
+    events = tuple(
+        normalize_update(item) for item in updates
+        if "message" in item or "edited_message" in item
+    )
     return TelegramPage(
         events, str(max(item["update_id"] for item in updates) + 1), len(updates) - len(events)
     )

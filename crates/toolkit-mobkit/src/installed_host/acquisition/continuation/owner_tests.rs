@@ -38,20 +38,41 @@ fn revision(value: &str) -> Revision { Revision::new(value).unwrap() }
 /// Uses the existing native pre-execution resolver, which receives the actual
 /// staged context. It grants no operation and never enters a tool body.
 #[derive(Default)]
-pub(crate) struct ContextProbe(Mutex<Option<ToolDispatchContext>>);
+pub(crate) struct ContextProbe {
+    captured: Mutex<Option<ToolDispatchContext>>,
+    exact_catalog: bool,
+    next_input: Arc<AtomicBool>,
+}
 impl ContextProbe {
+    pub(crate) fn with_exact_catalog() -> Self {
+        // This probe owns one immutable definition and the default catalog
+        // mirrors that complete list. It never supplies a deferred entry.
+        Self { captured: Mutex::new(None), exact_catalog: true, next_input: Arc::new(AtomicBool::new(false)) }
+    }
     pub(crate) fn definition() -> ToolDef {
         ToolDef::new(PROBE, "Capture the staged continuation fixture context", serde_json::json!({
             "type": "object", "additionalProperties": false,
         }))
     }
     pub(crate) fn captured(&self) -> ToolDispatchContext {
-        self.0.lock().unwrap().clone().expect("native plan resolver captured the staged context")
+        self.captured.lock().unwrap().clone().expect("native plan resolver captured the staged context")
+    }
+    /// The owning test has joined the prior turn and retained its actual
+    /// context before explicitly requesting a probe for one additional input.
+    pub(crate) fn arm_next_input(&self) {
+        self.captured.lock().unwrap().take().expect("prior input was captured");
+        self.next_input.store(true, Ordering::SeqCst);
     }
 }
 #[async_trait]
 impl AgentToolDispatcher for ContextProbe {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> { Arc::from([Arc::new(Self::definition())]) }
+    fn tool_catalog_capabilities(&self) -> meerkat_core::ToolCatalogCapabilities {
+        meerkat_core::ToolCatalogCapabilities {
+            exact_catalog: self.exact_catalog,
+            may_require_catalog_control_plane: false,
+        }
+    }
     fn resolve_execution_plan(&self, call: ToolCallView<'_>, context: &ToolDispatchContext,
         _: &meerkat_core::ToolExecutionResolutionContext)
         -> Result<meerkat_core::ResolvedToolExecutionPlan, meerkat_core::ToolExecutionResolutionError>
@@ -59,7 +80,7 @@ impl AgentToolDispatcher for ContextProbe {
         assert_eq!(call.name, PROBE);
         assert!(context.retained_work().is_some());
         assert!(context.work_authorization().is_some());
-        assert!(self.0.lock().unwrap().replace(context.clone()).is_none(), "probe runs once");
+        assert!(self.captured.lock().unwrap().replace(context.clone()).is_none(), "probe runs once");
         Err(meerkat_core::ToolExecutionResolutionError::NotFound { tool_name: call.name.into() })
     }
     async fn dispatch(&self, _: ToolCallView<'_>)
@@ -71,10 +92,14 @@ impl AgentToolDispatcher for ContextProbe {
 
 /// The existing provider still performs its native model authorization and
 /// observation. Only its first scripted response is changed to a probe call.
-pub(crate) struct ProbeProvider { inner: Arc<dyn LlmClient>, first: AtomicBool }
+pub(crate) struct ProbeProvider { inner: Arc<dyn LlmClient>, first: Arc<AtomicBool> }
 impl ProbeProvider {
     pub(crate) fn new(inner: Arc<dyn LlmClient>) -> Self {
-        Self { inner, first: AtomicBool::new(true) }
+        Self { inner, first: Arc::new(AtomicBool::new(true)) }
+    }
+    pub(crate) fn with_probe(inner: Arc<dyn LlmClient>, probe: &ContextProbe) -> Self {
+        probe.next_input.store(true, Ordering::SeqCst);
+        Self { inner, first: probe.next_input.clone() }
     }
 }
 #[async_trait]
@@ -102,7 +127,7 @@ impl LlmClient for ProbeProvider {
                 args: serde_json::json!({}), meta: None,
             },
             LlmEvent::Done { outcome: LlmDoneOutcome::Success { .. } } => LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success { stop_reason: StopReason::ToolUse },
+                outcome: LlmDoneOutcome::success(StopReason::ToolUse),
             },
             other => other,
         })))
@@ -161,6 +186,7 @@ async fn terminal_result_with_work<S>(adapter: &InstalledNativeContinuation, fix
     let request = validate_request(FindAndInstallRequest {
         request: "Find a service for this original task".into(), user_context: vec![], caller_observations: vec![],
     }, HostSetupRequest {
+        setup_helper: None,
         target: receiver, correlation: id("original-call"), parent_operation: None,
         continuation: TaskContinuation {
             owner: adapter.namespace.clone(), task: id(&retained.run_id().to_string()), revision: revision(&canonical_input_id.to_string()),
@@ -293,25 +319,24 @@ async fn applied_case(case: ResumeCase) {
                 }
             }).await.expect("native owner publishes the attempted resume");
             let status = service.continuation_status(&owner, &key).await.unwrap();
-            if case == ResumeCase::ClosedHost {
+            if matches!(case, ResumeCase::ClosedHost | ResumeCase::ReleasedSource) {
+                // An actual source release is NotRetained. The wrapper must
+                // preserve native's terminal verdict before looking for a pin.
                 assert!(matches!(status, ContinuationStatus::Refused {
+                    receipt: ref observed,
                     reason: meerkat_runtime::RuntimeDeliveryRefusalReason::AuthorityDenied, ..
-                }), "{status:?}; {pass:?}");
+                } if observed == &receipt), "{status:?}; {pass:?}");
                 assert_eq!(pass.refused, 1, "{pass:?}");
-                assert!(close_after_found.close.lock().unwrap().is_none(),
-                    "the real canonical Found result must precede this close");
+                if case == ResumeCase::ClosedHost {
+                    assert!(close_after_found.close.lock().unwrap().is_none(),
+                        "the real canonical Found result must precede this close");
+                }
             } else {
                 assert!(matches!(status, ContinuationStatus::Pending { admitted: None, .. }),
                     "{status:?}; {pass:?}");
                 assert_eq!(pass.refused, 0, "{pass:?}");
-                if case == ResumeCase::ClosedBeforeJobRead {
-                    assert!(pass.failures.iter().any(|failure| failure.contains("canonical setup result is unavailable")),
-                        "closed private disclosure must remain unavailable, not fabricate missing job facts: {pass:?}");
-                } else {
-                    let reason = meerkat_core::authorization::ControllerReadinessFailure::PolicyUnavailable;
-                    assert!(pass.failures.iter().any(|failure| failure.contains(&reason.to_string())),
-                        "missing source custody stays retryable: {pass:?}");
-                }
+                assert!(pass.failures.iter().any(|failure| failure.contains("canonical setup result is unavailable")),
+                    "closed private disclosure must remain unavailable, not fabricate missing job facts: {pass:?}");
                 assert_eq!(pass.blocked_sessions, vec![fixture.session.clone()], "{pass:?}");
             }
             assert_eq!(pass.applied, 0, "{pass:?}");
@@ -381,7 +406,7 @@ async fn installed_retained_resume_rechecks_current_host_before_native_admission
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn installed_retained_resume_without_source_custody_stays_pending_without_input() {
+async fn installed_retained_resume_after_source_release_refuses_without_input() {
     Box::pin(applied_case(ResumeCase::ReleasedSource)).await;
 }
 

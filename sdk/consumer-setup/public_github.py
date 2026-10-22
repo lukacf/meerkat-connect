@@ -27,6 +27,7 @@ RESPONSE_LIMIT = 256 * 1024
 TEXT_LIMIT = 64 * 1024
 PAGE_SIZE = 20
 PAGE_LIMIT = 5
+RELEASE_ASSET_LIMIT = 200
 OWNER = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}\Z")
 REPOSITORY = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
 BLOB = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
@@ -86,10 +87,15 @@ def arguments(operation, request):
         if type(page) is not int or not 1 <= page <= PAGE_LIMIT:
             raise ValueError()
         return {"query": query, "page": page}
-    if operation != "read" or set(request) - {"owner", "repository", "path", "ref"}:
+    if operation != "read" or set(request) - {"owner", "repository", "path", "ref", "release_tag"}:
         raise ValueError()
     repository(request.get("owner"), request.get("repository"))
     value = {"owner": request["owner"], "repository": request["repository"]}
+    if "release_tag" in request:
+        if "path" in request or "ref" in request:
+            raise ValueError()
+        value["release_tag"] = file_path(text(request["release_tag"], 256))
+        return value
     if "path" in request:
         value["path"] = file_path(request["path"])
     if "ref" in request:
@@ -103,6 +109,8 @@ def endpoint(operation, request):
         return "/search/repositories?" + urllib.parse.urlencode(
             {"q": request["query"], "per_page": PAGE_SIZE, "page": request["page"]})
     root = "/repos/" + urllib.parse.quote(repository(request["owner"], request["repository"]), safe="/")
+    if "release_tag" in request:
+        return root + "/releases/tags/" + urllib.parse.quote(request["release_tag"], safe="")
     path = root + ("/contents/" + urllib.parse.quote(request["path"], safe="/")
                    if "path" in request else "/readme")
     return path + ("?" + urllib.parse.urlencode({"ref": request["ref"]}) if "ref" in request else "")
@@ -146,6 +154,70 @@ def fetch(path):
         connection.close()
 
 
+def release_url(value, host, full, suffix):
+    """Validate an observed URL without following it or changing its spelling."""
+    value = text(value, 4096)
+    url = urllib.parse.urlsplit(value)
+    parts = urllib.parse.unquote(url.path, errors="strict").split("/")
+    prefix = ["", "repos"] if host == "api.github.com" else [""]
+    owner, name = full.split("/")
+    if (url.scheme != "https" or url.netloc != host or url.query or url.fragment
+            or parts[:len(prefix)] != prefix
+            or [part.casefold() for part in parts[len(prefix):len(prefix) + 2]] != [owner.casefold(), name.casefold()]
+            or "/".join(parts[len(prefix) + 2:]) != suffix):
+        raise ValueError()
+    return value
+
+
+def release_projection(request, value, source):
+    """Project only metadata returned for the chosen tag, with no asset choice."""
+    full = repository(request["owner"], request["repository"])
+    identifier, tag, assets = value.get("id"), value.get("tag_name"), value.get("assets")
+    if (type(identifier) is not int or not 0 < identifier < 2 ** 63
+            or tag != request["release_tag"] or value.get("draft") is not False
+            or type(value.get("prerelease")) is not bool or type(assets) is not list):
+        raise ValueError()
+    if len(assets) > RELEASE_ASSET_LIMIT:
+        raise Failure("github_read_too_large")
+    api_url = release_url(value.get("url"), "api.github.com", full, "releases/" + str(identifier))
+    html_url = release_url(value.get("html_url"), "github.com", full, "releases/tag/" + tag)
+    rows, identifiers, names = [], set(), set()
+    for asset in assets:
+        if type(asset) is not dict:
+            raise ValueError()
+        asset_id, size = asset.get("id"), asset.get("size")
+        name = text(asset.get("name"), 256)
+        if (type(asset_id) is not int or not 0 < asset_id < 2 ** 63 or asset_id in identifiers
+                or type(size) is not int or not 0 <= size < 2 ** 63
+                or name in names or name in (".", "..") or "/" in name or "\\" in name):
+            raise ValueError()
+        state = text(asset.get("state"), 64)
+        digest = asset.get("digest")
+        sha256 = None
+        if digest is not None:
+            digest = text(digest, 256)
+            if digest.startswith("sha256:"):
+                if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                    raise ValueError()
+                sha256 = digest[7:]
+        rows.append({"id": asset_id, "name": name, "state": state, "bytes": size,
+            "api_url": release_url(asset.get("url"), "api.github.com", full, "releases/assets/" + str(asset_id)),
+            "download_url": release_url(asset.get("browser_download_url"), "github.com", full,
+                "releases/download/" + tag + "/" + name),
+            "reported_digest": digest, "sha256": sha256})
+        identifiers.add(asset_id)
+        names.add(name)
+    result = {"scope": "untrusted_public_github_release_metadata", "source_url": source,
+        "repository": full, "release_id": identifier, "release_tag": tag,
+        "release_api_url": api_url, "release_url": html_url, "prerelease": value["prerelease"],
+        "assets": rows, "asset_count": len(rows), "asset_limit": RELEASE_ASSET_LIMIT,
+        "asset_scope": "assets_returned_by_release_endpoint", "selection_required": True,
+        "digest_provenance": "reported_by_github_not_locally_verified", "assets_downloaded": False}
+    if len(wire(result)) > RESPONSE_LIMIT:
+        raise Failure("github_read_too_large")
+    return result
+
+
 def projection(operation, request, value):
     if type(value) is not dict:
         raise ValueError()
@@ -173,6 +245,8 @@ def projection(operation, request, value):
                 "source_url": source, "total_count": total, "incomplete_results": incomplete,
                 "page_size": PAGE_SIZE, "max_pages": PAGE_LIMIT, "repositories": rows,
                 "selection_required": True}
+    if "release_tag" in request:
+        return release_projection(request, value, source)
     if value.get("type") != "file" or value.get("encoding") != "base64":
         raise Failure("github_text_required")
     size, sha = value.get("size"), value.get("sha")
@@ -260,6 +334,7 @@ class PublicGitHub:
                     self.retry_at = time.monotonic() + retry
                 raise self.io.Error(value["error"], 409)
             if value.get("scope") != ("untrusted_public_github_repository_search" if operation == "search"
+                                       else "untrusted_public_github_release_metadata" if "release_tag" in request
                                        else "untrusted_public_github_repository_text"):
                 raise ValueError()
             return value

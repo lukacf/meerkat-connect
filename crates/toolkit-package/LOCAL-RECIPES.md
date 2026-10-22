@@ -312,9 +312,86 @@ They do not obtain current policy by looking up the recipe store.
 
 There is no implicit download, artifact cache or installer invocation during
 save/read. Missing or changed artifacts must be resolved explicitly. This
-`export` command remains for remote endpoints; local selections use their
-existing installer. Preserve the old observations and record the new outcome
+executable `export` form remains for remote endpoints; local selections use their
+existing installer. Selected retained guidance can be exported separately as
+described below. Preserve the old observations and record the new outcome
 with its owner instead of overwriting the retained recipe.
+
+## Export selected retained guidance
+
+A retained local selection or plain software declaration with
+`documents.plugin_source_json` can export explicitly selected public skill text
+after the original staging directory has been removed. First read the exact
+saved identity and retention digest. Select literal paths from that observation
+and bind its `plugin_source_digest` in a guidance selection file:
+
+```json
+{
+  "plugin_source_digest": "REPLACE_WITH_THE_64_LOWERCASE_HEX_SOURCE_DIGEST",
+  "files": [
+    "./skills/report-guide/SKILL.md",
+    "./skills/report-guide/data/example.csv"
+  ]
+}
+```
+
+The source digest is the raw hash returned by retained read, not the inspector
+report's inner digest. The CLI accepts no caller-supplied file contents. Use an
+executable whose `--help` lists `--guidance`:
+
+```sh
+toolkit-local-recipes export \
+  --database /absolute/host-state/toolkit.sqlite \
+  --realm household --owner alice \
+  --publisher local-research --name selected-report --version 0.1.0 \
+  --digest REPLACE_WITH_THE_64_LOWERCASE_HEX_RETENTION_DIGEST \
+  --guidance /absolute/reviewed-choice/guidance.json \
+  --destination /absolute/exports/report-guide
+```
+
+Supply exactly one of `--guidance`, `--selection` or `--declaration`. Guidance
+requires 1-15 distinct retained files. Every selected file must be beneath
+`./skills/<skill>/`, with that skill's `SKILL.md` explicitly included. Supporting
+text can use any filename or extension, including JSON, YAML and CSV; it need
+not be under `references/`. No directory traversal, globs, recursive selection,
+root assets or MCP configuration selection is supported. Paths are at most 1024
+UTF-8 bytes and 16 components after `./`; empty, dot, dot-dot, colon, backslash
+and control-character components are refused. A selected file cannot also be
+another selected file's parent. Missing retained paths are refused before any
+destination is created.
+
+The retained source owner revalidates its existing limits and hashes: at most
+16 source files including `plugin.json`, at most 32 KiB per file and 128 KiB in
+total, UTF-8 text without binary control characters, and exact per-file and
+report digests. This validation does not identify secrets. The host must have
+selected public text when retaining it and must authorize its export. Old
+records without retained source remain readable but cannot use this form.
+
+The output contains canonical standard `plugin.json` and exactly the selected
+skill files. Recognized manifest metadata and every extension namespace are
+preserved, including a validated `ai.rkat.toolkit` package and its requirements.
+Unknown namespaces remain opaque. The exporter uses the existing manifest
+constructor and refuses an invalid Toolkit namespace; it does not erase
+requirements to make an executable export portable. No `mcp.json`, entrypoint,
+activation selection, configuration or grant is created. Files are written
+without execute bits. Text, including a code example, can still be interpreted
+by a receiving client; export grants no authority to execute it.
+
+A generic client can discover the skill through the standard `skills/`
+directory and follow its relative references without understanding Toolkit
+metadata. Only the explicitly selected bytes are copied; the host is responsible
+for choosing every reference the recipient needs. Source files are read from
+the exact retained record, never reopened in the former staging directory.
+The saved selection, policy references and decision history are unchanged.
+
+Success returns `selection_kind: guidance_only`, `plugin_source_digest`, the
+exact selection digest and hashes and sizes for every output file. Run
+`check-export` with the same `--guidance` file, identity, retention digest and
+destination to compare the complete expected file set and detect changed or
+extra entries. The destination custody, existing-directory refusal, uncertain
+write and readback limits described below apply to this form too. Export and
+readback do not establish installation, activation, host compatibility or
+completion of the original task.
 
 ## Export an independent MCP endpoint
 
@@ -340,11 +417,11 @@ server name in `portable_mcp_entries`. The shared contract validator refuses
 components that need Toolkit contracts, host services,
 package state or dependencies. Parsing the saved recipe is not sufficient proof
 of portability. A guidance-only recipe has no executable export through this
-command. The Rust `PortablePluginExport` API separately supports inert skill files.
+command. Selected retained skill text uses the separate `--guidance` form above.
 
 Existing `--selection` callers may still provide the full `ActivationManifest`,
 including its original configuration/policy references and source revision.
-Supply exactly one of `--selection` or `--declaration`. Legacy serialization,
+For an MCP endpoint, supply exactly one of `--selection` or `--declaration`. Legacy serialization,
 manifest digests, typed refusals and saved requests retain their meaning. Actual
 Toolkit activation and `check_host` still require the full manifest; the new
 inert export neither constructs a substitute manifest nor authorizes activation.
@@ -416,8 +493,8 @@ toolkit-local-recipes check-export \
 ```
 
 The command uses the same exact recipe lookup and selection/portability
-validation as `export`. It derives expected bytes through the matching
-`IntegrationBundle` export method and calls `PortablePluginExport::inspect_existing`; it never calls `write_new`,
+validation as `export`. It derives expected bytes through the matching export
+constructor and calls `PortablePluginExport::inspect_existing`; it never calls `write_new`,
 repairs files, creates the destination, executes package code or contacts the
 endpoint. An absent recipe database is refused rather than created. Opening an
 existing SQLite store can still create or update WAL sidecars; the read-only

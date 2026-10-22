@@ -834,11 +834,15 @@ fn check_export_observes_missing_matching_and_changed_files_in_fresh_processes()
             })
         );
         for name in ["plugin.json", "mcp.json"] {
+            let mut fingerprint = exported["files"][name].clone();
+            // Export summaries identify content. Current Unix inspection also
+            // observes executable intent; it does not change that summary.
+            fingerprint["executable"] = json!(false);
             assert_eq!(
                 checked["export_check"]["files"][name],
                 json!({
-                    "state": "matches", "expected": exported["files"][name],
-                    "observed": exported["files"][name],
+                    "state": "matches", "expected": fingerprint,
+                    "observed": fingerprint,
                 })
             );
         }
@@ -854,14 +858,16 @@ fn check_export_observes_missing_matching_and_changed_files_in_fresh_processes()
     fs::write(destination.join("mcp.json"), b"changed").unwrap();
     let changed = success(&arguments);
     assert_eq!(changed["export_check"]["state"], "mismatch");
+    let mut expected = exported["files"]["mcp.json"].clone();
+    expected["executable"] = json!(false);
     assert_eq!(
         changed["export_check"]["files"]["mcp.json"]["expected"],
-        exported["files"]["mcp.json"]
+        expected
     );
     assert_eq!(
         changed["export_check"]["files"]["mcp.json"]["observed"],
         json!({
-            "sha256": ContentDigest::of_bytes(b"changed"), "bytes": 7,
+            "sha256": ContentDigest::of_bytes(b"changed"), "bytes": 7, "executable": false,
         })
     );
     fs::remove_file(destination.join("mcp.json")).unwrap();

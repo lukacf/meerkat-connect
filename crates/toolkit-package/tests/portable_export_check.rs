@@ -2,10 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use toolkit_package::{
     AGENT_PLUGIN_SCHEMA, ContentDigest, ImportedPluginManifest, PluginRoot,
-    PortableExportCheckState as State, PortablePluginExport,
+    PortableExportCheckState as State, PortableExportFingerprint, PortablePluginExport,
 };
 
 fn export() -> PortablePluginExport {
@@ -55,6 +55,81 @@ fn inspection_reports_current_missing_matching_and_changed_bytes_without_writes(
     assert_eq!(fs::read(destination.join("plugin.json")).unwrap(), altered);
     fs::remove_file(destination.join("plugin.json")).unwrap();
     assert_eq!(export.inspect_existing(&destination).state, State::Missing);
+}
+
+#[test]
+fn inspection_detects_executable_mode_drift_with_identical_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("server"), b"inert executable fixture\n").unwrap();
+    fs::set_permissions(source.join("server"), fs::Permissions::from_mode(0o700)).unwrap();
+    let export = export()
+        .with_file(&PluginRoot::open(&source).unwrap(), "./server")
+        .unwrap();
+    let destination = temp.path().join("export");
+    export.write_new(&destination).unwrap();
+    assert_eq!(export.inspect_existing(&destination).state, State::Matches);
+    let original = fs::read(destination.join("server")).unwrap();
+    fs::set_permissions(
+        destination.join("server"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let check = export.inspect_existing(&destination);
+    assert_eq!(check.state, State::Mismatch);
+    assert_eq!(check.files["server"].state, State::Mismatch);
+    assert_eq!(
+        check.files["server"].expected.sha256,
+        check.files["server"].observed.as_ref().unwrap().sha256
+    );
+    assert_eq!(check.files["server"].expected.executable, Some(true));
+    assert_eq!(
+        check.files["server"].observed.as_ref().unwrap().executable,
+        Some(false)
+    );
+    assert_eq!(fs::read(destination.join("server")).unwrap(), original);
+    assert_eq!(
+        fs::metadata(destination.join("server"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0
+    );
+
+    fs::set_permissions(
+        destination.join("server"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    assert_eq!(export.inspect_existing(&destination).state, State::Matches);
+    fs::set_permissions(
+        destination.join("plugin.json"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    assert_eq!(
+        export.inspect_existing(&destination).files["plugin.json"].state,
+        State::Mismatch
+    );
+}
+
+#[test]
+fn legacy_fingerprint_does_not_invent_an_executable_observation() {
+    let legacy = serde_json::json!({
+        "sha256": ContentDigest::of_bytes(b"legacy observation"), "bytes": 18,
+    });
+    let imported: PortableExportFingerprint = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(imported.executable, None);
+    assert_eq!(serde_json::to_value(&imported).unwrap(), legacy);
+    for executable in [false, true] {
+        let mut current = legacy.clone();
+        current["executable"] = serde_json::json!(executable);
+        let imported: PortableExportFingerprint = serde_json::from_value(current.clone()).unwrap();
+        assert_eq!(imported.executable, Some(executable));
+        assert_eq!(serde_json::to_value(&imported).unwrap(), current);
+    }
 }
 
 #[test]

@@ -398,3 +398,485 @@ fn software_save_cli_retains_exact_new_form_for_python_and_node_and_refuses_cros
         assert_eq!(invoke(&fixture.args("list"),None)["recipes"],json!([saved["recipe"].clone()]));
     }
 }
+
+// This helper calls the actual canonical binary. Source rows are not a mocked
+// inspector envelope, and no command from the inspected MCP document is run.
+fn retained_guidance_source(fixture: &Fixture) -> (Value, Vec<String>, Value) {
+    use std::io::Write;
+    use std::process::Stdio;
+    let source = fixture.root.join("ordinary");
+    let skill = "skills/observed-guide";
+    fs::create_dir_all(source.join(format!("{skill}/data"))).unwrap();
+    let mut toolkit_package: Value = serde_json::from_slice(PYTHON_PACKAGE).unwrap();
+    toolkit_package["strategies"][0]["known_requirements"] = json!([{
+        "name": "fixture/required-service", "version": {"major": 1, "minimum_minor": 0},
+        "authority": ["read"], "availability": {"kind": "required"}
+    }]);
+    let plugin = json!({
+        "$schema": toolkit_package::AGENT_PLUGIN_SCHEMA, "name": "retained.guidance",
+        "extensions": {
+            "ai.rkat.toolkit": toolkit_package,
+            "org.example.other-client": {"notice": "opaque namespace retained"}
+        }
+    });
+    fs::write(
+        source.join("plugin.json"),
+        serde_json::to_vec_pretty(&plugin).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        source.join("mcp.json"),
+        serde_json::to_vec(&json!({
+            "$schema": toolkit_package::AGENT_PLUGIN_MCP_SCHEMA,
+            "mcpServers": {"never-exported": {"type": "stdio", "command": "./bin/not-retained"}}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(source.join(format!("{skill}/SKILL.md")),
+        b"---\nname: observed-guide\ndescription: Read retained public guidance.\n---\nRead [the data](data/example.csv).\n").unwrap();
+    let reading = format!(
+        "label,value\nretained,{}\n",
+        fixture.root.file_name().unwrap().to_str().unwrap()
+    );
+    fs::write(source.join(format!("{skill}/data/example.csv")), reading).unwrap();
+    fs::write(
+        source.join(format!("{skill}/data/example.py")),
+        b"# Public example, never an exported entrypoint.\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            source.join(format!("{skill}/data/example.py")),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    fs::write(source.join("root.txt"), b"unselected root asset\n").unwrap();
+    let selected = vec![
+        format!("./{skill}/SKILL.md"),
+        format!("./{skill}/data/example.csv"),
+        format!("./{skill}/data/example.py"),
+    ];
+    let files = [
+        vec![
+            "./plugin.json".to_owned(),
+            "./mcp.json".to_owned(),
+            "./root.txt".to_owned(),
+        ],
+        selected.clone(),
+    ]
+    .concat();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_toolkit-package-inspect"))
+        .arg("agent-plugin-files")
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            &serde_json::to_vec(&json!({
+                "root": fixture.root, "directory": "./ordinary", "files": files
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(output.stderr.is_empty());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "accepted");
+    let inspector = fs::read(env!("CARGO_BIN_EXE_toolkit-package-inspect")).unwrap();
+    let observation = json!({"schema_version": 1, "scope": "observed_public_plugin_files",
+        "staged_id": "ordinary", "inspector_sha256": ContentDigest::of_bytes(&inspector), "report": report});
+    fs::write(
+        fixture.root.join("plugin-source.json"),
+        serde_json::to_vec(&observation).unwrap(),
+    )
+    .unwrap();
+    (observation, selected, plugin)
+}
+
+fn save_guidance(fixture: &Fixture, software: bool) -> (Value, Value, Vec<String>, Value) {
+    let (observation, files, plugin) = retained_guidance_source(fixture);
+    let mut args = fixture.save();
+    if software {
+        let (_, declaration, _) = software_documents(LocalSelectionProfile::Python);
+        fs::write(fixture.root.join("declaration.json"), declaration).unwrap();
+        let index = args.iter().position(|arg| arg == "--selection").unwrap();
+        args[index] = "--declaration".into();
+        args[index + 1] = fixture.root.join("declaration.json").display().to_string();
+    }
+    args.extend([
+        "--plugin-source".into(),
+        fixture
+            .root
+            .join("plugin-source.json")
+            .display()
+            .to_string(),
+    ]);
+    let saved = invoke(&args, None);
+    assert_eq!(invoke(&args, None), saved);
+    (saved, observation, files, plugin)
+}
+
+fn guidance_args(fixture: &Fixture, saved: &Value, selection: &Value) -> Vec<String> {
+    fs::write(
+        fixture.root.join("guidance.json"),
+        serde_json::to_vec(selection).unwrap(),
+    )
+    .unwrap();
+    let mut args = fixture.read(saved["recipe"]["digest"].as_str().unwrap());
+    args[0] = "export".into();
+    args.extend([
+        "--guidance".into(),
+        fixture.root.join("guidance.json").display().to_string(),
+        "--destination".into(),
+        fixture.root.join("exported").display().to_string(),
+    ]);
+    args
+}
+
+#[test]
+fn retained_guidance_exports_after_staging_removal_for_a_generic_reader() {
+    for software in [false, true] {
+        let fixture = Fixture::new();
+        let (saved, observation, files, plugin) = save_guidance(&fixture, software);
+        let before = invoke(
+            &fixture.read(saved["recipe"]["digest"].as_str().unwrap()),
+            None,
+        );
+        let selection = json!({"plugin_source_digest": saved["recipe"]["plugin_source_digest"], "files": files});
+        let mut args = guidance_args(&fixture, &saved, &selection);
+        fs::remove_dir_all(fixture.root.join("ordinary")).unwrap();
+        fs::remove_file(fixture.root.join("plugin-source.json")).unwrap();
+        let exported = invoke(&args, None);
+        assert_eq!(exported["status"], "exported");
+        assert_eq!(exported["selection_kind"], "guidance_only");
+        assert_eq!(
+            exported["plugin_source_digest"],
+            selection["plugin_source_digest"]
+        );
+        assert_eq!(
+            exported["selection_digest"],
+            json!(ContentDigest::of_bytes(
+                &toolkit_package::canonical_json(&selection).unwrap()
+            ))
+        );
+        assert!(exported.get("declared_remote_service").is_none());
+        let destination = fixture.root.join("exported");
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(destination.join("plugin.json")).unwrap()).unwrap();
+        assert_eq!(manifest, plugin);
+        assert!(!destination.join("mcp.json").exists());
+        assert!(!destination.join("root.txt").exists());
+        assert!(!destination.join("bin").exists());
+        // Independent generic reader: ordinary directory and text reads only,
+        // ignoring extension namespaces and knowing no retained Toolkit schema.
+        let skills = fs::read_dir(destination.join("skills"))
+            .unwrap()
+            .map(|row| row.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(skills.len(), 1);
+        let guide = fs::read_to_string(skills[0].join("SKILL.md")).unwrap();
+        let relative = guide.split("](").nth(1).unwrap().split(')').next().unwrap();
+        let reference = skills[0].join(relative);
+        let data = fs::read(&reference).unwrap();
+        let retained_path = format!(
+            "./{}",
+            reference
+                .strip_prefix(&destination)
+                .unwrap()
+                .to_str()
+                .unwrap()
+        );
+        let retained = observation["report"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["path"] == retained_path)
+            .unwrap();
+        assert_eq!(data, retained["text"].as_str().unwrap().as_bytes());
+        assert_eq!(
+            exported["files"].as_object().unwrap().len(),
+            files.len() + 1
+        );
+        for file in &files {
+            let name = file.strip_prefix("./").unwrap();
+            let bytes = fs::read(destination.join(name)).unwrap();
+            let original = observation["report"]["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["path"] == *file)
+                .unwrap();
+            assert_eq!(bytes, original["text"].as_str().unwrap().as_bytes());
+            assert_eq!(
+                exported["files"][name],
+                json!({"sha256": ContentDigest::of_bytes(&bytes), "bytes": bytes.len()})
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(destination.join(name))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o111,
+                    0
+                );
+            }
+        }
+        let manifest_bytes = fs::read(destination.join("plugin.json")).unwrap();
+        assert_eq!(
+            exported["files"]["plugin.json"],
+            json!({"sha256": ContentDigest::of_bytes(&manifest_bytes), "bytes": manifest_bytes.len()})
+        );
+        args[0] = "check-export".into();
+        let checked = invoke(&args, None);
+        assert_eq!(checked["selection_kind"], "guidance_only");
+        assert_eq!(
+            checked["plugin_source_digest"],
+            selection["plugin_source_digest"]
+        );
+        assert_eq!(checked["export_check"]["state"], "matches");
+        assert_eq!(
+            checked["export_check"]["inventory"],
+            json!({"state": "matches", "complete": true, "unexpected_entries": 0})
+        );
+        assert_eq!(
+            checked["export_check"]["files"].as_object().unwrap().len(),
+            files.len() + 1
+        );
+        let changed = destination.join(files[1].strip_prefix("./").unwrap());
+        fs::write(&changed, b"changed\n").unwrap();
+        assert_eq!(invoke(&args, None)["export_check"]["state"], "mismatch");
+        fs::write(changed, data).unwrap();
+        fs::write(destination.join("unexpected.txt"), b"extra\n").unwrap();
+        assert_eq!(
+            invoke(&args, None)["export_check"]["inventory"]["unexpected_entries"],
+            1
+        );
+        fs::remove_file(destination.join("unexpected.txt")).unwrap();
+        assert_eq!(invoke(&args, None)["export_check"]["state"], "matches");
+        assert_eq!(
+            invoke(
+                &fixture.read(saved["recipe"]["digest"].as_str().unwrap()),
+                None
+            ),
+            before
+        );
+        args[0] = "export".into();
+        invoke(&args, Some("export_write_unconfirmed"));
+    }
+}
+
+#[test]
+fn retained_guidance_refuses_foreign_changed_or_unselected_source_without_output() {
+    let fixture = Fixture::new();
+    let (saved, _, files, _) = save_guidance(&fixture, false);
+    let before = invoke(
+        &fixture.read(saved["recipe"]["digest"].as_str().unwrap()),
+        None,
+    );
+    let selection =
+        json!({"plugin_source_digest": saved["recipe"]["plugin_source_digest"], "files": files});
+    let args = guidance_args(&fixture, &saved, &selection);
+    for (flag, value, error) in [
+        ("--owner", "bob", "recipe_not_found"),
+        ("--realm", "elsewhere", "recipe_not_found"),
+        ("--name", "not-retained", "recipe_not_found"),
+        ("--digest", &"0".repeat(64), "stored_recipe_unverified"),
+    ] {
+        let mut bad = args.clone();
+        replace(&mut bad, flag, value);
+        invoke(&bad, Some(error));
+    }
+    let mut wrong_source = selection.clone();
+    wrong_source["plugin_source_digest"] = json!("0".repeat(64));
+    invoke(
+        &guidance_args(&fixture, &saved, &wrong_source),
+        Some("portable_export_refused"),
+    );
+    let invalid_files = vec![
+        vec![],
+        vec![files[1].clone()],
+        vec![files[0].clone(), files[0].clone()],
+        vec!["./plugin.json".into()],
+        vec!["./mcp.json".into()],
+        vec!["./root.txt".into()],
+        vec![
+            files[0].clone(),
+            "./skills/observed-guide/missing.json".into(),
+        ],
+        vec![files[0].clone(), "./skills/other/data/example.csv".into()],
+        vec!["./skills/observed-guide/../SKILL.md".into()],
+        vec!["./skills/observed-guide/*.md".into()],
+        vec!["./skills/observed-guide//SKILL.md".into()],
+        vec!["./skills/observed-guide/bad\n".into()],
+        vec!["./skills/observed-guide/a:b".into()],
+        vec!["./skills/observed-guide/a\\b".into()],
+        vec!["./skills/observed-guide/".to_owned() + &"a".repeat(1024)],
+        vec!["./skills/observed-guide/".to_owned() + &"a/".repeat(14) + "last"],
+        vec![files[0].clone(); 16],
+    ];
+    for files in invalid_files {
+        let bad =
+            json!({"plugin_source_digest": selection["plugin_source_digest"], "files": files});
+        invoke(
+            &guidance_args(&fixture, &saved, &bad),
+            Some("portable_export_refused"),
+        );
+    }
+    for flag in ["--selection", "--declaration"] {
+        let mut both = guidance_args(&fixture, &saved, &selection);
+        both.extend([
+            flag.into(),
+            fixture.root.join("selection.json").display().to_string(),
+        ]);
+        invoke(&both, Some("invalid_arguments"));
+    }
+    let mut contents = selection.clone();
+    contents["text"] = json!("caller supplied contents");
+    invoke(
+        &guidance_args(&fixture, &saved, &contents),
+        Some("invalid_selection"),
+    );
+    assert!(!fixture.root.join("exported").exists());
+    assert_eq!(
+        invoke(
+            &fixture.read(saved["recipe"]["digest"].as_str().unwrap()),
+            None
+        ),
+        before
+    );
+    let no_source = Fixture::new();
+    let saved = invoke(&no_source.save(), None);
+    invoke(
+        &guidance_args(&no_source, &saved, &selection),
+        Some("portable_export_refused"),
+    );
+    assert!(!no_source.root.join("exported").exists());
+}
+
+#[test]
+fn retained_guidance_keeps_source_validation_and_refuses_selected_parent_collisions() {
+    let fixture = Fixture::new();
+    let (saved, observation, files, _) = save_guidance(&fixture, false);
+    let before = invoke(
+        &fixture.read(saved["recipe"]["digest"].as_str().unwrap()),
+        None,
+    );
+    let mut save = fixture.save();
+    save.extend([
+        "--plugin-source".into(),
+        fixture
+            .root
+            .join("plugin-source.json")
+            .display()
+            .to_string(),
+    ]);
+    // Retained observations are host-supplied historical data. Derive changes
+    // from the real inspector result to exercise custody and validation, not to
+    // claim that the inspector could read a file and its child simultaneously.
+    let rehash = |source: &mut Value| {
+        for file in source["report"]["files"].as_array_mut().unwrap() {
+            let text = file["text"].as_str().unwrap();
+            let length = text.len();
+            let digest = ContentDigest::of_bytes(text.as_bytes());
+            file["byte_length"] = json!(length);
+            file["source_digest"] = json!(digest);
+            if file["inspection"].is_object() {
+                file["inspection"]["source_digest"] = file["source_digest"].clone();
+            }
+        }
+        source["report"]["source_digest"] = json!(ContentDigest::of_bytes(
+            &toolkit_package::canonical_json(&source["report"]["files"]).unwrap()
+        ));
+    };
+    let mut changed = observation.clone();
+    changed["report"]["files"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|file| file["path"] == files[1])
+        .unwrap()["text"] = json!("changed without retained hashes\n");
+    fs::write(
+        fixture.root.join("plugin-source.json"),
+        serde_json::to_vec(&changed).unwrap(),
+    )
+    .unwrap();
+    invoke(&save, Some("invalid_plugin_source"));
+    rehash(&mut changed);
+    fs::write(
+        fixture.root.join("plugin-source.json"),
+        serde_json::to_vec(&changed).unwrap(),
+    )
+    .unwrap();
+    invoke(&save, Some("immutable_conflict"));
+
+    let mut invalid_namespace = observation.clone();
+    let plugin = invalid_namespace["report"]["files"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|file| file["path"] == "./plugin.json")
+        .unwrap();
+    let mut manifest: Value = serde_json::from_str(plugin["text"].as_str().unwrap()).unwrap();
+    manifest["extensions"]["ai.rkat.toolkit"]["schema_version"] = json!(999);
+    plugin["text"] = json!(serde_json::to_string(&manifest).unwrap());
+    rehash(&mut invalid_namespace);
+    fs::write(
+        fixture.root.join("plugin-source.json"),
+        serde_json::to_vec(&invalid_namespace).unwrap(),
+    )
+    .unwrap();
+    invoke(&save, Some("invalid_plugin_source"));
+
+    let mut collision = observation;
+    collision["report"]["files"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "path": "./skills/observed-guide/data", "text": "historically observed text\n",
+            "byte_length": 0, "source_digest": "0".repeat(64), "inspection": null
+        }));
+    rehash(&mut collision);
+    fs::write(
+        fixture.root.join("plugin-source.json"),
+        serde_json::to_vec(&collision).unwrap(),
+    )
+    .unwrap();
+    replace(&mut save, "--owner", "collision-owner");
+    let retained = invoke(&save, None);
+    let mut export = guidance_args(
+        &fixture,
+        &retained,
+        &json!({
+            "plugin_source_digest": retained["recipe"]["plugin_source_digest"],
+            "files": [files[0], "./skills/observed-guide/data", files[1]]
+        }),
+    );
+    replace(&mut export, "--owner", "collision-owner");
+    invoke(&export, Some("portable_export_refused"));
+    assert!(!fixture.root.join("exported").exists());
+    assert_eq!(
+        invoke(
+            &fixture.read(saved["recipe"]["digest"].as_str().unwrap()),
+            None
+        ),
+        before
+    );
+}

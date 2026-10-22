@@ -163,6 +163,51 @@ def start(args, *, stopped=None):
         if search_node:
             extra += ["--enable-node-search"]
 
+    node_build = host.node_build_options(args)
+    if node_build is not None:
+        if not {"selected_node", "selected_npm_cli"} <= pins.keys():
+            raise host.PreparationError("node_build_requires_selected_node_validator")
+        if host.compose_overlaps(node_build[0], destination):
+            raise host.PreparationError("node_build_profile_overlaps_host_paths")
+        pins["node_build_profile"] = host.pinned_path(node_build[0], node_build[1])
+        extra += ["--node-build-profile", str(node_build[0]),
+                  "--node-build-profile-sha256", node_build[1]]
+
+    node_prebuilt_profile = getattr(args, "node_prebuilt_profile", None)
+    node_prebuilt_sha256 = getattr(args, "node_prebuilt_profile_sha256", None)
+    acquire_node_prebuilt = node_prebuilt_profile is not None or node_prebuilt_sha256 is not None
+    if acquire_node_prebuilt:
+        if not node_prebuilt_profile or not node_prebuilt_sha256:
+            raise host.PreparationError("node_prebuilt_profile_pair_required")
+        host.checked_hash(node_prebuilt_sha256)
+        if not public_npm:
+            raise host.PreparationError("node_prebuilt_requires_node_acquisition")
+        if Path(node_prebuilt_profile).is_symlink():
+            raise host.PreparationError("node_prebuilt_profile_must_be_regular")
+        pins["node_prebuilt_profile"] = runtime_pin(node_prebuilt_profile, destination, executable=False)
+        if pins["node_prebuilt_profile"]["sha256"] != node_prebuilt_sha256:
+            raise host.PreparationError("node_prebuilt_profile_changed")
+        extra += ["--node-prebuilt-profile", pins["node_prebuilt_profile"]["path"],
+                  "--node-prebuilt-profile-sha256", node_prebuilt_sha256]
+
+    node_prebuilt_policy = getattr(args, "node_prebuilt_policy", None)
+    node_prebuilt_policy_sha256 = getattr(args, "node_prebuilt_policy_sha256", None)
+    if node_prebuilt_policy is not None or node_prebuilt_policy_sha256 is not None:
+        if not node_prebuilt_policy or not node_prebuilt_policy_sha256:
+            raise host.PreparationError("node_prebuilt_policy_pair_required")
+        if acquire_node_prebuilt:
+            raise host.PreparationError("ambiguous_node_prebuilt_selection")
+        host.checked_hash(node_prebuilt_policy_sha256)
+        if not public_npm:
+            raise host.PreparationError("node_prebuilt_requires_node_acquisition")
+        if Path(node_prebuilt_policy).is_symlink():
+            raise host.PreparationError("node_prebuilt_policy_must_be_regular")
+        pins["node_prebuilt_policy"] = runtime_pin(node_prebuilt_policy, destination, executable=False)
+        if pins["node_prebuilt_policy"]["sha256"] != node_prebuilt_policy_sha256:
+            raise host.PreparationError("node_prebuilt_policy_changed")
+        extra += ["--node-prebuilt-policy", pins["node_prebuilt_policy"]["path"],
+                  "--node-prebuilt-policy-sha256", node_prebuilt_policy_sha256]
+
     recipe_inputs = tuple(getattr(args, "recipes_" + key, None) for key in ("database", "realm", "owner", "scope"))
     recipes_enabled = any(value is not None for value in recipe_inputs)
     remote_recipes = getattr(args, "allow_remote_recipes", False)
@@ -257,6 +302,12 @@ def main(argv=None):
     parser.add_argument("--selected-node", help="trusted acquisition Node, separate from the library runtime")
     parser.add_argument("--selected-npm-cli", help="trusted npm CLI paired with the acquisition Node")
     parser.add_argument("--npm-archive", help="trusted npm distribution required by the acquisition owner")
+    parser.add_argument("--node-prebuilt-profile", help="explicit pinned public Node prebuilt acquisition profile")
+    parser.add_argument("--node-prebuilt-profile-sha256")
+    parser.add_argument("--node-prebuilt-policy", help="explicit relocatable target/origin policy; host binds its selected Python")
+    parser.add_argument("--node-prebuilt-policy-sha256")
+    parser.add_argument("--node-build-profile", help="optional host-selected build profile; external tools remain host-owned")
+    parser.add_argument("--node-build-profile-sha256")
     parser.add_argument("--timeout-seconds", type=int, default=300)
     for key in ("database", "realm", "owner"):
         parser.add_argument("--recipes-" + key)

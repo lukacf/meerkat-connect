@@ -10,7 +10,7 @@ const projection = moduleUrl(await readFile(new URL("projection.js", assets), "u
 const view = moduleUrl((await readFile(new URL("view.js", assets), "utf8")).replace('"./projection.js"', JSON.stringify(projection)));
 const moduleSource = (await readFile(new URL("panel.js", assets), "utf8"))
   .replace('"./projection.js"', JSON.stringify(projection)).replace('"./view.js"', JSON.stringify(view));
-const { mountSourceStatusPanel, mountAccountReview, readSourceStatus, mountSourceStatusPage, mountApplicationAccess } = await import(moduleUrl(moduleSource));
+const { mountSourceStatusPanel, mountAccountReview, readSourceStatus, mountSourceStatusPage, mountApplicationAccess, mountOperatorRecovery } = await import(moduleUrl(moduleSource));
 function fixture(t) {
   const dom = new JSDOM("<main></main>");
   t.after(() => dom.window.close());
@@ -89,6 +89,146 @@ test("the actual approval renderer uses supplied summary and exact fields withou
   account.update(review("")); assert.match(container.textContent, /No additional description was supplied/);
   assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Approve", "Deny"]);
 });
+// This is the final protected operator body, not the helper's input shape.
+// Member permissions and the separate catalog permission own their deadlines.
+function batchReview(count = 2) {
+  const service_instruction = {
+    proposed_fresh_instruction: "Compare the selected public sources for the original question",
+    instruction_origin: "setup proposal; approval authorizes this new instruction",
+    live_attachment_effect: "hydrate these exact servers into the original session",
+    configuration_persistence: "not authorized by this review",
+  };
+  const member_tool_policy = {
+    proposal: { member: "original-agent", lifetime: "until_superseded",
+      selection: { tools: Array.from({ length: count }, (_, index) => ({ name: `public_${index}_read`, consequence: "r0" })), catalog: "r0" },
+      candidate_canonical_json: '{"members":[{"member_identity":"original-agent","grants":[{"tool_name":"preserved_tool"}]}]}' },
+    approval_scope: "the complete successor policy including preserved member permissions",
+    lifetime: "until superseded; task closure does not undo this separately reviewed policy",
+    catalog_visibility: "eligible tool metadata in the original session; invocation still needs its exact native target grant",
+  };
+  const members = Array.from({ length: count }, (_, index) => {
+    const server = `public-${index}`;
+    return { server, parent: { purpose: "operations", connector_selection: { server, connector: null },
+      service_access: { permission: { connection: server, operations: [`read_${index}`, `list_${index}`],
+        lifetime: { scope: { kind: "task", task: "fresh-original" }, expires_at_ms: 1800000000000 + index * 1000 } } },
+      access_request: { phase: "installed_public_service_access", authentication: { kind: "none" },
+        software: { profile: `profile-${index}`, server_name: server }, operation_basis: { kind: "selected_manifest_declarations" },
+        application_selection: { agent: "original-agent", operations: [`untrusted_display_alias_${index}`], expires_in_ms: null },
+        service_instruction } } };
+  });
+  const request = { phase: "installed_public_service_batch_access", services: members.map(member => member.parent.access_request),
+    service_instruction, member_tool_policy, notice: "One decision covers this exact public set and fresh instruction. Readiness is checked separately." };
+  return { review_id: 26, can_start: false, prompt: { kind: "approval", approval_id: "actual-batch-prompt",
+    summary: "Review this exact set of public services for the task", allowed_decisions: ["approve", "deny"],
+    body: { kind: "public_services_v1", members, catalog: { purpose: "operations", access_request: request,
+      catalog_access: { session: "original-session", lifetime: { scope: { kind: "task", task: "fresh-original" }, expires_at_ms: 1800000000000 } } },
+      access_request: request } } };
+}
+function ordinaryReviewText(container) {
+  const copy = container.cloneNode(true); for (const detail of copy.querySelectorAll("details")) detail.remove();
+  return copy.textContent;
+}
+
+test("batch review visibly explains the exact members, reviewed task limits and separate persistent policy", t => {
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = batchReview();
+  const remote = selected.prompt.body.members[1].parent.access_request;
+  delete remote.software;
+  remote.operation_basis = { kind: "remote_recipe_declarations" };
+  remote.remote_export = { export: { declared_remote_service: { mcp_name: "public-1" },
+    mcp_configuration: { mcpServers: { "public-1": { url: "https://public-one.example/mcp" },
+      unrelated: { url: "https://not-selected.example/mcp" } } } } };
+  account.update(selected);
+  const text = ordinaryReviewText(container);
+  for (const expected of ["2 services", "original-agent", "public-0", "public-1", "read_0, list_0", "read_1, list_1",
+    "This task", "2027-01-15T08:00:00.000Z", "2027-01-15T08:00:01.000Z", "Tool catalog", "original-session",
+    "Compare the selected public sources for the original question", "not authorized by this review",
+    "the complete successor policy including preserved member permissions",
+    "until superseded; task closure does not undo this separately reviewed policy",
+    "invocation still needs its exact native target grant", "public_0_read", "public_1_read",
+    "Selected package declarations", "Researched remote recipe declarations", "https://public-one.example/mcp",
+    "No sign-in required by the selected service declaration"])
+    assert.ok(text.includes(expected), expected);
+  assert.equal(container.querySelectorAll(".toolkit-batch-member").length, 2);
+  assert.doesNotMatch(text, /untrusted_display_alias|Until revoked|anonymous execution verified|grant issued|not-selected\.example/i);
+  assert.equal(container.querySelector("details").open, false);
+  assert.deepEqual(JSON.parse(container.querySelector("details pre").textContent), selected.prompt);
+  assert.equal(container.querySelectorAll("input").length, 0);
+});
+
+test("warm service review shows the complete two-agent two-session metadata scope without changing protected actions", async t => {
+  const container = fixture(t); const sent = deferred(); const calls = [];
+  const account = mountAccountReview(container, async () => {}, (path, options) => {
+    calls.push({ path, options }); return sent.promise;
+  });
+  t.after(() => account.dispose()); const selected = batchReview(1);
+  selected.prompt.body.kind = "public_services_with_setup_v2";
+  selected.prompt.body.access_request.configured_setup = {
+    authority: "fresh children for this task from the already configured agent setup policy",
+    catalog_scope: "Both named agents may read tool metadata in both named sessions. This is the full two-agent by two-session scope, not paired permissions. It grants no service invocation.",
+    processors: [{ namespace: "fixture", id: "original-owner" }, { namespace: "fixture", id: "helper-owner" }],
+    sessions: ["original-session", "helper-session"], audience: { kind: "application", id: "exact-audience" },
+    expires_at_ms: 1800000000000,
+    continuation: "A later acquisition requires its own current capture, access review and fresh grants. Earlier connections must be selected again when needed.",
+  };
+  account.update(selected);
+  const text = ordinaryReviewText(container);
+  for (const expected of ["Later integration setup", "original-owner", "helper-owner", "original-session", "helper-session",
+    "exact-audience", "full two-agent by two-session scope", "It grants no service invocation", "2027-01-15T08:00:00.000Z",
+    "current capture, access review and fresh grants", "Earlier connections must be selected again", "read_0, list_0"])
+    assert.ok(text.includes(expected), expected);
+  assert.equal(container.querySelectorAll(".toolkit-batch-setup").length, 1);
+  assert.equal(container.querySelectorAll(".toolkit-batch-member").length, 1);
+  assert.deepEqual(JSON.parse(container.querySelector("details pre").textContent), selected.prompt);
+  assert.equal(container.querySelectorAll("input").length, 0);
+  const buttons = [...container.querySelectorAll("button")];
+  assert.deepEqual(buttons.map(button => button.textContent), ["Approve", "Deny"]);
+  buttons[0].click(); assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(calls[0].options.body), { review_id: 26, approval_id: "actual-batch-prompt", decision: "approve" });
+  assert.ok(buttons.every(button => button.disabled));
+  sent.resolve(new Response("{}", { status: 202 })); await new Promise(resolve => setImmediate(resolve));
+  account.update(batchReview()); assert.equal(container.querySelector(".toolkit-batch-setup"), null);
+});
+
+test("batch review renders every member as text and never turns a missing reviewed limit into a proposed duration", t => {
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = batchReview(8);
+  const last = selected.prompt.body.members[7]; last.server = '<img src=x onerror="bad()">';
+  last.parent.service_access.permission.operations = ['<script>bad()</script>'];
+  delete last.parent.service_access.permission.lifetime;
+  last.parent.access_request.application_selection.expires_in_ms = 999999;
+  account.update(selected);
+  const text = ordinaryReviewText(container);
+  assert.equal(container.querySelectorAll(".toolkit-batch-member").length, 8);
+  assert.match(text, /8 services/); assert.ok(text.includes(last.server));
+  assert.ok(text.includes('<script>bad()</script>')); assert.equal(container.querySelector("img,script"), null);
+  assert.match(text, /Reviewed access limit unavailable/); assert.doesNotMatch(text, /999999|Until revoked/);
+  assert.deepEqual(JSON.parse(container.querySelector("details pre").textContent), selected.prompt);
+});
+
+test("batch review keeps the existing protected answer payload, held-action controls and credential refusal", async t => {
+  for (const decision of ["approve", "deny"]) {
+    const container = fixture(t); const sent = deferred(); const calls = []; let refreshes = 0;
+    const account = mountAccountReview(container, async () => { refreshes++; }, (path, options) => {
+      calls.push({ path, options }); return sent.promise;
+    });
+    t.after(() => account.dispose()); account.update(batchReview());
+    const buttons = [...container.querySelectorAll("button")];
+    assert.deepEqual(buttons.map(button => button.textContent), ["Approve", "Deny"]);
+    buttons[decision === "approve" ? 0 : 1].click();
+    assert.equal(calls.length, 1); assert.equal(calls[0].path, "/host/toolkit/setup/answer");
+    assert.deepEqual(JSON.parse(calls[0].options.body), { review_id: 26, approval_id: "actual-batch-prompt", decision });
+    assert.ok(buttons.every(button => button.disabled)); assert.equal(refreshes, 0);
+    sent.resolve(new Response("{}", { status: 202 })); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(refreshes, 1);
+  }
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = batchReview();
+  selected.credential_input = { kind: "declared_secret_slots", slots: [{ slot: "TOKEN", label: "Token" }] };
+  assert.throws(() => account.update(selected), /Invalid credential input/);
+  assert.equal(container.querySelectorAll("input,button").length, 0);
+});
+
 test("explicit start forwards only the retained review id and waits for a fresh status read", async t => {
   const container = fixture(t); const sent = deferred(); let calls = []; let refreshes = 0;
   const account = mountAccountReview(container, async () => { refreshes++; }, (path, options) => { calls.push({ path, options }); return sent.promise; });
@@ -106,6 +246,123 @@ test("status transport is a finite GET and does not start account work", async (
   assert.equal(calls[0].options.method, "GET"); assert.equal(calls[0].options.body, undefined);
 });
 
+// Only the status reader's clock is controlled. Poll timers retain the existing
+// page fixture, and protected POST promises are never timed out by this clock.
+function statusReadClock(t) {
+  const originalSet = globalThis.setTimeout; const originalClear = globalThis.clearTimeout;
+  const timers = new Map(); const owned = new Set(); const cleared = []; let now = 0;
+  t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
+    if (delay !== 30000) return originalSet(callback, delay, ...args);
+    const id = {}; owned.add(id); timers.set(id, { callback, due: now + delay }); return id;
+  });
+  t.mock.method(globalThis, "clearTimeout", id => {
+    if (!owned.has(id)) return originalClear(id);
+    cleared.push(id); timers.delete(id);
+  });
+  return { timers, cleared, advance(ms) {
+    now += ms;
+    for (const [id, timer] of [...timers]) if (timer.due <= now) {
+      timers.delete(id); timer.callback();
+    }
+  } };
+}
+const nextTurn = () => new Promise(resolve => setImmediate(resolve));
+
+test("status read deadline releases a held header response and consumes late rejection", async t => {
+  const clock = statusReadClock(t); const headers = deferred(); const calls = []; let settled;
+  const read = readSourceStatus((path, options) => { calls.push({ path, options }); return headers.promise; })
+    .then(value => { settled = { value }; }, error => { settled = { error }; });
+  t.after(async () => { headers.reject(Error("late status transport failure")); await read; await nextTurn(); });
+  clock.advance(29999); await nextTurn(); assert.equal(settled, undefined);
+  clock.advance(1); await nextTurn();
+  assert.ok(settled?.error, "the status observer must stop waiting at its deadline");
+  assert.equal(calls.length, 1); assert.equal(calls[0].path, "/host/toolkit/setup/data");
+  assert.equal(calls[0].options.method, "GET"); assert.equal(calls[0].options.signal.aborted, true);
+  assert.equal(clock.timers.size, 0); assert.equal(clock.cleared.length, 1);
+});
+
+test("status read uses one header-and-body deadline and ignores a late body", async t => {
+  const clock = statusReadClock(t); const headers = deferred(); const body = deferred(); let signal; let settled; let inspected = 0;
+  const late = {}; Object.defineProperty(late, "projection", { get() { inspected++; return snapshot("Late body"); } });
+  const read = readSourceStatus((_path, options) => { signal = options.signal; return headers.promise; })
+    .then(value => { settled = { value }; }, error => { settled = { error }; });
+  t.after(async () => { headers.resolve({ ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => body.promise }); body.resolve(late); await read; await nextTurn(); });
+  clock.advance(20000);
+  headers.resolve({ ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => body.promise });
+  await nextTurn(); assert.equal(settled, undefined);
+  clock.advance(9999); await nextTurn(); assert.equal(settled, undefined);
+  clock.advance(1); await nextTurn();
+  assert.ok(settled?.error, "receiving headers must not restart or remove the response deadline");
+  assert.equal(signal.aborted, true); assert.equal(clock.timers.size, 0); assert.equal(clock.cleared.length, 1);
+  body.resolve(late); await nextTurn(); assert.equal(inspected, 0, "expired bodies must not be projected or validated later");
+});
+
+test("status read clears its deadline on success and each observed refusal", async t => {
+  const clock = statusReadClock(t); const signals = [];
+  const expected = { projection: snapshot() };
+  const cases = [
+    () => new Response(JSON.stringify(expected), { headers: { "content-type": "application/json" } }),
+    () => new Response("denied", { status: 403 }),
+    () => new Response("not json", { headers: { "content-type": "application/json" } }),
+    () => { throw Error("transport refused synchronously"); },
+  ];
+  for (const [index, response] of cases.entries()) {
+    const read = readSourceStatus((_path, options) => { signals.push(options.signal); return response(); });
+    if (index === 0) assert.deepEqual(await read, expected); else await assert.rejects(read);
+    assert.equal(clock.timers.size, 0); assert.equal(clock.cleared.length, index + 1);
+  }
+  clock.advance(30000); assert.equal(signals.some(signal => signal.aborted), false);
+  await assert.rejects(readSourceStatus(() => assert.fail("invalid selection must not fetch"), { page_id: 1, direction: "unknown" }));
+  assert.equal(clock.cleared.length, 4, "invalid selection never starts a response timer");
+});
+
+test("a timed-out status page requires explicit First page and cannot install a late offer", async t => {
+  const fixture = pageFixture(t); const { container, timers } = fixture;
+  const clock = statusReadClock(t); const body = deferred(); const calls = [];
+  const envelope = (id, title) => ({ projection: snapshot(title), review: review(title),
+    page: { page_id: id, first: true, has_next: true } });
+  const page = mountSourceStatusPage(container, undefined, (path, options) => {
+    calls.push({ path, options });
+    if (calls.length === 2) return { ok: true, headers: new Headers({ "content-type": "application/json" }), json: () => body.promise };
+    return new Response(JSON.stringify(envelope(calls.length, calls.length === 1 ? "Original review" : "Fresh review")),
+      { headers: { "content-type": "application/json" } });
+  });
+  t.after(async () => { page.dispose(); body.resolve(envelope(99, "Late stale review")); await nextTurn(); });
+  const tick = () => { const callback = [...timers.values()][0]; assert.ok(callback); timers.clear(); return callback(); };
+  const button = text => [...container.querySelectorAll("button")].find(node => node.textContent === text);
+  await nextTurn(); assert.match(container.textContent, /Original review/);
+  const polling = tick(); await nextTurn();
+  t.after(async () => { body.resolve(envelope(99, "Late stale review")); await polling; });
+  assert.equal(calls.length, 2); assert.equal(button("First page").disabled, true);
+  assert.equal(calls[1].path, "/host/toolkit/setup/data"); assert.equal(calls[1].options.method, "POST");
+  assert.deepEqual(JSON.parse(calls[1].options.body), { page_id: 1, direction: "refresh" });
+  clock.advance(30000); await nextTurn();
+  assert.match(container.textContent, /Task setup status is unavailable/, "a stalled body must release navigation into explicit recovery");
+  assert.doesNotMatch(container.textContent, /Original review|Late stale review/);
+  assert.equal(button("First page").disabled, false); assert.equal(button("Refresh status").disabled, true);
+  assert.equal(calls[1].options.signal.aborted, true);
+  await polling; await tick(); await tick(); assert.equal(calls.length, 2, "polling must not automatically recover or replay the failed page");
+  button("First page").click(); await nextTurn();
+  assert.equal(calls.length, 3); assert.equal(calls[2].options.method, "GET"); assert.equal(calls[2].options.body, undefined);
+  assert.match(container.textContent, /Fresh review/);
+  body.resolve(envelope(99, "Late stale review")); await nextTurn();
+  assert.match(container.textContent, /Fresh review/); assert.doesNotMatch(container.textContent, /Late stale review/);
+  assert.equal(clock.timers.size, 0);
+});
+
+test("a retired page's default status read expires without restoring its DOM or polling", async t => {
+  const fixture = pageFixture(t); const { container, timers, transition } = fixture;
+  const clock = statusReadClock(t); const held = deferred(); let signal; let calls = 0;
+  const page = mountSourceStatusPage(container, undefined, (_path, options) => { calls++; signal = options.signal; return held.promise; });
+  t.after(async () => { page.dispose(); held.reject(Error("late retired read")); await nextTurn(); });
+  await nextTurn(); transition("pagehide"); assert.equal(container.textContent, "");
+  clock.advance(30000); await nextTurn();
+  assert.equal(signal?.aborted, true, "a retired mount must not leave the default read unbounded");
+  assert.equal(container.textContent, ""); assert.equal(timers.size, 0); assert.equal(calls, 1);
+  assert.equal(clock.timers.size, 0); assert.equal(clock.cleared.length, 1);
+  held.reject(Error("late retired read")); await nextTurn(); assert.equal(container.textContent, "");
+});
+
 test("software approval displays the actual checked package and preserves native decisions", t => {
   const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
   t.after(() => account.dispose());
@@ -121,6 +378,124 @@ test("software approval displays the actual checked package and preserves native
   assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Approve & Install", "Deny"]);
   selected.prompt.allowed_decisions = ["deny"]; account.update(selected);
   assert.deepEqual([...container.querySelectorAll("button")].map(button => button.textContent), ["Deny"]);
+});
+
+function sourceBuildReview() {
+  return { review_id: 9, can_start: false, prompt: { kind: "approval", approval_id: "source-build-review",
+    summary: "Install the checked source package", allowed_decisions: ["approve", "deny"], body: {
+      kind: "service_software_install", scope: "software_installation_only", check_tool: "setup_selected_check",
+      owner_proposal: { profile: "node", destination: "/selected/install", build: {
+        schema_version: 1, scope: "selected_node_build", profile_sha256: "b".repeat(64),
+        target: { node_version: "v24.19.0", node_abi: "137", platform: "linux", arch: "x64",
+          libc: { family: "glibc", version: "2.39" } },
+        commands: [{ argv: ["/selected/cc", "-c", "src/with space.c", "", "<img src=x>", "-o", "addon.o"] },
+          { argv: ["/selected/ld", "-shared", "addon.o", "-o", "addon.node"] }],
+        inputs: Array.from({ length: 256 }, (_, index) => ({ path: `headers/input-${index}.h`, sha256: "f".repeat(64) })),
+        outputs: [{ destination: "node_modules/fixture/build/addon.node", replaces_sha256: null },
+          { destination: "node_modules/fixture/index.cjs", replaces_sha256: "2".repeat(64) }] } } } } };
+}
+
+test("source build summary keeps command boundaries and file changes concise", t => {
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = sourceBuildReview();
+  const original = JSON.stringify(selected); account.update(selected);
+  const text = ordinaryReviewText(container);
+  for (const expected of ["Build source on this host", "without sandboxing", "v24.19.0", "137", "linux x64 glibc 2.39",
+    '"/selected/cc" "-c" "src/with space.c" "" "<img src=x>" "-o" "addon.o"',
+    '"/selected/ld" "-shared" "addon.o" "-o" "addon.node"',
+    "node_modules/fixture/build/addon.node - Add a new file", "node_modules/fixture/index.cjs - Replace the existing file"])
+    assert.ok(text.includes(expected), expected);
+  assert.ok(text.indexOf("Command 1 literal arguments") < text.indexOf("Command 2 literal arguments"));
+  assert.doesNotMatch(text, /headers\/input-|bbbbbbbb|ffffffff/);
+  assert.equal(container.querySelector(".toolkit-build-review").querySelectorAll("dt").length, 7);
+  assert.equal(container.querySelector("img,script"), null);
+  assert.equal(container.querySelector("details").open, false);
+  assert.deepEqual(JSON.parse(container.querySelector("details pre").textContent), selected.prompt);
+  assert.equal(JSON.stringify(selected), original);
+});
+
+test("build summaries retain unknown change and format limits", t => {
+  const container = fixture(t); const account = mountAccountReview(container, async () => {}, async () => new Response());
+  t.after(() => account.dispose()); const selected = sourceBuildReview();
+  delete selected.prompt.body.owner_proposal.build.outputs[0].replaces_sha256;
+  account.update(selected);
+  assert.match(ordinaryReviewText(container), /Replacement information unavailable/);
+  assert.doesNotMatch(ordinaryReviewText(container), /Add a new file/);
+  selected.prompt.body.owner_proposal.build.schema_version = 2; account.update(selected);
+  assert.match(ordinaryReviewText(container), /This build format cannot be summarized here/);
+  assert.doesNotMatch(ordinaryReviewText(container), /Command 1|Add a new file|Replace the existing file/);
+  assert.deepEqual(JSON.parse(container.querySelector("details pre").textContent), selected.prompt);
+  delete selected.prompt.body.owner_proposal.build; account.update(selected);
+  assert.equal(container.querySelector(".toolkit-build-review"), null);
+});
+
+test("refresh layout placeholder survives only the pending read, with no retained review controls", async t => {
+  for (const outcome of ["same", "changed", "absent", "invalid", "denied", "unavailable"]) {
+    const container = fixture(t); const held = deferred(); let posts = 0;
+    container.style.setProperty("min-height", "12px", "important");
+    container.getBoundingClientRect = () => ({ height: 1600 });
+    let response = { projection: snapshot(), review: review() }; let panel;
+    const account = mountAccountReview(container, () => panel.refresh(), async () => { posts++; return new Response(); });
+    panel = mountSourceStatusPanel(container, () => response, account);
+    t.after(() => { panel.dispose(); account.dispose(); });
+    await panel.refresh();
+    const oldApprove = [...container.querySelectorAll("button")].find(button => button.textContent === "Approve");
+    response = held.promise; const pending = panel.refresh();
+    assert.equal(container.style.minHeight, "1600px", outcome);
+    assert.equal(container.querySelector(".toolkit-account-review").textContent, "", outcome);
+    assert.equal(container.querySelector("details"), null, outcome);
+    assert.equal(container.querySelector(".toolkit-account-review button"), null, outcome);
+    oldApprove.click(); assert.equal(posts, 0, "removed controls remain fenced during the layout placeholder");
+    if (outcome === "denied" || outcome === "unavailable") {
+      held.reject(Object.assign(Error("status unavailable"), { status: outcome === "denied" ? 403 : 503 }));
+    } else {
+      const next = { projection: snapshot(), review: outcome === "absent" ? null : review() };
+      if (outcome === "changed") { next.projection.scope = "another-viewer"; next.review.review_id++; }
+      if (outcome === "invalid") next.projection = {};
+      held.resolve(next);
+    }
+    await pending;
+    assert.equal(container.style.minHeight, "12px", outcome);
+    assert.equal(container.style.getPropertyPriority("min-height"), "important", outcome);
+    oldApprove.click(); assert.equal(posts, 0, "settlement does not revive a removed review control");
+  }
+});
+
+test("refresh layout placeholder is released on disposal without clearing a successor's placeholder", async t => {
+  const container = fixture(t); const firstRead = deferred(); const nextRead = deferred();
+  let height = 1200;
+  container.getBoundingClientRect = () => ({ height });
+  const first = mountSourceStatusPanel(container, () => firstRead.promise);
+  const pending = first.refresh(); await Promise.resolve();
+  assert.equal(container.style.minHeight, "1200px");
+  first.dispose(); assert.equal(container.style.minHeight, "");
+  height = 900;
+  const successor = mountSourceStatusPanel(container, () => nextRead.promise);
+  t.after(() => successor.dispose());
+  const next = successor.refresh(); await Promise.resolve();
+  assert.equal(container.style.minHeight, "900px");
+  firstRead.resolve({ projection: snapshot("stale") }); await pending;
+  assert.equal(container.style.minHeight, "900px", "retired read cannot release the current mount's layout");
+  nextRead.resolve({ projection: snapshot("current") }); await next;
+  assert.equal(container.style.minHeight, "");
+  assert.match(container.textContent, /current/); assert.doesNotMatch(container.textContent, /stale/);
+});
+
+test("same-review restoration requests focus without scrolling", async t => {
+  const container = fixture(t); let response = { projection: snapshot(), review: review() }; let panel;
+  const account = mountAccountReview(container, () => panel.refresh());
+  panel = mountSourceStatusPanel(container, () => response, account);
+  t.after(() => { panel.dispose(); account.dispose(); });
+  await panel.refresh(); container.querySelector("summary").focus();
+  const prototype = container.ownerDocument.defaultView.HTMLElement.prototype;
+  const originalFocus = prototype.focus; const calls = [];
+  prototype.focus = function(options) { calls.push({ node: this, options }); return originalFocus.call(this, options); };
+  await panel.refresh();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].node, container.querySelector("summary"));
+  assert.deepEqual(calls[0].options, { preventScroll: true });
+  response = { projection: { ...snapshot(), scope: "another-viewer" }, review: review() };
+  await panel.refresh(); assert.equal(calls.length, 1, "changed viewer cannot inherit focus");
 });
 
 test("serialized refresh clears private DOM and restores only the fresh same-review presentation", async t => {
@@ -299,18 +674,24 @@ test("restoration never replays a pending approval or retains a prior viewer's a
   container.querySelector(".toolkit-account-review button").click(); assert.equal(posts, 1);
   transition("pagehide"); transition("pageshow");
   assert.doesNotMatch(container.textContent, /Prior private account|selected-account/);
-  returning.reject(Error("current viewer denied")); await new Promise(resolve => setImmediate(resolve));
-  assert.match(container.textContent, /status is unavailable/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 1, "history restoration cannot replace the pending action's offer");
+  assert.match(container.textContent, /Waiting for the current setup response/);
   assert.equal(container.querySelector(".toolkit-account-review button"), null);
   sent.resolve(new Response("{}", { status: 202 })); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(posts, 1); assert.equal(reads, 2, "the old approval cannot refresh a retired page");
+  assert.equal(posts, 1); assert.equal(reads, 1, "the old approval cannot refresh a retired page");
+  const tick = [...timers.values()][0]; timers.clear(); const refreshed = tick();
+  await Promise.resolve(); returning.reject(Error("current viewer denied")); await refreshed;
+  assert.match(container.textContent, /status is unavailable/);
+  assert.equal(container.querySelector(".toolkit-account-review button"), null);
+  assert.equal(reads, 2, "the restored page reads normally after settlement");
   assert.equal(timers.size, 1);
   page.dispose(); assert.equal(timers.size, 0); assert.equal(container.textContent, "");
 });
 
-test("successful history restoration keeps answer and start submissions single-entry until settlement", async t => {
+test("successful history restoration waits for answer and start settlement without replay", async t => {
   for (const start of [false, true]) {
-    const { container, transition } = pageFixture(t);
+    const { container, transition, timers } = pageFixture(t);
     const sent = deferred(); let reads = 0; let posts = 0;
     const selected = start ? { review_id: 8, can_start: true, prompt: null } : review();
     const page = mountSourceStatusPage(container, async () => {
@@ -322,22 +703,17 @@ test("successful history restoration keeps answer and start submissions single-e
     original.click(); assert.equal(posts, 1);
     transition("pagehide"); transition("pageshow");
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(reads, 2);
-    const restored = [...container.querySelectorAll(".toolkit-account-review button")];
-    assert.ok(restored.length > 0, "the same review was successfully restored");
-    for (const button of restored) {
-      assert.equal(button.disabled, true, start ? "start" : "answer");
-      button.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
-    }
+    assert.equal(reads, 1);
+    assert.equal(container.querySelectorAll(".toolkit-account-review button").length, 0);
+    assert.match(container.textContent, /Waiting for the current setup response/);
     original.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
-    assert.equal(posts, 1, "neither a restored nor detached button resends the pending POST");
+    assert.equal(posts, 1, "a detached button cannot resend the pending POST");
     sent.resolve(new Response("{}", { status: 202 }));
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(reads, 2, "settlement cannot refresh the retired view");
+    assert.equal(reads, 1, "settlement cannot refresh the retired view");
     assert.equal(posts, 1);
-    [...container.querySelectorAll("button")].find(button => button.textContent === "Refresh status").click();
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(reads, 3);
+    const tick = [...timers.values()][0]; timers.clear(); await tick();
+    assert.equal(reads, 2);
     for (const button of container.querySelectorAll(".toolkit-account-review button"))
       assert.equal(button.disabled, false, "the next current read can present actions after settlement");
     assert.equal(posts, 1, "settlement and refresh never replay the user's response");
@@ -406,6 +782,64 @@ function applicationAccess(state = "grant_issued") {
 }
 function accessResponse(state) { return new Response(JSON.stringify({ scope: "application_issued_access", state }),
   { headers: { "content-type": "application/json" } }); }
+
+// No accessible-name package is installed. Resolve this explicit text-only
+// aria-labelledby contract against the real DOM; no screen-reader claim.
+function managementActionName(button) {
+  const ids = button.getAttribute("aria-labelledby")?.split(/\s+/) ?? [];
+  assert.ok(ids.length > 1, "management action must reference its visible target facts");
+  assert.equal(ids[0], button.id, "the visible action text leads the accessible name");
+  const card = button.closest("article");
+  return ids.map(id => {
+    const node = button.ownerDocument.getElementById(id);
+    assert.ok(node && card.contains(node), "each reference belongs to this action's visible card");
+    return node.textContent;
+  }).join(" ");
+}
+
+test("access action names distinguish visible targets, accounts and lifetimes", async t => {
+  const container = fixture(t); const calls = [];
+  const panel = mountApplicationAccess(container, async () => {}, async (path, options) => {
+    calls.push({ path, body: JSON.parse(options.body) }); return accessResponse("revoked");
+  });
+  t.after(() => panel.dispose());
+  const value = applicationAccess();
+  value.rows.push({ ...value.rows[0], id: "b".repeat(64), target: "other-agent",
+    selected_account: "other-account", resource: "other-inbox", operations: ["read", "list"] });
+  value.rows.push({ ...value.rows[0], id: "c".repeat(64),
+    lifetime: { scope: { kind: "task", task: "private-task-key" }, expires_at_ms: 1800000000000 } });
+  value.rows.push({ ...value.rows[0], id: "d".repeat(64), selected_account: null });
+  panel.update(value, "person");
+  const buttons = [...container.querySelectorAll("button")];
+  assert.deepEqual(buttons.map(managementActionName), [
+    "Revoke this access mail Agent selected-agent Operations read Resource mail Selected account selected-account Access scope member Expiry No expiry declared in this scope",
+    "Revoke this access mail Agent other-agent Operations read, list Resource other-inbox Selected account other-account Access scope member Expiry No expiry declared in this scope",
+    "Revoke this access mail Agent selected-agent Operations read Resource mail Selected account selected-account Access scope task Expiry 2027-01-15T08:00:00.000Z",
+    "Revoke this access mail Agent selected-agent Operations read Resource mail Access scope member Expiry No expiry declared in this scope",
+  ]);
+  assert.ok(buttons.every(button => button.textContent === "Revoke this access"));
+  buttons[1].click(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [{ path: "/host/toolkit/setup/access/revoke",
+    body: { offer_id: 9, row_id: "b".repeat(64) } }]);
+});
+
+test("management label references remain unique across mounts and replacement", t => {
+  const container = fixture(t);
+  const access = [mountApplicationAccess(container, async () => {}), mountApplicationAccess(container, async () => {})];
+  const recovery = [mountOperatorRecovery(container, async () => {}), mountOperatorRecovery(container, async () => {})];
+  t.after(() => [...access, ...recovery].forEach(panel => panel.dispose()));
+  const seen = new Set();
+  for (let replacement = 0; replacement < 2; replacement++) {
+    for (const panel of access) panel.update(applicationAccess(), "person");
+    for (const panel of recovery) panel.update(recoveryOffer(), "person");
+    for (const button of container.querySelectorAll("button")) managementActionName(button);
+    for (const node of container.querySelectorAll("[id]")) {
+      assert.match(node.id, /^toolkit-setup-label-\d+$/);
+      assert.equal(seen.has(node.id), false, "presentation IDs cannot collide or be reused after replacement");
+      seen.add(node.id);
+    }
+  }
+});
 
 test("application-issued access is distinct from account status and unknown grants cannot be revoked", t => {
   const container = fixture(t); const panel = mountApplicationAccess(container, async () => {});
@@ -795,4 +1229,336 @@ test("malformed or foreign credential projections clear actions without sending 
     assert.match(container.textContent, /status is unavailable/);
     assert.equal(calls, 0);
   }
+});
+
+
+test("pending protected action keeps its offer through automatic and manual status reads", async t => {
+  for (const action of ["revoke", "answer", "start"]) {
+    const { container, timers } = pageFixture(t);
+    const entered = deferred(); let reads = 0; const calls = []; let currentOffer;
+    const selectedReview = action === "start" ? { review_id: 8, can_start: true, prompt: null }
+      : action === "answer" ? review() : undefined;
+    const page = mountSourceStatusPage(container, async () => {
+      const page_id = ++reads; currentOffer = page_id;
+      return { projection: snapshot(), review: selectedReview,
+        page: { page_id, first: true, has_next: true },
+        application_access: { ...applicationAccess(), offer_id: page_id } };
+    }, (url, options) => { calls.push({ url, body: JSON.parse(options.body) }); return entered.promise; });
+    t.after(() => { entered.resolve(new Response("{}", { status: 202 })); page.dispose(); });
+    const settled = () => new Promise(resolve => setImmediate(resolve));
+    await settled(); assert.equal(reads, 1);
+    const selector = action === "revoke" ? ".toolkit-application-access button" : ".toolkit-account-review button";
+    const clicked = container.querySelector(selector); clicked.click();
+    assert.equal(calls.length, 1); assert.equal(clicked.disabled, true);
+    const tick = [...timers.values()][0]; timers.clear(); await tick();
+    for (const label of ["Refresh status", "First page", "Next page"]) {
+      [...container.querySelectorAll("button")].find(button => button.textContent === label)
+        .dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
+      await settled();
+    }
+    assert.equal(reads, 1, `${action}: no status request may retire the offer before POST settlement`);
+    assert.equal(currentOffer, 1);
+    clicked.dispatchEvent(new container.ownerDocument.defaultView.Event("click"));
+    assert.equal(calls.length, 1, "blocked reads never repeat the protected action");
+    if (action === "revoke") {
+      assert.equal(calls[0].body.offer_id, currentOffer, "the delayed POST still reaches its actual selected offer");
+      entered.resolve(accessResponse("revoked"));
+    } else entered.resolve(new Response("{}", { status: 202 }));
+    await settled();
+    assert.equal(reads, 2, "settlement performs the normal current status read");
+    assert.equal(calls.length, 1);
+    page.dispose();
+  }
+});
+
+test("stale access offer 409 is definite nonentry while a lost reply remains uncertain", async t => {
+  for (const stale of [true, false]) {
+    const container = fixture(t); let posts = 0; let refreshes = 0; let panel;
+    panel = mountApplicationAccess(container, async () => {
+      ++refreshes; panel.update({ ...applicationAccess(), offer_id: 10 }, "person");
+    }, async () => {
+      ++posts;
+      if (!stale) throw Error("lost reply");
+      return new Response(JSON.stringify({ error: "Protected setup is unavailable" }), {
+        status: 409, headers: { "Content-Type": "application/json" } });
+    });
+    t.after(() => panel.dispose()); panel.update(applicationAccess(), "person");
+    container.querySelector("button").click(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(posts, 1); assert.equal(refreshes, 1);
+    assert.match(container.textContent, stale ? /This request revoked nothing/ : /could not be confirmed/);
+    assert.doesNotMatch(container.textContent, stale ? /could not be confirmed/ : /This request revoked nothing/);
+    assert.equal(container.querySelector("button").disabled, false, "a fresh explicit decision is available");
+    await Promise.resolve(); assert.equal(posts, 1, "neither failure class automatically retries");
+  }
+});
+
+function recoveryOffer(overrides = {}) {
+  return { scope:"operator_service_recovery", offer_id:31, rows:[{ id:"b".repeat(64), service:"mail", target:"worker",
+    operations:["read"], resource:"inbox", state:"publication_unresolved", parent:"issued", child:"issued", policy:"pending", can_recover:true, ...overrides }] };
+}
+test("operator recovery is absent without selection and never offers cleanup for a published or unobserved parent", t => {
+  const container = fixture(t); const recovery = mountOperatorRecovery(container, async () => {}, async () => { throw Error("no mutation"); });
+  t.after(() => recovery.dispose()); recovery.update(undefined, "viewer"); assert.equal(container.textContent, "");
+  assert.equal(container.querySelector(".toolkit-view"), null, "absent selection adds no panel");
+  recovery.update(recoveryOffer({ parent:"not_observed", child:"not_observed", can_recover:false }), "viewer");
+  assert.match(container.textContent, /worker may still enter/); assert.equal(container.querySelectorAll("button").length, 0);
+  recovery.update(recoveryOffer({ state:"publication_present", can_recover:false }), "viewer");
+  assert.equal(container.querySelectorAll("button").length, 0); assert.match(container.textContent, /matching task source is retained/);
+  recovery.clear(); assert.equal(container.textContent, "");
+  assert.equal(container.querySelector(".toolkit-view"), null, "retirement removes the recovery panel");
+});
+test("recovery action names identify each visible service target without changing dispatch", async t => {
+  const container = fixture(t); const calls = [];
+  const recovery = mountOperatorRecovery(container, async () => {}, async (path, options) => {
+    calls.push({ path, body: JSON.parse(options.body) });
+    return new Response("{}", { status: 503 });
+  });
+  t.after(() => recovery.dispose());
+  const value = recoveryOffer();
+  value.rows.push({ ...value.rows[0], id: "c".repeat(64), target: "other-agent",
+    resource: "other-inbox", operations: ["read", "list"] });
+  recovery.update(value, "person");
+  const buttons = [...container.querySelectorAll("button")];
+  assert.deepEqual(buttons.map(managementActionName), value.rows.map(row =>
+    `Revoke this unresolved approval ${row.service} Agent ${row.target} Operations ${row.operations.join(", ")} Resource ${row.resource}`));
+  assert.ok(buttons.every(button => button.textContent === "Revoke this unresolved approval"));
+  buttons[1].click(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [{ path: "/host/toolkit/setup/recovery/revoke",
+    body: { offer_id: 31, row_id: "c".repeat(64) } }]);
+});
+test("operator cleanup posts only the opaque offer once and reports partial native outcomes without claiming policy rollback", async t => {
+  const container = fixture(t); const held = deferred(); const calls = []; let refreshes = 0; const submission = { sending:false };
+  const recovery = mountOperatorRecovery(container, async () => { refreshes++; recovery.update(recoveryOffer({ parent:"unavailable", child:"unavailable" }), "viewer"); },
+    (path, options) => { calls.push({ path, options }); return held.promise; }, submission);
+  t.after(() => recovery.dispose()); recovery.update(recoveryOffer(), "viewer");
+  const button = container.querySelector("button"); button.click(); button.click();
+  assert.equal(calls.length, 1); assert.equal(submission.sending, true);
+  assert.equal(calls[0].path, "/host/toolkit/setup/recovery/revoke");
+  assert.equal(calls[0].options.credentials, "same-origin"); assert.equal(calls[0].options.redirect, "error");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { offer_id:31, row_id:"b".repeat(64) });
+  held.resolve(new Response(JSON.stringify({ scope:"operator_service_recovery", parent:"revoked", child:"unresolved", uncertain:true,
+    policy_observed_at_offer:"pending", policy_changed:false }), { headers:{"content-type":"application/json"} }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(refreshes, 1); assert.equal(submission.sending, false);
+  assert.match(container.textContent, /parent was revoked/); assert.match(container.textContent, /ownership needs reconciliation/);
+  assert.match(container.textContent, /Tool policy was not changed/); assert.match(container.textContent, /Some effects remain uncertain/);
+});
+test("operator cleanup response lost across retirement is not replayed or applied to another viewer", async t => {
+  const container = fixture(t); const held = deferred(); let calls = 0; let refreshes = 0;
+  const recovery = mountOperatorRecovery(container, async () => { refreshes++; }, () => { calls++; return held.promise; });
+  t.after(() => recovery.dispose()); recovery.update(recoveryOffer(), "old-login"); container.querySelector("button").click();
+  recovery.update(undefined, "new-login"); held.reject(Error("connection lost"));
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(calls, 1); assert.equal(refreshes, 1); assert.equal(container.textContent, "");
+});
+
+test("operator refresh preserves keyboard focus only within the same scope and current row", t => {
+  const container = fixture(t); const recovery = mountOperatorRecovery(container, async () => {});
+  t.after(() => recovery.dispose()); recovery.update(recoveryOffer(), "viewer"); container.querySelector("button").focus();
+  recovery.suspend(); recovery.update(recoveryOffer(), "viewer"); assert.equal(container.ownerDocument.activeElement, container.querySelector("button"));
+  recovery.suspend(); recovery.update(recoveryOffer(), "another-viewer"); assert.equal(container.ownerDocument.activeElement, container.ownerDocument.body);
+});
+
+for (const kind of ["access", "recovery"]) {
+  const selector = kind === "access" ? ".toolkit-application-access" : ".toolkit-operator-recovery";
+  const key = kind === "access" ? "application_access" : "operator_recovery";
+  const offer = () => kind === "access" ? applicationAccess() : recoveryOffer();
+  const refused = () => kind === "access" ? accessResponse("controller_in_use")
+    : new Response(JSON.stringify({ scope: "operator_service_recovery", parent: "controller_in_use",
+      child: "not_entered", uncertain: false, policy_changed: false }), { headers: { "content-type": "application/json" } });
+  const refusal = kind === "access" ? /required by unfinished controller work/ : /Unfinished controller work still requires/;
+  const historical = kind === "access" ? /Last revocation attempt:/ : /Last approval cleanup attempt:/;
+  const settled = () => new Promise(resolve => setImmediate(resolve));
+  const tick = async timers => {
+    assert.equal(timers.size, 1); const callback = [...timers.values()][0]; timers.clear(); await callback();
+  };
+
+  test(`${kind} management feedback survives ordinary polling as history while owner status stays current`, async t => {
+    const { container, timers } = pageFixture(t); const calls = []; const nextAction = deferred();
+    let value = offer(); let reads = 0;
+    const page = mountSourceStatusPage(container, async () => {
+      reads++; return { projection: snapshot(), [key]: { ...value, offer_id: reads } };
+    }, async (path, options) => {
+      calls.push({ path, body: JSON.parse(options.body) });
+      if (calls.length === 1) return refused();
+      return nextAction.promise;
+    });
+    t.after(() => { nextAction.resolve(refused()); page.dispose(); }); await settled();
+    container.querySelector(`${selector} button`).click(); await settled();
+    assert.match(container.querySelector(selector).textContent, refusal);
+    await tick(timers);
+    assert.match(container.querySelector(selector).textContent, refusal, "the next ordinary poll must retain the explanation");
+    assert.match(container.querySelector(selector).textContent, historical);
+    assert.equal(calls.length, 1, "polling must not replay the action");
+    const nextOffer = reads;
+    container.querySelector(`${selector} button`).click();
+    assert.doesNotMatch(container.querySelector(selector).textContent, refusal, "a new action replaces the old explanation");
+    nextAction.reject(Error("reply lost")); await settled(); await tick(timers);
+    assert.match(container.querySelector(selector).textContent, /result could not be confirmed/);
+    assert.match(container.querySelector(selector).textContent, historical);
+    assert.deepEqual(calls.map(call => call.body), [
+      { offer_id: 1, row_id: value.rows[0].id }, { offer_id: nextOffer, row_id: value.rows[0].id },
+    ]);
+    assert.ok(calls.every(call => call.path === `/host/toolkit/setup/${kind}/revoke`));
+    value = kind === "access" ? applicationAccess("grant_unavailable")
+      : recoveryOffer({ state: "publication_present", can_recover: false });
+    await tick(timers);
+    assert.match(container.querySelector(selector).textContent, /result could not be confirmed/);
+    assert.equal(container.querySelector(`${selector} button`), null, "historical feedback grants no current action");
+    assert.match(container.querySelector(selector).textContent,
+      kind === "access" ? /Access is unavailable/ : /cleanup is unavailable here/);
+  });
+
+  test(`${kind} management feedback clears on target or viewer loss, retirement and failed observations`, async t => {
+    for (const change of ["target", "viewer", "pagehide", "unavailable", "503"]) {
+      const { container, timers, transition } = pageFixture(t); let changed = false; let calls = 0;
+      const page = mountSourceStatusPage(container, async () => {
+        if (changed && change === "503") { const error = Error("temporarily unavailable"); error.status = 503; throw error; }
+        const value = offer();
+        if (changed && change === "target") value.rows = [];
+        if (changed && change === "unavailable") value.state = "unavailable";
+        return { projection: { ...snapshot(), scope: changed && change === "viewer" ? "another-viewer" : "viewer" }, [key]: value };
+      }, async () => { calls++; return refused(); });
+      t.after(() => page.dispose()); await settled();
+      container.querySelector(`${selector} button`).click(); await settled(); await tick(timers);
+      assert.match(container.querySelector(selector).textContent, historical, change);
+      changed = true;
+      if (change === "pagehide") transition("pagehide"); else await tick(timers);
+      assert.doesNotMatch(container.textContent, historical, change);
+      changed = false;
+      if (change === "pagehide") { transition("pageshow"); await settled(); } else await tick(timers);
+      assert.doesNotMatch(container.textContent, historical, `${change}: a returning row must not revive retired feedback`);
+      assert.equal(calls, 1, change); page.dispose();
+    }
+  });
+
+  test(`${kind} management feedback cannot return with a late response after its viewer or target retired`, async t => {
+    for (const change of ["target", "viewer", "clear"]) {
+      const container = fixture(t); const held = deferred(); let calls = 0;
+      const mount = kind === "access" ? mountApplicationAccess : mountOperatorRecovery;
+      const panel = mount(container, async () => {}, () => { calls++; return held.promise; });
+      t.after(() => { held.resolve(refused()); panel.dispose(); }); panel.update(offer(), "viewer");
+      container.querySelector("button").click();
+      if (change === "clear") panel.clear();
+      else panel.update(change === "target" ? { ...offer(), rows: [] } : offer(), change === "viewer" ? "other-viewer" : "viewer");
+      panel.update(offer(), "viewer");
+      held.resolve(refused()); await settled();
+      assert.doesNotMatch(container.textContent, refusal, change);
+      assert.doesNotMatch(container.textContent, historical, change);
+      assert.equal(calls, 1, change);
+    }
+  });
+
+  test(`${kind} management feedback stays inside its exact target card after multiple rows reorder`, async t => {
+    const { container, timers } = pageFixture(t); const value = offer(); const calls = [];
+    const selected = { ...value.rows[0], id: "c".repeat(64), service: "selected-service",
+      target: "selected-worker", resource: "selected-resource" };
+    value.rows.push(selected);
+    const page = mountSourceStatusPage(container, async () => ({ projection: snapshot(), [key]: value }),
+      async (path, options) => { calls.push({ path, body: JSON.parse(options.body) }); return refused(); });
+    t.after(() => page.dispose()); await settled();
+    const cards = () => [...container.querySelectorAll(`${selector} article`)];
+    cards()[1].querySelector("button").click(); await settled();
+    const checkTarget = () => {
+      const target = cards().find(card => card.querySelector("h3").textContent === selected.service);
+      const other = cards().find(card => card !== target);
+      assert.match(target.textContent, refusal, "the explanation must be inside the selected target's card");
+      assert.match(target.querySelector('[role="status"]').textContent, historical);
+      assert.doesNotMatch(other.textContent, historical);
+      assert.equal(container.querySelectorAll(`${selector} [role="status"]`).length, 1, "reuse the existing status node");
+    };
+    checkTarget();
+    cards()[0].querySelector("button").focus();
+    value.rows.reverse(); await tick(timers);
+    assert.equal(cards()[0].querySelector("h3").textContent, selected.service);
+    checkTarget();
+    assert.deepEqual(calls, [{ path: `/host/toolkit/setup/${kind}/revoke`,
+      body: { offer_id: value.offer_id, row_id: selected.id } }]);
+  });
+}
+
+
+test("503 clears stale setup actions and the existing poll refreshes the retained page; 403 still pauses", async t => {
+  for (const status of [503, 403]) {
+    const { container, timers } = pageFixture(t); const calls = []; let reads = 0;
+    const fetcher = async (path, options) => {
+      calls.push({path, options});
+      if (++reads === 2) return new Response('{"error":"Protected setup is unavailable"}',
+        {status, headers:{"content-type":"application/json"}});
+      return new Response(JSON.stringify({projection:snapshot(), review:review("Current review"),
+        page:{page_id:17 + reads, first:reads === 1, has_next:true}}),
+        {headers:{"content-type":"application/json"}});
+    };
+    const page = mountSourceStatusPage(container, undefined, fetcher); t.after(() => page.dispose());
+    const tick = async () => { assert.equal(timers.size, 1); const callback = [...timers.values()][0]; timers.clear(); await callback(); };
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(container.querySelector(".toolkit-account-review button"));
+    await tick();
+    assert.equal(container.querySelector(".toolkit-view .toolkit-task"), null);
+    assert.equal(container.querySelector(".toolkit-account-review button"), null);
+    assert.equal(container.querySelector(".toolkit-application-access button"), null);
+    assert.equal(container.querySelector(".toolkit-operator-recovery button"), null);
+    assert.doesNotMatch(container.textContent, /Current review|Reviewed task/);
+    assert.equal(calls.length, 2, "a failed read cannot enter an immediate retry");
+    await tick();
+    assert.equal(calls.length, status === 503 ? 3 : 2);
+    if (status === 503) {
+      assert.deepEqual(calls.map(call => call.options.body && JSON.parse(call.options.body)),
+        [undefined, {page_id:18,direction:"refresh"}, {page_id:18,direction:"refresh"}]);
+      assert.ok(container.querySelector(".toolkit-account-review button"));
+    } else {
+      assert.match(container.textContent, /Use First page/);
+      assert.equal([...container.querySelectorAll("button")].find(button => button.textContent === "Refresh status").disabled, true);
+    }
+    assert.ok(calls.every(call => call.path === "/host/toolkit/setup/data"), "no protected action or login is replayed");
+    assert.ok(calls.every(call => call.options.credentials === "same-origin"));
+    page.dispose(); assert.equal(timers.size, 0);
+  }
+});
+
+test("an initial 503 leaves only the existing next status poll eligible", async t => {
+  const { container, timers } = pageFixture(t); const calls = [];
+  const page = mountSourceStatusPage(container, undefined, async (path, options) => {
+    calls.push({path, options});
+    return calls.length === 1 ? new Response("unavailable", {status:503})
+      : new Response(JSON.stringify({projection:snapshot(), page:{page_id:4,first:true,has_next:false}}),
+        {headers:{"content-type":"application/json"}});
+  }); t.after(() => page.dispose());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1); assert.match(container.textContent, /temporarily unavailable/);
+  const tick = [...timers.values()][0]; assert.ok(tick); timers.clear(); await tick();
+  assert.equal(calls.length, 2); assert.ok(calls.every(call => call.options.method === "GET"));
+  assert.match(container.textContent, /Reviewed task/);
+});
+
+test("503 recovery never overlaps or replays a protected submission", async t => {
+  const { container, timers } = pageFixture(t); const held = deferred(); let reads = 0; let posts = 0;
+  const page = mountSourceStatusPage(container, undefined, async (path) => {
+    if (path !== "/host/toolkit/setup/data") { assert.equal(path, "/host/toolkit/setup/answer"); posts++; return held.promise; }
+    if (++reads === 2) return new Response("unavailable", {status:503});
+    return new Response(JSON.stringify({projection:snapshot(), review:reads === 1 ? review() : undefined,
+      page:{page_id:reads,first:true,has_next:false}}), {headers:{"content-type":"application/json"}});
+  }); t.after(() => page.dispose());
+  const tick = async () => { const callback = [...timers.values()][0]; assert.ok(callback); timers.clear(); await callback(); };
+  await new Promise(resolve => setImmediate(resolve));
+  container.querySelector(".toolkit-account-review button").click();
+  assert.equal(posts, 1); await tick(); assert.equal(reads, 1);
+  held.resolve(new Response("{}", {status:202})); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(posts, 1); assert.equal(reads, 2); assert.match(container.textContent, /temporarily unavailable/);
+  await tick(); assert.equal(reads, 3); assert.equal(posts, 1);
+});
+
+
+test("an explicit First after denial can receive 503 and resume the existing read loop", async t => {
+  const { container, timers } = pageFixture(t); let reads = 0;
+  const page = mountSourceStatusPage(container, undefined, async () => {
+    reads++;
+    return reads < 3 ? new Response("unavailable", {status:reads === 1 ? 403 : 503})
+      : new Response(JSON.stringify({projection:snapshot()}), {headers:{"content-type":"application/json"}});
+  }); t.after(() => page.dispose());
+  await new Promise(resolve => setImmediate(resolve));
+  [...container.querySelectorAll("button")].find(button => button.textContent === "First page").click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 2); assert.match(container.textContent, /temporarily unavailable/);
+  const tick = [...timers.values()][0]; assert.ok(tick); timers.clear(); await tick();
+  assert.equal(reads, 3); assert.match(container.textContent, /Reviewed task/);
 });

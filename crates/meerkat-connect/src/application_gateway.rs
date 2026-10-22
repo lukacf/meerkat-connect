@@ -4,6 +4,7 @@
 //! native principal. The existing OS facade and same grant owner issue access.
 
 pub(crate) mod setup_presenter;
+mod local_recovery;
 pub mod console_setup;
 pub use console_setup::serve_console_setup;
 pub use setup_presenter::{LocalSetupApprovals, LocalSetupReviews};
@@ -12,14 +13,14 @@ use setup_presenter::{Enrollment, SetupEvent, SetupPresenters};
 use crate::{
     ConnectError,
     application_operator::{review_local_controller_parent, review_local_setup_request},
-    approval::{ApprovalPresenter, ApprovalPromptOutcome, LocalApprovals, present_approval, present_approval_outcome},
+    approval::{ApprovalPresenter, ApprovalPrompt, ApprovalPromptOutcome, LocalApprovals, present_approval, present_approval_outcome},
     terminal::TerminalInput,
 };
 use std::{
     fs::{File, OpenOptions},
     io,
     os::fd::{OwnedFd, RawFd},
-    os::unix::fs::{FileTypeExt, MetadataExt},
+    os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
     path::PathBuf,
     sync::Arc,
 };
@@ -63,7 +64,11 @@ impl InheritedOperatorTerminal {
             return Err(io::Error::new(io::ErrorKind::InvalidInput,
                 "operator input is not a terminal"));
         }
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        // Reopening an inherited PTY must not make it this process's controlling
+        // terminal. A session-leading gateway otherwise receives SIGHUP when
+        // its operator closes the master, before owned cleanup can settle.
+        let file = OpenOptions::new().read(true).write(true)
+            .custom_flags(nix::libc::O_NOCTTY).open(path)?;
         let after = file.metadata()?;
         if before.dev() != after.dev() || before.ino() != after.ino()
             || before.rdev() != after.rdev()
@@ -98,6 +103,36 @@ async fn retire_presenter_and_join<T>(
     drop(presenter.take());
     let result = review.await;
     retired?;
+    result
+}
+
+enum ReviewPresentation<T> {
+    Reviewed(Result<T, ConnectError>),
+    Presented(Result<bool, ConnectError>),
+}
+
+// Presentation retains the sole input owner while the same review drives its
+// deadline. A ready interruption inside presentation keeps its precedence.
+async fn present_approval_with_review<T>(
+    prompt: ApprovalPrompt,
+    input: &mut TerminalInput,
+    output: &mut impl io::Write,
+    interrupted: impl std::future::Future<Output = io::Result<()>>,
+    review: std::pin::Pin<&mut impl std::future::Future<Output = Result<T, ConnectError>>>,
+) -> ReviewPresentation<T> {
+    let result = {
+        let shown = present_approval(prompt, input, output, interrupted);
+        tokio::pin!(shown);
+        tokio::select! { biased;
+            shown = shown.as_mut() => ReviewPresentation::Presented(shown),
+            result = review => ReviewPresentation::Reviewed(result),
+        }
+    };
+    if matches!(&result, ReviewPresentation::Reviewed(_)) {
+        if let Err(error) = input.check_cleanup() {
+            return ReviewPresentation::Reviewed(Err(ConnectError::native("restore operator terminal", error)));
+        }
+    }
     result
 }
 
@@ -144,6 +179,13 @@ async fn serve_operator(
     setup: Option<LocalSetupReviews>,
 ) -> Result<(), ConnectError> {
     let mut setup = setup.map(SetupPresenters::new);
+    let recovery_selected = host.local_operator_recovery_selected();
+    if recovery_selected {
+        use std::io::Write as _;
+        writeln!(terminal.output, "Installed-host operator recovery is selected. Type /recover while this terminal is idle to inspect unresolved approvals.")
+            .and_then(|()| terminal.output.flush())
+            .map_err(|error| ConnectError::native("display local recovery entry", error))?;
+    }
     loop {
         let request = tokio::select! {
             biased;
@@ -158,6 +200,19 @@ async fn serve_operator(
                 continue;
             }
             request = requests.next() => match request { Some(request) => request, None => return Ok(()) },
+            command = terminal.input.recv(), if recovery_selected => {
+                let Some(command) = command else { return Ok(()); };
+                let command = command.map_err(|error| ConnectError::native("read operator command", error))?;
+                if command.trim() == "/recover" {
+                    if !local_recovery::present(&host, &mut terminal, &artifact_parent, &closed).await? { return Ok(()); }
+                } else {
+                    use std::io::Write as _;
+                    writeln!(terminal.output, "Use /recover to inspect unresolved installed-host approvals. Other input is handled by its active review prompt.")
+                        .and_then(|()| terminal.output.flush())
+                        .map_err(|error| ConnectError::native("display operator command help", error))?;
+                }
+                continue;
+            }
         };
         // This native call is retained to completion even if the parent closes.
         // It returns before input admission and before any human wait starts.
@@ -214,14 +269,16 @@ async fn serve_operator(
                                 signal = tokio::signal::ctrl_c() => signal,
                             }
                         };
-                        match present_approval(prompt, &mut terminal.input, &mut terminal.output, interrupt).await {
-                            Ok(true) => {}
-                            Ok(false) => {
+                        match present_approval_with_review(prompt, &mut terminal.input, &mut terminal.output,
+                            interrupt, review.as_mut()).await {
+                            ReviewPresentation::Reviewed(result) => break result,
+                            ReviewPresentation::Presented(Ok(true)) => {}
+                            ReviewPresentation::Presented(Ok(false)) => {
                                 ended = true;
                                 drop(setup.take());
                                 break retire_presenter_and_join(&approvals, &mut presenter, review).await;
                             }
-                            Err(error) => {
+                            ReviewPresentation::Presented(Err(error)) => {
                                 ended = true;
                                 drop(setup.take());
                                 // Preserve retirement failure, but always join the review first.
@@ -389,6 +446,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_controller_review_expires_while_shown_and_releases_input() {
+        use std::{future::{Future, poll_fn}, task::Poll, time::{Duration, SystemTime}};
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let directory = tempfile::tempdir().unwrap();
+            let (approvals, mut presenter) = LocalApprovals::create(directory.path()).unwrap();
+            let session = meerkat_core::SessionId::new();
+            approvals.bind_session(&session).unwrap();
+            let mut request = access_request(session.clone());
+            request.expires_at = Some((SystemTime::now() + Duration::from_millis(500)).into());
+            let review = approvals.review_access(request);
+            tokio::pin!(review);
+            assert!(poll_fn(|cx| Poll::Ready(review.as_mut().poll(cx))).await.is_pending());
+            let prompt = presenter.next().await.unwrap();
+            let (lines, receive_lines) = tokio::sync::mpsc::channel(1);
+            let mut input = TerminalInput::scripted(receive_lines);
+            let mut output = Vec::new();
+            let result = present_approval_with_review(prompt, &mut input, &mut output,
+                std::future::pending(), review.as_mut()).await;
+            assert!(matches!(result, ReviewPresentation::Reviewed(Err(ConnectError::InvalidInput(ref message)))
+                if message == "The access review expired without a returned decision"));
+            assert_eq!(String::from_utf8(output).unwrap().matches("Type 'approve ").count(), 1);
+            input.check_cleanup().unwrap();
+            lines.send(Ok("input after expiry".into())).await.unwrap();
+            assert_eq!(input.recv().await.unwrap().unwrap(), "input after expiry");
+            approvals.check_session(&session).unwrap();
+
+            let later = approvals.review_access(access_request(session));
+            let respond = async {
+                let mut prompt = presenter.next().await.unwrap();
+                prompt.decide(meerkat_core::ApprovalDecision::Deny).unwrap();
+            };
+            let (record, ()) = tokio::join!(later, respond);
+            assert_eq!(record.unwrap().status, meerkat_core::ApprovalStatus::Denied);
+        }).await.expect("displayed terminal controller review did not settle at its actual approval deadline");
+    }
+
+    #[tokio::test]
+    async fn terminal_controller_review_ready_stop_wins_then_joins_the_same_review() {
+        use std::{future::{Future, poll_fn}, task::Poll, time::{Duration, SystemTime}};
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let directory = tempfile::tempdir().unwrap();
+            let (approvals, presenter) = LocalApprovals::create(directory.path()).unwrap();
+            let mut presenter = Some(presenter);
+            let session = meerkat_core::SessionId::new();
+            approvals.bind_session(&session).unwrap();
+            let mut request = access_request(session.clone());
+            request.expires_at = Some((SystemTime::now() + Duration::from_millis(50)).into());
+            let review = approvals.review_access(request);
+            tokio::pin!(review);
+            assert!(poll_fn(|cx| Poll::Ready(review.as_mut().poll(cx))).await.is_pending());
+            let prompt = presenter.as_mut().unwrap().next().await.unwrap();
+            let (lines, receive_lines) = tokio::sync::mpsc::channel(1);
+            let mut input = TerminalInput::scripted(receive_lines);
+            let mut output = Vec::new();
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            let result = present_approval_with_review(prompt, &mut input, &mut output,
+                std::future::ready(Ok(())), review.as_mut()).await;
+            assert!(matches!(result, ReviewPresentation::Presented(Ok(false))));
+            assert!(retire_presenter_and_join(&approvals, &mut presenter, review).await.is_err());
+            assert!(presenter.is_none());
+            assert!(approvals.check_session(&session).is_err());
+            input.check_cleanup().unwrap();
+            lines.send(Ok("input after stop".into())).await.unwrap();
+            assert_eq!(input.recv().await.unwrap().unwrap(), "input after stop");
+        }).await.expect("terminal stop did not preserve precedence and joined input cleanup");
+    }
+
+    #[tokio::test]
     async fn shutdown_drops_queued_native_prompt_before_joining_review() {
         use std::{future::{Future, poll_fn}, task::Poll};
         let directory = tempfile::tempdir().unwrap();
@@ -460,12 +585,40 @@ mod tests {
     #[test]
     fn owned_terminal_is_retained_close_on_exec_without_a_second_input_owner() {
         let pty = nix::pty::openpty(None, None).unwrap();
+        assert_eq!(nix::sys::termios::tcgetsid(&pty.slave), Err(nix::errno::Errno::ENOTTY));
         let fd = pty.slave.into_raw_fd();
         let terminal = InheritedOperatorTerminal::adopt(fd, fd + 1, fd + 2).unwrap();
         terminal.input.require_terminal().unwrap();
+        assert_eq!(nix::sys::termios::tcgetsid(&terminal.output), Err(nix::errno::Errno::ENOTTY));
         let flags = nix::fcntl::fcntl(&terminal.output, nix::fcntl::FcntlArg::F_GETFD).unwrap();
         assert!(nix::fcntl::FdFlag::from_bits_truncate(flags).contains(nix::fcntl::FdFlag::FD_CLOEXEC));
         drop(terminal);
         drop(pty.master);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn adopting_terminal_does_not_acquire_a_controlling_terminal() {
+        const CHILD: &str = "MEERKAT_CONNECT_TERMINAL_SESSION_TEST";
+        if std::env::var_os(CHILD).as_deref() != Some(std::ffi::OsStr::new("child")) {
+            // Run the real adoption path in a fresh session, without changing
+            // the test runner's terminal or suppressing the SIGHUP disposition.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "application_gateway::tests::adopting_terminal_does_not_acquire_a_controlling_terminal",
+                    "--exact", "--test-threads=1", "--nocapture",
+                ])
+                .env(CHILD, "child")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "terminal child {:?}: {}{}",
+                output.status, String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        let session = nix::unistd::setsid().unwrap();
+        assert_eq!(session, nix::unistd::getpid());
+        assert_eq!(nix::unistd::getsid(None).unwrap(), session);
+        owned_terminal_is_retained_close_on_exec_without_a_second_input_owner();
     }
 }

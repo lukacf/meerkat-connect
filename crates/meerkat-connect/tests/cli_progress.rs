@@ -56,9 +56,7 @@ impl LlmClient for PausedModel {
                 Ok(LlmEvent::UsageUpdate { usage })
             }))
             .chain(futures_util::stream::iter([Ok(LlmEvent::Done {
-                outcome: meerkat::LlmDoneOutcome::Success {
-                    stop_reason: meerkat::StopReason::EndTurn,
-                },
+                outcome: meerkat::LlmDoneOutcome::success(meerkat::StopReason::EndTurn),
             })])),
         )
     }

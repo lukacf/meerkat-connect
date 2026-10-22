@@ -1785,6 +1785,45 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 c.public_review(wrong, accepted, results, operation, owner, VERIFIER.ACQUISITION_ROUTE, task_scope, source_authority)
 
+    def test_approved_service_context_is_exact_and_immediately_before_b(self):
+        v = VERIFIER
+        proposal = {"acquisition": {"id": "selected-acquisition"}, "decision": {
+            "decision": "selected-B", "connection_revision": "a" * 64,
+            "permission": {"connection": "selected-server", "resource": "selected-resource",
+                "operations": ["read"], "lifetime": {"expires_at_ms": 1900000000000}}}}
+        expected = v.installed_approved_service_context(proposal)
+        self.assertEqual({k: expected[k] for k in ("operation", "original", "connection", "resource",
+            "allowed_operations", "expires_at_ms", "configuration_sha256")}, {
+            "operation": "selected-acquisition", "original": "selected-B",
+            "connection": "selected-server", "resource": "selected-resource",
+            "allowed_operations": ["read"], "expires_at_ms": 1900000000000,
+            "configuration_sha256": "a" * 64})
+        user = lambda text: {"role": "user", "content": text}
+        rows = [user("request"), {"role": "assistant", "content": "A finished"},
+                user(v.canonical(expected).decode()), user("request")]
+        self.assertIsNone(v.original_catalog_history(rows, "request", "read", 3,
+                                                    service_context=expected))
+        # An unselected context is not accepted merely because it looks typed.
+        with self.assertRaises(AssertionError):
+            v.original_catalog_history(rows, "request", "read", 3)
+        for key in expected:
+            changed = copy.deepcopy(expected)
+            changed[key] = "wrong" if not isinstance(changed[key], list) else ["other"]
+            wrong = copy.deepcopy(rows)
+            wrong[2]["content"] = v.canonical(changed).decode()
+            with self.subTest(field=key), self.assertRaises(AssertionError):
+                v.original_catalog_history(wrong, "request", "read", 3, service_context=expected)
+        for wrong, fresh in (
+                (rows[:2] + rows[3:], 2),
+                (rows[:2] + [rows[2], rows[2], rows[3]], 4),
+                ([rows[0], rows[2], rows[1], rows[3]], 3),
+                (rows + [rows[2]], 3),
+                (rows[:2] + [{"role": "system", "content": rows[2]["content"]}, rows[3]], 3),
+                (rows[:2] + [user(rows[2]["content"] + " trailing"), rows[3]], 3),
+                (rows[:2] + [user(v.canonical({**expected, "extra": "field"}).decode()), rows[3]], 3)):
+            with self.assertRaises(AssertionError):
+                v.original_catalog_history(wrong, "request", "read", fresh, service_context=expected)
+
     def test_controller_reprepare_feedback_is_single_and_pre_tool_only(self):
         v = VERIFIER
         request, operation = v.ACQUISITION_REQUEST, v.ACQUISITION_OPERATION
@@ -1801,6 +1840,79 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
             provider = v.InstalledPublicCatalogProvider(Path("unused"), None)
             self.assertFalse(v.InstalledAcquisitionProvider.controller_reprepare)
             self.original_catalog_response_control(provider, controller_recovery=True)
+
+    def test_controller_reprepare_completed_boundaries_preserve_single_catalog_sequence(self):
+        v = VERIFIER
+        request, operation = v.ACQUISITION_REQUEST, v.ACQUISITION_OPERATION
+        rows = [{"role": "user", "content": request},
+                {"role": "assistant", "tool_calls": [{"id": "original-catalog-search"}]},
+                {"role": "tool", "tool_call_id": "original-catalog-search", "content": "{}"},
+                {"role": "user", "content": v.ORIGINAL_CONTROLLER_FEEDBACK}]
+        self.assertEqual(v.original_catalog_history(rows, request, operation, 0,
+            allow_controller_recovery=True), 3)
+        completed = rows[:-1]
+        boundaries = [copy.deepcopy(rows)]
+        for call_id in ("original-catalog-load", v.ORIGINAL_STORY_CALL):
+            completed += [{"role": "assistant", "tool_calls": [{"id": call_id}]},
+                          {"role": "tool", "tool_call_id": call_id, "content": "{}"}]
+            history = completed + [rows[-1]]
+            self.assertEqual(v.original_catalog_history(history, request, operation, 0,
+                allow_controller_recovery=True), len(history) - 1)
+            boundaries.append(copy.deepcopy(history))
+        for wrong in (rows + [rows[-1]], rows[:2] + [rows[-1]],
+                      rows[:3] + [rows[1], rows[2], rows[-1]],
+                      rows[:3] + [{"role": "tool", "tool_call_id": "original-catalog-load"}, rows[-1]]):
+            with self.assertRaises(AssertionError):
+                v.original_catalog_history(wrong, request, operation, 0, allow_controller_recovery=True)
+        notice = {"role": "user", "content": (
+            "Tool configuration changed at turn boundary: boundary_applied(base_changed=true,visible_changed=true,revision=1)"
+            "\nTool configuration changed: boundary_applied(base_changed=true,visible_changed=true,revision=1)")}
+        with_notice = boundaries[1][:-1] + [notice, rows[-1]]
+        self.assertEqual(v.original_catalog_history(with_notice, request, operation, 0,
+            allow_controller_recovery=True), len(with_notice) - 1)
+        boundaries.append(with_notice)
+        with self.assertRaises(AssertionError):
+            v.original_catalog_history(rows, request, operation, 0)
+        state = self.controller_reprepare_state()
+        prior = copy.deepcopy(state["authorization_audit"][2:])
+        for row in prior: row["observation"]["operation_id"] = "earlier-model"
+        state["authorization_audit"] = prior + state["authorization_audit"]
+        projected = v.original_reprepare_projection(state, "session", "B", "run-B")
+        self.assertEqual(projected["refusal_count"], 2)
+        with tempfile.TemporaryDirectory(prefix="inert-post-search-audit-") as scratch:
+            directory = Path(scratch)
+            projected["row_sha256"] = "a" * 64
+            path = directory / "original-b-controller-recovery.json"
+            path.write_bytes(v.canonical(projected))
+            acquisition = {"controller_recovery_audit": v.artifact_pin(path)}
+            business = {"original_catalog": {}, "controller_recovery_history_index": 3}
+            receipt = {"input_id": "B", "run_id": "run-B", "outcome": {"session_id": "session"}}
+            for history in boundaries:
+                business["controller_recovery_history_index"] = len(history) - 1
+                ASSEMBLER.gateway_controller_recovery(acquisition, business, history, 0, directory, receipt)
+            business["controller_recovery_history_index"] = 3
+            for wrong in (rows + [rows[-1]], rows[:2] + [rows[-1]]):
+                with self.assertRaises(ValueError):
+                    ASSEMBLER.gateway_controller_recovery(acquisition, business, wrong, 0, directory, receipt)
+        for mutate in (
+            lambda x: x["authorization_audit"][0]["observation"].update(operation_id="refused"),
+            lambda x: x["authorization_audit"][0]["observation"].update(observation={"kind": "authorization_unavailable"}),
+            lambda x: x["authorization_audit"][3]["observation"]["observation"].update(reason="denied"),
+            lambda x: x["authorization_audit"].append(copy.deepcopy(x["authorization_audit"][3])),
+        ):
+            wrong = copy.deepcopy(state); mutate(wrong)
+            with self.assertRaises(AssertionError):
+                v.original_reprepare_projection(wrong, "session", "B", "run-B")
+
+    def test_controlled_provider_preserves_explicit_tool_refusals(self):
+        v = VERIFIER
+        provider = object.__new__(v.InstalledAcquisitionProvider)
+        for identifier in ("original-catalog-search", "original-catalog-load", "helper-catalog-load-1", "install"):
+            body = {"model": "fixture-original-model", "tools": [], "messages": [
+                {"role": "tool", "tool_call_id": identifier, "content": json.dumps({
+                    "error": "operation_refused", "message": "operation unavailable under current authorization"})}]}
+            with self.assertRaisesRegex(AssertionError, "actual tool result " + identifier + " refused: operation_refused"):
+                provider.response(body)
 
     def controller_reprepare_state(self):
         target = {"kind": "model", "model": "fixture-original-model", "provider": "self_hosted",
@@ -1916,7 +2028,8 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
         scenario = self.console.ConsoleScenario(VERIFIER, "http://127.0.0.1:18444")
         with mock.patch.object(VERIFIER.InstalledAcquisitionProvider, "__init__", return_value=None):
             provider = scenario.provider(Path("unused"), None)
-        self.original_catalog_response_control(provider)
+        self.original_catalog_response_control(provider, expected_tool_policy={"tools": [
+            {"name": VERIFIER.ACQUISITION_OPERATION, "consequence": "r2"}], "catalog": "r2"})
 
     def test_installed_original_requests_reviewed_catalog_and_reads_only_after_exact_load(self):
         with mock.patch.object(VERIFIER.InstalledAcquisitionProvider, "__init__", return_value=None):
@@ -1927,7 +2040,7 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
         self.assertTrue(provider.original_catalog)
         self.original_catalog_response_control(provider)
 
-    def original_catalog_response_control(self, provider, *, controller_recovery=False):
+    def original_catalog_response_control(self, provider, *, controller_recovery=False, expected_tool_policy=None):
         import threading
         v = VERIFIER
         provider.results, provider.issued, provider.requests = {}, set(), []
@@ -2006,7 +2119,8 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
         if controller_recovery:
             self.assertEqual(provider.business_observation["controller_recovery_history_index"], 7)
         self.assertEqual(provider.business_observation["original_catalog"]["load_result"], loaded)
-        self.assertEqual(provider.access_arguments("job", [operation])["tool_policy"], {"tools": [], "catalog": "r2"})
+        self.assertEqual(provider.access_arguments("job", [operation])["tool_policy"],
+                         {"tools": [], "catalog": "r2"} if expected_tool_policy is None else expected_tool_policy)
         self.assertNotIn("tool_policy", v.InstalledAcquisitionProvider.access_arguments(provider, "job", [operation]))
         with self.assertRaises(AssertionError): provider.response(body)
 
@@ -2259,6 +2373,9 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
             # This is only an inert oracle control. Native review/persistence and
             # native A/B completion remain independently required by the scenario.
             scenario._persistence_proposal = {"inert_review": True}
+            scenario._credential_service_context = {"inert_review": "selected-context"}
+            messages.insert(4, {"role": "user",
+                "content": v.canonical(scenario._credential_service_context).decode()})
             return scenario, provider, body
 
         for inline in (False, True):
@@ -2276,7 +2393,7 @@ class InstalledConsoleBoundaryTests(unittest.TestCase):
 
         changes = [
             ("missing_original", lambda s, p, b: b["messages"].pop(0)),
-            ("missing_fresh", lambda s, p, b: b["messages"].pop(4)),
+            ("missing_fresh", lambda s, p, b: b["messages"].pop(5)),
             ("missing_a_completion", lambda s, p, b: b["messages"].pop(3)),
             ("duplicate_input", lambda s, p, b: b["messages"].append({"role": "user", "content": c.TRELLO_REQUEST})),
             ("unrelated_input", lambda s, p, b: b["messages"].insert(4, {"role": "user", "content": "another input"})),

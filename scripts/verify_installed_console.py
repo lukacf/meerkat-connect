@@ -96,7 +96,7 @@ def original_work_reference(value, source_authority):
             and value["authority"] == source_authority and nonempty(value["work"]))
 
 
-def reviewed_original_catalog(request, decision, accepted, prior_raw, verifier):
+def reviewed_original_catalog(request, decision, accepted, prior_raw, verifier, *, expected_selection=None):
     """Join the reviewed whole successor to the actual native bootstrap bytes."""
     wrapper = request["member_tool_policy"]
     proposal = wrapper["proposal"]
@@ -107,11 +107,11 @@ def reviewed_original_catalog(request, decision, accepted, prior_raw, verifier):
             and wrapper["native_service_scope"] == "the separate native service and catalog grants still expire with this task",
             "human catalog review omitted its complete policy or visibility scope")
     verifier.reviewed_original_catalog_policy(proposal, decision["catalog"],
-        accepted["session_id"], prior_raw)
+        accepted["session_id"], prior_raw, expected_selection=expected_selection)
 
 
 def public_review(review, accepted, results, operation, original_owner, route, task_scope, source_authority,
-                  *, prior_tool_policy=None, verifier=None, principal=None):
+                  *, prior_tool_policy=None, verifier=None, principal=None, expected_tool_policy=None):
     answer = approval_answer(review)
     principal = human() if principal is None else principal
     body = review["prompt"]["body"]
@@ -130,8 +130,10 @@ def public_review(review, accepted, results, operation, original_owner, route, t
             "actual original-task references missing")
     selection = {"operations": [operation], "agent": "original", "expires_in_ms": None}
     if prior_tool_policy is not None:
-        selection["tool_policy"] = {"tools": [], "catalog": "r2"}
-        reviewed_original_catalog(request, decision, accepted, prior_tool_policy, verifier)
+        selection["tool_policy"] = ({"tools": [], "catalog": "r2"}
+                                    if expected_tool_policy is None else expected_tool_policy)
+        reviewed_original_catalog(request, decision, accepted, prior_tool_policy, verifier,
+                                  expected_selection=expected_tool_policy)
     require(request["software"]["job_id"] == results["installed-job"]["job"]["id"]
             and request["software"]["family"] == "agno" and request["software"]["profile"] == "hackernews"
             and request["software"]["server_name"] == server
@@ -194,10 +196,11 @@ def input_text(frame):
     return None
 
 
-def native_original_pair(frames, live, accepted, original_request, fresh_request):
+def native_original_pair(frames, live, accepted, original_request, fresh_request, *, fresh_context=None):
     """Join the accepted Send anchor to at most two ordered native run starts."""
-    # Accepted send owns the interaction anchor. Native event lineage may carry
-    # only a run ID; do not invent its absent interaction ID from the envelope.
+    # The accepted Send owns its reservation anchor. Each native RunStarted
+    # owns its input interaction lineage, which can differ from that reservation.
+    # Preserve an absent native interaction ID rather than inventing one.
     positions = {f["id"]: i for i, f in enumerate(frames)}
     require(len(positions) == len(frames), "duplicate native source frame")
     anchors = [f for f in frames if f["id"] == accepted["input_frame_id"]]
@@ -220,12 +223,25 @@ def native_original_pair(frames, live, accepted, original_request, fresh_request
               and f.get("session_id") == accepted["session_id"]]
     require(len(starts) <= 2, "duplicate native original or fresh run")
     runs = []
+    interactions = {}
     for index, frame in enumerate(starts):
-        runs.append(run_id(frame))
+        run = run_id(frame)
+        runs.append(run)
+        interaction = frame["payload"]["identity"].get("interaction_id")
+        require(interaction is None or nonempty(interaction), "invalid native run interaction")
+        interactions[run] = interaction
         expected = original_request if index == 0 else fresh_request
+        if index == 1 and fresh_context is not None:
+            # The caller binds this exact context from the checked human review
+            # before submitting approval. Never infer it from observed input.
+            require(nonempty(fresh_context), "reviewed fresh host context is missing")
+            matches_input = frame["payload"].get("input") == {"kind": "content", "content": [
+                {"type": "text", "text": fresh_context}, {"type": "text", "text": expected}]}
+        else:
+            matches_input = input_text(frame) == expected
         require(frame["payload"].get("source_event_type") == "run_started"
                 and frame["payload"].get("session_id") == accepted["session_id"]
-                and input_text(frame) == expected
+                and matches_input
                 and positions[anchor["id"]] < positions[frame["id"]],
                 "native original/fresh input differs from the accepted session or request")
     require(len(set(runs)) == len(runs), "fresh instruction reused the original native run")
@@ -233,8 +249,8 @@ def native_original_pair(frames, live, accepted, original_request, fresh_request
         if frame.get("run_id") in runs:
             run_id(frame)
             require(frame.get("interaction_id") == frame["payload"]["identity"].get("interaction_id")
-                    and frame.get("interaction_id") in (None, accepted["interaction_id"]),
-                    "native run contradicts the accepted Console interaction")
+                    and frame.get("interaction_id") == interactions[frame["run_id"]],
+                    "native run contradicts its RunStarted interaction lineage")
     if len(starts) < 2:
         return None
     a, b = starts[:1], starts[1:]
@@ -242,7 +258,7 @@ def native_original_pair(frames, live, accepted, original_request, fresh_request
     return a, b, a_run, b_run, positions
 
 
-def completed_journey(frames, accepted, context, business, verifier):
+def completed_journey(frames, accepted, context, business, verifier, *, fresh_context=None):
     """Return only a complete native A -> reviewed fresh B -> real result join.
 
     Native tool events inherit active-run lineage but have no session field.
@@ -259,7 +275,7 @@ def completed_journey(frames, accepted, context, business, verifier):
     if context is None or business is None:
         return None
     pair = native_original_pair(frames, live, accepted, verifier.ACQUISITION_REQUEST,
-                                context["proposed_fresh_instruction"])
+                                context["proposed_fresh_instruction"], fresh_context=fresh_context)
     if pair is None:
         return None
     a, b, a_run, b_run, positions = pair
@@ -401,20 +417,45 @@ class ConsoleScenario:
     def software_answer(self, review, checked):
         return software_review(review, checked, self.v.ACQUISITION_OPERATION)
 
-    async def access_answer(self, http, review, accepted, results, report):
+    def checked_access_review(self, review, accepted, results):
         answer, context = public_review(review, accepted, results, self.v.ACQUISITION_OPERATION,
             self.v.installed_fixture_principal("original-agent"), self.v.ACQUISITION_ROUTE,
             self.task_scope, self.source_authority,
-            prior_tool_policy=self.application_tool_policy, verifier=self.v, principal=self.human())
+            prior_tool_policy=self.application_tool_policy, verifier=self.v, principal=self.human(),
+            expected_tool_policy={"tools": [{"name": self.v.ACQUISITION_OPERATION, "consequence": "r2"}],
+                                  "catalog": "r2"})
         require(context["proposed_fresh_instruction"] == self.v.ACQUISITION_REQUEST,
                 "human review changed the controlled original request")
+        return answer, context
+
+    def bind_access_context(self, review, accepted, results, provider):
+        # Bind only from the independently checked public review, before its
+        # answer can enter native. This is an oracle expectation, not authority.
+        _, context = self.checked_access_review(review, accepted, results)
+        expected = self.v.installed_approved_service_context({
+            "decision": review["prompt"]["body"]["service_access"],
+            "acquisition": context["business_task"]})
+        encoded = self.v.canonical(expected).decode()
+        with provider.lock:
+            require(provider.expected_service_context in (None, expected)
+                    and getattr(self, "_approved_service_context", None) in (None, encoded),
+                    "approved service context changed after selection")
+            provider.expected_service_context = expected
+            self._approved_service_context = encoded
+
+    async def access_answer(self, http, review, accepted, results, report):
+        answer, context = self.checked_access_review(review, accepted, results)
         return answer, context, PANEL + "/answer", "public_access"
 
     def completed(self, frames, accepted, context, business):
         if business is not None:
             require(business.get("original_catalog", {}).get("operation") == self.v.ACQUISITION_OPERATION,
                     "original public completion lacks its own catalog receipts")
-        return completed_journey(frames, accepted, context, business, self.v)
+        fresh_context = getattr(self, "_approved_service_context", None)
+        require(context is None or fresh_context is not None,
+                "approved service context was not selected before submission")
+        return completed_journey(frames, accepted, context, business, self.v,
+                                 fresh_context=fresh_context)
 
     def finish_report(self, report, results, provider, completion):
         require(len(report["decisions"]) == 2 and len(report["starts"]) == 1
@@ -439,10 +480,12 @@ class ConsoleScenario:
     def provider(self, directory, events):
         class HumanProvider(self.v.InstalledAcquisitionProvider):
             original_catalog = True
+            allow_fresh_helper_search = True
 
             def access_arguments(self, job_id, raw):
                 return {**super().access_arguments(job_id, raw),
-                        "tool_policy": {"tools": [], "catalog": "r2"}}
+                        "tool_policy": {"tools": [{"name": name, "consequence": "r2"} for name in raw],
+                                        "catalog": "r2"}}
 
             def public_reply(self):
                 return {"state": "reviewed", "access_reviewed": True, "grant_issued": True,
@@ -462,7 +505,10 @@ class ConsoleScenario:
         original_error = None
         token = None
 
-        def request(method, path, body=None, *, bearer=True, origin=None, expected=200, text=False):
+        def request(method, path, body=None, *, bearer=True, origin=None, expected=200, text=False, status_poll=False):
+            if status_poll:
+                require(method == "GET" and path == PANEL + "/data" and body is None and expected == 200 and not text,
+                        "pending allowance is only for the existing status poll")
             require(time.monotonic() < deadline and process.poll() is None,
                     "actual Console owner or acquisition deadline ended")
             connection = HTTPConnection("127.0.0.1", self.port,
@@ -483,6 +529,9 @@ class ConsoleScenario:
                 report["http"].append({"method": method, "path": path, "request": self.report_value(body),
                     "status": response.status, "response": self.report_value(value)})
                 self.check_response(value)
+                if status_poll and response.status == 503:
+                    require(value == {"error": "Protected setup is unavailable"}, "malformed unavailable status response")
+                    return None
                 require(response.status == expected, "actual " + path + " returned " + str(response.status))
                 return value
             finally:
@@ -550,7 +599,12 @@ class ConsoleScenario:
                 if completion is not None and provider.finished.is_set():
                     self.finish_report(report, results, provider, completion)
                     break
-                data = await http("GET", PANEL + "/data")
+                data = await http("GET", PANEL + "/data", status_poll=True)
+                if data is None:
+                    # Only the next existing bounded observation is eligible.
+                    # Never replay Send, Start or an approval after a failed POST.
+                    await asyncio.sleep(0.1)
+                    continue
                 review = data["review"]
                 if review is not None:
                     if review["can_start"]:
@@ -571,6 +625,8 @@ class ConsoleScenario:
                                         "unexpected additional human review")
                                 answer, context, answer_path, kind = await self.access_answer(
                                     http, review, accepted, results, report)
+                                if kind == "public_access":
+                                    self.bind_access_context(review, accepted, results, provider)
                             if not report["decisions"]:
                                 await http("POST", PANEL + "/answer", answer,
                                     origin="https://wrong-origin.invalid", expected=403)
@@ -715,6 +771,57 @@ class BrowserConsoleScenario(ConsoleScenario):
                             for secret in (self.front.key if self.front else None,)),
                         "private Forge value reached retained evidence")
 
+    @staticmethod
+    def cleanup_category(error):
+        # Only closed labels reach evidence. Exception text, task names and
+        # login identifiers may contain private values.
+        if isinstance(error, asyncio.CancelledError):
+            return "cancelled"
+        if isinstance(error, TimeoutError):
+            return "timeout"
+        if getattr(error, "code", None) == "cleanup_unconfirmed":
+            return "native_login_cleanup_unconfirmed"
+        for message, category in (
+            ("Console subscription cleanup is unconfirmed.", "subscription_cleanup_unconfirmed"),
+            ("Console upstream cleanup is unconfirmed.", "upstream_cleanup_unconfirmed"),
+            ("Console access retirement is unconfirmed.", "access_retirement_unconfirmed"),
+            ("Console access cleanup is unconfirmed.", "access_cleanup_unconfirmed"),
+            ("Console login cleanup is unconfirmed.", "login_cleanup_unconfirmed"),
+        ):
+            if isinstance(error, RuntimeError) and error.args == (message,):
+                return category
+        if isinstance(error, AssertionError):
+            return "assertion_failed"
+        return "other_error"
+
+    @classmethod
+    def cleanup_children(cls, front, front_logins, subscriptions):
+        # Observe the original retained tasks only. Never await, cancel, retry
+        # or replace them. Counts keep the output bounded by fixed categories.
+        rows = {}
+        def observe(role, task):
+            if task is None:
+                return
+            if not task.done():
+                category = "pending"
+            elif task.cancelled():
+                category = "cancelled"
+            else:
+                error = task.exception()
+                category = "succeeded" if error is None else cls.cleanup_category(error)
+            counts = rows.setdefault(role, {})
+            counts[category] = counts.get(category, 0) + 1
+        observe("front_close", getattr(front, "_close_task", None))
+        observe("server", getattr(front, "task", None))
+        for login in front_logins:
+            for role in ("retirement_task", "connect_close", "controller_review_close",
+                         "console_login_close", "controller_review_start"):
+                observe(role, getattr(login, role, None))
+        for subscription in subscriptions:
+            observe("subscription", subscription.task)
+            observe("subscription_close", subscription.close_task)
+        return rows
+
     async def run(self, private, provider, directory, events, process, base_url):
         v, front = self.v, self.front
         require(front is not None and base_url.rstrip("/") != self.origin,
@@ -725,6 +832,7 @@ class BrowserConsoleScenario(ConsoleScenario):
         observations, inputs, logins = [], [], []
         frames, by_id, by_sequence, reviews = [], {}, {}, {}
         accepted = context = None
+        status_pending = False
         observer_errors = []
         deadline = time.monotonic() + v.ACQUISITION_LIMIT
         release = directory / "browser-release.json"
@@ -737,7 +845,17 @@ class BrowserConsoleScenario(ConsoleScenario):
             return owner
 
         def admitted(event):
-            inputs.append(dataclasses.asdict(event))
+            nonlocal accepted
+            event = dataclasses.asdict(event)
+            require(not inputs and event["channel"] == "host-authenticated-console"
+                    and event["principal"] == EMAIL and event["identity"] == "original"
+                    and event["content"] == self.original_request(),
+                    "Browser Send changed the selected public input or human")
+            inputs.append(event)
+            accepted = {key: event[key] for key in
+                        ("identity", "interaction_id", "session_id", "input_frame_id",
+                         "cursor", "conversation_id")}
+            report["accepted"] = accepted
 
         async def observed_response(response):
             # Observe bounded, public fixture JSON only. Never retain headers,
@@ -762,15 +880,33 @@ class BrowserConsoleScenario(ConsoleScenario):
                 require(len(observations) < 2000, "public Browser observation bound")
                 observations.append({"method": method, "path": path, "request": body,
                                      "status": response.status_code, "response": value})
+                if path == PANEL + "/data" and response.status_code == 200:
+                    review = value["review"]
+                    prompt = review.get("prompt") if review is not None else None
+                    if (prompt is not None and prompt.get("body", {}).get("access_request", {})
+                            .get("phase") == "installed_public_service_access"):
+                        require(accepted is not None, "access review preceded accepted Browser Send")
+                        with provider.lock:
+                            results = dict(provider.results)
+                        # httpx awaits this hook before the front releases the
+                        # review to the browser. An answer-response hook is too
+                        # late: B can run before that response is observed.
+                        self.bind_access_context(review, accepted, results, provider)
             except Exception as error:
                 observer_errors.append({"method": method, "path": path, "error_type": type(error).__name__})
+                raise
 
         async def consume_observations(results):
-            nonlocal frames, context
+            nonlocal frames, context, status_pending
             while observations:
                 observation = observations.pop(0)
                 report["http"].append(observation)
                 path, method, body, value = (observation[key] for key in ("path", "method", "request", "response"))
+                if path == PANEL + "/data" and method in ("GET", "POST") and observation["status"] == 503:
+                    require(value == {"error": "Protected setup is unavailable"},
+                            "malformed unavailable Browser status response")
+                    status_pending = True
+                    continue
                 require(observation["status"] == (202 if path in (PANEL + "/answer", PANEL + "/start") else 200),
                         "observed public Browser request failed")
                 if path == PANEL + "/data":
@@ -778,6 +914,7 @@ class BrowserConsoleScenario(ConsoleScenario):
                     if review is not None:
                         key = (review["review_id"], review["prompt"].get("approval_id") if review["prompt"] else None)
                         reviews[key] = review
+                    status_pending = False
                 elif path == PANEL + "/answer":
                     require(accepted is not None, "approval preceded accepted Browser Send")
                     review = reviews[(body["review_id"], body["approval_id"])]
@@ -860,20 +997,12 @@ class BrowserConsoleScenario(ConsoleScenario):
                 require(process.poll() is None and not front.task.done(), "Browser owner exited during observation")
                 require(not observer_errors and not front.failures, "shipping front or public observation failed")
                 require(len(inputs) <= 1, "Browser admitted an additional original input")
-                if inputs and accepted is None:
-                    event = inputs[0]
-                    require(event["channel"] == "host-authenticated-console" and event["principal"] == EMAIL
-                            and event["identity"] == "original" and event["content"] == self.original_request(),
-                            "Browser Send changed the selected public input or human")
-                    accepted = {key: event[key] for key in
-                        ("identity", "interaction_id", "session_id", "input_frame_id", "cursor", "conversation_id")}
-                    report["accepted"] = accepted
                 with provider.lock:
                     require(not provider.errors, "controlled model rejected actual Browser native request")
                     results, business = dict(provider.results), provider.business_observation
                 await consume_observations(results)
                 completion = self.completed(frames, accepted, context, business) if accepted else None
-                if completion is not None and provider.finished.is_set():
+                if completion is not None and provider.finished.is_set() and not status_pending:
                     require(any(row == {"method": "GET", "path": "/login", "status": 200}
                                 for row in report["front_routes"])
                             and sum(row == {"method": "POST", "path": "/login", "status": 303}
@@ -909,13 +1038,36 @@ class BrowserConsoleScenario(ConsoleScenario):
         finally:
             report["observation_errors"] = observer_errors
             cleanup_phase = "front_close"
+            # Retain references before successful cleanup clears owner lists.
+            front_logins = tuple(getattr(front, "_logins", {}).values())
+            subscriptions = tuple(item for login in front_logins for item in login.subscriptions)
             try:
-                await front.close()
+                front_error = login_error = None
+                try:
+                    await front.close()
+                except BaseException as error:
+                    front_error = error
+                # front.close already owns these retirements. Observe every
+                # retained result even if its aggregate close failed.
                 for owner in logins:
-                    retired = await owner.close()  # The same idempotent, joined owner result.
-                    require(retired is not None and retired.fenced and retired.reservations_drained
-                            and not retired.uncertain, "shipping login retirement unconfirmed")
-                    report["login_retirement"].append(dataclasses.asdict(retired))
+                    try:
+                        retired = await owner.close()  # The same idempotent, joined owner result.
+                        if retired is not None:
+                            report["login_retirement"].append(dataclasses.asdict(retired))
+                        require(retired is not None and retired.fenced and retired.reservations_drained
+                                and not retired.uncertain, "shipping login retirement unconfirmed")
+                    except BaseException as error:
+                        if login_error is None:
+                            login_error = error
+                        counts = report.setdefault("login_retirement_failures", {})
+                        category = self.cleanup_category(error)
+                        counts[category] = counts.get(category, 0) + 1
+                report["cleanup_children"] = self.cleanup_children(front, front_logins, subscriptions)
+                if front_error is not None:
+                    raise front_error
+                cleanup_phase = "login_retirement"
+                if login_error is not None:
+                    raise login_error
                 report["front_joined"] = True
                 cleanup_phase = "post_close_observation"
                 if original_error is None:
@@ -925,6 +1077,7 @@ class BrowserConsoleScenario(ConsoleScenario):
                         require(not provider.errors, "late controlled model failure")
                         results, business = dict(provider.results), provider.business_observation
                     await consume_observations(results)
+                    require(not status_pending, "Browser status remained unavailable after completion")
                     require(self.completed(frames, accepted, context, business) == report["completion"],
                             "late Browser timeline observation changed completion")
                     for suffix, count in (("/answer", 2), ("/start", 1)):
@@ -933,7 +1086,8 @@ class BrowserConsoleScenario(ConsoleScenario):
                                 "late Browser action changed the result")
             except BaseException as error:
                 report.update(status="failed", front_joined=report.get("front_joined", False),
-                              cleanup_failure_phase=cleanup_phase, cleanup_error_type=type(error).__name__)
+                              cleanup_failure_phase=cleanup_phase, cleanup_error_type=type(error).__name__,
+                              cleanup_failure_category=self.cleanup_category(error))
                 if original_error is None:
                     v.save_json(directory / "console-journey.json", self.wire_value(report))
                     raise
@@ -960,7 +1114,7 @@ TRELLO_FINISH = ("The reviewed Trello setup is attached to this original task. "
     "No Trello operation was called and no provider account was verified.")
 
 
-def completed_credential_setup(frames, accepted, context, business, verifier):
+def completed_credential_setup(frames, accepted, context, business, verifier, *, fresh_context=None):
     """Join native setup-only A/fresh B runs without a provider operation."""
     live = [frame for frame in frames if frame.get("source", {}).get("kind") == "console_event"
             and frame.get("identity") == accepted["identity"]]
@@ -975,7 +1129,7 @@ def completed_credential_setup(frames, accepted, context, business, verifier):
     if context is None or business is None:
         return None
     pair = native_original_pair(frames, live, accepted, TRELLO_REQUEST,
-                                context["proposed_fresh_instruction"])
+                                context["proposed_fresh_instruction"], fresh_context=fresh_context)
     if pair is None:
         return None
     first, fresh, a_run, b_run, positions = pair
@@ -1030,12 +1184,17 @@ class TrelloConsoleScenario(ConsoleScenario):
         self._credential_values = {slot: "controlled-canary-" + uuid.uuid4().hex
                                    for slot in TRELLO_SLOTS}
         self._persistence_proposal = None
+        self._credential_service_context = None
 
     def original_request(self):
         return TRELLO_REQUEST
 
     def completed(self, frames, accepted, context, business):
-        return completed_credential_setup(frames, accepted, context, business, self.v)
+        require(context is None or self._credential_service_context is not None,
+                "credential service context was not selected before submission")
+        return completed_credential_setup(frames, accepted, context, business, self.v,
+            fresh_context=(self.v.canonical(self._credential_service_context).decode()
+                           if self._credential_service_context is not None else None))
 
     def report_value(self, value):
         if isinstance(value, str):
@@ -1210,6 +1369,11 @@ class TrelloConsoleScenario(ConsoleScenario):
         require(self._persistence_proposal is None, "credential persistence review was repeated")
         self._persistence_proposal = {"defining_realm": defining_realm, "server_name": server,
             "reviewed_configuration_generation": expected_generation}
+        # The credential-specific checks above bind configuration, slots,
+        # original, audience and lifetime before any protected submission.
+        # Project only the same nonsecret facts used by native attachment.
+        self._credential_service_context = self.v.installed_approved_service_context({
+            "decision": decision, "acquisition": context["business_task"]})
         # This body goes only to POST /host/toolkit/setup/credentials. The
         # shared HTTP reporter redacts both canaries before retaining requests.
         return {**answer, "credentials": [
@@ -1335,7 +1499,10 @@ class TrelloConsoleScenario(ConsoleScenario):
                                 and any(row["role"] == "assistant" and row.get("content") == scenario.v.ORIGINAL_A_FINISH
                                     for row in messages[first + 1:fresh]),
                                 "credential fresh input lacks the actual original setup and completed history")
-                        scenario.v.original_catalog_history(messages, self.request_text, TRELLO_OPERATION, fresh)
+                        require(scenario._credential_service_context is not None,
+                                "credential continuation lacks its reviewed service context")
+                        scenario.v.original_catalog_history(messages, self.request_text, TRELLO_OPERATION, fresh,
+                            service_context=scenario._credential_service_context)
                         tool_results = [row for row in messages if row["role"] == "tool"]
                         require(len(tool_results) == 1 and tool_results[0]["tool_call_id"] == "original-request"
                                 and scenario.v.unique_json(tool_results[0]["content"].encode())

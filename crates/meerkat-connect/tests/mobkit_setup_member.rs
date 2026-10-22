@@ -520,13 +520,11 @@ fn response_events(
             ),
         }),
         Ok(LlmEvent::Done {
-            outcome: meerkat::LlmDoneOutcome::Success {
-                stop_reason: if tool_call {
-                    meerkat::StopReason::ToolUse
-                } else {
-                    meerkat::StopReason::EndTurn
-                },
-            },
+            outcome: meerkat::LlmDoneOutcome::success(if tool_call {
+                meerkat::StopReason::ToolUse
+            } else {
+                meerkat::StopReason::EndTurn
+            }),
         }),
     ]))
 }

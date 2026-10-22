@@ -7,7 +7,7 @@ use crate::private_originals::{
 /// The existing native approval request, with the whole proposed service scope
 /// and any caller task context included in the same retained review body.
 pub struct ServiceMcpParentReview {
-    proposal: OperatorParentProposal,
+    pub(super) proposal: OperatorParentProposal,
     decision: PrivateServiceMcpAccessDecision,
     selection: ServiceMcpSelection,
 }
@@ -262,5 +262,69 @@ impl OperatorSetup {
                 }
             },
         )
+    }
+}
+
+/// Exact retained issuance intent from one validated approval. This is an
+/// in-process failure handle, not a second grant ledger or cold recovery permit.
+pub(crate) struct ServiceMcpParentCompensation {
+    expected: OperatorDecision,
+    key: StoreKey,
+    originals: Arc<dyn ToolkitStore>,
+    source: Arc<ToolkitOriginalOwner>,
+}
+impl OperatorSetup {
+    pub(super) fn retained_service_compensation(&self, expected: OperatorDecision, key: StoreKey)
+        -> ServiceMcpParentCompensation
+    {
+        ServiceMcpParentCompensation { expected, key,
+            originals: self.originals.clone(), source: self.source.clone() }
+    }
+
+    pub(crate) fn service_mcp_parent_compensation(&self, review: &ServiceMcpParentReview,
+        approval: &ApprovalRecord) -> Result<Option<ServiceMcpParentCompensation>, HostLifetimeError>
+    {
+        if !self.validate_service_mcp_parent_approval(review, approval)? { return Ok(None); }
+        let expected = self.parent_decision_record(&review.proposal, approval.clone())?;
+        let key = self.parent_decision_key(&expected)?;
+        Ok(Some(ServiceMcpParentCompensation { expected, key,
+            originals: self.originals.clone(), source: self.source.clone() }))
+    }
+}
+impl ServiceMcpParentCompensation {
+    pub(crate) fn belongs_to(&self, source: &Arc<ToolkitOriginalOwner>) -> bool {
+        Arc::ptr_eq(&self.source, source)
+    }
+
+    pub(crate) fn issuer(&self) -> &meerkat_core::PrincipalRef { &self.expected.operator }
+
+    /// Called only after the issuance future and any native worker have joined.
+    /// Pending store acknowledgement is reconciled with the actual native owner;
+    /// a failed native lookup is never absence or permission to issue again.
+    pub(crate) async fn issued(&self) -> Result<Option<GrantLineageRef>, HostLifetimeError> {
+        self.reference_observation().await
+    }
+
+    /// Pure native identity observation. Absence while a worker may remain is
+    /// unresolved, never final nonentry or a cancellation receipt.
+    pub(crate) async fn reference_observation(&self) -> Result<Option<GrantLineageRef>, HostLifetimeError> {
+        let saved = self.originals.get(&self.key).await.map_err(|_| HostLifetimeError::Unavailable)?;
+        let native = self.source.grants().issued_reference(
+            &EvidenceId::new(self.key.id.clone()).map_err(|_| HostLifetimeError::InvalidSelection)?)
+            .map_err(|_| HostLifetimeError::Unavailable)?;
+        let Some(saved) = saved else {
+            return if native.is_none() { Ok(None) } else { Err(HostLifetimeError::Unavailable) };
+        };
+        let actual = decode(&saved, &self.key)?;
+        if decision_body(&actual)? != decision_body(&self.expected)? {
+            return Err(HostLifetimeError::Denied);
+        }
+        match (&actual.issued, &native) {
+            (ParentIssuance::Pending, _) => {},
+            (ParentIssuance::Issued { lineage }, Some(leaf)) if lineage.as_slice() == [leaf.clone()] => {},
+            (ParentIssuance::NativeRefused | ParentIssuance::Denied, None) => {},
+            _ => return Err(HostLifetimeError::Unavailable),
+        }
+        Ok(native)
     }
 }

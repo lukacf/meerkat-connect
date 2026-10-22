@@ -14,6 +14,7 @@ use meerkat_mobkit::{
     runtime::cross_mob_control::ControlListenAddr,
 };
 use meerkat_runtime::meerkat_machine::NativeGrantWorkConfiguration;
+use meerkat_mcp::{McpAttemptGuardBounds, McpAttemptGuards};
 use meerkat_toolkit::host_lifetime::{
     control::{HostLifetimeError, SelectedHostArtifact}, policy::PreparedLocalPolicy,
 };
@@ -29,7 +30,11 @@ use toolkit_mobkit::{
 use crate::{application_acquisition::ApplicationAcquisitionParameters,
     application_gateway::{InheritedOperatorTerminal, LocalSetupApprovals, LocalSetupReviews},
     application_setup::{PreparedApplicationSetup, compilation::{ApplicationSetupCompilation,
-        ApplicationSetupCompilationInput}}, resources::InstalledResources};
+        ApplicationSetupCompilationInput}}, resources::{InstalledResources,
+        LocalRoundAttempts, LocalRoundOwner}};
+
+pub(crate) mod local_round;
+use local_round::LocalRoundCleanup;
 
 /// Trusted fresh-application preparation input on the inherited channel. The owner
 /// facts contain no surface references; native construction produces those.
@@ -70,6 +75,9 @@ struct Driver {
     completed: OnceLock<PreparedApplicationSetup>,
     deliver: Mutex<Option<oneshot::Sender<SelectedHostArtifact>>>,
     adopted: Mutex<Option<oneshot::Receiver<()>>>,
+    attempt_guards: McpAttemptGuards,
+    local_round_attempts: Arc<LocalRoundAttempts>,
+    local_round_cleanup: tokio::sync::Mutex<LocalRoundCleanup>,
 }
 
 impl Driver {
@@ -144,7 +152,7 @@ impl GatewayHostComposition for Driver {
                 self.presenters.clone().ok_or(GatewayHostError::Unavailable)?, self.runtime.service_tasks()),
         }.map_err(|_| GatewayHostError::Unavailable)?;
         self.current()?;
-        Ok(Some(composition))
+        Ok(Some(composition.with_attempt_guards(self.attempt_guards.clone())))
     }
     async fn prepare_bootstrap(&self, spec: MobBootstrapSpec) -> Result<MobBootstrapSpec, GatewayHostError> {
         self.current()?;
@@ -245,6 +253,7 @@ impl GatewayHostComposition for Driver {
         self.installed()?.host_app_routes(viewer)
     }
     fn begin_close(&self, reason: GatewayHostCloseReason) -> Result<(), GatewayHostError> {
+        self.runtime.begin_custody_close();
         let host = {
             let mut publication = self.publication.lock().map_err(|_| GatewayHostError::Unavailable)?;
             publication.closed = true;
@@ -254,8 +263,17 @@ impl GatewayHostComposition for Driver {
         match host { Some(host) => host.begin_close(reason), None => Ok(()) }
     }
     async fn join_close(&self) -> Result<(), GatewayHostError> {
-        let host = self.publication.lock().map_err(|_| GatewayHostError::Unavailable)?.installed.clone();
-        match host { Some(host) => host.join_close().await, None => Ok(()) }
+        self.runtime.begin_custody_close();
+        let host = self.publication.lock().map(|publication| publication.installed.clone())
+            .map_err(|_| GatewayHostError::Unavailable);
+        let host_close = async {
+            match host { Ok(Some(host)) => host.join_close().await, Ok(None) => Ok(()), Err(error) => Err(error) }
+        };
+        // Meta calls this after native transport shutdown. A failed host lookup
+        // cannot abandon either the selected source task or local guard owner.
+        let (host_result, source_result, local_result) = tokio::join!(
+            host_close, self.runtime.join_custody_close(), self.join_local_round());
+        host_result.and(source_result).and(local_result)
     }
     async fn wait_closed(&self) {
         let mut changed = self.closed.subscribe();
@@ -448,49 +466,79 @@ pub async fn run(
     let mut owner = PreparedInstallationOwner::open(
         plan.deployment_root.clone(), plan.owner.clone(), plan.startup.clone())
         .map_err(|error| error.to_string())?;
+    let bounds = McpAttemptGuardBounds::new(
+        Duration::from_secs(60), Duration::from_secs(5), Duration::from_secs(5),
+    ).map_err(|error| error.to_string())?;
     let resources = InstalledResources::locate().map_err(|error| error.to_string())?;
-    let prepared_resources = resources.prepare(validation.storage(), async {
+    let (prepared_resources, mut local_owner) = resources.prepare_with_local_round_owner(validation.storage(), async {
         let _error = startup.wait_lost().await; Ok(())
     }).await.map_err(|error| error.to_string())?;
-    let compilation = Arc::new(validation.prepare(prepared_resources)?);
-    let selected = compilation.project_policy(plan.owner.clone())?;
-    owner.project_helper_member(&plan.application.helper.member, &compilation.helper().member)
-        .map_err(|error| error.to_string())?;
-    if owner.selected() != &selected { return Err("prepared owner projection changed".into()); }
-    plan.authorities = plan.authorities.project_helper_member(
-        &plan.application.helper.member, &compilation.helper().member);
-    plan.owner = selected;
-    let selected_policy = plan.acquisition.standing_policy.map(|selection|
-        crate::application_acquisition::selected_policy::SelectedPolicyBinding::new(selection,
-            plan.owner.native_host.grant_administrator.clone(), plan.owner.deployment.clone(), plan.owner.native_host.realm.clone(),
-            plan.owner.native_host.members.iter().map(|row| row.member.member.clone()).collect()));
-    let recovery_participant = selected_policy.as_ref().map(|binding| binding.participant()).or_else(||
-        plan.application.helper_tools.requires_software_review().then(||
-            crate::application_acquisition::selected_policy::SelectedPolicyBinding::human_review_participant(
+    let mut compilation = match validation.prepare(prepared_resources) {
+        Ok(compilation) => compilation,
+        Err(error) => return Err(local_round::preparation_failed(error, &mut local_owner).await),
+    };
+    // Retain the actual fresh owner before compilation creates shared or weak
+    // resource references. Reopening an installed descriptor cannot replace it.
+    let attempts = match compilation.retain_local_round_owner(local_owner) {
+        Ok(attempts) => attempts,
+        Err((mut owner, error)) => return Err(local_round::preparation_failed(error, &mut owner).await),
+    };
+    let guards = McpAttemptGuards::new(attempts.clone(), bounds);
+    let compilation = Arc::new(compilation);
+    let prepared_driver = async {
+        let selected = compilation.project_policy(plan.owner.clone())?;
+        owner.project_helper_member(&plan.application.helper.member, &compilation.helper().member)
+            .map_err(|error| error.to_string())?;
+        if owner.selected() != &selected { return Err("prepared owner projection changed".into()); }
+        plan.authorities = plan.authorities.project_helper_member(
+            &plan.application.helper.member, &compilation.helper().member);
+        plan.owner = selected;
+        let selected_policy = plan.acquisition.standing_policy.map(|selection|
+            crate::application_acquisition::selected_policy::SelectedPolicyBinding::new(selection,
                 plan.owner.native_host.grant_administrator.clone(), plan.owner.deployment.clone(), plan.owner.native_host.realm.clone(),
-                plan.owner.native_host.members.iter().map(|row| row.member.member.clone()).collect())));
-    let prepared = match recovery_participant {
-        Some(participant) => owner.prepare_with_application_service_policy(
-            compilation.prepared_tool_policy(), participant).await,
-        None => owner.prepare(compilation.prepared_tool_policy()).await,
-    }.map_err(|error| error.to_string())?;
-    let resources = compilation.clone();
-    let registration = Arc::new(PreparedMemberRegistration::new(compilation.clone(), compilation.registry(),
-        Arc::new(move |identity, destination| resources.selected_destination(identity, destination))));
-    let tools = InstalledAcquisitionTools::new(Duration::from_millis(plan.acquisition.limits.admission_timeout_ms))
-        .map_err(|error| error.to_string())?;
-    let runtime = prepared.gateway_runtime(registration.clone(), tools, plan.acquisition.output_audience.clone())
-        .map_err(|error| error.to_string())?;
-    let mut configuration = prepared.take_configuration().map_err(|error| error.to_string())?;
-    configuration.configured_mcp_attachment = Some(Arc::new(crate::application_setup::resource::SetupResourceProvider::new(
-        compilation.resource_selection(), configuration.configured_mcp_attachment.take(),
-    )));
-    let (presenters, reviews) = if retain_presenter_channel(plan.acquisition.standing_policy.as_ref(),
-        terminal.is_some(), plan.acquisition.console_setup.is_some()) {
-        let (presenters, reviews) = crate::application_gateway::setup_presenter::channel(plan.deployment_root.clone());
-        let presenters = if plan.acquisition.console_setup.is_some() { presenters.with_pending_console() } else { presenters };
-        (Some(presenters), Some(reviews))
-    } else { (None, None) };
+                plan.owner.native_host.members.iter().map(|row| row.member.member.clone()).collect()));
+        let recovery_participant = selected_policy.as_ref().map(|binding| binding.participant()).or_else(||
+            plan.application.helper_tools.requires_software_review().then(||
+                crate::application_acquisition::selected_policy::SelectedPolicyBinding::human_review_participant(
+                    plan.owner.native_host.grant_administrator.clone(), plan.owner.deployment.clone(), plan.owner.native_host.realm.clone(),
+                    plan.owner.native_host.members.iter().map(|row| row.member.member.clone()).collect())));
+        let prepared = match recovery_participant {
+            Some(participant) => owner.prepare_with_application_service_policy(
+                compilation.prepared_tool_policy(), participant).await,
+            None => owner.prepare(compilation.prepared_tool_policy()).await,
+        }.map_err(|error| error.to_string())?;
+        let resources = compilation.clone();
+        let registration = Arc::new(PreparedMemberRegistration::new(compilation.clone(), compilation.registry(),
+            Arc::new(move |identity, destination| resources.selected_destination(identity, destination))));
+        let tools = InstalledAcquisitionTools::new(Duration::from_millis(plan.acquisition.limits.admission_timeout_ms))
+            .map_err(|error| error.to_string())?;
+        let runtime = prepared.gateway_runtime(registration.clone(), tools, plan.acquisition.output_audience.clone())
+            .map_err(|error| error.to_string())?;
+        let mut configuration = prepared.take_configuration().map_err(|error| error.to_string())?;
+        configuration.configured_mcp_attachment = Some(Arc::new(crate::application_setup::resource::SetupResourceProvider::new(
+            compilation.resource_selection(), configuration.configured_mcp_attachment.take(),
+        )));
+        let (presenters, reviews) = if retain_presenter_channel(plan.acquisition.standing_policy.as_ref(),
+            terminal.is_some(), plan.acquisition.console_setup.is_some()) {
+            let (presenters, reviews) = crate::application_gateway::setup_presenter::channel(plan.deployment_root.clone());
+            let presenters = if plan.acquisition.console_setup.is_some() { presenters.with_pending_console() } else { presenters };
+            (Some(presenters), Some(reviews))
+        } else { (None, None) };
+        Ok::<_, String>((registration, runtime, configuration, prepared, presenters, selected_policy, reviews))
+    }.await;
+    let (registration, runtime, configuration, prepared, presenters, selected_policy, reviews) = match prepared_driver {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            // No native factory has received the installation yet. Closing it
+            // recovers this exact unentered owner after any preparation refusal.
+            let mut cleanup = LocalRoundCleanup::default();
+            let joined = cleanup.join_until_settled(&attempts, &guards).await;
+            return Err(match joined {
+                Ok(()) => error,
+                Err(_) => format!("{error}; local preparation cleanup remains unavailable"),
+            });
+        }
+    };
     let (deliver, completed) = oneshot::channel();
     let (adopted, receive) = oneshot::channel();
     let (closed, _) = watch::channel(false);
@@ -499,7 +547,9 @@ pub async fn run(
         prepared: Mutex::new(Some(prepared)), presenters, selected_policy,
         publication: Mutex::new(Publication { closed: false, installed: None }), closed,
         selected: AtomicBool::new(false), completed: OnceLock::new(),
-        deliver: Mutex::new(Some(deliver)), adopted: Mutex::new(Some(receive)) });
+        deliver: Mutex::new(Some(deliver)), adopted: Mutex::new(Some(receive)),
+        attempt_guards: guards, local_round_attempts: attempts,
+        local_round_cleanup: tokio::sync::Mutex::new(LocalRoundCleanup::default()) });
     let actor_driver = driver.clone();
     let actor = tokio::spawn(async move {
         let result = serve_private(startup, actor_driver.clone(), completed, adopted, terminal, reviews).await;

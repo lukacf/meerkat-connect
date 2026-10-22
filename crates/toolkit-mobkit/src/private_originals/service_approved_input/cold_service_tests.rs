@@ -119,7 +119,7 @@ async fn cold_b_restores_actual_admission_and_phase_without_replay_or_new_issuer
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_b_requires_complete_reserved_selection_and_retained_input() {
-    for corruption in ["task-link", "legacy-no-input", "input-key", "input-content"] {
+    for corruption in ["task-link", "legacy-no-input", "input-key", "input-content", "input-context"] {
         let fixture = ContinuationFixture::for_service_input().await;
         let result = AssertUnwindSafe(Box::pin(async {
             fixture.source.bind_controller_pin_source(fixture.service.clone()).unwrap();
@@ -130,13 +130,17 @@ async fn cold_b_requires_complete_reserved_selection_and_retained_input() {
             let requests = fixture.model_requests();
             let (stored, mut changed) = row(&fixture, &b).await;
             match corruption {
-                "task-link" => changed.approved_task.as_mut().unwrap().before_ms -= 1,
+                "task-link" => changed.approved_task.as_mut().unwrap().header_mut().before_ms -= 1,
                 "legacy-no-input" => changed.bound_service_input = None,
                 _ => {
                     let mut input = changed.bound_service_input.as_ref().unwrap().decode().unwrap();
                     let Input::Prompt(prompt) = &mut input else { panic!("prompt"); };
                     if corruption == "input-key" {
                         prompt.header.idempotency_key = Some(meerkat_runtime::identifiers::IdempotencyKey::new("other"));
+                    } else if corruption == "input-context" {
+                        // An older exact input had no host context. Recovery
+                        // cannot upgrade it into newly asserted setup evidence.
+                        prompt.injected_context.push(meerkat_core::ContentInput::Text("invented readiness".into()));
                     } else { prompt.content = meerkat_core::ContentInput::Text("other".into()); }
                     changed.bound_service_input = Some(serde_json::from_value(serde_json::to_value(input).unwrap()).unwrap());
                 }

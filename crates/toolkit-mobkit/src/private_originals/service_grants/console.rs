@@ -133,7 +133,7 @@ impl PrivateOriginals {
                     && same_source_human(human, &route.requester, route.represented_subject.as_ref())) else { continue; };
                 let member = self.status_route(&lifetime, human, route)?;
                 if !members.contains(&member) { continue; }
-                if link.original_task.member.as_ref() != Some(&member) || link.grant.route != route.id {
+                if link.original_task.member.as_ref() != Some(&member) || link.grants().iter().any(|grant| grant.route != route.id) {
                     return Err(PrivateOriginalError::Conflict);
                 }
                 let source_ref = PrivateOriginalRef { route: route.id.clone(), original: record.event.original.clone(),
@@ -142,24 +142,33 @@ impl PrivateOriginals {
                 // Reuse the canonical task/source correlation reader, including
                 // completed rows. No task-open, admission or retry check is made.
                 self.service_task_snapshot(&record).await?;
-                let access = store.get(&self.access_key(&link.grant)?).await.map_err(store_error)?
+                for grant in link.grants() {
+                let access = store.get(&self.access_key(&grant)?).await.map_err(store_error)?
                     .ok_or(PrivateOriginalError::Unavailable)?;
-                let access_record = self.decode_access(&access, &link.grant)?;
+                let access_record = self.decode_access(&access, &grant)?;
                 // Old rows without native correspondence remain historical.
                 // Neither a missing source join nor v2 becomes a live account.
-                let (AccessDecision::Mcp(decision), Some(selection)) = (&access_record.decision, &access_record.mcp) else { continue; };
                 if result.rows.iter().any(|row| row.access.key == access.key) { continue; }
                 if result.rows.len() == MAX_ACCESS { return Err(PrivateOriginalError::Unavailable); }
-                let state = self.access_observation(link.grant.clone(), &access_record)?.state;
+                let state = self.access_observation(grant.clone(), &access_record)?.state;
                 let id = digest(&canonical_json(&(human, &access.key, &access.content_digest))
                     .map_err(|_| PrivateOriginalError::Conflict)?);
-                let projection = serde_json::json!({"id":id, "service":selection.server,
-                    "selected_account":selection.connector.as_ref().map(|binding| binding.account.as_str()),
-                    "target":decision.permission.target, "operations":decision.permission.operations,
-                    "resource":decision.permission.resource, "lifetime":decision.permission.lifetime,
-                    "state":state, "can_revoke":state == PrivateServiceGrantState::GrantIssued});
-                result.rows.push(ApplicationAccessRow { id, projection, member, source, source_ref,
-                    access, reference: link.grant.clone(), record: access_record });
+                let mut projection = match (&access_record.decision, &access_record.mcp) {
+                    (AccessDecision::Mcp(decision), Some(selection)) => serde_json::json!({"service":selection.server,
+                        "selected_account":selection.connector.as_ref().map(|binding| binding.account.as_str()),
+                        "target":decision.permission.target, "operations":decision.permission.operations,
+                        "resource":decision.permission.resource, "lifetime":decision.permission.lifetime}),
+                    (AccessDecision::Catalog(decision), None) => serde_json::json!({"service":"public_service_set_catalog",
+                        "selected_account":null, "target":route.grant_target, "operations":["catalog"],
+                        "resource":decision.session.to_string(), "lifetime":decision.lifetime}),
+                    _ => continue,
+                };
+                projection["id"] = serde_json::json!(id);
+                projection["state"] = serde_json::json!(state);
+                projection["can_revoke"] = serde_json::json!(state == PrivateServiceGrantState::GrantIssued);
+                result.rows.push(ApplicationAccessRow { id, projection, member: member.clone(), source: source.clone(), source_ref: source_ref.clone(),
+                    access, reference: grant.clone(), record: access_record });
+                }
             }
         }
         for row in &result.rows { self.recheck_application_access_from(store, &result, row).await?; }
@@ -187,7 +196,7 @@ impl PrivateOriginals {
         if source.revision != row.source.revision || source.content_digest != row.source.content_digest
             || access.revision != row.access.revision || access.content_digest != row.access.content_digest
             || !same_source_human(&read.human, &original.source.requester, original.source.represented_subject.as_ref())
-            || original.approved_task.as_ref().is_none_or(|link| link.grant != row.reference)
+            || original.approved_task.as_ref().is_none_or(|link| !link.contains(&row.reference))
             || self.decode_access(&access, &row.reference)? != row.record {
             return Err(PrivateOriginalError::Conflict);
         }

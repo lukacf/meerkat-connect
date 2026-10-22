@@ -146,12 +146,13 @@ fn requested(facts: &HelperAdmissionFacts, operation: Operation) -> Result<Execu
 }
 
 pub(super) fn check_record_basis(report: Option<&HelperReportIntent>, account: Option<&HelperReportIntent>,
-    public: Option<&HelperReportIntent>, facts: &HelperAdmissionFacts, basis: &WorkAuthorityBasis)
+    public: Option<&HelperReportIntent>, facts: &HelperAdmissionFacts,
+    operation_basis: &WorkAuthorityBasis, basis: &WorkAuthorityBasis)
     -> Result<(), OriginalWriterError>
 {
     let helper = &facts.selection.helper;
     match (report, &helper.report_capability) {
-        (None, None) if account.is_none() && public.is_none() && basis == &helper.operation_basis => Ok(()),
+        (None, None) if account.is_none() && public.is_none() && basis == operation_basis => Ok(()),
         (Some(report), Some(capability)) => {
             // Structural reconstruction validates the frozen requested tuple
             // without resolving every target's current grant.
@@ -174,7 +175,7 @@ pub(super) fn check_record_basis(report: Option<&HelperReportIntent>, account: O
             let account_lineage = optional_lineage(account, Operation::Account)?;
             let public_lineage = optional_lineage(public, Operation::Public)?;
             if lineage.last().map(|leaf| &leaf.grant_id) != Some(&report.id)
-                || capability.project_with_operations(&helper.operation_basis, lineage.to_vec(), account_lineage, public_lineage)
+                || capability.project_with_operations(operation_basis, lineage.to_vec(), account_lineage, public_lineage)
                     .map_err(|_| OriginalWriterError::Conflict)? != *basis
             { return Err(OriginalWriterError::Conflict); }
             Ok(())

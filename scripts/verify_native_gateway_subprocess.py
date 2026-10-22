@@ -1351,7 +1351,7 @@ ACQUISITION_REQUEST = ("Install the supplied Agno Hacker News integration for "
 ORIGINAL_A_FINISH = "The setup worker owns acquisition. The original task is waiting for service access."
 ORIGINAL_STORY_CALL = "original-public-story"
 ACQUISITION_MCP_TOOLS = ("setup_prepare", "setup_help", "setup_check", "setup_install",
-    "setup_job", "setup_reconcile")
+    "setup_job", "setup_reconcile", "setup_inspect_schema")
 ACQUISITION_HELPER_TOOLS = ACQUISITION_MCP_TOOLS + ("setup_report", "toolkit_request_public_service")
 RESOURCE_REFUSAL = ("Installed Connect resources are unavailable or changed; "
                     "reinstall the complete product. No setup command was started.")
@@ -1790,9 +1790,9 @@ def acquisition_helper_targets():
     ]
 
 
-def reviewed_original_catalog_policy(proposal, catalog, session_id, prior_raw):
+def reviewed_original_catalog_policy(proposal, catalog, session_id, prior_raw, *, expected_selection=None):
     """Validate the exact complete successor before either native approval path."""
-    selection = {"tools": [], "catalog": "r2"}
+    selection = {"tools": [], "catalog": "r2"} if expected_selection is None else expected_selection
     prior = unique_json(prior_raw)
     candidate_raw = proposal["candidate_canonical_json"].encode()
     candidate = unique_json(candidate_raw)
@@ -1812,8 +1812,15 @@ def reviewed_original_catalog_policy(proposal, catalog, session_id, prior_raw):
     original = [row for row in expected["members"] if row["member_identity"] == "original"]
     require(len(original) == 1 and not any(row["tool_name"] in ("tool_catalog_search", "tool_catalog_load")
             for row in original[0]["grants"]), "bootstrap original catalog selection was not absent")
-    original[0]["grants"].extend({"tool_name": name, "action": "invoke", "consequence": "r2"}
-                               for name in ("tool_catalog_search", "tool_catalog_load"))
+    selected_grants = [{"tool_name": row["name"], "action": "invoke", "consequence": row["consequence"]}
+                       for row in selection["tools"]]
+    selected_grants.extend({"tool_name": name, "action": "invoke", "consequence": selection["catalog"]}
+                           for name in ("tool_catalog_search", "tool_catalog_load"))
+    for grant in selected_grants:
+        existing = [row for row in original[0]["grants"] if row["tool_name"] == grant["tool_name"]]
+        require(not existing or existing == [grant], "review changed an existing exact tool grant")
+        if not existing:
+            original[0]["grants"].append(grant)
     original[0]["grants"].sort(key=lambda row: row["tool_name"])
     source = candidate["source"]
     require(set(source) == {"source_id", "source_digest"}
@@ -1874,10 +1881,35 @@ ORIGINAL_CONTROLLER_FEEDBACK = (
 )
 
 
-def original_catalog_history(messages, request, operation, fresh, *, allow_controller_recovery=False):
-    """Keep exactly A/B business inputs; allow only their bounded native notices."""
-    require(all(row["role"] != "user" or row.get("content") == request
-                for row in messages[:fresh]), "unexpected original input before B")
+def installed_approved_service_context(proposal):
+    """Expected display facts from the fixture's independently checked proposal.
+
+    This controls the synthetic provider only. Native readiness, currentness,
+    permission and B's completed input remain separate acceptance predicates.
+    """
+    decision = proposal["decision"]
+    permission = decision["permission"]
+    return {"schema": "toolkit.approved-service-context.v1",
+        "operation": proposal["acquisition"]["id"], "original": decision["decision"],
+        "connection": permission["connection"], "resource": permission["resource"],
+        "allowed_operations": list(permission["operations"]),
+        "expires_at_ms": permission["lifetime"]["expires_at_ms"],
+        "configuration_sha256": decision["connection_revision"],
+        "attachment": "observed_usable_before_input_admission",
+        "meaning": "The host completed the approved integration attachment checks for this continuation. This context accompanies the unchanged reviewed user instruction. Native authorization is still checked on each use. This observation does not guarantee future readiness, extend permission, establish filesystem isolation or complete the user's task."}
+
+
+def original_catalog_history(messages, request, operation, fresh, *, allow_controller_recovery=False,
+                             service_context=None):
+    """Keep A/B, one exact approved context before B, and bounded native notices."""
+    context_index = None
+    if service_context is not None:
+        context_index = fresh - 1
+        require(fresh > 0 and messages[context_index] == {
+            "role": "user", "content": canonical(service_context).decode()},
+            "approved host context is missing, changed or not immediately before B")
+    require(all(row["role"] != "user" or row.get("content") == request or i == context_index
+                for i, row in enumerate(messages[:fresh])), "unexpected original input before B")
     load_positions = [i for i, row in enumerate(messages) if row["role"] == "tool"
                       and row["tool_call_id"] == "original-catalog-load"]
     require(len(load_positions) <= 1, "duplicate original catalog load result")
@@ -1894,7 +1926,15 @@ def original_catalog_history(messages, request, operation, fresh, *, allow_contr
             # This schedules a new controller choice, not a replay of a tool.
             # Text cannot establish the reason: final acceptance additionally
             # requires this exact B's persisted ReprepareRequired audit.
-            require(allow_controller_recovery and recovery is None and i < first_tool,
+            before = messages[fresh + 1:i]
+            calls = [call.get("id") if isinstance(call, dict) else None
+                for row in before for call in row.get("tool_calls", [])]
+            results = [row.get("tool_call_id") for row in before if row.get("role") == "tool"]
+            completed_boundary = (bool(calls) and all(isinstance(value, str) and value for value in calls)
+                and len(calls) == len(set(calls))
+                and calls == results)
+            require(allow_controller_recovery and recovery is None
+                    and (i < first_tool or completed_boundary),
                     "unexpected original controller feedback stage or count")
             recovery = i
         elif kind == "boundary":
@@ -1921,21 +1961,25 @@ def original_reprepare_projection(state, session_id, input_id, run_id):
             and [item["input_id"] for item in row["contributors"]] == [input_id]
             for row in records), "controller recovery audit has foreign contributors or run")
     observations = [row["observation"] for row in records]
-    prepared_at = next((i for i, row in enumerate(observations)
-                        if row["observation"]["kind"] != "refused"), len(observations))
-    require(0 < prepared_at < len(observations), "controller recovery lacks refused/prepared boundaries")
-    refused, prepared = observations[0], observations[prepared_at]
+    refusal_indices = [i for i, row in enumerate(observations)
+                       if row["observation"]["kind"] == "refused"]
+    require(refusal_indices and not any(row["observation"]["kind"] == "authorization_unavailable"
+            for row in observations), "controller recovery lacks a refusal or includes unavailable authorization")
+    refused_at, prepared_at = refusal_indices[0], refusal_indices[-1] + 1
+    require(refusal_indices == list(range(refused_at, prepared_at))
+            and prepared_at < len(observations), "controller recovery lacks one contiguous refusal boundary")
+    refused, prepared = observations[refused_at], observations[prepared_at]
     target = refused["observation"]["target"]
     require(target["kind"] == "model" and target["model"] == "fixture-original-model"
             and target["provider"] == "self_hosted" and target["usage"] == "controller_inference"
             and target["hosted_capabilities"] == [], "controller recovery target is not the selected controller")
     require(all(row["operation_id"] == refused["operation_id"]
-                and row["observation"] == refused["observation"] for row in observations[:prepared_at])
+                and row["observation"] == refused["observation"]
+                for row in observations[refused_at:prepared_at])
             and refused["observation"]["reason"] == "reprepare_required"
-            and all(row["operation_id"] != refused["operation_id"] for row in observations[prepared_at:])
-            and not any(row["observation"]["kind"] in ("refused", "authorization_unavailable")
-                        for row in observations[prepared_at:]),
-            "controller recovery includes a denial, malformed facts or later refusal")
+            and all(row["operation_id"] != refused["operation_id"]
+                    for row in observations[:refused_at] + observations[prepared_at:]),
+            "controller recovery includes a denial, malformed facts or reused refused operation")
     require(prepared["operation_id"] != refused["operation_id"]
             and prepared["observation"]["kind"] == "prepared"
             and prepared["observation"]["target"] == target,
@@ -1947,7 +1991,7 @@ def original_reprepare_projection(state, session_id, input_id, run_id):
             "controller recovery lacks its successful model entry and response")
     policy = prepared["observation"]["policy"]
     return {"session_id": session_id, "input_id": input_id, "run_id": run_id,
-        "refused_operation_id": refused["operation_id"], "refusal_count": prepared_at,
+        "refused_operation_id": refused["operation_id"], "refusal_count": prepared_at - refused_at,
         "reason": "reprepare_required", "model": target["model"], "provider": target["provider"],
         "usage": target["usage"], "hosted_capabilities": [],
         "recovery_operation_id": prepared["operation_id"], "recovered_http_status": 200,
@@ -1984,6 +2028,23 @@ def exact_catalog_load(value, expected):
                 "native load refused or contradicted the selected name")
 
 
+def pending_setup_search(value):
+    return (isinstance(value, dict)
+            and set(value) == {"catalog_exact", "total_matches", "results", "pending_sources", "empty_result_status"}
+            and value["catalog_exact"] is True
+            and type(value["total_matches"]) is int and value["total_matches"] == 0
+            and value["results"] == [] and value["pending_sources"] == ["toolkit-setup"]
+            and value["empty_result_status"] == "pending_source")
+
+
+def helper_search_not_dispatched(value):
+    """Core 0.9.4's closed model-visible proof, never inferred from display text."""
+    data = value.get("data")
+    return (value.get("error") == "operation_refused" and isinstance(data, dict)
+            and set(data) == {"kind", "tool_invoked"}
+            and data["kind"] == "reprepare_required" and data["tool_invoked"] is False)
+
+
 class InstalledAcquisitionProvider:
     """Controlled model responses; every tool result comes from the real child."""
     request_text = ACQUISITION_REQUEST
@@ -1994,6 +2055,13 @@ class InstalledAcquisitionProvider:
     access_call_id = "public-task-access"
     original_catalog = False
     controller_reprepare = False
+    allow_fresh_helper_search = False
+    helper_search_refusal = None
+
+    def checked_original_catalog_history(self, messages, fresh):
+        return original_catalog_history(messages, self.request_text, self.operation, fresh,
+            allow_controller_recovery=self.controller_reprepare,
+            service_context=getattr(self, "expected_service_context", None))
 
     def __init__(self, directory, events):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2005,6 +2073,7 @@ class InstalledAcquisitionProvider:
         self.finished = threading.Event()
         self.business_response_prepared = threading.Event()
         self.business_observation = None
+        self.expected_service_context = None
         self.deadline = time.monotonic() + INSTALLED_LIMIT + ACQUISITION_LIMIT
         owner = self
 
@@ -2078,6 +2147,7 @@ class InstalledAcquisitionProvider:
         require(lane in ("fixture-original-model", "fixture-helper-model"), "unknown model owner")
         names = {row["function"]["name"] for row in body["tools"]}
         results = {}
+        refused_searches = []
         for message in body["messages"]:
             if message["role"] == "tool":
                 identifier = message["tool_call_id"]
@@ -2086,6 +2156,13 @@ class InstalledAcquisitionProvider:
                     value = {"content": message["content"], "story": installed_public_story(message["content"])}
                 else:
                     value = unique_json(message["content"].encode())
+                    if isinstance(value, dict) and "error" in value:
+                        if not (self.allow_fresh_helper_search and lane == "fixture-helper-model"
+                                and identifier in self.issued
+                                and identifier.startswith("helper-catalog-search-")
+                                and helper_search_not_dispatched(value)):
+                            raise AssertionError("actual tool result " + identifier + " refused: " + str(value["error"]))
+                        refused_searches.append(identifier)
                 require(identifier not in results, "duplicate tool result in actual model history")
                 results[identifier] = value
                 if identifier in self.results:
@@ -2149,8 +2226,7 @@ class InstalledAcquisitionProvider:
             require(any(message["role"] == "assistant" and message.get("content") == ORIGINAL_A_FINISH
                         for message in messages[first + 1:fresh]), "fresh B input lacks A's actual final history")
             if self.original_catalog:
-                recovery_index = original_catalog_history(messages, self.request_text, self.operation, fresh,
-                    allow_controller_recovery=self.controller_reprepare)
+                recovery_index = self.checked_original_catalog_history(messages, fresh)
                 search, loaded = "original-catalog-search", "original-catalog-load"
                 if search not in results:
                     return call(search, "tool_catalog_search", {"query": self.operation, "limit": 50})
@@ -2209,15 +2285,42 @@ class InstalledAcquisitionProvider:
             return finished(answer)
 
         require(self.request_text in canonical(body["messages"]).decode(), "helper did not receive original setup request")
+        if self.allow_fresh_helper_search:
+            prior_refusal = self.helper_search_refusal
+            require(len(refused_searches) <= 1
+                    and (prior_refusal is None or refused_searches == [prior_refusal]),
+                    "fresh helper search exceeded its one-decision bound or lost its refusal")
+            if refused_searches:
+                refused = refused_searches[0]
+                fresh = refused + "-fresh"
+                if fresh not in results:
+                    # This controlled model proposes a new tool call. Core owns
+                    # fresh admission; no same-operation replay or audit oracle.
+                    reply = call(fresh, "tool_catalog_search", {"query": "setup", "limit": 50})
+                    self.helper_search_refusal = refused
+                    self.events.add("controlled_model_fresh_helper_search",
+                        refused_call_id=refused, fresh_call_id=fresh,
+                        proof=results[refused]["data"], bound=1)
+                    return reply
+                require(fresh in self.issued
+                        and list(results).index(fresh) > list(results).index(refused),
+                        "fresh helper search result is unissued or precedes its refusal")
         selected = {"family": "agno", "profile": self.profile,
                     "operations": [self.operation], "values": self.selection_values}
         phase = len(self.requests)
-        if any(name not in names for name in ACQUISITION_MCP_TOOLS):
-            searches = [value for identifier, value in results.items()
-                        if identifier.startswith("helper-catalog-search-")]
-            loads = [value for identifier, value in results.items()
-                     if identifier.startswith("helper-catalog-load-")]
-            require(len(searches) < 10 and len(loads) < 10, "native catalog did not expose selected setup tools")
+        searches = [value for identifier, value in results.items()
+                    if identifier.startswith("helper-catalog-search-") and identifier not in refused_searches]
+        loads = [value for identifier, value in results.items()
+                 if identifier.startswith("helper-catalog-load-")]
+        needs_fresh_load = False
+        if refused_searches:
+            following = list(results)[list(results).index(fresh) + 1:]
+            needs_fresh_load = not any(identifier.startswith("helper-catalog-load-")
+                                       for identifier in following)
+        if any(name not in names for name in ACQUISITION_MCP_TOOLS) or needs_fresh_load:
+            require(len(loads) < 10, "native catalog did not expose selected setup tools")
+            require(all(pending_setup_search(value) for value in searches[:-1]),
+                    "another Search followed a result other than the exact pending setup source")
             found = searches[-1] if searches else None
             observed_names = {}
             if found is not None:
@@ -2230,6 +2333,8 @@ class InstalledAcquisitionProvider:
                 return call("helper-catalog-load-" + str(phase), "tool_catalog_load",
                             {"names": [observed_names[name] for name in ACQUISITION_MCP_TOOLS]})
             if searches:
+                require(pending_setup_search(found),
+                        "native catalog did not resolve selected setup tools or report the exact pending setup source")
                 threading.Event().wait(0.25)
             return call("helper-catalog-search-" + str(phase), "tool_catalog_search", {"query": "setup", "limit": 50})
 
@@ -2247,9 +2352,23 @@ class InstalledAcquisitionProvider:
                 return job_id, call(label + "-poll-" + str(phase), "setup_job", {"job_id": job_id})
             return job_id, None
 
+        if "schema-evidence" not in results:
+            require("prepare-family" not in self.issued,
+                    "schema evidence call must precede package preparation")
+            return call("schema-evidence", "setup_inspect_schema", {"schema_json": "{}"})
+        schema = results["schema-evidence"]
+        expected_schema = {"schema_version": 1, "scope": "supplied_schema_evidence_only",
+            "schema_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "bytes": 2, "hash_algorithm": "sha256", "byte_convention": "exact_supplied_utf8",
+            "runtime_observation": "not_established", "schema_validation": "not_performed"}
+        require("schema-evidence" in self.issued and isinstance(schema, dict)
+                and set(schema) == set(expected_schema) | {"notice"}
+                and all(schema[key] == value for key, value in expected_schema.items())
+                and isinstance(schema["notice"], str) and bool(schema["notice"]),
+                "installed helper did not return exact supplied-schema evidence and limits")
+
         if "prepare-family" not in results:
-            require(any(identifier.startswith("helper-catalog-search-") for identifier in results)
-                    and any(identifier.startswith("helper-catalog-load-") for identifier in results),
+            require(searches and loads,
                     "fixture did not observe actual deferred catalog search and load")
             return call("prepare-family", "setup_prepare", {"family": "agno"})
         _, pending = pending_job(results["prepare-family"], "prepare")
@@ -2542,6 +2661,12 @@ class InstalledFixtureRule:
             require(hashlib.sha256(canonical(proposal)).hexdigest() == request.proposal_sha256,
                     "actual proposal digest mismatch")
             self.check(proposal)
+            # Bind the finite display expectation before the SDK can submit the
+            # reviewed answer. It is never derived from a model message.
+            with self.provider.lock:
+                require(self.provider.expected_service_context is None,
+                        "approved context expectation was already selected")
+                self.provider.expected_service_context = installed_approved_service_context(proposal)
         except BaseException:
             self.release_untransferred()
             raise
@@ -2767,6 +2892,7 @@ async def run_installed_acquisition(private, finalizer, provider, directory, eve
             "authenticated_event": event_pin, "original": dataclasses.asdict(retained.original), "admission": admission,
             "proposal": proposal_pin, "ack": ack, "observation": observed, "custody": custody,
             "rule_releases_after_joined": rule.releases, "helper_result": provider.results["public-task-access"],
+            "schema_evidence": provider.results["schema-evidence"],
             "business": business, "fresh_original": dataclasses.asdict(b_original),
             "native_b": terminal_observation, "native_receipt_reads": receipt_reads,
             "service_readiness": "not_independently_observed",
@@ -2889,6 +3015,8 @@ async def _run_installed_product(args, candidate, package, resource_manifest, *,
             specs.append(META_IDENTITY.DurableAgentSpec(identity="original", profile="original", runtime_mode_override="turn_driven"))
         plan, plan_pin, source_pin = installed_plan(directory, [spec.to_dict() for spec in specs], acquisition=not corrupt, console=console,
             catalog_policy=console is None and not corrupt)
+        if console is not None and hasattr(console, "prepare_plan"):
+            plan, plan_pin, source_pin = console.prepare_plan(directory, plan, plan_pin, source_pin)
         report["preparation_plan"] = plan_pin
         callbacks = []
 
@@ -3035,6 +3163,11 @@ async def _run_installed_product(args, candidate, package, resource_manifest, *,
                     private, finalizer, provider, directory, events, process)
             else:
                 console.application_tool_policy = finalizer.application_tool_policy
+                if hasattr(console, "observe_preparation"):
+                    console.observe_preparation(attempt, finalizer, gateway, process, observe)
+                if hasattr(console, "observe_completed_setup"):
+                    console.observe_completed_setup(
+                        finalizer.completed_setup, finalizer.evidence["completed_setup"])
                 report["console_journey"] = await console.run(
                     private, provider, directory, events, process, runtime.rust_http_base_url)
             observe()
@@ -3153,12 +3286,20 @@ def main():
     parser.add_argument("--toolkit-python", required=True, type=Path)
     parser.add_argument("--meta-python", "--mobkit-python", dest="mobkit_python", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--case", choices=("core", "all", "memory-cleanup", "shutdown-reader", "private-protocol", "installed-product", "installed-console", "installed-console-credentials", "installed-console-browser"), default="core")
+    parser.add_argument("--case", choices=("core", "all", "memory-cleanup", "shutdown-reader", "private-protocol", "installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build", "installed-console-helper-reset"), default="core")
     parser.add_argument("--installed-staging", type=Path)
     parser.add_argument("--installed-staging-sha256")
     parser.add_argument("--browser-forge-source", type=Path)
     parser.add_argument("--browser-forge-source-sha256")
+    parser.add_argument("--helper-reset-forge-source", type=Path)
+    parser.add_argument("--helper-reset-forge-source-sha256")
     args = parser.parse_args()
+    helper_reset = args.case == "installed-console-helper-reset"
+    if helper_reset:
+        if args.helper_reset_forge_source is None or not args.helper_reset_forge_source_sha256:
+            parser.error("Helper reset needs exact selected Forge adapter source receipt/hash")
+    elif args.helper_reset_forge_source is not None or args.helper_reset_forge_source_sha256 is not None:
+        parser.error("Helper-reset Forge inputs apply only to installed-console-helper-reset")
     browser = args.case == "installed-console-browser"
     if browser:
         if args.browser_forge_source is None or not args.browser_forge_source_sha256:
@@ -3167,7 +3308,7 @@ def main():
         parser.error("Forge Browser source inputs apply only to installed-console-browser")
     if sys.platform != "darwin" and not sys.platform.startswith("linux"):
         parser.error("verifier supports explicit macOS /dev/fd or Linux /proc/self/fd inventory only")
-    installed = args.case in ("installed-product", "installed-console", "installed-console-credentials", "installed-console-browser")
+    installed = args.case in ("installed-product", "installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build", "installed-console-helper-reset")
     if installed:
         if args.raw_gateway is not None or args.installed_staging is None or args.installed_staging_sha256 is None:
             parser.error("installed-product needs the exact staging path/hash and no unrelated raw gateway")
@@ -3177,6 +3318,8 @@ def main():
     path_names += ["installed_staging"] if installed else ["raw_gateway"]
     if browser:
         path_names.append("browser_forge_source")
+    if helper_reset:
+        path_names.append("helper_reset_forge_source")
     for name in path_names:
         value = getattr(args, name)
         if not value.is_absolute():
@@ -3229,17 +3372,45 @@ def main():
             report.update(installed_candidate=candidate, installed_inputs=inputs,
                 execution_claim="installed SDK acquisition and one public read; success requires exact native input completion; no live authentication or general service support claim")
             console = None
-            if args.case in ("installed-console", "installed-console-credentials", "installed-console-browser"):
+            if args.case in ("installed-console", "installed-console-credentials", "installed-console-browser", "installed-console-warm", "installed-console-source-build", "installed-console-helper-reset"):
                 module_path = Path(__file__).with_name("verify_installed_console.py")
                 spec = importlib.util.spec_from_file_location("connect_installed_console", module_path)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 report["console_verifier"] = artifact_pin(module_path)
-                scenario = (module.TrelloConsoleScenario if args.case == "installed-console-credentials"
-                            else module.ConsoleScenario)
-                console = (module.BrowserConsoleScenario(sys.modules[__name__], module.loopback_origin(),
-                    args.browser_forge_source, args.browser_forge_source_sha256) if browser else
-                    scenario(sys.modules[__name__], module.loopback_origin()))
+                if helper_reset:
+                    reset_path = Path(__file__).with_name("verify_installed_helper_reset.py")
+                    reset_spec = importlib.util.spec_from_file_location("connect_installed_helper_reset", reset_path)
+                    reset_module = importlib.util.module_from_spec(reset_spec)
+                    reset_spec.loader.exec_module(reset_module)
+                    report["helper_reset_verifier"] = artifact_pin(reset_path)
+                    console = reset_module.create_scenario(sys.modules[__name__], module, module.loopback_origin(),
+                        args.helper_reset_forge_source, args.helper_reset_forge_source_sha256)
+                elif args.case == "installed-console-source-build":
+                    warm_path = Path(__file__).with_name("verify_installed_warm.py")
+                    warm_spec = importlib.util.spec_from_file_location("connect_installed_warm", warm_path)
+                    warm_module = importlib.util.module_from_spec(warm_spec)
+                    warm_spec.loader.exec_module(warm_module)
+                    source_path = Path(__file__).with_name("verify_installed_source_build.py")
+                    source_spec = importlib.util.spec_from_file_location("connect_installed_source_build", source_path)
+                    source_module = importlib.util.module_from_spec(source_spec)
+                    source_spec.loader.exec_module(source_module)
+                    report["warm_observation_helpers"] = artifact_pin(warm_path)
+                    report["source_build_verifier"] = artifact_pin(source_path)
+                    console = source_module.create_scenario(sys.modules[__name__], module, warm_module, module.loopback_origin())
+                elif args.case == "installed-console-warm":
+                    warm_path = Path(__file__).with_name("verify_installed_warm.py")
+                    warm_spec = importlib.util.spec_from_file_location("connect_installed_warm", warm_path)
+                    warm_module = importlib.util.module_from_spec(warm_spec)
+                    warm_spec.loader.exec_module(warm_module)
+                    report["warm_verifier"] = artifact_pin(warm_path)
+                    console = warm_module.create_scenario(sys.modules[__name__], module, module.loopback_origin())
+                else:
+                    scenario = (module.TrelloConsoleScenario if args.case == "installed-console-credentials"
+                                else module.ConsoleScenario)
+                    console = (module.BrowserConsoleScenario(sys.modules[__name__], module.loopback_origin(),
+                        args.browser_forge_source, args.browser_forge_source_sha256) if browser else
+                        scenario(sys.modules[__name__], module.loopback_origin()))
                 report["execution_claim"] = console.scope
             for corrupt in ((False,) if console is not None else (False, True)):
                 result = (asyncio.run(_run_installed_product(args, candidate, package, resource_manifest,
@@ -3251,6 +3422,14 @@ def main():
                     break
             if console is not None:
                 require(digest(module_path) == report["console_verifier"]["sha256"], "Console verifier helper changed during verification")
+            if args.case == "installed-console-warm":
+                require(digest(warm_path) == report["warm_verifier"]["sha256"], "Warm verifier changed during verification")
+            if args.case == "installed-console-source-build":
+                require(digest(warm_path) == report["warm_observation_helpers"]["sha256"], "Observation helpers changed during verification")
+                require(digest(source_path) == report["source_build_verifier"]["sha256"], "Source-build verifier changed during verification")
+            if helper_reset:
+                require(digest(reset_path) == report["helper_reset_verifier"]["sha256"], "Reset verifier changed during verification")
+                console.check_sources()
             require(installed_candidate(args)[0] == candidate, "selected staged candidate changed during verification")
             for row in report["sdk_sources"]:
                 require(digest(Path(row["path"])) == row["sha256"], "selected SDK source changed during verification")

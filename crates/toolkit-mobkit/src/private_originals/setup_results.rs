@@ -10,10 +10,13 @@ use toolkit_package::{ContentDigest, Revision};
 use toolkit_store::RecordCondition;
 
 pub(crate) struct SetupResultSource {
+    pub selected_helper: meerkat_core::MobMemberBinding,
     pub operation: crate::original_ingress::helper_originals::HelperOperation,
     pub helper: InputAuthorityAssociation,
     pub source: RecordCondition,
     pub contributors: Vec<InputAuthorityAssociation>,
+    pub contributor_sources: Vec<(InputAuthorityAssociation, RecordCondition)>,
+    pub ancestor_sources: Vec<RecordCondition>,
     pub context: HostAdmissionContext,
 }
 
@@ -22,6 +25,14 @@ impl PrivateOriginals {
         &self,
         context: &ToolDispatchContext,
         expected: &InstalledSetupSelection,
+    ) -> Result<SetupResultSource, PrivateOriginalError> {
+        self.setup_result_source_from(context, std::slice::from_ref(expected)).await
+    }
+
+    pub(crate) async fn setup_result_source_from(
+        &self,
+        context: &ToolDispatchContext,
+        expected: &[InstalledSetupSelection],
     ) -> Result<SetupResultSource, PrivateOriginalError> {
         let authorization = context
             .work_authorization()
@@ -90,7 +101,7 @@ impl PrivateOriginals {
         let facts = self
             .helper_policy_source(association)?
             .ok_or(PrivateOriginalError::Unavailable)?;
-        if facts.selection.helper != *expected
+        if expected.iter().filter(|helper| **helper == facts.selection.helper).count() != 1
             || association.candidate().target.context.as_str() != session.to_string()
             || association.candidate().target.logical_runtime.as_str() != retained.runtime_id()
         {
@@ -102,16 +113,13 @@ impl PrivateOriginals {
             .await
             .map_err(store_error)?
             .ok_or(PrivateOriginalError::Unavailable)?;
-        if saved.revision != held.source_record().revision
-            || saved.content_digest != held.source_record().content_digest
-            || saved.content_digest != saved.data.digest().map_err(store_error)?
-        {
-            return Err(PrivateOriginalError::Conflict);
-        }
+        held.check_result_record(&saved, session)?;
         // Match every canonical contributor through this actual source owner's
         // retained handles, then re-read that exact source. Native liveness is
         // checked again below; the typed snapshot is not an atomic permission.
         let mut originals = Vec::new();
+        let mut contributor_sources = Vec::new();
+        let mut ancestor_sources = Vec::new();
         for contributor in &facts.contributors {
             let original = {
                 let retained = self
@@ -143,6 +151,11 @@ impl PrivateOriginals {
             if record.operation_cancelled {
                 return Err(PrivateOriginalError::Denied);
             }
+            self.extend_result_ancestor_sources(&record, &mut ancestor_sources).await?;
+            contributor_sources.push((contributor.clone(), RecordCondition {
+                key: row.key, revision: row.revision, content_digest: row.content_digest,
+                claim: None, dispatch_claim: None,
+            }));
             originals.push(original);
         }
         for original in &originals {
@@ -207,6 +220,7 @@ impl PrivateOriginals {
                 _ => PrivateOriginalError::Denied,
             })?;
         Ok(SetupResultSource {
+            selected_helper: facts.selection.helper.member.clone(),
             operation: facts.operation,
             helper: association.clone(),
             source: RecordCondition {
@@ -217,6 +231,8 @@ impl PrivateOriginals {
                 dispatch_claim: None,
             },
             contributors: facts.contributors,
+            contributor_sources,
+            ancestor_sources,
             context: current,
         })
     }
@@ -242,7 +258,7 @@ impl PrivateOriginals {
         }
         let basis = self
             .owner
-            .retained_original(&claims.ingress_namespace, &claims.original_work)
+            .admitted_original_basis(&claims.ingress_namespace, &claims.original_work)
             .map_err(|_| PrivateOriginalError::Unavailable)?
             .ok_or(PrivateOriginalError::Unavailable)?;
         if basis != claims.authority_basis {
@@ -286,7 +302,7 @@ mod tests {
         assert!(matches!(adapter.require_result_source(association, false),
             Err(PrivateOriginalError::Unavailable)));
         let c = association.candidate();
-        assert!(owner.retained_original(&c.ingress_namespace, &c.original_work).unwrap().is_none());
+        assert!(owner.admitted_original_basis(&c.ingress_namespace, &c.original_work).unwrap().is_none());
         let mut foreign = c.clone();
         foreign.ingress_namespace.realm = meerkat_core::RealmId::parse("foreign-realm").unwrap();
         let foreign = InputAuthorityAssociation::new(foreign).unwrap();

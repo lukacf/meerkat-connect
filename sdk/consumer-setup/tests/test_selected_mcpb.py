@@ -305,13 +305,22 @@ class McpbMcpTests(McpbFixture, unittest.IsolatedAsyncioTestCase):
         task=asyncio.create_task(owner.dispatch('/api/selected_install',self.selection(checked)))
         self.assertTrue(await asyncio.to_thread(c.runner.entered.wait,5))
         task.cancel()
-        try:await task
-        except asyncio.CancelledError:pass
         closing=asyncio.create_task(owner.aclose())
-        await asyncio.sleep(.01);self.assertFalse(closing.done())
-        c.runner.block.set();await closing
-        self.assertEqual(c.job['status'],'succeeded')
-        self.assertEqual(sum(a[1]=='install' for a,_ in c.runner.calls),1)
+        try:
+            await asyncio.sleep(.01)
+            self.assertFalse(task.done())
+            self.assertFalse(closing.done())
+            self.assertNotIn('stop',c.job)
+            c.runner.block.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            await closing
+            self.assertEqual(c.job['status'],'succeeded')
+            self.assertEqual(sum(a[1]=='install' for a,_ in c.runner.calls),1)
+        finally:
+            c.runner.block.set()
+            await asyncio.gather(task,closing,return_exceptions=True)
+            await owner.aclose()
 
 
 if __name__=='__main__':unittest.main()

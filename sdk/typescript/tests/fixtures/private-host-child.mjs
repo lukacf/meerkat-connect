@@ -127,6 +127,7 @@ for await (const line of lines) {
     const reply = { kind: "original_operation_cancelled", original: command.original,
       state: mode === "wrong-cancel-state" ? "settled" : "operations_cancelled" };
     if (mode === "legacy-cancel-state") reply.state = "operation_grant_revoked";
+    if (mode === "cancel-cleanup-pending") reply.state = "operations_cancelled_cleanup_pending";
     if (mode === "cancel-wrong-original") reply.original = { ...command.original, original: "another-original" };
     if (mode === "cancel-late") { const timer = setTimeout(() => { timers.delete(timer); send(id, reply); }, 70); timers.add(timer); }
     else send(id, reply);

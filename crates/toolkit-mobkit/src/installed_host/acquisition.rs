@@ -17,6 +17,7 @@ mod bootstrap;
 pub use bootstrap::{AcquisitionBootstrapStatus, AcquisitionDisabledReason, InstalledSetupBootstrap};
 pub(crate) use bootstrap::AcquisitionBootstrap;
 mod admission;
+pub(crate) use admission::installed_invocation_correlation;
 mod continuation;
 pub use continuation::InstalledNativeContinuation;
 #[cfg(test)]
@@ -60,6 +61,10 @@ use toolkit_store::{SqliteStore, StoreScope, ToolkitStore};
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstalledSetupSelection {
+    /// Explicit catalog-only parent for current helper successors. The current
+    /// native binder must derive a child before this supplies operation access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_capability: Option<ConfiguredHelperCatalogCapability>,
     /// Independently configured report parent. The actual helper session is
     /// selected later; this is never a permission or source-currentness claim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,6 +84,10 @@ pub struct InstalledSetupSelection {
 
 mod report;
 pub use report::ConfiguredHelperReportCapability;
+mod catalog;
+pub use catalog::ConfiguredHelperCatalogCapability;
+mod helpers;
+use helpers::InstalledHelpers;
 
 impl InstalledSetupSelection {
     pub(crate) fn selected_member(
@@ -128,6 +137,9 @@ impl InstalledSetupSelection {
         if let Some(report) = &self.report_capability {
             report.validate(&self.operation_basis)?;
         }
+        if let Some(catalog) = &self.catalog_capability {
+            catalog.validate(&self.operation_basis)?;
+        }
         Ok(member.clone())
     }
 }
@@ -151,8 +163,7 @@ pub struct InstalledAcquisitionOwners {
 }
 
 pub(crate) struct InstalledAcquisition {
-    helper: InstalledSetupSelection,
-    helper_member: CompiledNativeMember,
+    helpers: InstalledHelpers,
     grant_caller: PrincipalRef,
     store: Arc<SqliteStore>,
     scope: SetupScope,
@@ -172,9 +183,10 @@ impl InstalledAcquisition {
         originals: Arc<PrivateOriginals>,
         native: &CompiledNativeHost,
         owners: InstalledAcquisitionOwners,
+        additional_helpers: Vec<InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         let tools = InstalledAcquisitionTools::new(owners.admission_timeout)?;
-        Self::with_tools(store, source_scope, originals, native, owners, tools)
+        Self::with_tools(store, source_scope, originals, native, owners, tools, additional_helpers)
     }
 
     pub(super) fn with_tools(
@@ -184,6 +196,7 @@ impl InstalledAcquisition {
         native: &CompiledNativeHost,
         owners: InstalledAcquisitionOwners,
         tools: InstalledAcquisitionTools,
+        additional_helpers: Vec<InstalledSetupSelection>,
     ) -> Result<Self, HostLifetimeError> {
         tools.require_unbound(owners.admission_timeout)?;
         store.capabilities().require_durable_contract()
@@ -193,7 +206,7 @@ impl InstalledAcquisition {
         if owners.tenant.as_str() != source_scope.realm {
             return Err(HostLifetimeError::InvalidSelection);
         }
-        let helper_member = owners.helper.selected_member(native)?;
+        let helpers = InstalledHelpers::new(owners.helper, additional_helpers, native)?;
         if owners.work_backend.pin().realm() != &owners.tenant {
             return Err(HostLifetimeError::InvalidSelection);
         }
@@ -205,10 +218,11 @@ impl InstalledAcquisition {
             inner: owners.admission,
             tenant: owners.tenant,
             deployment,
+            #[cfg(test)]
+            recheck_pause: std::sync::Mutex::new(None),
         });
         Ok(Self {
-            helper: owners.helper,
-            helper_member,
+            helpers,
             grant_caller: native.grant_administrator.clone(),
             store,
             scope,
@@ -225,7 +239,21 @@ impl InstalledAcquisition {
     /// Historical installed helper selection for the existing native binder.
     /// It confers no input custody, controller child or operation permission.
     pub(crate) fn helper(&self) -> (&InstalledSetupSelection, &CompiledNativeMember) {
-        (&self.helper, &self.helper_member)
+        self.helpers.get(None).expect("validated default helper")
+    }
+
+    pub(crate) fn helper_selections(&self) -> Vec<InstalledSetupSelection> {
+        self.helpers.all().map(|(helper, _)| helper.clone()).collect()
+    }
+
+    fn selected_helper(&self, request: &meerkat_toolkit::request::ValidatedSetupRequest)
+        -> Result<crate::original_ingress::helper_originals::HelperAdmissionSelection, SetupError>
+    {
+        let (helper, member) = self.helpers.get(request.host().setup_helper.as_ref())
+            .map_err(|_| SetupError::Denied)?;
+        Ok(crate::original_ingress::helper_originals::HelperAdmissionSelection {
+            helper: helper.clone(), member: member.clone(), grant_caller: self.grant_caller.clone(),
+        })
     }
 
     pub(super) fn bind_tool_driver(self: &Arc<Self>) -> Result<(), HostLifetimeError> {
@@ -318,6 +346,39 @@ struct CanonicalSetupHost {
     inner: Arc<dyn SetupToolHost>,
     tenant: Id,
     deployment: Id,
+    #[cfg(test)]
+    recheck_pause: std::sync::Mutex<Option<Arc<AdmissionRecheckPause>>>,
+}
+
+// A one-shot test observation of this host's actual successful inner admission.
+// The real registered invocation retains its admission/context while paused;
+// no source or publication lock is held across the permit await.
+#[cfg(test)]
+pub(crate) struct AdmissionRecheckPause {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+    finished: tokio::sync::Notify,
+    result: std::sync::Mutex<Option<Result<(), ToolAdmissionError>>>,
+}
+#[cfg(test)]
+impl AdmissionRecheckPause {
+    pub(crate) async fn entered(&self) { self.entered.notified().await; }
+    pub(crate) fn release(&self) { self.release.add_permits(1); }
+    pub(crate) async fn outcome(&self) -> Result<(), ToolAdmissionError> {
+        self.finished.notified().await;
+        self.result.lock().unwrap().take().expect("actual admission returned")
+    }
+}
+#[cfg(test)]
+impl InstalledAcquisition {
+    pub(crate) fn hold_admission_recheck_for_test(&self) -> Arc<AdmissionRecheckPause> {
+        let pause = Arc::new(AdmissionRecheckPause {
+            entered: tokio::sync::Notify::new(), release: tokio::sync::Semaphore::new(0),
+            finished: tokio::sync::Notify::new(), result: std::sync::Mutex::new(None),
+        });
+        assert!(self.host.recheck_pause.lock().unwrap().replace(pause.clone()).is_none());
+        pause
+    }
 }
 
 #[async_trait]
@@ -333,6 +394,34 @@ impl SetupToolHost for CanonicalSetupHost {
             .await
             .map_err(source_admission_error)?;
         let admission = self.inner.admit_invocation(call_id, context).await?;
+        #[cfg(test)]
+        let pause = self.recheck_pause.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = &pause {
+            pause.entered.notify_one();
+            pause.release.acquire().await.unwrap().forget();
+        }
+        let result = self.recheck_admission(context, &original, admission).await;
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            *pause.result.lock().unwrap() = Some(match &result {
+                Ok(_) => Ok(()),
+                Err(ToolAdmissionError::Denied) => Err(ToolAdmissionError::Denied),
+                Err(ToolAdmissionError::Unavailable) => Err(ToolAdmissionError::Unavailable),
+            });
+            pause.finished.notify_one();
+        }
+        result
+    }
+}
+
+impl CanonicalSetupHost {
+    async fn recheck_admission(
+        &self,
+        context: &ToolDispatchContext,
+        original: &crate::private_originals::acquisition::AcquisitionOriginal,
+        admission: HostToolAdmission,
+    ) -> Result<HostToolAdmission, ToolAdmissionError> {
         let claims = original.original.association().candidate();
         if admission.evidence.association() != original.original.association()
             || admission.context.tenant != self.tenant
@@ -351,9 +440,9 @@ impl SetupToolHost for CanonicalSetupHost {
             .await
             .map_err(source_admission_error)?;
         if !Arc::ptr_eq(&current.original, &original.original)
-            || current.source_record.key != original.source_record.key
-            || current.source_record.revision != original.source_record.revision
-            || current.source_record.content_digest != original.source_record.content_digest
+            || !self.originals.same_acquisition_source(
+                &original.reference, &original.source_record, &current.source_record,
+            ).map_err(source_admission_error)?
             || current.contributors.len() != original.contributors.len()
             || current
                 .contributors
@@ -409,6 +498,7 @@ mod tests {
             )
             .unwrap();
         let selected = InstalledSetupSelection {
+            catalog_capability: None,
             report_capability: None,
             member: native.members[0].member.clone(),
             ingress_actor: principal("setup-owner"),

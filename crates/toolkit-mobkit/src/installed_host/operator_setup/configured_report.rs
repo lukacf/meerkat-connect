@@ -1,4 +1,5 @@
 //! Trusted stopped-host configuration of one separate helper report parent.
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 use crate::installed_host::acquisition::{ConfiguredHelperReportCapability, InstalledSetupSelection};
 use meerkat_authorization::grants::GrantRefusal;
@@ -46,7 +47,7 @@ impl OperatorSetup {
             { return Err(HostLifetimeError::Denied); }
             // Absence of report_capability is intentional for first issuance.
             // Existing controller and target-operation selections are unchanged.
-            let expected = report_parent(&helper.logical_executor, &member.audience);
+            let expected = report_parent(&native.grant_administrator, &helper.logical_executor, &member.audience);
             let (source, originals) = open_owner_pair(selection, native, operator, OperatorOwnerStartup::Restore)?;
             let result = issue_or_recover(&source, &native.grant_administrator, operator, &helper, request, expected, &member.audience);
             drop(originals);
@@ -56,16 +57,16 @@ impl OperatorSetup {
     }
 }
 
-pub(crate) fn report_parent(executor: &meerkat_core::PrincipalRef, audience: &AudienceRef) -> ExecutionRestrictions {
-    operation_parent(executor, audience, "setup-report")
+pub(crate) fn report_parent(application: &meerkat_core::PrincipalRef, executor: &meerkat_core::PrincipalRef, audience: &AudienceRef) -> ExecutionRestrictions {
+    operation_parent(application, executor, audience, "setup-report")
 }
 
-pub(crate) fn account_parent(executor: &meerkat_core::PrincipalRef, audience: &AudienceRef) -> ExecutionRestrictions {
-    operation_parent(executor, audience, "setup-account-request")
+pub(crate) fn account_parent(application: &meerkat_core::PrincipalRef, executor: &meerkat_core::PrincipalRef, audience: &AudienceRef) -> ExecutionRestrictions {
+    operation_parent(application, executor, audience, "setup-account-request")
 }
 
-pub(crate) fn public_parent(executor: &meerkat_core::PrincipalRef, audience: &AudienceRef) -> ExecutionRestrictions {
-    operation_parent(executor, audience, "setup-public-service-request")
+pub(crate) fn public_parent(application: &meerkat_core::PrincipalRef, executor: &meerkat_core::PrincipalRef, audience: &AudienceRef) -> ExecutionRestrictions {
+    operation_parent(application, executor, audience, "setup-public-service-request")
 }
 
 fn distinct_ids(request: &HelperReportCapabilityRequest) -> bool {
@@ -74,13 +75,13 @@ fn distinct_ids(request: &HelperReportCapabilityRequest) -> bool {
         && request.account_issuance_id.as_ref().is_none_or(|id| request.public_issuance_id.as_ref() != Some(id))
 }
 
-fn operation_parent(executor: &meerkat_core::PrincipalRef, audience: &AudienceRef, action: &str) -> ExecutionRestrictions {
+fn operation_parent(application: &meerkat_core::PrincipalRef, executor: &meerkat_core::PrincipalRef, audience: &AudienceRef, action: &str) -> ExecutionRestrictions {
     ExecutionRestrictions {
         actions: ExactRestriction::exact([ActionRef { feature: "toolkit".into(), action: action.into() }]),
         // The originating request does not exist during configuration. This
-        // parent explicitly covers all resources for this one action and exact
-        // destination. The governed child narrows to its qualified origin later.
-        resource_domains: ExactRestriction::unrestricted(),
+        // parent covers only the selected application's domains for this action
+        // and destination. The child narrows to its qualified origin later.
+        resource_domains: DomainRestriction::owned_by([application.clone()]),
         processors: ExactRestriction::exact([ProcessorRef::Principal { principal: executor.clone() }]),
         audiences: ExactRestriction::exact([audience.clone()]),
         lifetime: LifetimeRestriction::unrestricted(),
@@ -115,11 +116,11 @@ pub(crate) fn issue_or_recover(
         };
         let parent = issue(&request.issuance_id, &expected)?;
         let account_parent = request.account_issuance_id.as_ref().map(|id| {
-            issue(id, &account_parent(&helper.logical_executor, audience))
+            issue(id, &account_parent(application, &helper.logical_executor, audience))
                 .map(|parent| vec![parent])
         }).transpose()?;
         let public_parent = request.public_issuance_id.as_ref().map(|id| {
-            issue(id, &public_parent(&helper.logical_executor, audience))
+            issue(id, &public_parent(application, &helper.logical_executor, audience))
                 .map(|parent| vec![parent])
         }).transpose()?;
         Ok(ConfiguredHelperReportCapability { parent: vec![parent], account_parent, public_parent })

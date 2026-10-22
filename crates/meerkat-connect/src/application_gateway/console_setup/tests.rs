@@ -154,3 +154,38 @@ async fn status_read_across_retirement_omits_review_and_replacement_still_refuse
     assert!(matches!(http::read_status_with_review(Some(selected), &active, async { Ok(()) }).await,
         Err(StatusCode::CONFLICT)), "poison must not become a retired presentation");
 }
+
+#[test]
+fn mounted_operator_recovery_requires_separate_pinned_policy_and_opaque_offer() {
+    let legacy: ConsoleSetupSelection = serde_json::from_str(r#"{"origin":"https://console.example"}"#).unwrap();
+    let requester = ConsoleSetupSelection::for_application_issued_access("https://console.example".into());
+    let selected = requester.clone().with_operator_service_recovery();
+    selected.validate().unwrap();
+    let body = json!({"offer_id":7,"row_id":"a".repeat(64)}).to_string();
+    for absent in [&legacy, &requester] {
+        assert!(matches!(http::recovery_request(absent, body.as_bytes()), Err(StatusCode::FORBIDDEN)));
+        assert!(serde_json::to_value(absent).unwrap().get("recovery_management").is_none());
+    }
+    assert_eq!(serde_json::to_string(&legacy).unwrap(), r#"{"origin":"https://console.example"}"#);
+    assert_eq!(serde_json::to_value(&requester).unwrap(), json!({"origin":"https://console.example", "access_management":"requester_issued_leaves"}));
+    let parsed = http::recovery_request(&selected, body.as_bytes()).unwrap();
+    assert_eq!(parsed.offer_id, 7); assert_eq!(parsed.row_id, "a".repeat(64));
+    for extra in ["principal", "approval", "grant_id", "lineage", "connector_selection"] {
+        let mut value = json!({"offer_id":7,"row_id":"a".repeat(64)}); value[extra] = json!("untrusted");
+        assert!(matches!(http::recovery_request(&selected, value.to_string().as_bytes()), Err(StatusCode::BAD_REQUEST)));
+    }
+    assert!(matches!(http::recovery_request(&selected, &vec![b' ';1025]), Err(StatusCode::PAYLOAD_TOO_LARGE)));
+    assert!(serde_json::from_value::<ConsoleSetupSelection>(json!({"origin":"https://console.example", "recovery_management":"visible_agent_parents"})).is_err());
+    assert_ne!(serde_json::to_vec(&selected).unwrap(), serde_json::to_vec(&requester).unwrap(), "the existing artifact fingerprint includes the explicit selection");
+    assert!(http::access_request(&selected, body.as_bytes()).is_ok(), "requester-leaf selection retains its own unchanged meaning");
+}
+
+#[test]
+fn final_status_disclosure_preserves_unavailable_without_authorizing_a_response() {
+    use meerkat_toolkit::host_lifetime::control::HostLifetimeError;
+    assert_eq!(http::status_disclosure_failure(HostLifetimeError::Unavailable), StatusCode::SERVICE_UNAVAILABLE);
+    for error in [HostLifetimeError::Denied, HostLifetimeError::InvalidSelection,
+        HostLifetimeError::WrongOwner, HostLifetimeError::NotSettled] {
+        assert_eq!(http::status_disclosure_failure(error), StatusCode::FORBIDDEN);
+    }
+}

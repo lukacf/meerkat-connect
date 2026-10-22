@@ -23,6 +23,11 @@ pub use configured_setup::AgentSetupCapabilityRequest;
 pub(super) mod configured_report;
 pub use configured_report::HelperReportCapabilityRequest;
 mod service_mcp;
+mod service_batch;
+pub use service_batch::{MAX_PUBLIC_SERVICE_BATCH, ServiceMcpParentBatchReview};
+pub(crate) use service_batch::ReviewedServiceCatalogParent;
+pub(crate) use service_batch::member_decision_id as service_batch_member_id;
+pub(crate) mod service_recovery;
 mod standing_service;
 pub(crate) use standing_service::{ServiceParentRuleEvidence, StandingServiceParentProposal};
 mod service_review;
@@ -32,6 +37,7 @@ pub use setup_targets::SetupTargetRequest;
 mod setup_recovery;
 pub(crate) use setup_request::{validate_setup_selection, validate_retained_setup_selection};
 pub use service_mcp::{ReviewedServiceMcpParent, ServiceMcpParentOutcome, ServiceMcpParentReview};
+pub(crate) use service_mcp::ServiceMcpParentCompensation;
 
 const SCHEMA: &str = "toolkit.operator-application-parent";
 const RECORD_VERSION: u32 = 2;
@@ -69,6 +75,7 @@ pub struct OperatorSetup {
     originals: Arc<dyn ToolkitStore>,
     source: Arc<ToolkitOriginalOwner>,
     helper_selection: Option<crate::installed_host::acquisition::InstalledSetupSelection>,
+    additional_helpers: Vec<crate::installed_host::acquisition::InstalledSetupSelection>,
 }
 
 /// Held by the actual operator setup invocation across its existing presenter.
@@ -80,6 +87,7 @@ pub struct OperatorParentProposal {
     restrictions: ExecutionRestrictions,
     purpose: OperatorParentPurpose,
     setup_request: Option<SetupRequestIntent>,
+    batch_member: Option<service_batch::ServiceBatchMemberIdentity>,
     creating_source: std::sync::Weak<ToolkitOriginalOwner>,
     creating_lifetime: std::sync::Weak<NativeHostLifetime>,
 }
@@ -96,6 +104,8 @@ struct OperatorDecision {
     purpose: OperatorParentPurpose,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     setup_request: Option<SetupRequestIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    batch_member: Option<service_batch::ServiceBatchMemberIdentity>,
     operator: meerkat_core::PrincipalRef,
     application: meerkat_core::PrincipalRef,
     represented_subject: Option<meerkat_core::PrincipalRef>,
@@ -325,6 +335,7 @@ impl OperatorSetup {
             originals: Arc::new(originals),
             source,
             helper_selection: None,
+            additional_helpers: vec![],
         })
     }
 
@@ -357,6 +368,7 @@ impl OperatorSetup {
             originals,
             source,
             helper_selection: None,
+            additional_helpers: vec![],
         })
     }
 
@@ -388,6 +400,7 @@ impl OperatorSetup {
             originals,
             source,
             helper_selection: None,
+            additional_helpers: vec![],
         })
     }
 
@@ -397,6 +410,24 @@ impl OperatorSetup {
         self.lifetime.validate_current_selection()?;
         if let Some(helper) = &helper { helper.selected_member(&self.native)?; }
         self.helper_selection = helper;
+        Ok(self)
+    }
+
+    pub(crate) fn with_helper_selections(mut self,
+        helpers: Vec<crate::installed_host::acquisition::InstalledSetupSelection>) -> Result<Self, HostLifetimeError>
+    {
+        self.lifetime.validate_current_selection()?;
+        if helpers.len() > 8 { return Err(HostLifetimeError::InvalidSelection); }
+        let mut selected = Vec::new();
+        for helper in helpers {
+            helper.selected_member(&self.native)?;
+            if selected.iter().any(|old: &crate::installed_host::acquisition::InstalledSetupSelection| old.member == helper.member) {
+                return Err(HostLifetimeError::InvalidSelection);
+            }
+            selected.push(helper);
+        }
+        self.helper_selection = if selected.is_empty() { None } else { Some(selected.remove(0)) };
+        self.additional_helpers = selected;
         Ok(self)
     }
 
@@ -649,6 +680,7 @@ impl OperatorSetup {
             restrictions,
             purpose,
             setup_request: None,
+            batch_member: None,
             creating_source: Arc::downgrade(&self.source),
             creating_lifetime: Arc::downgrade(&self.lifetime),
         })
@@ -675,10 +707,9 @@ impl OperatorSetup {
         self.apply_parent_decision_current(proposal, approval, Arc::new(|| true)).await
     }
 
-    async fn apply_parent_decision_current(
-        &self, proposal: OperatorParentProposal, approval: ApprovalRecord,
-        presented: Arc<dyn Fn() -> bool + Send + Sync>,
-    ) -> Result<OperatorParentOutcome, HostLifetimeError> {
+    fn parent_decision_record(&self, proposal: &OperatorParentProposal, approval: ApprovalRecord)
+        -> Result<OperatorDecision, HostLifetimeError>
+    {
         // An actual approval is applied only by the source and lifetime that
         // created its opaque proposal. Re-prepare after a legitimate restore.
         self.check_parent_proposal_owner(&proposal)?;
@@ -700,22 +731,33 @@ impl OperatorSetup {
             _ => return Err(HostLifetimeError::Denied),
         };
         let record = OperatorDecision {
-            route: proposal.route,
+            route: proposal.route.clone(),
             purpose: proposal.purpose,
             target_issuance: proposal.setup_request.as_ref().map(|intent|
                 vec![setup_targets::TargetIssuance::NotStarted; intent.targets.len()]).unwrap_or_default(),
-            setup_request: proposal.setup_request,
+            setup_request: proposal.setup_request.clone(),
+            batch_member: proposal.batch_member.clone(),
             operator: self.operator.clone(),
             application: self.native.grant_administrator.clone(),
             represented_subject: route.represented_subject.clone(),
             approval,
-            requested: proposal.restrictions,
+            requested: proposal.restrictions.clone(),
             issued: if approved {
                 ParentIssuance::Pending
             } else {
                 ParentIssuance::Denied
             },
         };
+        service_batch::validate_member(&record)?;
+        Ok(record)
+    }
+
+    async fn apply_parent_decision_current(
+        &self, proposal: OperatorParentProposal, approval: ApprovalRecord,
+        presented: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<OperatorParentOutcome, HostLifetimeError> {
+        let record = self.parent_decision_record(&proposal, approval)?;
+        let approved = matches!(&record.issued, ParentIssuance::Pending);
         let key = self.parent_decision_key(&record)?;
         // Store admission compares the whole immutable decision. An exact retry
         // reads the saved result even if the review deadline has since elapsed.
@@ -862,6 +904,15 @@ fn same_request(a: &ApprovalRequest, b: &ApprovalRecord) -> bool {
         && a.request_provenance == b.request_provenance
 }
 fn decision_body(record: &OperatorDecision) -> Result<Vec<u8>, HostLifetimeError> {
+    if let Some(member) = &record.batch_member {
+        return canonical_json(&(
+            "toolkit.public-service-batch-parent.v1", member, &record.route,
+            record.purpose, &record.setup_request, &record.operator,
+            &record.application, &record.represented_subject, &record.approval,
+            &record.requested,
+        )).map_err(|_| HostLifetimeError::InvalidSelection);
+    }
+    // The historical singleton comparison bytes remain exactly unchanged.
     canonical_json(&(
         &record.route,
         record.purpose,
@@ -902,6 +953,7 @@ fn decode(stored: &StoredRecord, key: &StoreKey) -> Result<OperatorDecision, Hos
         }
     }
     setup_targets::validate_progress(&record, key)?;
+    service_batch::validate_member(&record)?;
     Ok(record)
 }
 
@@ -939,7 +991,7 @@ mod tests {
             generation: 1,
         }
     }
-    fn request() -> ApprovalRequest {
+    pub(super) fn request() -> ApprovalRequest {
         ApprovalRequest {
             requester: ApprovalPrincipalId::new("setup-invocation").unwrap(),
             owner: ApprovalOwnerRef::Session {
@@ -1685,7 +1737,7 @@ mod tests {
         }
     }
 
-    fn service_proposal(setup: &OperatorSetup) -> (
+    pub(super) fn service_proposal(setup: &OperatorSetup) -> (
         crate::private_originals::PrivateServiceMcpAccessDecision,
         crate::private_originals::ServiceMcpSelection,
         ApprovalRequest,

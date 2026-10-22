@@ -7,6 +7,25 @@ impl OperatorSetup {
         &self, route: &Id, evidence: &PrivateSourceEvidence,
         expected_parent: &[GrantLineageRef],
     ) -> Result<ApprovalRecord, HostLifetimeError> {
+        Ok(self.retained_service_review_record(route, evidence, expected_parent).await?.approval)
+    }
+
+    pub(crate) async fn retained_service_installation_review(
+        &self, route: &Id, evidence: &PrivateSourceEvidence, expected_parent: &[GrantLineageRef],
+    ) -> Result<crate::private_originals::ServiceInstallationReadbackSource, HostLifetimeError> {
+        let record = self.retained_service_review_record(route, evidence, expected_parent).await?;
+        if record.batch_member.is_none() {
+            return Ok(crate::private_originals::ServiceInstallationReadbackSource::SettledReview(record.approval));
+        }
+        let body = service_batch::member_body(&record)?.ok_or(HostLifetimeError::InvalidSelection)?;
+        let document = body.get("access_request").cloned().ok_or(HostLifetimeError::InvalidSelection)?;
+        Ok(crate::private_originals::ServiceInstallationReadbackSource::ReviewedBatchMember(
+            crate::private_originals::ReviewedBatchInstallation::new(document)))
+    }
+
+    async fn retained_service_review_record(
+        &self, route: &Id, evidence: &PrivateSourceEvidence, expected_parent: &[GrantLineageRef],
+    ) -> Result<OperatorDecision, HostLifetimeError> {
         self.lifetime.validate_current_selection()?;
         if evidence.revision.as_str() != "settled-review-v1" || expected_parent.len() != 1 {
             return Err(HostLifetimeError::Denied);
@@ -23,10 +42,8 @@ impl OperatorSetup {
             .ok_or(HostLifetimeError::Unavailable)?;
         let record = decode(&stored, &key)?;
         let selected = self.route(route)?;
-        let expected_key = format!("operator-parent-{}", digest(&canonical_json(&(
-            SCHEMA, route, &record.approval.approval_id,
-        )).map_err(|_| HostLifetimeError::InvalidSelection)?));
-        if key.id != expected_key || record.route != *route
+        let expected_key = self.parent_decision_key(&record)?;
+        if key != expected_key || record.route != *route
             || record.purpose != OperatorParentPurpose::Operations
             || record.operator != self.operator
             || record.application != self.native.grant_administrator
@@ -43,6 +60,6 @@ impl OperatorSetup {
             return Err(HostLifetimeError::Unavailable);
         }
         self.lifetime.validate_current_selection()?;
-        Ok(record.approval)
+        Ok(record)
     }
 }

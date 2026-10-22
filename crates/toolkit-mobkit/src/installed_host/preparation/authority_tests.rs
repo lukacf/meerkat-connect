@@ -12,6 +12,7 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PreparedLocalPolicy, acquisition::I
     let member = selected.native_host.members[0].member.clone();
     let route = selected.native_host.routes[0].id.clone();
     let helper = acquisition::InstalledSetupSelection {
+        catalog_capability: None,
         report_capability: None, member: member.clone(),
         ingress_actor: super::super::tests::principal("helper-ingress"),
         logical_executor: selected.native_host.members[0].logical_owner.clone(), represented_subject: None,
@@ -27,7 +28,8 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PreparedLocalPolicy, acquisition::I
             PreparedControllerRequest { target: PreparedControllerTarget::Helper,
                 issuance_id: EvidenceId::new("helper-controller-parent").unwrap(), controller_route: key },
         ],
-        agent_setup: vec![AgentSetupCapabilityRequest { member: member.clone(), route, helper_targets: vec![],
+        agent_setup: vec![AgentSetupCapabilityRequest {
+            helper: None, member: member.clone(), route, helper_targets: vec![],
             issuance_id: EvidenceId::new("original-setup-parent").unwrap() }],
         helper_report: Some(HelperReportCapabilityRequest { member, account_issuance_id: None, public_issuance_id: None,
             issuance_id: EvidenceId::new("helper-report-parent").unwrap() }),
@@ -64,11 +66,11 @@ fn empty_owner_issues_separate_real_parents_then_recovers_same_ids() {
     assert_ne!(report.parent, helper.controller_parent);
     let setup_resolved = owner.source.grants().resolve_lineage(std::slice::from_ref(&setup.parent), application, None).unwrap();
     assert_eq!(setup_resolved.restrictions(), &application_operations::configured_setup_parent(
-        &resolved.native_host.routes[0].logical_executor, &resolved.native_host.members[0].audience));
+        application, &resolved.native_host.routes[0].logical_executor, &resolved.native_host.members[0].audience));
     setup_resolved.check_current().unwrap();
     let report_resolved = owner.source.grants().resolve_controller_lineage(&report.parent, application, None).unwrap();
     assert_eq!(report_resolved.restrictions(), &operator_setup::configured_report::report_parent(
-        &helper.logical_executor, &resolved.native_host.members[0].audience));
+        application, &helper.logical_executor, &resolved.native_host.members[0].audience));
     report_resolved.check_current().unwrap();
     drop(report_resolved); drop(setup_resolved);
     owner.configure_authorities(&mut helper, &requests).unwrap();
@@ -503,6 +505,7 @@ fn bundled_helper_mcp_intent_selects_only_issuance_identity_and_survives_held_re
 fn request_helper_catalog(requests: &mut PreparationAuthorities) {
     requests.helper_catalog = Some(PreparedHelperCatalogRequest {
         issuance_id: EvidenceId::new("bundled-helper-catalog-parent").unwrap(),
+        scope: PreparedHelperCatalogScope::ExactSession,
     });
 }
 
@@ -650,9 +653,138 @@ fn helper_catalog_intent_has_no_caller_session_and_preserves_exact_id() {
     let intent: PreparationAuthorityIntent = serde_json::from_value(request.clone()).unwrap();
     let resolved = intent.resolve_controller_routes([]).unwrap();
     assert_eq!(resolved.helper_catalog.as_ref().unwrap().issuance_id.as_str(), "bundled-helper-catalog-parent");
+    assert!(resolved.helper_catalog.as_ref().unwrap().scope == PreparedHelperCatalogScope::ExactSession);
+    assert_eq!(serde_json::to_value(resolved.helper_catalog.as_ref().unwrap()).unwrap(), request["helper_catalog"],
+        "default scope preserves the legacy serialized request");
     assert_eq!(PreparationAuthorityIntent::from(resolved).helper_catalog.unwrap().issuance_id.as_str(), "bundled-helper-catalog-parent");
     for field in ["session", "member", "action", "resource", "actor", "restrictions"] {
         let mut changed = request.clone(); changed["helper_catalog"][field] = serde_json::json!("caller-selected");
         assert!(serde_json::from_value::<PreparationAuthorityIntent>(changed).is_err());
     }
+    let mut successors = request.clone();
+    successors["helper_catalog"]["scope"] = serde_json::json!("current_helper_successors");
+    let resolved = serde_json::from_value::<PreparationAuthorityIntent>(successors.clone()).unwrap()
+        .resolve_controller_routes([]).unwrap();
+    assert!(resolved.helper_catalog.unwrap().scope == PreparedHelperCatalogScope::CurrentHelperSuccessors);
+    for invalid in [serde_json::json!(null), serde_json::json!(true), serde_json::json!("all_sessions")] {
+        successors["helper_catalog"]["scope"] = invalid;
+        assert!(serde_json::from_value::<PreparationAuthorityIntent>(successors.clone()).is_err());
+    }
+}
+
+#[test]
+fn helper_catalog_successor_parent_is_explicit_catalog_only_and_not_an_executable_base() {
+    let (_directory, root, selected, mut helper, mut requests) = fixture();
+    request_helper_catalog(&mut requests);
+    requests.helper_catalog.as_mut().unwrap().scope = PreparedHelperCatalogScope::CurrentHelperSuccessors;
+    requests.agent_setup[0].helper_targets = vec![operator_setup::SetupTargetRequest {
+        target: None, issuance_id: EvidenceId::new("explicit-original-successor-catalog").unwrap(),
+    }];
+    let session = meerkat_core::SessionId::new();
+    let member = helper.member.clone();
+    let mut owner = initialize(root.clone(), selected.clone());
+    owner.configure_authorities_with_helper_resources(&mut helper, &requests, None, Some((&member, &session))).unwrap();
+    assert!(helper.operation_basis.lineage_for(None).is_none());
+    let capability = helper.catalog_capability.as_ref().unwrap();
+    let expected = application_operations::configured_catalog_parent(&selected.native_host.grant_administrator, &helper.logical_executor,
+        &selected.native_host.members[0].audience);
+    let current = owner.source.grants().resolve_lineage(&capability.parent,
+        &selected.native_host.grant_administrator, helper.represented_subject.as_ref()).unwrap();
+    assert_eq!(current.restrictions(), &expected);
+    current.check_current().unwrap();
+    assert!(owner.source.grants().resolve_lineage(&capability.parent,
+        &helper.logical_executor, helper.represented_subject.as_ref()).is_err());
+    let original = &owner.selected().native_host.members[0].setup_capability.as_ref().unwrap().helper_targets[0];
+    assert!(original.target.is_none());
+    assert_ne!(original.parent, capability.parent[0]);
+    assert_eq!(original.restrictions, expected);
+    drop(current);
+    let complete = helper.clone();
+    let before = bytes(&owner);
+    let successor = meerkat_core::SessionId::new();
+    owner.configure_authorities_with_helper_resources(&mut helper, &requests, None, Some((&member, &successor))).unwrap();
+    assert!(helper == complete);
+    assert_eq!(bytes(&owner), before);
+    let retained = serde_json::to_value(&helper).unwrap();
+    assert!(serde_json::from_value::<acquisition::InstalledSetupSelection>(retained).unwrap() == helper);
+}
+
+#[test]
+fn helper_catalog_successor_selection_refuses_old_exact_id_foreign_owner_and_revocation() {
+    let (_directory, root, selected, mut helper, mut requests) = fixture();
+    request_helper_catalog(&mut requests);
+    let session = meerkat_core::SessionId::new();
+    let member = helper.member.clone();
+    let mut owner = initialize(root, selected);
+    owner.configure_authorities_with_helper_resources(&mut helper, &requests, None, Some((&member, &session))).unwrap();
+    let exact = helper.operation_basis.clone();
+    let before = bytes(&owner);
+    requests.helper_catalog.as_mut().unwrap().scope = PreparedHelperCatalogScope::CurrentHelperSuccessors;
+    assert!(owner.configure_authorities_with_helper_resources(&mut helper, &requests, None, Some((&member, &session))).is_err());
+    helper.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![] };
+    assert!(owner.configure_authorities_with_helper_resources(&mut helper, &requests, None, Some((&member, &session))).is_err(),
+        "clearing local selection cannot reinterpret the old native depth-zero ID");
+    assert_eq!(bytes(&owner), before);
+    requests.helper_catalog.as_mut().unwrap().issuance_id = EvidenceId::new("new-explicit-successor-parent").unwrap();
+    owner.configure_authorities_with_helper_resources(&mut helper, &requests, None, Some((&member, &session))).unwrap();
+    let complete = helper.clone();
+    let before = bytes(&owner);
+    for (application, audience) in [
+        (super::super::tests::principal("foreign-application"), owner.selected.native_host.members[0].audience.clone()),
+        (owner.selected.native_host.grant_administrator.clone(), meerkat_authorization_contracts::constraints::AudienceRef::Principal {
+            principal: super::super::tests::principal("foreign-audience"),
+        }),
+    ] {
+        assert!(super::helper_catalog::PreparedHelperCatalog::select(&owner.source, &application,
+            owner.selected.native_host.remote_operator.as_ref().unwrap(), &helper, &audience,
+            requests.helper_catalog.as_ref(), Some((&member, &session))).is_err());
+    }
+    for change in 0..4 {
+        let mut foreign = helper.clone();
+        match change {
+            0 => foreign.logical_executor = super::super::tests::principal("foreign-helper"),
+            1 => foreign.represented_subject = Some(super::super::tests::principal("foreign-subject")),
+            2 => foreign.catalog_capability.as_mut().unwrap().parent[0].grant_id = EvidenceId::new("foreign-parent").unwrap(),
+            _ => foreign.operation_basis = exact.clone(),
+        }
+        assert!(owner.configure_authorities_with_helper_resources(&mut foreign, &requests, None, Some((&member, &session))).is_err());
+    }
+    assert_eq!(bytes(&owner), before);
+    let parent = helper.catalog_capability.as_ref().unwrap().parent[0].clone();
+    let machine = crate::original_ingress::tests::machine(&owner.source);
+    let mut custody = machine.try_controller_grant_mutation().unwrap();
+    owner.source.grants().revoke(owner.selected.native_host.remote_operator.as_ref().unwrap(), &parent, &mut custody).unwrap();
+    drop(custody); drop(machine);
+    let revoked = bytes(&owner);
+    assert!(owner.configure_authorities_with_helper_resources(&mut helper, &requests, None, Some((&member, &meerkat_core::SessionId::new()))).is_err());
+    assert!(helper == complete);
+    assert_eq!(bytes(&owner), revoked);
+}
+
+#[test]
+fn helper_catalog_successor_does_not_reinterpret_existing_original_catalog_target() {
+    let (_directory, root, selected, mut helper, mut requests) = fixture();
+    request_helper_catalog(&mut requests);
+    requests.agent_setup[0].helper_targets = vec![operator_setup::SetupTargetRequest {
+        target: None, issuance_id: EvidenceId::new("original-exact-catalog-parent").unwrap(),
+    }];
+    let session = meerkat_core::SessionId::new();
+    let member = helper.member.clone();
+    let mut owner = initialize(root, selected);
+    owner.configure_authorities_with_helper_resources(&mut helper, &requests, None, Some((&member, &session))).unwrap();
+    let original = owner.selected.native_host.members[0].setup_capability.as_ref().unwrap().clone();
+    let old_target = original.helper_targets[0].clone();
+    helper.operation_basis = WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![] };
+    let catalog = requests.helper_catalog.as_mut().unwrap();
+    catalog.issuance_id = EvidenceId::new("fresh-successor-catalog-parent").unwrap();
+    catalog.scope = PreparedHelperCatalogScope::CurrentHelperSuccessors;
+    assert!(owner.configure_authorities_with_helper_resources(&mut helper, &requests, None,
+        Some((&member, &meerkat_core::SessionId::new()))).is_err());
+    assert_eq!(owner.selected.native_host.members[0].setup_capability.as_ref(), Some(&original));
+    let current = owner.source.grants().resolve_lineage(std::slice::from_ref(&old_target.parent),
+        &owner.selected.native_host.grant_administrator, owner.selected.native_host.routes[0].represented_subject.as_ref()).unwrap();
+    assert_eq!(current.restrictions(), &old_target.restrictions);
+    current.check_current().unwrap();
+    assert_ne!(current.restrictions(), &application_operations::configured_catalog_parent(&owner.selected.native_host.grant_administrator, &helper.logical_executor,
+        &owner.selected.native_host.members[0].audience));
 }

@@ -59,7 +59,7 @@ impl InstalledAcquisition {
         let source = self
             .host
             .originals
-            .setup_result_source(context, &self.helper)
+            .setup_result_source_from(context, &self.helper_selections())
             .await;
         let initial_current = context.check_tool_authorization(call, None)?;
         let context = initial_current.as_ref().unwrap_or(context);
@@ -81,6 +81,8 @@ impl InstalledAcquisition {
                     helper: &source.helper,
                     source: &source.source,
                     contributors: &source.contributors,
+                    contributor_sources: &source.contributor_sources,
+                    ancestor_sources: &source.ancestor_sources,
                     effect: &effect,
                     input_digest: &source.operation.input_digest,
                     context: &current,
@@ -94,7 +96,7 @@ impl InstalledAcquisition {
         let after = self
             .host
             .originals
-            .setup_result_source(context, &self.helper)
+            .setup_result_source_from(context, &self.helper_selections())
             .await;
         let recorded_current = context.check_tool_authorization(call, None)?;
         let context = recorded_current.as_ref().unwrap_or(context);
@@ -102,6 +104,8 @@ impl InstalledAcquisition {
         if after.helper != source.helper
             || after.source != source.source
             || after.contributors != source.contributors
+            || after.contributor_sources != source.contributor_sources
+            || after.ancestor_sources != source.ancestor_sources
             || after.operation != source.operation
             || after.context.policy_revision != source.context.policy_revision
         {
@@ -141,7 +145,7 @@ impl InstalledAcquisition {
         let after = self
             .host
             .originals
-            .setup_result_source(context, &self.helper)
+            .setup_result_source_from(context, &self.helper_selections())
             .await;
         // Recheck this exact borrowed call through the native owner after the
         // last wait. Its policy checks current host/component and full native
@@ -153,6 +157,8 @@ impl InstalledAcquisition {
         if after.helper != source.helper
             || after.source != source.source
             || after.contributors != source.contributors
+            || after.contributor_sources != source.contributor_sources
+            || after.ancestor_sources != source.ancestor_sources
             || after.operation != source.operation
             || after.context.policy_revision != source.context.policy_revision
         {

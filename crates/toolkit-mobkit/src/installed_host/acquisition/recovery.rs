@@ -12,7 +12,7 @@ const SWEEP_PAUSE: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
-struct RecoveryControl {
+pub(crate) struct RecoveryControl {
     stopped: Mutex<bool>,
     wake: Notify,
 }
@@ -144,6 +144,7 @@ impl SetupDeadlineOwner for InstalledAcquisition {
 }
 
 impl InstalledAcquisition {
+
     fn recovery_disclose<T: Send>(&self, value: T) -> Result<T, SetupError> {
         let mut disclosed = None;
         self.host
@@ -170,7 +171,13 @@ impl InstalledAcquisition {
         self.recovery_disclose(result)?
     }
     async fn run_recovery(self: Arc<Self>, control: Arc<RecoveryControl>) {
-        self.clone().run_recovery_steps(control).await;
+        // A panic or cancellation also stops new recovery work. The
+        // normal path below joins entered handles; Drop makes no join claim.
+        struct StopOnDrop(Arc<RecoveryControl>);
+        impl Drop for StopOnDrop { fn drop(&mut self) { self.0.stop(); } }
+        let _stop = StopOnDrop(control.clone());
+        self.clone().run_recovery_steps(control.clone()).await;
+        control.stop();
         // The same joined worker drains already entered attachment replies.
         // This does not start never-polled work or certify router cleanup.
         self.host.originals.join_service_attachments().await;
@@ -214,7 +221,9 @@ impl InstalledAcquisition {
                         match result {
                             // Expire atomically commits the canonical terminal
                             // state and its existing continuation outbox effect.
-                            Ok(_) => page.operations.push(operation),
+                            Ok(_) => {
+                                page.operations.push(operation);
+                            },
                             Err(SetupError::Denied | SetupError::WrongScope) => return,
                             // A concurrent selection/terminal transition keeps
                             // its CAS winner; the next sweep reads it afresh.

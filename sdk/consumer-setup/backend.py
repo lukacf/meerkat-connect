@@ -42,6 +42,9 @@ INSPECTION_TIMEOUT = 30.0
 SELECTED_GUIDE_BYTES = 32 * 1024
 MCPB_INSPECTION_TIMEOUT = 120.0
 STOP_CHECK_INTERVAL = 0.1
+# The selected Python/Node installer allows its child 2 s after TERM. Leave
+# additional time for that existing owner to join and unwind before escalation.
+SELECTED_INSTALLER_TERMINATION_GRACE = 10
 REQUEST_ID = re.compile(r"[0-9a-f]{32}\Z")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 REFERENCE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
@@ -70,9 +73,11 @@ ACQUISITION_ASSETS = {
     "node": {"profile.json", "npm.tgz", "installer.py", "worker.py"},
     "compose": {"profile.json", "runtime.py", "planner", "host-profile.json"},
     "mcpb": {"profile.json", "worker.py"},
+    "node-prebuilt": {"profile.json", "installer.py", "fetch.py", "worker.py"},
 }
 ACQUISITION_SCOPES = {"python": "trusted_pypi_wheel_acquisition", "node": "trusted_npm_registry_acquisition",
-                      "compose": "acquire_agent_selected_container_images", "mcpb": "trusted_public_mcpb_acquisition"}
+                      "compose": "acquire_agent_selected_container_images", "mcpb": "trusted_public_mcpb_acquisition",
+                      "node-prebuilt": "trusted_public_node_prebuilt_acquisition"}
 ACQUISITION_EXCLUSIONS = [
     "Matching retained files do not establish that the historical acquisition completed successfully.",
     "No network, package code, installer, runtime, engine observation, image pull or graph operation is executed.",
@@ -941,9 +946,11 @@ class Runner:
 
     def run(self, argv: list[str], *, capture: bool = False,
             inspection_timeout: float | None = None) -> tuple[int, bytes]:
-        timeout = INSPECTION_TIMEOUT if inspection_timeout is None else inspection_timeout
+        selected_timeout = getattr(self._job_context, "installer_timeout", None)
+        timeout = ((selected_timeout if selected_timeout is not None else INSPECTION_TIMEOUT)
+                   if inspection_timeout is None else inspection_timeout)
         compose = getattr(self._compose_context, "settings", None)
-        if capture and (type(timeout) not in (int, float) or not 0 < timeout <= (3600 if compose else MCPB_INSPECTION_TIMEOUT)):
+        if capture and (type(timeout) not in (int, float) or not 0 < timeout <= (3600 if compose or selected_timeout is not None else MCPB_INSPECTION_TIMEOUT)):
             raise SetupError("inspection_unavailable", 500)
         control = getattr(self._job_context, "control", None)
         diagnostic = getattr(self._diagnostic_context, "stderr", None) if capture else None
@@ -1017,11 +1024,14 @@ class Runner:
             # Direct-child settlement does not attest every descendant exit.
             try:
                 if process.returncode is None:
-                    grace = compose.get("termination_grace", 0) if compose else 0
+                    grace = (compose.get("termination_grace", 0) if compose else
+                             getattr(self._job_context, "termination_grace", 0))
                     if grace:
-                        # The pinned Compose CLI owns separately-sessioned
-                        # children. TERM lets its existing owner join them.
-                        # Even a graceful exit does not establish effect state.
+                        # Pinned Compose and selected installer processes own
+                        # separately-sessioned children. Give that owner a
+                        # chance to join them. Grace exhaustion leaves inner
+                        # settlement unconfirmed; even a graceful exit does
+                        # not establish effect state or descendant closure.
                         try:
                             process.send_signal(signal.SIGTERM)
                             process.wait(timeout=grace)
@@ -1249,7 +1259,7 @@ def selected_profile(path, expected, *, recovering=False):
         if digest(raw) != expected:
             raise ValueError()
         value = decode(raw)
-        if not isinstance(value, dict) or set(value) - {"python_target", "package_inspector", "plugin_inspection", "mcpb_inspection"} not in (
+        if not isinstance(value, dict) or set(value) - {"python_target", "package_inspector", "plugin_inspection", "mcpb_inspection", "node_build"} not in (
                 {"schema_version", "scope", "staging_root", "installer", "validators"},
                 {"schema_version", "scope", "staging_root", "validators"}):
             raise ValueError()
@@ -1265,22 +1275,24 @@ def selected_profile(path, expected, *, recovering=False):
                 or ("mcpb_inspection" in value and (type(value["mcpb_inspection"]) is not bool
                     or value["mcpb_inspection"] and ("package_inspector" not in value
                         or "mcpb" not in value["validators"])))
+                or ("node_build" in value and ("node" not in value["validators"] or "installer" not in value))
                 or ("installer" not in value and set(value["validators"]) != {"mcpb"})):
             raise ValueError()
         if not recovering:
             canonical_directory(Path(value["staging_root"]))
         tools = {**({"installer": value["installer"]} if "installer" in value else {}), **value["validators"],
-                 **({"package_inspector": value["package_inspector"]} if "package_inspector" in value else {})}
+                 **({"package_inspector": value["package_inspector"]} if "package_inspector" in value else {}),
+                 **({"node_build": value["node_build"]} if "node_build" in value else {})}
         payloads = {}
         for name, item in tools.items():
             keys(item, ("path", "sha256"))
             if not isinstance(item["path"], str) or not Path(item["path"]).is_absolute() or not selected_hash(item["sha256"]):
                 raise ValueError()
             source = Path(item["path"])
-            data = read_file(canonical_directory(source.parent), source.name, SELECTED_FILE)
+            data = read_file(canonical_directory(source.parent), source.name, 65536 if name == "node_build" else SELECTED_FILE)
             if digest(data) != item["sha256"]:
                 raise ValueError()
-            if name != "installer" and not os.access(source, os.X_OK):
+            if name not in ("installer", "node_build") and not os.access(source, os.X_OK):
                 raise ValueError()
             payloads[name] = data
         return value, raw, payloads
@@ -1319,12 +1331,15 @@ def selected_source_request(value):
     keys(value, (*fields, *(("configuration_sha256",) if isinstance(value, dict) and value.get("profile") == "mcpb" else ()),
                  *(("plugin_source",) if isinstance(value, dict) and "plugin_source" in value else ()),
                  *(("acquired_source",) if isinstance(value, dict) and "acquired_source" in value else ()),
-                 *(("document_kind",) if isinstance(value, dict) and "document_kind" in value else ())))
+                 *(("document_kind",) if isinstance(value, dict) and "document_kind" in value else ()),
+                 *(("build_plan_sha256",) if isinstance(value, dict) and "build_plan_sha256" in value else ())))
     selected_document(value)
     if (value["profile"] not in ("python", "node", "mcpb") or not selected_name(value["staged_id"])
             or not selected_name(value["component"]) or not selected_hash(value["package_sha256"])
             or not selected_hash(value["selection_sha256"])
             or (value["profile"] == "mcpb" and not selected_hash(value["configuration_sha256"]))):
+        raise SetupError("invalid_selected_request")
+    if "build_plan_sha256" in value and (value["profile"] != "node" or not selected_hash(value["build_plan_sha256"])):
         raise SetupError("invalid_selected_request")
     if "plugin_source" in value:
         plugin_source_reference(value["plugin_source"])
@@ -1375,6 +1390,10 @@ def selected_check_request(value):
                   ("declaration.json" if software else "activation.json", "selection_sha256")}
     if value.get("profile") == "mcpb":
         fields["configuration_json"] = ("configuration.json", "configuration_sha256")
+    if "build_plan_json" in value:
+        if value.get("profile") != "node":
+            raise SetupError("invalid_selected_request")
+        fields["build_plan_json"] = ("closure/node-build-plan", "build_plan_sha256")
     keys(value, ("profile", "staged_id", "component", *fields,
                  *(("plugin_source",) if "plugin_source" in value else ()),
                  *(("acquired_source",) if "acquired_source" in value else ())))
@@ -1393,7 +1412,7 @@ def selected_check_request(value):
     return request, documents
 
 
-def materialize_acquired_source(raw, component_id, result):
+def materialize_acquired_source(raw, component_id, result, build_plan_sha256=None):
     """Copy only retained artifact facts; the pinned validator owns semantics."""
     value = decode(raw)
     if not isinstance(value, dict) or type(value.get("components")) is not list:
@@ -1410,6 +1429,11 @@ def materialize_acquired_source(raw, component_id, result):
                   dependencies={"kind": "pinned_closure", "artifacts": {
                       name.removeprefix("closure/"): sha for name, sha in result["files"].items()
                       if name.startswith("closure/")}})
+    if build_plan_sha256 is not None:
+        if not selected_hash(build_plan_sha256) or "closure/node-build-plan" in result["files"]:
+            raise SetupError("invalid_selected_request")
+        # The authored plan is separate from the unmodified acquisition result.
+        source["dependencies"]["artifacts"]["node-build-plan"] = build_plan_sha256
     expanded = encoded(value)
     if len(expanded) > SELECTED_DOCUMENT:
         raise SetupError("invalid_selected_request")
@@ -1419,6 +1443,9 @@ def materialize_acquired_source(raw, component_id, result):
 PLUGIN_SOURCE_SCOPE = "observed_public_plugin_files"
 PLUGIN_FILE_COUNT = 16
 PLUGIN_FILES_TOTAL = 128 * 1024
+PLUGIN_INVENTORY_COUNT = 256
+PLUGIN_INVENTORY_PATH_BYTES = 1024
+PLUGIN_INVENTORY_TOTAL_PATH_BYTES = 64 * 1024
 
 
 def plugin_files_request(value):
@@ -1432,6 +1459,27 @@ def plugin_files_request(value):
     # This only bounds the request. The canonical anchored reader owns paths,
     # file selection, portable metadata parsing and required contract versions.
     if len(encoded(value)) > MAX_BODY:
+        raise SetupError("invalid_plugin_request")
+
+
+def plugin_inventory_path(value, max_depth):
+    """Bound portable names in the envelope; the canonical reader owns traversal."""
+    if (type(value) is not str or not value.startswith("./") or ":" in value or "\\" in value
+            or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value)):
+        return False
+    try:
+        if len(value.encode("utf-8")) > PLUGIN_INVENTORY_PATH_BYTES:
+            return False
+    except UnicodeError:
+        return False
+    parts = [] if value == "./" else value[2:].split("/")
+    return len(parts) <= max_depth and all(part not in ("", ".", "..") for part in parts)
+
+
+def plugin_inventory_request(value):
+    keys(value, ("staged_id", "inventory"))
+    if (not selected_name(value["staged_id"]) or not plugin_inventory_path(value["inventory"], 15)
+            or len(encoded(value)) > MAX_BODY):
         raise SetupError("invalid_plugin_request")
 
 
@@ -1501,6 +1549,48 @@ def plugin_files_output(raw, code, files):
     except SetupError as error:
         if error.code == "plugin_metadata_rejected":
             raise
+    except (TypeError, ValueError, KeyError, RecursionError, UnicodeError):
+        pass
+    raise SetupError("plugin_inspection_unavailable")
+
+
+def plugin_inventory_output(raw, code, directory):
+    """Accept only a complete, content-free inventory of the requested directory."""
+    try:
+        if type(code) is not int or type(raw) is not bytes or len(raw) > PACKAGE_INSPECTION_OUTPUT:
+            raise ValueError()
+        # Inventory never parses file contents. A rejection, including an older
+        # inspector without this variant, says nothing about package validity.
+        if code != 0:
+            raise ValueError()
+        value = decode(raw)
+        keys(value, ("schema_version", "scope", "format", "status", "directory", "inventory", "complete"))
+        rows = value["inventory"]
+        if (code != 0 or type(value["schema_version"]) is not int or value["schema_version"] != 1
+                or value["scope"] != "metadata_only" or value["format"] != "agent-plugin-files"
+                or value["status"] != "inventoried" or value["directory"] != directory
+                or value["complete"] is not True or type(rows) is not list
+                or len(rows) > PLUGIN_INVENTORY_COUNT):
+            raise ValueError()
+        prefix = directory if directory == "./" else directory + "/"
+        paths = []
+        for row in rows:
+            if type(row) is not dict or row.get("kind") not in ("file", "directory", "symlink", "special"):
+                raise ValueError()
+            keys(row, ("path", "kind", "byte_length") if row["kind"] == "file" else ("path", "kind"))
+            path = row["path"]
+            if (not plugin_inventory_path(path, 16) or not path.startswith(prefix)
+                    or not path[len(prefix):] or "/" in path[len(prefix):]):
+                raise ValueError()
+            if row["kind"] == "file" and (type(row["byte_length"]) is not int
+                    or not 0 <= row["byte_length"] <= 2**64 - 1):
+                raise ValueError()
+            paths.append(path.encode("utf-8"))
+        if (paths != sorted(set(paths)) or sum(map(len, paths)) > PLUGIN_INVENTORY_TOTAL_PATH_BYTES):
+            raise ValueError()
+        return value
+    except SetupError:
+        pass
     except (TypeError, ValueError, KeyError, RecursionError, UnicodeError):
         pass
     raise SetupError("plugin_inspection_unavailable")
@@ -1715,7 +1805,9 @@ def acquired_inspection_output(raw, code, request):
     value = decode(raw)
     if code == 2 and value == {"error": "acquired_member_unreadable"}:
         raise SetupError("acquired_member_unreadable")
-    common = {"schema_version": 1, "scope": "acquired_primary_archive_only", "profile": request["profile"],
+    scope = ("acquired_primary_archive_only" if request.get("archive_role", "primary") == "primary"
+             else "acquired_dependency_archive_only")
+    common = {"schema_version": 1, "scope": scope, "profile": request["profile"],
               "filename": request["filename"], "archive_sha256": request["archive_sha256"]}
     listing = "after" in request["selection"]
     fields = ("members", "next_after") if listing else ("member", "member_bytes", "member_sha256", "offset", "text", "next_offset")
@@ -1879,6 +1971,8 @@ def selected_plan(raw, request):
 
 
 def selected_files(plan, request):
+    if request["profile"] == "node" and plan["closure"].get("node-build-plan") != request.get("build_plan_sha256"):
+        raise SetupError("selected_validation_unavailable")
     if request["profile"] == "mcpb":
         return {"package.json": request["package_sha256"], "activation.json": request["selection_sha256"],
                 "configuration.json": request["configuration_sha256"], "artifact.mcpb": plan["artifact_digest"]}
@@ -1905,7 +1999,8 @@ def selected_proposal(root, identifier, expected, host_binding):
     if digest(raw) != expected:
         raise SetupError("selected_proposal_changed", 409)
     effect = decode(raw)
-    keys(effect, ("schema_version", "kind", "request", "host", "destination", "files", "plan_sha256"))
+    keys(effect, ("schema_version", "kind", "request", "host", "destination", "files", "plan_sha256",
+                  *(("build_review",) if isinstance(effect, dict) and "build_review" in effect else ())))
     if (type(effect["schema_version"]) is not int or effect["schema_version"] != 1
             or effect["kind"] != SELECTED_PROPOSAL or effect["host"] != host_binding
             or effect["destination"] != str(root / "installations" / identifier)):
@@ -1923,11 +2018,31 @@ def selected_proposal(root, identifier, expected, host_binding):
         total += len(data)
         if total > SELECTED_TOTAL or digest(data) != sha:
             raise SetupError("selected_proposal_changed", 409)
+    if "build_plan_sha256" in effect["request"]:
+        review_raw = selected_read(path, "build-review.json", MAX_JSON)
+        if encoded(decode(review_raw)) != encoded(effect.get("build_review")):
+            raise SetupError("selected_proposal_changed", 409)
+        selected_build_review(effect["build_review"], effect["request"], host_binding)
+    elif "build_review" in effect:
+        raise SetupError("selected_proposal_changed", 409)
     if "plugin_source" in effect["request"]:
         source = selected_read(path, "plugin-source.json", MAX_JSON)
         if digest(source) != effect["request"]["plugin_source"]["inspection_sha256"]:
             raise SetupError("selected_proposal_changed", 409)
     return path, effect, plan
+
+
+def selected_build_review(review, request, host_binding):
+    if (not isinstance(review, dict) or type(review.get("schema_version")) is not int
+            or review["schema_version"] != 1 or review.get("scope") != "selected_node_build"
+            or review.get("plan_sha256") != request.get("build_plan_sha256")
+            or review.get("profile_sha256") != host_binding["tools"].get("node_build")
+            or not isinstance(review.get("limits"), dict)
+            or type(review["limits"].get("timeout_seconds")) is not int
+            or not 1 <= review["limits"]["timeout_seconds"] <= 3600
+            or len(encoded(review)) > MAX_JSON):
+        raise SetupError("selected_build_review_unavailable", 409)
+    return review
 
 
 def load_selected_recovery(root, identifier, expected, host_binding):
@@ -2012,8 +2127,9 @@ def acquisition_module(kind):
     # The current setup implementation owns readback. Never import retained code.
     if kind not in ACQUISITION_ASSETS:
         raise SetupError("invalid_recovery_request")
-    spec = importlib.util.spec_from_file_location("consumer_setup_" + kind + "_acquisition",
-        Path(__file__).with_name(kind + "_acquisition.py"))
+    module_name = kind.replace("-", "_") + "_acquisition"
+    spec = importlib.util.spec_from_file_location("consumer_setup_" + module_name,
+        Path(__file__).with_name(module_name + ".py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -2157,6 +2273,8 @@ class Controller:
                  python_acquisition_profile_sha256: str | None = None,
                  node_acquisition_profile: Path | None = None,
                  node_acquisition_profile_sha256: str | None = None,
+                 node_prebuilt_profile: Path | None = None,
+                 node_prebuilt_profile_sha256: str | None = None,
                  compose_acquisition_profile: Path | None = None,
                  compose_acquisition_profile_sha256: str | None = None,
                  mcpb_acquisition_profile: Path | None = None,
@@ -2242,6 +2360,7 @@ class Controller:
         acquisition_modules = {}
         acquisition_profiles = {"python": (python_acquisition_profile, python_acquisition_profile_sha256),
                                 "node": (node_acquisition_profile, node_acquisition_profile_sha256),
+                                "node-prebuilt": (node_prebuilt_profile, node_prebuilt_profile_sha256),
                                 "compose": (compose_acquisition_profile, compose_acquisition_profile_sha256),
                                 "mcpb": (mcpb_acquisition_profile, mcpb_acquisition_profile_sha256)}
         acquisition_identities = {}
@@ -2368,6 +2487,16 @@ class Controller:
                 raise SetupError("invalid_node_search_scope")
             if allow_node_search:
                 node_search = owner
+        node_prebuilt_acquisition = None
+        if not (recovering or _local_read_only) and (node_prebuilt_profile is not None or node_prebuilt_profile_sha256 is not None):
+            if node_acquisition is None or selected is None or "node" not in selected["validators"]:
+                raise SetupError("invalid_node_prebuilt_acquisition_profile")
+            module = acquisition_module("node-prebuilt")
+            acquisition_modules["node-prebuilt"] = module
+            node_prebuilt_acquisition = module.NodePrebuiltAcquisition(node_prebuilt_profile,
+                node_prebuilt_profile_sha256, Path(selected["staging_root"]), io=acquisition_io(),
+                node_owner=node_acquisition, source_reader=self._node_prebuilt_source,
+                selected_node=self.selected_node)
         mcpb_acquisition = None
         if not (recovering or _local_read_only) and (mcpb_acquisition_profile is not None or mcpb_acquisition_profile_sha256 is not None):
             if selected is None or selected.get("mcpb_inspection") is not True or "mcpb" not in selected["validators"]:
@@ -2589,7 +2718,7 @@ class Controller:
             for name, data in selected_payloads.items():
                 tool = workspace / "selected-tools" / (name + (".py" if name == "installer" else ""))
                 write_new(tool, data)
-                if name != "installer":
+                if name not in ("installer", "node_build"):
                     tool.chmod(0o700)
         self.local_recipes = recipes
         self.allow_remote_recipes = allow_remote_recipes
@@ -2621,6 +2750,7 @@ class Controller:
         self.observation_revision = 0
         self.job = None
         self.threads = []
+        self._job_threads = {}
         self.closing = False
         self.request_retention_failed = False
         self.recovery_only = _local_read_only if _retained_selections else bool(recoveries)
@@ -2632,6 +2762,7 @@ class Controller:
             compose.bind(self.runner)
         self.python_acquisition = acquisition
         self.node_acquisition = node_acquisition
+        self.node_prebuilt_acquisition = node_prebuilt_acquisition
         self.node_search = node_search
         self.public_github = None
         if allow_public_github_research:
@@ -2649,7 +2780,7 @@ class Controller:
         self.acquisition_bindings = {}
         self.acquisition_intents = {}
         self.acquisition_recovery_summary = {}
-        for kind, owner in (("python", acquisition), ("node", node_acquisition), ("compose", compose_acquisition), ("mcpb", mcpb_acquisition)):
+        for kind, owner in (("python", acquisition), ("node", node_acquisition), ("node-prebuilt", node_prebuilt_acquisition), ("compose", compose_acquisition), ("mcpb", mcpb_acquisition)):
             if owner is not None:
                 owner.bind(workspace)
                 self.acquisition_bindings[kind] = {
@@ -2685,7 +2816,7 @@ class Controller:
                 else:
                     self.acquisition_requests[identifier] = (identity, self.job["id"])
                 if self.recovery_only:
-                    self.acquisition_recovery_summary[kind + "_acquisition"] = {
+                    self.acquisition_recovery_summary[kind.replace("-", "_") + "_acquisition"] = {
                         "available": True, "readback_only": True, "scope": ACQUISITION_SCOPES[kind],
                         "staging_root": record["staging_root"], "workspace": record["workspace"],
                         "host_profile_sha256": record["host"]["profile_sha256"]}
@@ -2716,10 +2847,35 @@ class Controller:
         return ("Host-permitted local software installation and separately delegated container-plan execution; "
                 "no account access, tool attachment or native authority is supplied." if self.compose else SCOPE)
 
+    def selected_build_planning(self):
+        if self.selected is None or "node_build" not in self.selected or self.recovery_only:
+            return None
+        if not self.operation_lock.acquire(blocking=False):
+            return {"available": False, "reason": "operation_in_progress"}
+        try:
+            tools = self.selected_tools()
+            code, raw = self._run([self.python, "-I", "-B", tools["installer"], "--describe-node-build",
+                "--node", self.selected_node, "--node-build-profile", tools["node_build"],
+                "--node-build-profile-sha256", self.selected_binding["tools"]["node_build"]], capture=True)
+            value = decode(raw)
+            if (code or not isinstance(value, dict) or value.get("scope") != "selected_node_build_planning"
+                    or value.get("profile_sha256") != self.selected_binding["tools"]["node_build"]
+                    or len(encoded(value)) > MAX_BODY):
+                raise SetupError("selected_build_review_unavailable", 409)
+            self.selected_tools()
+            return {"available": True, "planning": value}
+        except (SetupError, ValueError, OSError, TypeError, KeyError):
+            return {"available": False, "reason": "host_toolchain_unavailable",
+                    "guidance": "The host must supply the selected toolchain files and matching Node target before checking a build plan."}
+        finally:
+            self.operation_lock.release()
+
     def state(self):
+        build_planning = self.selected_build_planning()
         with self.lock:
             return copy.deepcopy({"families": list(self.families.values()), "job": self.job,
                                   "scope": self.scope(),
+                                  **({"node_build": build_planning} if build_planning is not None else {}),
                                   **({"compose": self.compose.summary()} if self.compose else {}),
                                   **({"python_acquisition": {**self.python_acquisition.summary(), "workspace": str(self.workspace)}}
                                      if self.python_acquisition is not None else {}),
@@ -2728,6 +2884,8 @@ class Controller:
                                   **({"node_search": self.node_search.search_summary()} if self.node_search is not None else {}),
                                   **({"compose_acquisition": {**self.compose_acquisition.summary(), "workspace": str(self.workspace)}}
                                      if self.compose_acquisition is not None else {}),
+                                  **({"node_prebuilt_acquisition": {**self.node_prebuilt_acquisition.summary(), "workspace": str(self.workspace)}}
+                                     if self.node_prebuilt_acquisition is not None else {}),
                                   **({"mcpb_acquisition": {**self.mcpb_acquisition.summary(), "workspace": str(self.workspace)}}
                                      if self.mcpb_acquisition is not None else {}),
                                   **self.acquisition_recovery_summary,
@@ -2737,6 +2895,8 @@ class Controller:
                                   "recovery_manifest": {"available": True, "max_requests": 256},
                                   "operation_in_progress": self.operation_lock.locked(),
                                   **({"acquired_inspection": {"available": True, "scope": "acquired_primary_archive_only",
+                                      "dependency_scope": "acquired_dependency_archive_only",
+                                      "archive_selection": "optional_archive_sha256_from_job_artifacts",
                                       "page_size": 64, "max_text_bytes": SELECTED_DOCUMENT,
                                       "max_chunk_bytes": SELECTED_INLINE_DOCUMENT}}
                                      if self.acquired_inspection_raw is not None else {}),
@@ -2787,6 +2947,15 @@ class Controller:
                 if not isinstance(before, str) or before not in self.jobs:
                     raise SetupError("unknown_job", 404)
                 identifiers = identifiers[identifiers.index(before) + 1:]
+            return self._job_summary_page(identifiers[:51])
+
+    def _job_summary_page(self, identifiers):
+        """Project one bounded page selected by the owning host connection."""
+        if not isinstance(identifiers, list) or len(identifiers) > 51:
+            raise SetupError("invalid_job_page", 500)
+        with self.lock:
+            if any(identifier not in self.jobs for identifier in identifiers):
+                raise SetupError("unknown_job", 404)
             page = identifiers[:50]
             return {"jobs": [{**{key: self.jobs[identifier][key] for key in ("id", "kind", "family", "status")},
                               "profile": self.install_intents.get(identifier, {}).get("profile"),
@@ -2808,6 +2977,51 @@ class Controller:
             return copy.deepcopy({"job": job,
                                   "reconciliation": {"available": self.reconciliation_available(job),
                                                      "observation": self.observations.get(identifier)}})
+
+    def wait_acquisition(self, identifier):
+        """Join this controller's exact acquisition worker without holding state.
+
+        The MCP adapter calls this only with the job returned by acquisition
+        admission. Its existing owner enforces the acquisition deadline and
+        stop checks. Joining also waits for the worker's cleanup and operation
+        lock release; reading a terminal row alone would not establish that.
+        A recovered row without a worker remains historically unconfirmed.
+        """
+        with self.lock:
+            job = self.jobs.get(identifier) if isinstance(identifier, str) else None
+            if job is None or job["kind"] != "acquire":
+                raise SetupError("unknown_acquisition_job", 404)
+            thread = self._job_threads.get(identifier)
+            if thread is None and job["status"] == "running":
+                raise SetupError("acquisition_worker_unavailable", 409)
+        if thread is not None:
+            thread.join()
+        with self.lock:
+            return {"job": copy.deepcopy(job)}
+
+    def wait_selected_install(self, identifier):
+        """Join the admitted selected installer, including verified readback.
+
+        This is the MCP delivery path, not another admission or a retry. The
+        existing worker retains stop and effect ownership; caller cancellation
+        does not request stopping it. No native deadline is changed here.
+        """
+        with self.lock:
+            job = self.jobs.get(identifier) if isinstance(identifier, str) else None
+            intent = self.install_intents.get(identifier) if job is not None else None
+            if (job is None or job["kind"] != "install"
+                    or job["family"] not in ("selected-python", "selected-node", "selected-mcpb")
+                    or intent is None or intent.get("kind") != "selected"):
+                raise SetupError("unknown_selected_install_job", 404)
+            thread = self._job_threads.get(identifier)
+            if thread is None and job["status"] == "running":
+                raise SetupError("selected_install_worker_unavailable", 409)
+        # Join outside state custody so observation, exact replay and explicit
+        # stop remain available. A terminal row precedes final worker cleanup.
+        if thread is not None:
+            thread.join()
+        with self.lock:
+            return {"job": copy.deepcopy(job)}
 
     def reconciliation_available(self, job):
         return bool(job and (job["kind"] == "acquire" and job["id"] in self.acquisition_intents or
@@ -2846,6 +3060,32 @@ class Controller:
         result = self.runner.run(argv, **kwargs)
         self._check_stop()
         return result
+
+    def _run_selected_installer(self, argv, profile, *, installer_timeout=None, **kwargs):
+        # Only these selected commands invoke the pinned Python installer with
+        # its TERM/join handler. Custom run signatures and MCPB stay unchanged.
+        if profile not in ("python", "node"):
+            return self._run(argv, **kwargs)
+        if installer_timeout is not None and (profile != "node" or type(installer_timeout) is not int
+                                               or not 1 <= installer_timeout <= 3600):
+            raise SetupError("selected_build_review_unavailable", 409)
+        prior_timeout = getattr(self._job_context, "installer_timeout", None)
+        if installer_timeout is not None:
+            self._job_context.installer_timeout = installer_timeout
+        previous = getattr(self._job_context, "termination_grace", None)
+        self._job_context.termination_grace = SELECTED_INSTALLER_TERMINATION_GRACE
+        try:
+            return self._run(argv, **kwargs)
+        finally:
+            if previous is None:
+                del self._job_context.termination_grace
+            else:
+                self._job_context.termination_grace = previous
+            if installer_timeout is not None:
+                if prior_timeout is None:
+                    del self._job_context.installer_timeout
+                else:
+                    self._job_context.installer_timeout = prior_timeout
 
     def compose_action(self, action, request):
         with self.lock:
@@ -2888,6 +3128,20 @@ class Controller:
     def acquire_node(self, request):
         """Stage an explicitly chosen package using the host's trusted npm."""
         return self._acquire("node", self.node_acquisition, request)
+
+    def acquire_node_prebuilt(self, request):
+        """Derive inert payloads from the exact current owned Node acquisition."""
+        return self._acquire("node-prebuilt", self.node_prebuilt_acquisition, request)
+
+    def _node_prebuilt_source(self, source):
+        # Called only by the entered acquisition worker, which already holds
+        # operation_lock. A retained/recovered or derived job is not a source.
+        with self.lock:
+            job = self.jobs.get(source["job_id"])
+            if not job or job.get("family") != "selected-node":
+                raise SetupError("node_prebuilt_source_unavailable", 409)
+        return self.selected_acquired_source({"profile": "node", "staged_id": source["job_id"],
+                                             "acquired_source": source})
 
     def github_research(self, operation, request):
         with self.lock:
@@ -3663,6 +3917,8 @@ class Controller:
             result["acquired_source"] = copy.deepcopy(effect["request"]["acquired_source"])
         if effect["request"]["profile"] == "mcpb":
             result["configuration_sha256"] = effect["request"]["configuration_sha256"]
+        if "build_review" in effect:
+            result["build"] = copy.deepcopy(effect["build_review"])
         if "retry_of" in value:
             result.update(retry_of=value["retry_of"], job_id=value["job_id"])
         if len(encoded(result)) > MAX_JSON:
@@ -3745,6 +4001,44 @@ class Controller:
         finally:
             self.operation_lock.release()
 
+    def inspect_schema(self, request):
+        """Hash supplied schema text without asserting its source or meaning."""
+        keys(request, ("schema_json",))
+        try:
+            document = selected_inline_document(request["schema_json"])
+            if len(encoded(request)) > MAX_BODY or document.startswith(b"\xef\xbb\xbf"):
+                raise ValueError()
+            value = decode(document)
+            if type(value) not in (dict, bool):
+                raise ValueError()
+            # A bounded JSON syntax check, not JSON Schema validation. In
+            # particular, references remain inert and no schema is fetched.
+            pending, nodes = [(value, 0)], 0
+            while pending:
+                item, depth = pending.pop()
+                nodes += 1
+                if nodes > 4096 or depth > 32:
+                    raise ValueError()
+                if type(item) is dict:
+                    pending.extend((child, depth + 1) for child in item.values())
+                elif type(item) is list:
+                    pending.extend((child, depth + 1) for child in item)
+            encoded(value)  # Reject nonfinite parsed numbers; do not hash this encoding.
+        except (SetupError, TypeError, ValueError, UnicodeError, RecursionError):
+            raise SetupError("invalid_schema_evidence") from None
+        with self.lock:
+            self.admit_setup()
+            if "package_inspector" not in self.selected_tools():
+                raise SetupError("schema_inspection_unavailable", 409)
+            return {"schema_version": 1, "scope": "supplied_schema_evidence_only",
+                "schema_digest": digest(document), "bytes": len(document),
+                "hash_algorithm": "sha256", "byte_convention": "exact_supplied_utf8",
+                "runtime_observation": "not_established", "schema_validation": "not_performed",
+                "notice": "This digest identifies the exact supplied text, including whitespace. "
+                    "It does not establish schema provenance, runtime equality, readiness or authority. "
+                    "Retain the evidence source and any host observation's hashing convention; "
+                    "do not replace an existing host convention with this one."}
+
     def plugin_source_bytes(self, reference):
         """Read this session's retained observation, never reopen the imported files."""
         plugin_source_reference(reference)
@@ -3809,7 +4103,8 @@ class Controller:
             self.operation_lock.release()
 
     def inspect_plugin(self, request):
-        plugin_files_request(request)
+        inventory = isinstance(request, dict) and "inventory" in request
+        plugin_inventory_request(request) if inventory else plugin_files_request(request)
         with self.lock:
             self.admit_setup()
             tools = self.selected_tools()
@@ -3827,7 +4122,7 @@ class Controller:
             # The canonical reader opens this host-owned root once, then reads
             # the chosen child below that handle. Do not resolve a child here.
             settings = {"root": self.selected["staging_root"], "directory": "./" + request["staged_id"],
-                        "files": request["files"]}
+                        **({"inventory": request["inventory"]} if inventory else {"files": request["files"]})}
             document = encoded(settings)
             with tempfile.TemporaryDirectory(prefix="plugin-inspection-", dir=self.workspace / "tmp") as temporary:
                 path = Path(temporary) / "request.json"
@@ -3841,6 +4136,9 @@ class Controller:
                     self.selected_tools()
                 except Exception:
                     raise SetupError("plugin_inspection_unavailable") from None
+                if inventory:
+                    # Names are observations only, never retained source provenance.
+                    return plugin_inventory_output(raw, code, request["inventory"])
                 report = plugin_files_output(raw, code, request["files"])
             retained = encoded({"schema_version": 1, "scope": PLUGIN_SOURCE_SCOPE,
                                 "staged_id": request["staged_id"],
@@ -3956,9 +4254,11 @@ class Controller:
     def inspect_acquired(self, request):
         if not isinstance(request, dict):
             raise SetupError("invalid_acquired_inspection_request")
-        keys(request, ("job_id", "receipt_sha256", *(("after",) if "after" in request else ("member", "offset"))))
+        keys(request, ("job_id", "receipt_sha256", *(("archive_sha256",) if "archive_sha256" in request else ()),
+                       *(("after",) if "after" in request else ("member", "offset"))))
         if (not isinstance(request["job_id"], str) or not REQUEST_ID.fullmatch(request["job_id"])
-                or not selected_hash(request["receipt_sha256"])):
+                or not selected_hash(request["receipt_sha256"])
+                or "archive_sha256" in request and not selected_hash(request["archive_sha256"])):
             raise SetupError("invalid_acquired_inspection_request")
         listing = "after" in request
         path = request["after"] if listing else request["member"]
@@ -3973,7 +4273,7 @@ class Controller:
             if (not job or job["kind"] != "acquire" or job["family"] not in ("selected-python", "selected-node")
                     or job["id"] not in self.acquisition_intents):
                 raise SetupError("acquired_inspection_unavailable", 409)
-            if self.recovery_only:
+            if self.recovery_only or job.get("recovered"):
                 observation = self.observations.get(job["id"], {})
                 if (not job.get("recovered") or observation.get("status") != "matched"
                         or observation.get("scope") != ACQUISITION_READBACK
@@ -3995,7 +4295,7 @@ class Controller:
             intent = copy.deepcopy(self.acquisition_intents[job["id"]])
             anchor = intent["recovery_anchor"]
             kind = job["family"].removeprefix("selected-")
-            owner = getattr(self, kind + "_acquisition")
+            owner = getattr(self, kind.replace("-", "_") + "_acquisition")
             def verify_python():
                 # Readback proves old payloads, not the executable we enter now.
                 runtime = Path(self.python)
@@ -4027,10 +4327,21 @@ class Controller:
                 raise ValueError()
             record, result = observe()
             primary = result["primary"]
+            selected_sha = request.get("archive_sha256", primary["sha256"])
+            archives = [row for row in result["artifacts"] if row["sha256"] == selected_sha]
+            if len(archives) != 1:
+                raise ValueError()
+            archive = archives[0]
+            is_primary = archive == primary
+            filename = archive["filename"] if kind == "python" else archive["url"].rsplit("/", 1)[-1]
+            relative = ("artifact.whl" if kind == "python" else "artifact.tgz") if is_primary else (
+                "closure/" + filename if kind == "python" else "closure/archive-" + selected_sha)
+            if result["files"].get(relative) != selected_sha:
+                raise ValueError()
             settings = {"installer": tools["installer"], "installer_sha256": self.selected_binding["tools"]["installer"],
-                        "artifact": str(Path(record["staging_root"]) / job["id"] / ("artifact.whl" if kind == "python" else "artifact.tgz")),
-                        "archive_sha256": primary["sha256"], "profile": kind,
-                        "filename": primary["filename"] if kind == "python" else primary["url"].rsplit("/", 1)[-1],
+                        "artifact": str(Path(record["staging_root"]) / job["id"] / relative),
+                        "archive_sha256": selected_sha, "archive_role": "primary" if is_primary else "dependency", "profile": kind,
+                        "filename": filename,
                         "selection": {key: request[key] for key in (("after",) if listing else ("member", "offset"))}}
             raw = encoded(settings)
             with tempfile.TemporaryDirectory(prefix="acquired-inspection-", dir=self.workspace / "tmp") as temporary:
@@ -4062,6 +4373,10 @@ class Controller:
             reference = request["acquired_source"]
             kind = request["profile"]
             job = copy.deepcopy(self.jobs.get(reference["job_id"]))
+            # Derived acquisition identity remains distinct, while its normal
+            # installation profile and canonical validator are still Node.
+            if kind == "node" and job and job.get("family") == "selected-node-prebuilt":
+                kind = "node-prebuilt"
             intent = copy.deepcopy(self.acquisition_intents.get(reference["job_id"]))
             if (self.recovery_only or not job or job["kind"] != "acquire"
                     or job["family"] != "selected-" + kind or job["status"] != "succeeded"
@@ -4078,8 +4393,8 @@ class Controller:
                     or self.selected_binding["runtimes"] != {"python": self.python,
                         "node": self.selected_node, "npm_cli": self.selected_npm_cli}):
                 raise ValueError()
-            owner = getattr(self, kind + "_acquisition")
-            if owner is None or Path(self.python) != owner.python or (kind == "node" and Path(self.selected_node) != owner.node):
+            owner = getattr(self, kind.replace("-", "_") + "_acquisition")
+            if owner is None or Path(self.python) != owner.python or (kind in ("node", "node-prebuilt") and Path(self.selected_node) != owner.node):
                 raise ValueError()
             owner.verify()
             self.selected_tools()
@@ -4104,16 +4419,18 @@ class Controller:
             tools = self.selected_tools()
             if request["profile"] not in self.selected["validators"]:
                 raise SetupError("selected_profile_unavailable", 409)
-            if not self.operation_lock.acquire(blocking=False):
-                raise SetupError("operation_in_progress", 409)
-        try:
+            # Exact retained checks are observations of this same Controller.
+            # They may replay while its worker owns the effect lock, but only
+            # after the current host and every selected byte are revalidated.
             staging = canonical_directory(Path(self.selected["staging_root"]))
             acquired = None
             if "acquired_source" in request:
                 acquired = self.selected_acquired_source(request)
                 documents[document_name] = materialize_acquired_source(
-                    documents[document_name], request["component"], acquired)
+                    documents[document_name], request["component"], acquired, request.get("build_plan_sha256"))
                 request["selection_sha256"] = digest(documents[document_name])
+            if "build_plan_sha256" in request and "node_build" not in tools:
+                raise SetupError("selected_profile_unavailable", 409)
             # Read from the host-fixed root through no-follow child traversal.
             prefix = request["staged_id"] + "/"
             mcpb = request["profile"] == "mcpb"
@@ -4126,6 +4443,11 @@ class Controller:
                     or digest(documents[document_name]) != request["selection_sha256"]
                     or (mcpb and digest(documents["configuration.json"]) != request["configuration_sha256"])):
                 raise SetupError("selected_source_changed", 409)
+            if "build_plan_sha256" in request:
+                if "closure/node-build-plan" not in documents:
+                    documents["closure/node-build-plan"] = selected_read(staging, prefix + "closure/node-build-plan", SELECTED_INLINE_DOCUMENT)
+                if digest(documents["closure/node-build-plan"]) != request["build_plan_sha256"]:
+                    raise SetupError("selected_source_changed", 409)
             if "plugin_source" in request:
                 documents["plugin-source.json"] = self.plugin_source_bytes(request["plugin_source"])
             for identifier, value in self.validations.items():
@@ -4138,6 +4460,9 @@ class Controller:
                     if acquired is not None and self.selected_acquired_source(request) != acquired:
                         raise SetupError("selected_acquired_source_unavailable", 409)
                     return self.selected_summary(identifier, value)
+            if not self.operation_lock.acquire(blocking=False):
+                raise SetupError("operation_in_progress", 409)
+        try:
             if self.selected_attempts >= 128 or len(self.validations) >= 128:
                 raise SetupError("new_workspace_required", 409)
             self.selected_attempts += 1
@@ -4178,6 +4503,16 @@ class Controller:
             effect = {"schema_version": 1, "kind": SELECTED_PROPOSAL, "request": copy.deepcopy(request),
                       "host": copy.deepcopy(self.selected_binding), "destination": str(self.workspace / "installations" / identifier),
                       "files": files, "plan_sha256": digest(plan_raw)}
+            if "build_plan_sha256" in request:
+                code, raw = self._run([self.python, "-I", "-B", tools["installer"],
+                    "--review-node-build", str(snapshot), "--node", self.selected_node,
+                    "--node-build-profile", tools["node_build"],
+                    "--node-build-profile-sha256", self.selected_binding["tools"]["node_build"]], capture=True)
+                if code:
+                    raise SetupError("selected_build_review_unavailable", 409)
+                review = selected_build_review(decode(raw), request, self.selected_binding)
+                write_new(snapshot / "build-review.json", encoded(review))
+                effect["build_review"] = review
             effect_raw = encoded(effect)
             write_new(snapshot / "effect.json", effect_raw)
             value = {"kind": "selected", "effect": effect, "plan": plan,
@@ -4244,6 +4579,8 @@ class Controller:
             if digest(plan_raw) != effect["plan_sha256"]:
                 raise SetupError("selected_proposal_changed", 409)
             write_new(snapshot / "plan.json", plan_raw)
+            if "build_review" in effect:
+                write_new(snapshot / "build-review.json", selected_read(old_path, "build-review.json", MAX_JSON))
             effect["destination"] = str(self.workspace / "installations" / successor)
             effect_raw = encoded(effect)
             write_new(snapshot / "effect.json", effect_raw)
@@ -4288,6 +4625,9 @@ class Controller:
             argv += ["--document-kind", effect["request"]["document_kind"]]
         if profile == "python" and "python_target" in self.selected:
             argv += ["--python-target", self.selected["python_target"]]
+        if "build_review" in effect:
+            argv += ["--node-build-profile", tools["node_build"],
+                     "--node-build-profile-sha256", self.selected_binding["tools"]["node_build"]]
         if verify:
             argv.append("--verify-existing")
         elif profile == "node":
@@ -4313,15 +4653,41 @@ class Controller:
             family = "selected-" + effect["request"]["profile"]
             intent = {"kind": "selected", "family": family, "root": self.workspace, "validation_id": identifier,
                       "effect_sha256": value["effect_sha256"], "destination": Path(effect["destination"])}
+            if "build_review" in effect:
+                # This live attempt requires its own successful installer reply.
+                # A lost reply must not become cold consistency on reconciliation.
+                intent["installer_reply_required"] = True
             def work():
                 argv, _, _ = self.selected_command(intent, verify=False)
-                if self._run(argv)[0]:
+                review = effect.get("build_review")
+                code, raw = self._run_selected_installer(argv, effect["request"]["profile"],
+                    **({"capture": True, "installer_timeout": review["limits"]["timeout_seconds"]} if review else {}))
+                if code:
                     raise SetupError("operation_unconfirmed", 500)
+                if review:
+                    # Observe the actual installer's bounded response before any
+                    # mutable ready-file read. Overflow is a Runner error, never
+                    # truncation accepted as success. Preserve this origin even
+                    # when subsequent readback fails, in this same job intent.
+                    if type(raw) is not bytes or len(raw) > MAX_JSON:
+                        raise SetupError("operation_unconfirmed", 500)
+                    receipt = decode(raw)
+                    if (not isinstance(receipt, dict) or not isinstance(receipt.get("node_build"), dict)
+                            or receipt["node_build"].get("review") != review
+                            or receipt.get("destination") != effect["destination"]
+                            or receipt.get("selection_sha256") != effect["request"]["selection_sha256"]):
+                        raise SetupError("operation_unconfirmed", 500)
+                    canonical = encoded(receipt)
+                    if len(canonical) > MAX_JSON:
+                        raise SetupError("operation_unconfirmed", 500)
+                    intent["installer_reply"] = {"raw_sha256": digest(raw), "bytes": len(raw),
+                                                  "semantic_sha256": digest(canonical)}
                 verified = self.selected_readback(intent)
                 return {**verified, "scope": "observed_software_installation_only", "readback_scope": READBACK_SCOPE}
             def retain(job):
                 path, current, _ = selected_proposal(self.workspace, identifier, value["effect_sha256"], self.selected_binding)
                 for name in (*current["files"], "plan.json", "effect.json",
+                             *(("build-review.json",) if "build_review" in current else ()),
                              *(("plugin-source.json",) if "plugin_source" in current["request"] else ())):
                     file = path / name
                     sync_file(file.parent, file.name)
@@ -4355,7 +4721,16 @@ class Controller:
         destination = Path(effect["destination"])
         receipt_raw = selected_read(intent["root"], "installations/" + intent["validation_id"] + "/ready/installed.json", SELECTED_FILE)
         profile = effect["request"]["profile"]
-        code, raw = self._run(argv, capture=True,
+        origin = intent.get("installer_reply")
+        if intent.get("installer_reply_required") and origin is None:
+            raise SetupError("reconciliation_unconfirmed", 500)
+        if origin is not None:
+            # Both JSON producers use this one semantic projection. The ready
+            # file's whitespace is not the installer's stdout wire format.
+            if (digest(encoded(decode(receipt_raw))) != origin["semantic_sha256"]
+                    or ("receipt_sha256" in origin and digest(receipt_raw) != origin["receipt_sha256"])):
+                raise SetupError("reconciliation_unconfirmed", 500)
+        code, raw = self._run_selected_installer(argv, profile, capture=True,
                                    **({"inspection_timeout": MCPB_INSPECTION_TIMEOUT} if profile == "mcpb" else {}))
         if code:
             raise SetupError("reconciliation_unconfirmed", 500)
@@ -4378,6 +4753,10 @@ class Controller:
                   "effect_sha256": intent["effect_sha256"], "mcp_path": str(destination / "ready/mcp.json"),
                   "receipt_path": str(destination / "ready/installed.json"), "receipt_sha256": digest(receipt_raw),
                   "mcp_configuration": mcp}
+        if "build_review" in effect:
+            result["build_receipt_binding"] = "original_installer_reply" if origin is not None else "current_receipt_consistency_only"
+            if origin is not None:
+                result["installer_reply"] = {**origin, "receipt_sha256": digest(receipt_raw)}
         if "declared_service" in plan:
             result["declared_service"] = copy.deepcopy(plan["declared_service"])
         if profile == "mcpb":
@@ -4388,6 +4767,10 @@ class Controller:
             result["acquired_source"] = copy.deepcopy(effect["request"]["acquired_source"])
         if len(encoded(result)) > MAX_JSON:
             raise SetupError("selected_output_too_large")
+        if origin is not None:
+            # Only successful verification establishes the retained raw-file pin.
+            # Future live observations also retain the original semantic origin.
+            origin["receipt_sha256"] = digest(receipt_raw)
         return result
 
     def mcpb_readback(self, raw, receipt_raw, receipt, mcp, effect, plan):
@@ -4666,14 +5049,17 @@ class Controller:
             thread = threading.Thread(target=run, name="consumer-setup-operation", daemon=False)
             thread.start()
             self.threads.append(thread)
+            self._job_threads[job["id"]] = thread
             dispatch_allowed = True
         except BaseException as error:
             dispatch_allowed = False
             job.update(status="unconfirmed", error="operation_unconfirmed")
             self._job_controls.pop(job["id"], None)
             self.operation_lock.release()
-            if thread is not None and thread.ident is not None and thread not in self.threads:
-                self.threads.append(thread)
+            if thread is not None and thread.ident is not None:
+                if thread not in self.threads:
+                    self.threads.append(thread)
+                self._job_threads[job["id"]] = thread
             if not isinstance(error, Exception):
                 raise
         finally:
@@ -4986,6 +5372,18 @@ class Controller:
                     raise SetupError("reconciliation_unconfirmed", 500)
                 observation["setup_metadata"] = metadata
             with self.lock:
+                if intent.get("installer_reply_required"):
+                    # readback used a copy. Commit its successful raw-file pin
+                    # only to the same retained live origin, not to cold intent
+                    # or the historical job outcome.
+                    owned = self.install_intents[identifier]
+                    origin, checked = owned.get("installer_reply"), intent.get("installer_reply")
+                    if (not owned.get("installer_reply_required") or not isinstance(origin, dict)
+                            or not isinstance(checked, dict)
+                            or any(checked.get(key) != value for key, value in origin.items())
+                            or checked.get("receipt_sha256") != result.get("receipt_sha256")):
+                        raise SetupError("reconciliation_unconfirmed", 500)
+                    origin["receipt_sha256"] = checked["receipt_sha256"]
                 observation.update(status="matched", result=result)
         except BaseException as error:
             # Never project verifier output or exception values. A failed check
@@ -5250,6 +5648,7 @@ class Controller:
                   "/api/prepare": self.prepare, "/api/retry_prepare": self.retry_prepare, "/api/help": self.help,
                   "/api/check": self.check, "/api/install": self.install, "/api/reconcile": self.reconcile,
                   "/api/inspect_package": self.inspect_package,
+                  "/api/inspect_schema": self.inspect_schema,
                   "/api/inspect_plugin": self.inspect_plugin,
                   "/api/inspect_mcpb": self.inspect_mcpb,
                   "/api/plugin_source": self.plugin_source,
@@ -5257,6 +5656,7 @@ class Controller:
                   "/api/selected_check": self.selected_check, "/api/selected_install": self.selected_install,
                   "/api/selected_retry": self.selected_retry,
                   "/api/acquire_python": self.acquire_python, "/api/acquire_node": self.acquire_node,
+                  "/api/acquire_node_prebuilt": self.acquire_node_prebuilt,
                   "/api/search_node": self.search_node,
                   "/api/search_github": self.search_github, "/api/read_github": self.read_github,
                   "/api/acquire_compose": self.acquire_compose, "/api/acquire_mcpb": self.acquire_mcpb}
@@ -5471,6 +5871,8 @@ def main(argv=None):
     parser.add_argument("--node-acquisition-profile", type=Path,
                         help="explicit trusted public npm acquisition scope and pinned runtime/npm")
     parser.add_argument("--node-acquisition-profile-sha256")
+    parser.add_argument("--node-prebuilt-profile", type=Path)
+    parser.add_argument("--node-prebuilt-profile-sha256")
     parser.add_argument("--mcpb-acquisition-profile", type=Path,
                         help="explicit trusted public MCPB download origins and pinned Python")
     parser.add_argument("--mcpb-acquisition-profile-sha256")
@@ -5522,6 +5924,8 @@ def main(argv=None):
                                 python_acquisition_profile_sha256=args.python_acquisition_profile_sha256,
                                 node_acquisition_profile=args.node_acquisition_profile,
                                 node_acquisition_profile_sha256=args.node_acquisition_profile_sha256,
+                                node_prebuilt_profile=args.node_prebuilt_profile,
+                                node_prebuilt_profile_sha256=args.node_prebuilt_profile_sha256,
                                 mcpb_acquisition_profile=args.mcpb_acquisition_profile,
                                 mcpb_acquisition_profile_sha256=args.mcpb_acquisition_profile_sha256,
                                 compose_acquisition_profile=args.compose_acquisition_profile,

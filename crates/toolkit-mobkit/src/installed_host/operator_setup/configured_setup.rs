@@ -11,6 +11,8 @@ pub struct AgentSetupCapabilityRequest {
     pub member: meerkat_core::MobMemberBinding,
     pub route: Id,
     pub issuance_id: EvidenceId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helper: Option<meerkat_core::MobMemberBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub helper_targets: Vec<super::SetupTargetRequest>,
 }
@@ -30,7 +32,11 @@ impl OperatorSetup {
                 &self.source,
                 &self.operator,
                 request,
-                self.helper_selection.as_ref(),
+                match request.helper.as_ref() {
+                    None => self.helper_selection.as_ref(),
+                    Some(member) => Some(self.helper_selection.iter().chain(self.additional_helpers.iter())
+                        .find(|helper| &helper.member == member).ok_or(HostLifetimeError::Denied)?),
+                },
             )
         })
     }
@@ -101,6 +107,11 @@ pub(crate) fn configure_prepared(
         .iter()
         .find(|route| route.id == request.route)
         .ok_or(HostLifetimeError::Denied)?;
+    if request.helper.as_ref().is_some_and(|selected| {
+        helper.is_none_or(|helper| &helper.member != selected)
+    }) {
+        return Err(HostLifetimeError::Denied);
+    }
     if route.source_binding_in(channels)?.0 != &request.member {
         return Err(HostLifetimeError::Denied);
     }
@@ -118,11 +129,11 @@ pub(crate) fn configure_prepared(
         let helper = helper.ok_or(HostLifetimeError::Denied)?;
         let member = native.members.iter().find(|row| row.member == helper.member)
             .ok_or(HostLifetimeError::Denied)?;
-        super::setup_targets::helper_intents(source, helper, &member.audience,
+        super::setup_targets::helper_intents(source, helper, &native.grant_administrator, &member.audience,
             request.helper_targets.iter().map(|target| target.target.clone()))?
     };
     let expected =
-        application_operations::configured_setup_parent(&route.logical_executor, &member.audience);
+        application_operations::configured_setup_parent(&native.grant_administrator, &route.logical_executor, &member.audience);
     let grants = source.grants();
     let operation = || {
         // A retained identity never implies usability. Reconcile only the same
@@ -167,7 +178,8 @@ pub(crate) fn configure_prepared(
                 target: target.target.clone(), parent: reference, restrictions: intent.requested.clone(),
             });
         }
-        Ok(CompiledAgentSetupCapability { route: request.route.clone(), parent, helper_targets })
+        Ok(CompiledAgentSetupCapability { route: request.route.clone(), parent,
+            helper: request.helper.clone(), helper_targets })
     };
     operation().map_err(|error| match error {
         GrantRefusal::Denied | GrantRefusal::Duplicate | GrantRefusal::ControllerInUse => {

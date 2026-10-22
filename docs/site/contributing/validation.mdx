@@ -10,13 +10,13 @@ Contributions should improve one concrete reusable behavior and its evidence whi
 
 Read repository `AGENTS.md` and the owning crate/SDK contract. Preserve unrelated work. Keep integration selection with agents and concrete validation in code. Prefer existing Meerkat/Meta owners over parallel runtime, policy or persistence authorities.
 
-The root Rust workspace contains the standalone package and store crates. Use
+The root Rust workspace contains the standalone `toolkit-package` crate. Use
 `./scripts/repo-cargo test --workspace --all-features --locked` to include the
 artifact and recipe functionality. `python3 scripts/verify-local` records
 formatting, tests and Clippy against that workspace's actual source and graph.
 
-The three native integration crates remain required work in the explicit
-`native-candidate` workspace. Use `python3 scripts/verify-local --manifest-path native-candidate/Cargo.toml` with the exact reviewed prerequisite checkouts and
+The native integration crates, including `toolkit-store`, remain required work
+in the explicit `native-candidate` workspace. Use `python3 scripts/verify-local --manifest-path native-candidate/Cargo.toml` with the exact reviewed prerequisite checkouts and
 lockfile. That graph retains local development paths and can fail before
 compilation. A root workspace pass does not certify native integration, and
 an older passing snapshot does not establish current compatibility.

@@ -32,12 +32,13 @@ OFFICIAL_FILES = ("official/CONTENTS.json", "official/delivery.json", "setup/ins
 RECIPES_TOOL = "selected/bin/toolkit-local-recipes"
 MCPB_TOOL = "selected/bin/toolkit-mcpb-install"
 MCPB_ACQUISITION = "setup/mcpb_acquisition.py"
+NODE_PREBUILT_ACQUISITION = "setup/node_prebuilt_acquisition.py"
 COMPOSE_RUNTIME = "setup/compose_runtime.py"
 COMPOSE_PLANNER = "selected/bin/toolkit-compose-plan"
 COMPOSE_ACQUISITION = "setup/compose_acquisition.py"
 COMPOSE_BRIDGE = "setup/compose_bridge.py"
 OPTIONAL = ("setup/public_github.py", *NODE_FILES, *OFFICIAL_FILES, RECIPES_TOOL, MCPB_TOOL, "setup/local_session.py",
-            "selected/bin/toolkit-package-inspect", "setup/acquired_inspection.py", MCPB_ACQUISITION,
+            "selected/bin/toolkit-package-inspect", "setup/acquired_inspection.py", MCPB_ACQUISITION, NODE_PREBUILT_ACQUISITION,
             COMPOSE_RUNTIME, COMPOSE_PLANNER, COMPOSE_ACQUISITION, COMPOSE_BRIDGE)
 
 
@@ -135,6 +136,25 @@ def recheck_pins(pins):
         if (path.resolve(strict=True) != Path(pin["resolved_path"]) or digest(raw) != pin["sha256"]
                 or pin["executable"] and not mode & 0o111):
             raise PreparationError("host_input_changed")
+
+
+def node_build_options(args):
+    """Capture an optional host-selected profile without interpreting its tools."""
+    value = getattr(args, "node_build_profile", None)
+    expected = getattr(args, "node_build_profile_sha256", None)
+    if value is None and expected is None:
+        return None
+    if not value or not expected:
+        raise PreparationError("node_build_profile_pair_required")
+    checked_hash(expected)
+    path = Path(value)
+    if not path.is_absolute():
+        raise PreparationError("invalid_input_path")
+    path = directory(path.parent) / path.name
+    raw, _ = read_regular(path, 65536)
+    if not raw or digest(raw) != expected:
+        raise PreparationError("node_build_profile_changed")
+    return path, expected, raw
 
 
 def relative(value):
@@ -357,6 +377,8 @@ def recovery_options(args):
     forbidden = ("allow_public_pypi", "allow_public_npm", "enable_node_search", "enable_public_github_research", "allow_remote_recipes",
                  "pip_zipapp", "pip_sha256", "npm_archive", "npm_archive_sha256",
                  "mcpb_acquisition_profile", "mcpb_acquisition_profile_sha256",
+                 "node_prebuilt_profile", "node_prebuilt_profile_sha256",
+                 "node_prebuilt_policy", "node_prebuilt_policy_sha256",
                  "prior_request", "prior_request_sha256",
                  "prior_manifest", "prior_manifest_sha256", "prior_request_id",
                  "compose_acquisition_host_profile", "compose_acquisition_host_profile_sha256",
@@ -438,6 +460,11 @@ def prepare(args):
         raise PreparationError("overlapping_directories")
     if args.target not in TARGETS:
         raise PreparationError("unsupported_target")
+    node_build = node_build_options(args)
+    if node_build is not None:
+        if any(overlap(node_build[0], location) for location in locations):
+            raise PreparationError("node_build_profile_overlaps_host_paths")
+        locations.append(node_build[0])
     # The archive owns both manifest parsing and each retained request format.
     snapshot, retained = release_snapshot(args.release_archive, args.release_sha256, release, args.target)
     backend = owner_module("prepared_setup_backend", release / "setup/backend.py", retained["setup/backend.py"])
@@ -456,7 +483,7 @@ def prepare(args):
                 record, _ = backend.load_request_recovery(recovery_root, entry["id"], entry["sha256"],
                                                           kind=entry["kind"])
                 kind = record["family"].removeprefix("selected-")
-                if "setup/" + kind + "_acquisition.py" not in retained:
+                if "setup/" + kind.replace("-", "_") + "_acquisition.py" not in retained:
                     raise PreparationError("recovery_owner_not_in_release")
                 recovery_acquisitions[kind] = record
     if "backend" in compose_profiles:
@@ -481,6 +508,22 @@ def prepare(args):
         raise PreparationError("mcpb_acquisition_profile_pair_required")
     if acquire_mcpb and not inspect_mcpb:
         raise PreparationError("mcpb_acquisition_requires_inspection")
+    node_prebuilt_path = getattr(args, "node_prebuilt_profile", None)
+    node_prebuilt_sha256 = getattr(args, "node_prebuilt_profile_sha256", None)
+    node_prebuilt_policy = getattr(args, "node_prebuilt_policy", None)
+    node_prebuilt_policy_sha256 = getattr(args, "node_prebuilt_policy_sha256", None)
+    policy_selected = node_prebuilt_policy is not None or node_prebuilt_policy_sha256 is not None
+    if policy_selected:
+        if not node_prebuilt_policy or not node_prebuilt_policy_sha256:
+            raise PreparationError("node_prebuilt_policy_pair_required")
+        if node_prebuilt_path is not None or node_prebuilt_sha256 is not None:
+            raise PreparationError("ambiguous_node_prebuilt_selection")
+        node_prebuilt_path, node_prebuilt_sha256 = node_prebuilt_policy, node_prebuilt_policy_sha256
+    acquire_node_prebuilt = node_prebuilt_path is not None or node_prebuilt_sha256 is not None
+    if acquire_node_prebuilt and (not node_prebuilt_path or not node_prebuilt_sha256):
+        raise PreparationError("node_prebuilt_profile_pair_required")
+    if acquire_node_prebuilt and not args.allow_public_npm:
+        raise PreparationError("node_prebuilt_requires_node_acquisition")
     selected_node_inputs = (args.selected_node, args.selected_node_sha256)
     github_research = getattr(args, "enable_public_github_research", False)
     if type(github_research) is not bool:
@@ -528,6 +571,8 @@ def prepare(args):
         raise PreparationError("acquired_inspection_not_in_release")
     if acquire_mcpb and MCPB_ACQUISITION not in retained:
         raise PreparationError("mcpb_acquisition_not_in_release")
+    if acquire_node_prebuilt and not {NODE_PREBUILT_ACQUISITION, MCPB_ACQUISITION} <= retained.keys():
+        raise PreparationError("node_prebuilt_not_in_release")
     compose_raw = {}
     if compose_profiles:
         needed = {COMPOSE_RUNTIME, COMPOSE_PLANNER}
@@ -563,6 +608,21 @@ def prepare(args):
         if digest(mcpb_raw) != mcpb_sha256:
             raise PreparationError("mcpb_acquisition_profile_changed")
         locations.append(mcpb_path)
+    node_prebuilt_raw = None
+    if acquire_node_prebuilt:
+        checked_hash(node_prebuilt_sha256)
+        node_prebuilt_path = Path(node_prebuilt_path)
+        if not node_prebuilt_path.is_absolute():
+            raise PreparationError("invalid_input_path")
+        if any(overlap(node_prebuilt_path, location) for location in locations):
+            raise PreparationError("node_prebuilt_profile_overlaps_host_paths")
+        def read_node_prebuilt():
+            backend.canonical_directory(node_prebuilt_path.parent)
+            return read_regular(node_prebuilt_path, backend.MAX_BODY)[0]
+        node_prebuilt_input_raw = node_prebuilt_raw = read_node_prebuilt()
+        if digest(node_prebuilt_raw) != node_prebuilt_sha256:
+            raise PreparationError("node_prebuilt_profile_changed")
+        locations.append(node_prebuilt_path)
     prior_raw = None
     prior_source = None
     if prior_manifest:
@@ -709,6 +769,8 @@ def prepare(args):
         locations.extend(Path(pin["path"]) for name, pin in pins.items() if name.startswith("compose_"))
     if acquire_mcpb:
         pins["mcpb_acquisition_profile"] = pinned_path(mcpb_path, mcpb_sha256)
+    if acquire_node_prebuilt:
+        pins["node_prebuilt_policy" if policy_selected else "node_prebuilt_profile"] = pinned_path(node_prebuilt_path, node_prebuilt_sha256)
     if "activepieces" in families or playwright:
         if not all((args.node, args.node_sha256, args.npm_cli, args.npm_cli_sha256)):
             raise PreparationError("playwright_runtime_required" if playwright else "activepieces_runtime_required")
@@ -722,6 +784,10 @@ def prepare(args):
         pins["selected_node"] = pinned_path(args.selected_node, args.selected_node_sha256, executable=True)
     if all(selected_npm_inputs):
         pins["selected_npm_cli"] = pinned_path(args.selected_npm_cli, args.selected_npm_cli_sha256)
+    if node_build is not None:
+        if not {"selected_node", "selected_npm_cli"} <= pins.keys():
+            raise PreparationError("node_build_requires_selected_node_validator")
+        pins["node_build_profile"] = pinned_path(node_build[0], node_build[1])
     if args.allow_public_npm or search_node:
         pins["npm_archive"] = pinned_path(args.npm_archive, args.npm_archive_sha256)
     def tool(name):
@@ -743,7 +809,13 @@ def prepare(args):
         profile["validators"]["mcpb"] = tool(MCPB_TOOL)
     selected_enabled = (not recovery or inspect_acquired or inspect_package or inspect_plugin or allow_mcpb
                         or any(row["kind"] == backend.SELECTED_REQUEST for row in recovery_entries))
+    if node_build is not None:
+        if not selected_enabled or "node" not in profile["validators"]:
+            raise PreparationError("node_build_requires_selected_node_validator")
+        profile["node_build"] = {"path": str(output / "node-build-profile.json"), "sha256": node_build[1]}
     files = {"selected-install.json": encoded(profile)} if selected_enabled else {}
+    if node_build is not None:
+        files["node-build-profile.json"] = node_build[2]
     compose_wrappers = {}
     for name in ("successor_inputs", "successor_backend"):
         if name in compose_raw:
@@ -841,6 +913,19 @@ def prepare(args):
         files["node-acquisition.json"] = encoded(acquisition)
         argv += ["--node-acquisition-profile", str(output / "node-acquisition.json"),
                  "--node-acquisition-profile-sha256", digest(files["node-acquisition.json"])]
+    if acquire_node_prebuilt:
+        if policy_selected:
+            policy = backend.decode(node_prebuilt_input_raw)
+            backend.keys(policy, ("schema_version", "scope", "target", "allowed_origins", "allowed_redirect_origins"))
+            if (type(policy.get("schema_version")) is not int or policy["schema_version"] != 1
+                    or policy.get("scope") != "trusted_public_node_prebuilt_resources"):
+                raise PreparationError("invalid_node_prebuilt_resource_policy")
+            node_prebuilt_raw = encoded({**policy, "scope": "trusted_public_node_prebuilt_acquisition",
+                "python": {name: pins["python"][name] for name in ("path", "sha256")}})
+            node_prebuilt_sha256 = digest(node_prebuilt_raw)
+        files["node-prebuilt.json"] = node_prebuilt_raw
+        argv += ["--node-prebuilt-profile", str(output / "node-prebuilt.json"),
+                 "--node-prebuilt-profile-sha256", node_prebuilt_sha256]
     if search_node:
         argv += ["--allow-node-search"]
     if github_research:
@@ -858,8 +943,17 @@ def prepare(args):
             write_new(temp / name, raw)
         selected_binding = None
         if selected_enabled:
-            _, _, payloads = backend.selected_profile(temp / "selected-install.json",
-                digest(files["selected-install.json"]), recovering=bool(recovery))
+            checked_profile = temp / "selected-install.json"
+            checked_profile_raw = files["selected-install.json"]
+            if node_build is not None:
+                # Only the outer profile locator differs before publication.
+                # The toolchain's internal paths and exact bytes stay intact.
+                checked_profile = temp / "check-selected-install.json"
+                checked_profile_raw = encoded({**profile, "node_build": {
+                    "path": str(temp / "node-build-profile.json"), "sha256": node_build[1]}})
+                write_new(checked_profile, checked_profile_raw)
+            _, _, payloads = backend.selected_profile(checked_profile,
+                digest(checked_profile_raw), recovering=bool(recovery))
             selected_node = pins.get("selected_node", pins.get("node"))
             selected_npm = pins.get("selected_npm_cli", None if "selected_node" in pins else pins.get("npm_cli"))
             selected_binding = {"profile_sha256": digest(files["selected-install.json"]),
@@ -951,6 +1045,18 @@ def prepare(args):
                 pins["selected_node"]["path"])
             if observed.target != args.target:
                 raise PreparationError("node_target_mismatch")
+            if acquire_node_prebuilt:
+                node_owner = observed
+                owner = owner_module("prepared_node_prebuilt_acquisition", release / NODE_PREBUILT_ACQUISITION,
+                                     retained[NODE_PREBUILT_ACQUISITION])
+                def no_source_before_acquisition(_):
+                    raise PreparationError("node_prebuilt_source_not_admitted")
+                observed = owner.NodePrebuiltAcquisition(temp / "node-prebuilt.json", node_prebuilt_sha256,
+                    staging, io=io, node_owner=node_owner, source_reader=no_source_before_acquisition,
+                    selected_node=pins["selected_node"]["path"])
+                if (str(observed.python) != pins["python"]["path"]
+                        or digest(observed.inputs[observed.python]) != pins["python"]["sha256"]):
+                    raise PreparationError("node_prebuilt_python_mismatch")
         if acquire_mcpb:
             owner = owner_module("prepared_mcpb_acquisition", release / MCPB_ACQUISITION, retained[MCPB_ACQUISITION])
             observed = owner.McpbAcquisition(temp / "mcpb-acquisition.json", mcpb_sha256, staging, io=io)
@@ -959,12 +1065,16 @@ def prepare(args):
                 raise PreparationError("mcpb_acquisition_python_mismatch")
         recheck_release(release, snapshot)
         recheck_pins(pins)
+        if node_build is not None and node_build_options(args) != node_build:
+            raise PreparationError("node_build_profile_changed")
         if playwright and digest(read_regular(playwright_path, backend.MAX_BODY)[0]) != playwright_sha256:
             raise PreparationError("playwright_host_profile_changed")
         if prior_enabled and digest(read_prior()) != prior_sha256:
             raise PreparationError("prior_request_changed")
         if acquire_mcpb and read_mcpb() != mcpb_raw:
             raise PreparationError("mcpb_acquisition_profile_changed")
+        if acquire_node_prebuilt and read_node_prebuilt() != node_prebuilt_input_raw:
+            raise PreparationError("node_prebuilt_profile_changed")
         if compose_profiles:
             # Recheck freshness after all private validation, before publication.
             current_profiles, current_execution, _ = compose_options(args)
@@ -1035,6 +1145,9 @@ def main(argv=None):
                  "prior-manifest", "prior-manifest-sha256", "prior-request-id",
                  "recover-manifest", "recover-manifest-sha256",
                  "mcpb-acquisition-profile", "mcpb-acquisition-profile-sha256",
+                 "node-prebuilt-profile", "node-prebuilt-profile-sha256",
+                 "node-prebuilt-policy", "node-prebuilt-policy-sha256",
+                 "node-build-profile", "node-build-profile-sha256",
                  "compose-acquisition-host-profile", "compose-acquisition-host-profile-sha256",
                  "compose-backend-profile", "compose-backend-profile-sha256", "compose-graph-workspace",
                  "compose-allowed-actions", "compose-expected-plan-sha256", "compose-delete-state-namespaces",

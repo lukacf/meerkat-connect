@@ -5,6 +5,8 @@
 //! until the actual final lifetime and installed registration are adopted.
 
 use super::*;
+#[cfg(test)]
+use super::controller_first_input_fixture::PrepareOriginalSource;
 use meerkat_toolkit::host_lifetime::policy::PreparedLocalPolicy;
 
 /// The actual canonical stores used by this preparation, not a snapshot of
@@ -33,7 +35,8 @@ mod authorities;
 mod helper_mcp;
 mod helper_catalog;
 pub use authorities::{PreparationAuthorities, PreparationAuthorityIntent, PreparedControllerIntent,
-    PreparedControllerRequest, PreparedControllerTarget, PreparedHelperMcpRequest, PreparedHelperCatalogRequest};
+    PreparedControllerRequest, PreparedControllerTarget, PreparedHelperMcpRequest, PreparedHelperCatalogRequest,
+    PreparedHelperCatalogScope};
 
 /// The same native pair opened before configuration has native surface outputs.
 /// All optional parent requests are explicit trusted-admin operations, retained
@@ -106,21 +109,31 @@ impl PreparedInstallationOwner {
     pub async fn prepare(self, tool_policy: PreparedInstalledToolPolicy)
         -> Result<PreparedInstalledHost, HostLifetimeError>
     {
-        self.prepare_selected(tool_policy, None).await
+        self.prepare_selected(tool_policy, None, #[cfg(test)] None).await
     }
 
     pub async fn prepare_with_application_service_policy(self, tool_policy: PreparedInstalledToolPolicy,
         participant: Arc<dyn crate::private_originals::ApplicationServicePolicy>,
     ) -> Result<PreparedInstalledHost, HostLifetimeError> {
-        self.prepare_selected(tool_policy, Some(participant)).await
+        self.prepare_selected(tool_policy, Some(participant), #[cfg(test)] None).await
     }
 
     async fn prepare_selected(self, tool_policy: PreparedInstalledToolPolicy,
         participant: Option<Arc<dyn crate::private_originals::ApplicationServicePolicy>>,
+        #[cfg(test)] prepare_source: Option<PrepareOriginalSource>,
     ) -> Result<PreparedInstalledHost, HostLifetimeError> {
+        let source_store: Arc<dyn toolkit_store::ToolkitStore> = self.store.clone();
+        #[cfg(test)]
+        let source_store = match prepare_source {
+            Some(decorate) => decorate(source_store), None => source_store,
+        };
         let originals = Arc::new(PrivateOriginals::prepare(
-            self.source_scope.clone(), self.store.clone(), self.source.clone(),
+            self.source_scope.clone(), source_store, self.source.clone(),
         ).await.map_err(|_| HostLifetimeError::InvalidSelection)?);
+        // PreparedInstallationOwner::open owns the intact leased pair. This
+        // fact survives adoption with this exact source; generic new/prepare
+        // never receives it merely by attaching a runtime.
+        originals.select_installed_pair_recovery()?;
         let service_policy = tool_policy.bind_service_owner(self.store.clone(), self.source_scope.clone(),
             self.selected.native_host.grant_administrator.clone(), participant).await?;
         originals.bind_service_tool_policy(service_policy)?;
@@ -132,6 +145,15 @@ impl PreparedInstallationOwner {
             source_scope: self.source_scope.clone(), tool_policy, policy, configuration,
             authorities: PreparedAuthorityState::Pending(self),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn complete_with_source_store(self, tool_policy: PreparedInstalledToolPolicy,
+        prepare_source: PrepareOriginalSource,
+    ) -> Result<PreparedInstalledHost, HostLifetimeError> {
+        let mut prepared = self.prepare_selected(tool_policy, None, Some(prepare_source)).await?;
+        prepared.finalize_selection()?;
+        Ok(prepared)
     }
 
     /// Existing callers with already resolved authority selections retain the
@@ -188,17 +210,29 @@ mod tests {
         assert!(prepared.take_configuration().is_err());
         let member = &selected.native_host.members[0];
         let mut helper = acquisition::InstalledSetupSelection {
+            catalog_capability: None,
             report_capability: None, member: member.member.clone(),
             ingress_actor: member.logical_owner.clone(), logical_executor: member.logical_owner.clone(),
             represented_subject: None, controller_parent: vec![],
             operation_basis: WorkAuthorityBasis::TargetedGrantLineages { base: None, targets: vec![] },
         };
+        let source = prepared.source.clone();
+        let store = prepared.store.clone();
+        prepared.configure_held_authorities_with_helper_resources(
+            &mut helper, &PreparationAuthorities::default(), None, None).unwrap();
+        assert!(Arc::ptr_eq(&source, &prepared.source));
+        assert!(Arc::ptr_eq(&store, &prepared.store));
+        assert!(Arc::ptr_eq(&originals, &prepared.originals()));
+        assert!(matches!(originals.routes(), Err(crate::private_originals::PrivateOriginalError::Unavailable)));
+        assert!(matches!(prepared.selected(), Err(HostLifetimeError::Unavailable)));
         let finalized = prepared.finalize_authorities(&mut helper, &PreparationAuthorities::default()).unwrap();
         assert_eq!(finalized, selected);
         assert!(Arc::ptr_eq(&originals, &prepared.originals()));
         let routes = originals.routes().unwrap().to_vec();
         assert_eq!(routes.len(), selected.native_host.routes.len());
         assert!(prepared.finalize_authorities(&mut helper, &PreparationAuthorities::default()).is_err());
+        assert!(prepared.configure_held_authorities_with_helper_resources(
+            &mut helper, &PreparationAuthorities::default(), None, None).is_err());
         assert!(originals.finalize_routes(routes).is_err(), "an installed route set cannot be replaced");
         assert_eq!(prepared.selected().unwrap(), &selected);
         drop(configuration);
@@ -306,12 +340,27 @@ impl PreparedInstalledHost {
         requests: &PreparationAuthorities, server: Option<&meerkat_core::McpServerConfig>,
         session: Option<(&meerkat_core::MobMemberBinding, &meerkat_core::SessionId)>,
     ) -> Result<PreparedLocalPolicy, HostLifetimeError> {
+        self.configure_held_authorities_with_helper_resources(helper, requests, server, session)?;
+        self.finalize_selection()?;
+        self.selected().cloned()
+    }
+
+    /// Configure one explicitly selected helper on the existing pending owner
+    /// after native materialization supplies its actual member/session pair.
+    /// Multiple helpers may be configured before the existing finalization call
+    /// publishes the complete route selection once. This does not finalize or
+    /// permit invocation/adoption, and a finalized owner rejects further calls.
+    /// Partial issuance retains this same owner and native issuance IDs for
+    /// exact recovery; a failure is not rollback of earlier configured helpers.
+    pub fn configure_held_authorities_with_helper_resources(
+        &mut self, helper: &mut acquisition::InstalledSetupSelection,
+        requests: &PreparationAuthorities, server: Option<&meerkat_core::McpServerConfig>,
+        session: Option<(&meerkat_core::MobMemberBinding, &meerkat_core::SessionId)>,
+    ) -> Result<(), HostLifetimeError> {
         let PreparedAuthorityState::Pending(owner) = &mut self.authorities else {
             return Err(HostLifetimeError::InvalidSelection);
         };
-        owner.configure_authorities_with_helper_resources(helper, requests, server, session)?;
-        self.finalize_selection()?;
-        self.selected().cloned()
+        owner.configure_authorities_with_helper_resources(helper, requests, server, session)
     }
 
     fn selected(&self) -> Result<&PreparedLocalPolicy, HostLifetimeError> {

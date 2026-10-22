@@ -56,6 +56,13 @@ impl SessionStartup {
     }
 
     async fn with_config(storage: ResolvedStorage, config: Config) -> Result<Self, ConnectError> {
+        let factory = Self::realm_factory(&storage);
+        Ok(Self { storage, config, factory, persistence: None, connector_auth: None, standalone: None })
+    }
+
+    /// Select the existing native credential backend without composing a model,
+    /// opening a runtime session or installing the supplied setup helper.
+    pub(crate) fn realm_factory(storage: &ResolvedStorage) -> AgentFactory {
         let realm_paths = meerkat_store::realm_paths_in(
             &storage.locator.state_root,
             storage.locator.realm.as_str(),
@@ -70,7 +77,7 @@ impl SessionStartup {
         } else {
             factory
         };
-        Ok(Self { storage, config, factory, persistence: None, connector_auth: None, standalone: None })
+        factory
     }
 
     pub(crate) async fn persistence(&mut self) -> Result<&meerkat::PersistenceBundle, ConnectError> {
@@ -604,11 +611,18 @@ impl ConnectSession {
                 .ok_or_else(|| ConnectError::InvalidInput("The governed setup actor changed".into()))?;
             let controller = self.service.pin_controller_client_for_actor(&lease).await
                 .map_err(|e| ConnectError::native("Pin governed setup controller", e))?;
-            // The existing stock prompt contract retains this actual pin and
-            // releases the actor boundary before native binding/admission.
+            // Both stock contracts retain this actual pin. Release the actor
+            // boundary before native binding/admission, preserving input kind.
             drop(lease);
-            let (input, pending) = stock.bind_prompt(&self.machine, &self.session_id,
-                input, controller).await
+            let bound = match input {
+                Input::Prompt(prompt) => stock.bind_prompt(&self.machine, &self.session_id,
+                    Input::Prompt(prompt), controller).await,
+                Input::ExternalEvent(event) => stock.bind_host_outcome(&self.machine, &self.session_id,
+                    event, controller).await,
+                _ => return Err(ConnectError::InvalidInput(
+                    "Governed setup accepts human prompts or typed host outcomes".into())),
+            };
+            let (input, pending) = bound
                 .map_err(|e| ConnectError::native("Bind governed setup original", e))?;
             let observation = Arc::new(OnceLock::new());
             *reserved = Some(BoundStockSubmission { input, pending: Some(pending),

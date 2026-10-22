@@ -16,10 +16,17 @@ pub(super) fn router(panel: ConsoleSetup) -> Router {
         .route("/toolkit/setup/credentials", post(credentials))
         .route("/toolkit/setup/cancel-sign-in", post(cancel_sign_in))
         .route("/toolkit/setup/access/revoke", post(revoke_access))
+        .route("/toolkit/setup/recovery/revoke", post(recover_service_approval))
         .route("/toolkit/setup/callback", get(callback_landing).post(callback))
         .route("/toolkit/setup/{asset}", get(asset))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(panel)
+}
+pub(super) fn status_disclosure_failure(error: meerkat_toolkit::host_lifetime::control::HostLifetimeError) -> StatusCode {
+    match error {
+        meerkat_toolkit::host_lifetime::control::HostLifetimeError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::FORBIDDEN,
+    }
 }
 fn failure(status: StatusCode) -> Response {
     response(status, "application/json", "{\"error\":\"Protected setup is unavailable\"}")
@@ -167,7 +174,7 @@ async fn data_from(panel: ConsoleSetup, headers: HeaderMap, uri: Uri, request: O
                     HostLifetimeError::WrongOwner => "WrongOwner",
                     HostLifetimeError::NotSettled => "NotSettled",
                 });
-                return Err(StatusCode::SERVICE_UNAVAILABLE);
+                return Err(status_disclosure_failure(error));
             },
         };
         if current().is_none() { return Err(StatusCode::FORBIDDEN); }
@@ -209,8 +216,14 @@ async fn data_from(panel: ConsoleSetup, headers: HeaderMap, uri: Uri, request: O
         if page.access().is_some() { value["offer_id"] = json!(id); }
         envelope["application_access"] = value;
     }
+    if let Some(mut value) = page.recovery_projection() {
+        if page.recovery().is_some() { value["offer_id"] = json!(id); }
+        envelope["operator_recovery"] = value;
+    }
     if current().is_none() { return failure(StatusCode::FORBIDDEN); }
-    if panel.0.binding.check_status_page(&page, &current).is_err() { return failure(StatusCode::FORBIDDEN); }
+    if let Err(error) = panel.0.binding.check_status_page(&page, &current) {
+        return failure(status_disclosure_failure(error));
+    }
     let mut pages = match panel.0.pages.lock() { Ok(value) => value, Err(_) => {
         status_read_refused("http.data.offer_pages_lock", "poisoned");
         return failure(StatusCode::SERVICE_UNAVAILABLE);
@@ -227,6 +240,13 @@ pub(super) struct RevokeAccess { pub(super) offer_id: u64, pub(super) row_id: St
 // alternate principals and native grant coordinates never reach its owner.
 pub(super) fn access_request(selection: &ConsoleSetupSelection, body: &[u8]) -> Result<RevokeAccess, StatusCode> {
     if selection.access_management != Some(ConsoleAccessPolicy::RequesterIssuedLeaves) { return Err(StatusCode::FORBIDDEN); }
+    bounded_offer_request(body)
+}
+pub(super) fn recovery_request(selection: &ConsoleSetupSelection, body: &[u8]) -> Result<RevokeAccess, StatusCode> {
+    if selection.recovery_management != Some(ConsoleRecoveryPolicy::OperatorUnpublishedServiceApprovals) { return Err(StatusCode::FORBIDDEN); }
+    bounded_offer_request(body)
+}
+fn bounded_offer_request(body: &[u8]) -> Result<RevokeAccess, StatusCode> {
     if body.len() > 1024 { return Err(StatusCode::PAYLOAD_TOO_LARGE); }
     let value: RevokeAccess = serde_json::from_slice(body).map_err(|_| StatusCode::BAD_REQUEST)?;
     if value.offer_id == 0 || value.offer_id > 9_007_199_254_740_991 || value.row_id.len() != 64
@@ -251,6 +271,26 @@ async fn revoke_access(State(panel): State<ConsoleSetup>, headers: HeaderMap, Or
     // This path uses no Active setup request and remains available for retained
     // completed sources. The one-use offer owns any entered outcome if reply is lost.
     match panel.0.binding.revoke_application_access(offer, &request.row_id, &native).await {
+        Ok(value) => response(StatusCode::OK, "application/json", value.to_string()),
+        Err(_) => failure(StatusCode::FORBIDDEN),
+    }
+}
+// An opaque same-login offer selects already-retained intent. No request body
+// can supply a principal, native grant coordinate, approval or connector config.
+async fn recover_service_approval(State(panel): State<ConsoleSetup>, headers: HeaderMap, OriginalUri(uri): OriginalUri, body: Bytes) -> Response {
+    if let Err(status) = mutation(&panel, &headers, &uri) { return failure(status); }
+    let request = match recovery_request(&panel.0.selection, &body) { Ok(value) => value, Err(status) => return failure(status) };
+    let (_, login) = match viewer(&panel, &headers, &uri) { Ok(value) => value, Err(status) => return failure(status) };
+    let page = match panel.0.pages.lock() {
+        Ok(slot) => match slot.iter().find(|offer| offer.id == request.offer_id && offer.login.same_owner(&login)) {
+            Some(offer) => offer.value.clone(), None => return failure(StatusCode::CONFLICT),
+        },
+        Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE),
+    };
+    let Some(offer) = page.recovery() else { return failure(StatusCode::CONFLICT); };
+    let resolver = match panel.0.viewer.get() { Some(value) => value, None => return failure(StatusCode::SERVICE_UNAVAILABLE) };
+    let native = || resolver.resolve(&headers, &uri);
+    match panel.0.binding.recover_service_approval(offer, &request.row_id, &native).await {
         Ok(value) => response(StatusCode::OK, "application/json", value.to_string()),
         Err(_) => failure(StatusCode::FORBIDDEN),
     }

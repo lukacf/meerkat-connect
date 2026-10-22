@@ -326,6 +326,13 @@ fn observation_facts(observation: &Option<Observation>) -> Value {
 impl Outcome {
     pub(super) fn stopped(&self) -> bool { self.stopped.is_some() }
     pub(super) fn grant(&self) -> Option<&GrantResult> { self.grant.as_ref() }
+    pub(super) fn has_unconfirmed_effect(&self) -> bool {
+        self.persistence.as_ref().is_some_and(|result|
+            result.as_ref().is_err_and(public_persistence_may_have_changed))
+            || self.slots.iter().any(|(_, result)|
+                matches!(result, Err(meerkat::McpServiceSecretUpdateError::OutcomeUnknown(_))))
+            || self.grant.as_ref().is_some_and(|result| unconfirmed_grant_effect(result.as_ref()))
+    }
     pub(super) fn blocks_reentry(&self) -> bool {
         match &self.persistence {
             None => false,
@@ -444,6 +451,36 @@ impl ReviewedSecretInstallation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_exit_distinguishes_unknown_write_from_stopped_before_grant() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = crate::RealmOptions { context_root:root.path().to_owned(),
+            state_root:Some(root.path().join("state")), user_config_root:Some(root.path().join("home")) }
+            .resolve("exit-fixture").unwrap();
+        for (outcome, expected) in [
+            (Outcome { stopped:Some(Stop::Cancelled), ..Default::default() }, false),
+            (Outcome { persistence:Some(Ok(7)), stopped:Some(Stop::Cancelled), ..Default::default() }, false),
+            (Outcome { persistence:Some(Ok(7)), slots:vec![("TOKEN".into(),
+                Err(meerkat::McpServiceSecretUpdateError::OutcomeUnknown("PRIVATE_SLOT_DIAGNOSTIC".into())))],
+                stopped:Some(Stop::Cancelled), ..Default::default() }, true),
+            (Outcome { persistence:Some(Ok(7)), slots:vec![("TOKEN".into(),
+                Err(meerkat::McpServiceSecretUpdateError::NotAdmitted(
+                    meerkat_core::AdministrationEntryRefusal::NotAdministrator)))],
+                stopped:Some(Stop::Cancelled), ..Default::default() }, false),
+        ] {
+            let installation = FinalizedInstallation::new(FinalizationTarget {
+                realm:storage.locator.clone(), server:"mail".into(), agent:"fixture".into(),
+                job_id:"reviewed-job".into(), session:SessionId::new(),
+            }, FinalizationOutcome::Secret(outcome));
+            let action = FinalizedAction { outcome:ActionOutcome::Installation(Arc::new(installation)),
+                continuation:None };
+            assert!(action.stopped_during_finalization());
+            let result = FinalizedAction::finish_invocation(&[action], Ok(()));
+            assert_eq!(result.is_err(), expected);
+            if let Err(error) = result { assert!(!error.to_string().contains("PRIVATE_SLOT_DIAGNOSTIC")); }
+        }
+    }
     use meerkat_auth_core::auth_store::{FileLockCoordinator, FileTokenStore, ProviderAuthPersistence,
         PersistedTokens, TokenKey, TokenStore, TokenStoreError};
     use meerkat_core::{ApprovalService, ConfigStore, FileConfigStore};

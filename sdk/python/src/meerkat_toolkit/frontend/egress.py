@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import closing
 import copy
 from contextvars import Context
 from dataclasses import asdict, dataclass, field
@@ -1237,7 +1238,7 @@ class ProactiveEgress:
             if observed.state != "managed" or observed.format != EGRESS_STATE_FORMAT:
                 raise ValueError("managed egress format required")
         else:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 connection.execute("BEGIN IMMEDIATE")
                 # A present managed record disables all legacy DDL/backfills.
                 managed = connection.execute(
@@ -1345,7 +1346,7 @@ class ProactiveEgress:
         if decision is EgressAuthorizationDecision.ALLOWED:
             return True
         if refusal is not None:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 connection.execute("BEGIN IMMEDIATE")
                 changed = connection.execute(
                     "UPDATE egress_parts SET state='refused', error=? "
@@ -1378,8 +1379,16 @@ class ProactiveEgress:
         if self._schema_mode == "managed":
             return _format_connection(_state_path(self.path), "rw")
         connection = sqlite3.connect(self.path)
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA synchronous = FULL")
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA synchronous = FULL")
+        except BaseException:
+            # Setup failed before the transaction owner acquired the connection.
+            try:
+                connection.close()
+            except BaseException:
+                pass  # Preserve the original setup failure.
+            raise
         return connection
 
     # Bounds resolve kwarg-or-module-constant AT CALL TIME (monkeypatch-able).
@@ -1483,7 +1492,7 @@ class ProactiveEgress:
             selected = candidate_rows[0] if candidate_rows else ("", "", None)
         output_id: str
         existing_output_id: str | None = None
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             # Serialize the lookup and insert. Multiple in-process MCP calls or
             # a short-lived overlapping legacy subprocess must converge on the
             # same durable root instead of surfacing UNIQUE races.
@@ -1625,7 +1634,7 @@ class ProactiveEgress:
             )
 
     def find_output(self, *, issuer_id: str, logical_key: str) -> str | None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT output_id FROM egress_outputs WHERE issuer_id = ? AND logical_key = ?",
                 (issuer_id, logical_key),
@@ -1633,7 +1642,7 @@ class ProactiveEgress:
         return str(row[0]) if row is not None else None
 
     def attempt_count(self, *, output_id: str) -> int:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT COALESCE(MAX(attempts), 0) FROM egress_parts WHERE output_id = ?",
                 (output_id,),
@@ -1641,7 +1650,7 @@ class ProactiveEgress:
         return int(row[0]) if row is not None else 0
 
     def status(self, *, output_id: str) -> EgressStatus:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN")
             return self._status(connection, output_id)
 
@@ -1670,7 +1679,7 @@ class ProactiveEgress:
         """
         if not isinstance(output_id, str) or not output_id or not isinstance(issuer_id, str) or not issuer_id:
             raise ValueError("output_id and issuer_id must be nonempty text")
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT issuer_id FROM egress_outputs WHERE output_id = ?", (output_id,),
@@ -1725,7 +1734,7 @@ class ProactiveEgress:
             # The host has stopped every previous writer/dispatch. Capture once
             # before any provider await; a later reservation is never swept into
             # this abandoned set. This assertion does not itself fence a writer.
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 abandoned = connection.execute(
                     "SELECT p.output_id,p.part_index,p.attempts FROM egress_parts p "
                     "JOIN egress_outputs o USING(output_id) WHERE p.attempt_open=1 "
@@ -1757,7 +1766,7 @@ class ProactiveEgress:
         """
 
         cutoff_ms = time.time_ns() // 1_000_000 - int(self._freshness() * 1000)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT p.output_id, p.part_index, p.attempts, p.unknown_attempts, "
                 "o.created_at_ms "
@@ -1834,7 +1843,7 @@ class ProactiveEgress:
         skipped_locked = 0
         skipped_detached = 0
         skipped_fresh = 0
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT DISTINCT p.output_id, o.sender_id, o.created_at_ms "
                 "FROM egress_parts p JOIN egress_outputs o ON o.output_id = p.output_id "
@@ -1861,7 +1870,7 @@ class ProactiveEgress:
                 continue
             await self._dispatch_output(str(output_id))
             dispatched += 1
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             pending_remaining = int(
                 connection.execute(
                     "SELECT COUNT(DISTINCT p.output_id) FROM egress_parts p "
@@ -1970,7 +1979,7 @@ class ProactiveEgress:
     def backlog_summary(self) -> dict[str, Any]:
         """Queryable egress state for health surfaces - counts, oldest age."""
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             counts = {
                 str(state): int(count)
                 for state, count in connection.execute(
@@ -2004,7 +2013,7 @@ class ProactiveEgress:
     def incident_cycles(self, incident_id: str) -> list[tuple[int, str, str]]:
         prefix = f"{incident_id}:"
         cycles: list[tuple[int, str, str]] = []
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             outputs = connection.execute(
                 "SELECT output_id, logical_key FROM egress_outputs "
                 "WHERE issuer_id = 'incident_drain'"
@@ -2054,7 +2063,7 @@ class ProactiveEgress:
         extension = self._host_extension
         output_columns = tuple(extension.output_columns) if extension else ()
         part_columns = extension.part_columns if extension else ()
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             # Correlation and all candidate parts come from one verified snapshot.
             connection.execute("BEGIN")
             if extension is not None:
@@ -2410,7 +2419,7 @@ class ProactiveEgress:
             eligible = "state IN ('pending','unknown') AND last_outcome IN ('unknown','known_not_sent')"
         else:
             eligible = "state IN ('pending','unknown') AND last_outcome = 'unknown'"
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             retained = connection.execute(
                 "SELECT p.unknown_history,p.unknown_resends_used,o.delivery_policy,o.cancel_requested "
@@ -2465,7 +2474,7 @@ class ProactiveEgress:
 
     def _reserve_attempt(self, output_id: str, part_index: int, attempts: int) -> bool:
         """One atomic durable reservation precedes provider entry, across handles."""
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT p.last_outcome,p.unknown_history,p.unknown_resends_used,o.delivery_policy "
@@ -2497,7 +2506,7 @@ class ProactiveEgress:
 
     def _retire_unresolved(self, output_id: str, part_index: int, *, finalize_completed: bool = False) -> bool:
         """Retain old uncertainty and receipts; never create retry permission."""
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT p.attempts,p.attempt_open,p.unknown_history,p.unknown_resends_used,o.delivery_policy,o.cancel_requested "
@@ -2533,7 +2542,7 @@ class ProactiveEgress:
         return None
 
     def _unknown_rows(self, output_id: str) -> list[tuple[Any, ...]]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             return connection.execute(
                 "SELECT p.state,p.attempts,p.unknown_resends_used,o.delivery_policy,o.cancel_requested,"
                 "o.incident_delivery,p.attempt_open,p.unknown_history,p.part_index "

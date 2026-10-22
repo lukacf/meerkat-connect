@@ -72,7 +72,9 @@ impl PrivateOriginals {
         self.owner.check_historical_task_child(association).map_err(writer_error)
     }
 
-    /// Called only for an exact committed non-B obligation. Existing warm
+    /// Called for an exact committed A result. A selected B requires its
+    /// durable native-failure cause and authenticated permanent non-entry.
+    /// Existing warm
     /// custody keeps its prior native path. Cold reconstruction is deliberately
     /// limited to a single selected input/contributor with no named ancestors;
     /// there is no authoritative source-reference inventory for wider batches.
@@ -81,7 +83,9 @@ impl PrivateOriginals {
     pub(crate) async fn restore_setup_continuation_source(&self, obligation: &ContinuationObligation)
         -> Result<bool, ContinuationError>
     {
-        if obligation.approved_service().is_some() { return Err(ContinuationError::Denied); }
+        if obligation.approved_service().is_some()
+            && !self.failed_service_allows_original_result(obligation).await?
+        { return Err(ContinuationError::Denied); }
         self.restore_setup_source(obligation).await.map_err(continuation_error)
     }
 
@@ -227,7 +231,7 @@ fn check_single_source(binding: &meerkat_toolkit::request::NativeOriginalTask,
 mod tests {
     use super::*;
     use futures::FutureExt;
-    use std::panic::AssertUnwindSafe;
+    use std::{os::unix::fs::PermissionsExt, panic::AssertUnwindSafe};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn no_installed_host_declines_optional_capture_and_ancestor_inventory_is_not_inferred() {
@@ -237,16 +241,18 @@ mod tests {
             fixture.finish(&admission).await.unwrap();
             let row = fixture.cold_source_record().await;
             let record = fixture.source.decode_record(&row, fixture.original_reference()).unwrap();
-            let custom = PrivateOriginals::new(fixture.scope.clone(), fixture.store.clone(),
-                fixture.source.owner.clone(), fixture.source.routes().unwrap().to_vec()).await.unwrap();
+            // A separate custom owner supplies only the absent-host predicate.
+            // The real record/reference remain inert here; no native custody
+            // is transferred or restored into this adapter.
+            let custom_directory = tempfile::Builder::new()
+                .permissions(std::fs::Permissions::from_mode(0o700)).tempdir().unwrap();
+            let custom_owner = crate::original_ingress::tests::initialized(
+                &custom_directory.path().join("grants"));
+            let custom = crate::original_ingress::tests::private_originals(
+                custom_owner, &custom_directory.path().join("source.sqlite")).await;
             assert!(custom.host_lifetime.get().is_none());
             assert!(!custom.stock_setup_source(&record, fixture.original_reference()).unwrap(),
                 "optional capture cannot turn a missing installed host into fresh-input failure");
-            let held = fixture.source.retained.lock().unwrap().iter()
-                .find(|held| &held.reference == fixture.original_reference()).unwrap().original.clone();
-            custom.hold_binding(fixture.original_reference().clone(), held).await.unwrap();
-            assert!(!custom.retained.lock().unwrap()[0].retain_bound_input,
-                "the consumed binder gate skips the additional writer/read for custom owners");
             let context = fixture.probe.as_ref().unwrap().captured();
             let binding = meerkat_toolkit::request::NativeOriginalTask { origin_session_id: fixture.session.clone(),
                 retained_work: context.retained_work().unwrap().clone(), member: None };

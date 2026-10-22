@@ -1,5 +1,6 @@
 //! Actual native issuance and retained source controls. No MCP process or input
 //! is admitted here. The protected parent-review control lives with OperatorSetup.
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 use crate::original_ingress::tests::{claims, initialized, private_event, source};
 use meerkat_authorization_contracts::work_association::WorkAuthorityBasis;
@@ -653,7 +654,7 @@ async fn narrowed_intermediate_parent_cannot_restore_removed_connector_approval(
             action: "list-labels".into(),
         },
     ]);
-    bounds.resource_domains = ExactRestriction::exact([ResourceDomain {
+    bounds.resource_domains = DomainRestriction::exact([ResourceDomain {
         authority: app(),
         namespace: "mcp-server/mail".into(),
     }]);

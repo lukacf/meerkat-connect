@@ -674,6 +674,9 @@ where
                 };
                 let result = tokio::select! { biased;
                     stopped = stop(response, bridge, closed.as_mut()) => (None, Some(stopped)),
+                    // The same review owns expiry and retirement while its
+                    // prompt is displayed; presentation must keep polling it.
+                    result = review.as_mut() => return result.map(Some),
                     result = shown => (Some(result), None),
                 };
                 if !matches!(result.0, Some(Ok(()))) {

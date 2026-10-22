@@ -23,7 +23,7 @@ pub(crate) struct AcquisitionOriginal {
     pub own_originals: Vec<Arc<RetainedToolkitOriginal>>,
     /// Complete same-owner original set for a future helper: each staged
     /// source in native order, then its recorded ancestors in first-seen order. Native
-    /// retained_original returns one basis, never recursive contributor custody.
+    /// admitted_original_basis returns one basis, never recursive contributor custody.
     /// Each exact handle retains the canonical recorded contributor edges. The
     /// set preserves source identity and relationships, not a union of grants;
     /// each original remains a separate native conjunct at helper admission.
@@ -42,6 +42,56 @@ impl AcquisitionOriginal {
 }
 
 impl PrivateOriginals {
+    /// Compare two validated observations around an application admission.
+    /// Only source-owned accounting for the same already-recorded attempt may
+    /// advance. Every other typed source field remains exact; this comparison
+    /// supplies neither native admission nor contributor currentness.
+    pub(crate) fn same_acquisition_source(
+        &self,
+        reference: &PrivateOriginalRef,
+        prior: &StoredRecord,
+        current: &StoredRecord,
+    ) -> Result<bool, PrivateOriginalError> {
+        let mut before = self.decode_record(prior, reference)?;
+        let mut after = self.decode_record(current, reference)?;
+        if current.key != prior.key || current.data.schema != prior.data.schema
+            || current.data.version != prior.data.version
+        { return Ok(false); }
+        if current.revision == prior.revision {
+            return Ok(current.content_digest == prior.content_digest && before == after);
+        }
+        if current.revision < prior.revision { return Ok(false); }
+        let (Some(first), Some(last)) =
+            (before.custody_attempt.take(), after.custody_attempt.take())
+        else { return Ok(false); };
+        if before != after || first == last || !first.same_attempt(&last) {
+            return Ok(false);
+        }
+        use crate::original_ingress::custody_attempt::{CustodyChange, CustodyDecision};
+        // A newly withdrawn source preserves the previous changed-row refusal.
+        // This is not evidence of native cancellation or nonadmission.
+        if last.decision() == CustodyDecision::Withdrawn { return Ok(false); }
+        let mut reachable = first;
+        let mut revisions_left = current.revision - prior.revision;
+        loop {
+            if reachable == last { return Ok(true); }
+            if revisions_left == 0 { return Ok(false); }
+            if reachable.changed(CustodyChange::Promote).ok().as_ref() == Some(&last) {
+                return Ok(true);
+            }
+            // Walk only the existing policy's bounded charge/settle chain.
+            // An inner await can span several steps, not just one CAS. Each
+            // step still requires an observed canonical revision increment.
+            let change = if reachable.observation_entered() {
+                CustodyChange::ResolutionSettled
+            } else { CustodyChange::ChargeResolution };
+            match reachable.changed(change) {
+                Ok(next) => { reachable = next; revisions_left -= 1; }
+                Err(_) => return Ok(false),
+            }
+        }
+    }
+
     pub(crate) async fn acquisition_original(
         &self,
         context: &ToolDispatchContext,
@@ -278,7 +328,7 @@ impl PrivateOriginals {
         }
         let basis = self
             .owner
-            .retained_original(&claims.ingress_namespace, &claims.original_work)
+            .admitted_original_basis(&claims.ingress_namespace, &claims.original_work)
             .map_err(|_| PrivateOriginalError::Unavailable)?
             .ok_or(PrivateOriginalError::Unavailable)?;
         if basis != claims.authority_basis {
@@ -814,7 +864,7 @@ mod tests {
         );
         let c = fixture.original.association().candidate();
         let retained_basis = || fixture.adapter.owner
-            .retained_original(&c.ingress_namespace, &c.original_work).unwrap();
+            .admitted_original_basis(&c.ingress_namespace, &c.original_work).unwrap();
         assert!(retained_basis().is_none());
         let resolved = fixture.adapter.acquisition_original(&context).await.unwrap();
         assert!(Arc::ptr_eq(&resolved.original, &fixture.original));
@@ -841,7 +891,7 @@ mod tests {
         drop(fixture.pending.take());
         fixture.adapter.acquisition_original(&context).await.unwrap();
         let c = fixture.original.association().candidate();
-        assert!(fixture.adapter.owner.retained_original(
+        assert!(fixture.adapter.owner.admitted_original_basis(
             &c.ingress_namespace, &c.original_work,
         ).unwrap().is_none());
         fixture.adapter.record_operation_cancelled(&fixture.reference).await.unwrap();
@@ -876,7 +926,7 @@ mod tests {
         assert!(Arc::ptr_eq(&resolved.original, &child));
         assert!(Arc::ptr_eq(&resolved.own_originals[1], &fixture.original));
         let c = fixture.original.association().candidate();
-        assert!(fixture.adapter.owner.retained_original(
+        assert!(fixture.adapter.owner.admitted_original_basis(
             &c.ingress_namespace, &c.original_work,
         ).unwrap().is_none());
     }
@@ -917,7 +967,7 @@ mod tests {
             fixture
                 .adapter
                 .owner
-                .retained_original(&child_claims.ingress_namespace, &child_claims.original_work)
+                .admitted_original_basis(&child_claims.ingress_namespace, &child_claims.original_work)
                 .unwrap()
                 .is_some()
         );

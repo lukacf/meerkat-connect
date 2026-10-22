@@ -51,6 +51,26 @@ flowchart LR
 
 Validation constructs `ValidatedManifest`, including a canonical payload digest and dependency order. Deserialization alone cannot create that validated value. Host compatibility checks report required gaps and explicit optional degradation before code is imported.
 
+The source-built inspector accepts an activation input containing `package` and
+`manifest`:
+
+```sh
+toolkit-package-inspect activation < selected-activation.json
+```
+
+Its `summary.declared_frontends` lists selected frontend IDs, components,
+modalities and admission, conversation, delivery, control and live contract
+requirements. Optional contracts remain `null` when absent; service-only
+selections return an empty list. The same projection appears inside
+`activation-host` and `activation-update` reports.
+
+These are package declarations, not observed host support, permission or
+readiness. A declared text modality does not establish streaming, edits,
+interactive controls or their fallback behavior. Those need the selected
+frontend and host's own contracts and runtime verification. This source
+inspection improvement does not establish distribution in a Connect archive or
+an installed frontend experience.
+
 ## Components
 
 A `Component` names its ID/version, source, runtime, placement, lifetime, activation scope, dependencies, host contracts, state, readiness, shutdown and rollback.

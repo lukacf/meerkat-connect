@@ -683,10 +683,19 @@ def gateway_controller_recovery(acquisition, business, messages, b_index, direct
         return
     first_tool = next((i for i, row in enumerate(messages) if i > b_index
                        and (row.get("tool_calls") or row.get("role") == "tool")), len(messages))
-    require(len(positions) == 1 and b_index < positions[0] < first_tool
-            and business.get("controller_recovery_history_index") == positions[0]
+    require(len(positions) == 1, "controller feedback must occur exactly once")
+    position = positions[0]
+    before = messages[b_index + 1:position]
+    calls = [call.get("id") if isinstance(call, dict) else None
+        for row in before for call in row.get("tool_calls", [])]
+    results = [row.get("tool_call_id") for row in before if row.get("role") == "tool"]
+    completed_boundary = (bool(calls) and all(isinstance(value, str) and value for value in calls)
+        and len(calls) == len(set(calls))
+        and calls == results)
+    require(b_index < position and (position < first_tool or completed_boundary)
+            and business.get("controller_recovery_history_index") == position
             and business.get("original_catalog") is not None,
-            "controller feedback is not the one selected pre-tool B recovery")
+            "controller feedback is not one selected B recovery at a completed boundary")
     pin = acquisition.get("controller_recovery_audit")
     require(isinstance(pin, dict) and Path(pin["path"]) == directory / "original-b-controller-recovery.json",
             "controller recovery lacks its retained native audit")

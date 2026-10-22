@@ -1,6 +1,7 @@
 //! The production private caller runs through real native admission and source
 //! custody. Faults wrap the real bridge before lookup or after fresh acceptance.
 
+use meerkat_authorization_contracts::constraints::DomainRestriction;
 use super::*;
 
 // Test-only result context. Production admission types do not
@@ -72,6 +73,14 @@ use meerkat_runtime::{
 
 #[path = "governed_submit_test_bridge.rs"]
 mod observed;
+#[path = "custody_recovery_tests.rs"]
+mod custody_recovery_tests;
+#[path = "custody_recovery_writer_tests.rs"]
+mod custody_recovery_writer_tests;
+#[path = "custody_recovery_budget_tests.rs"]
+mod custody_recovery_budget_tests;
+#[path = "custody_recovery_stopped_traversal_tests.rs"]
+mod custody_recovery_stopped_traversal_tests;
 #[path = "first_input_tests.rs"]
 pub(in crate::private_originals) mod first_input_tests;
 
@@ -87,6 +96,20 @@ pub(in crate::private_originals) enum DeliveryMode {
     // These two controls target only the fixture's actual helper session.
     HoldHelperBeforeLookup,
     HoldHelperAcceptedReply,
+    // These controls invalidate the actual controller-admission observation.
+    HelperPolicyChangesOnce,
+    HelperPolicyChangesAlways,
+    HelperPolicyChangesThenUnresolved,
+    HelperPolicyChangesThenRetirement,
+    HelperPolicyChangesThenDeadline,
+}
+
+impl DeliveryMode {
+    fn helper_reprepare(self) -> bool {
+        matches!(self, Self::HelperPolicyChangesOnce | Self::HelperPolicyChangesAlways
+            | Self::HelperPolicyChangesThenUnresolved | Self::HelperPolicyChangesThenRetirement
+            | Self::HelperPolicyChangesThenDeadline)
+    }
 }
 
 struct DeliveryFault {
@@ -98,6 +121,11 @@ struct DeliveryFault {
     helper_session: std::sync::OnceLock<SessionId>,
     helper_input: Mutex<Option<InputId>>,
     helper_returns: AtomicUsize,
+    helper_inputs: Mutex<Vec<serde_json::Value>>,
+    helper_policy_changed: AtomicUsize,
+    helper_admission_change: Mutex<Option<InputAuthorityAssociation>>,
+    publication_changes: AtomicUsize,
+    publication_change_failures: AtomicUsize,
 }
 impl DeliveryFault {
     fn new(mode: DeliveryMode) -> Self {
@@ -110,6 +138,11 @@ impl DeliveryFault {
             helper_session: std::sync::OnceLock::new(),
             helper_input: Mutex::new(None),
             helper_returns: AtomicUsize::new(0),
+            helper_inputs: Mutex::new(Vec::new()),
+            helper_policy_changed: AtomicUsize::new(0),
+            helper_admission_change: Mutex::new(None),
+            publication_changes: AtomicUsize::new(0),
+            publication_change_failures: AtomicUsize::new(0),
         }
     }
 }
@@ -157,7 +190,7 @@ fn domain() -> ResourceDomain {
 fn ceiling(action_name: &str) -> ExecutionRestrictions {
     let mut bounds = ExecutionRestrictions::unrestricted();
     bounds.actions = ExactRestriction::exact([action(action_name)]);
-    bounds.resource_domains = ExactRestriction::exact([domain()]);
+    bounds.resource_domains = DomainRestriction::exact([domain()]);
     bounds.processors = ExactRestriction::exact([ProcessorRef::Principal {
         principal: principal("agent"),
     }]);
@@ -322,7 +355,32 @@ fn fixture_controller_decorator() -> meerkat_core::AgentLlmClientDecorator {
 }
 
 #[derive(Default)]
-struct ScriptedProvider(AtomicUsize);
+struct ScriptedProvider(AtomicUsize, Mutex<Option<Arc<PreparedResponsePause>>>);
+
+#[derive(Default)]
+struct PreparedResponsePause {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+/// Opt-in fixture transport hold after actual model authorization. The test
+/// owns release; dropping that owner always lets the already entered response
+/// settle before normal fixture shutdown. Default transport stays unchanged.
+pub(crate) struct PreparedResponseHold(Arc<PreparedResponsePause>);
+impl PreparedResponseHold {
+    pub(crate) async fn entered(&self) { self.0.entered.notified().await; }
+    pub(crate) fn release(&self) { self.0.release.notify_one(); }
+}
+impl Drop for PreparedResponseHold {
+    fn drop(&mut self) { self.release(); }
+}
+impl ScriptedProvider {
+    fn hold_next_response(&self) -> PreparedResponseHold {
+        let pause = Arc::new(PreparedResponsePause::default());
+        assert!(self.1.lock().unwrap().replace(pause.clone()).is_none());
+        PreparedResponseHold(pause)
+    }
+}
 
 #[async_trait]
 impl LlmClient for ScriptedProvider {
@@ -372,7 +430,7 @@ impl LlmClient for ScriptedProvider {
                 Err(LlmError::from_operation_authorization(error)),
             ])),
         };
-        if let Err(error) = current.observe_entry() {
+        if let Err(error) = current.observe_entry(meerkat_core::OperationEntryBoundary::ModelRequest) {
             return Box::pin(futures::stream::iter([
                 Err(LlmError::from_operation_observation(error)),
             ]));
@@ -385,17 +443,26 @@ impl LlmClient for ScriptedProvider {
             ]));
         }
         self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(futures::stream::iter([
+        let response = futures::stream::iter([
             Ok(LlmEvent::TextDelta {
                 delta: ANSWER.into(),
                 meta: None,
             }),
             Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: StopReason::EndTurn,
-                },
+                outcome: LlmDoneOutcome::success(StopReason::EndTurn),
             }),
-        ]))
+        ]);
+        let pause = self.1.lock().unwrap().take();
+        match pause {
+            None => Box::pin(response),
+            Some(pause) => Box::pin(futures::StreamExt::flatten(
+                futures::stream::once(async move {
+                    pause.entered.notify_one();
+                    pause.release.notified().await;
+                    response
+                }),
+            )),
+        }
     }
 
     fn provider(&self) -> Provider {
@@ -508,8 +575,14 @@ struct Fixture {
     submission: PrivateOriginalSubmit,
 }
 
+type RecoverySourceStore = Box<dyn FnOnce(Arc<dyn toolkit_store::ToolkitStore>, Arc<DeliveryFault>)
+    -> Arc<dyn toolkit_store::ToolkitStore> + Send>;
 impl Fixture {
     async fn new(mode: DeliveryMode, wrong_destination: bool) -> Self {
+        Self::with_source_store(mode, wrong_destination, None).await
+    }
+    async fn with_source_store(mode: DeliveryMode, wrong_destination: bool,
+        source_store: Option<RecoverySourceStore>) -> Self {
         let directory = Arc::new(
             tempfile::Builder::new()
                 .permissions(std::fs::Permissions::from_mode(0o700))
@@ -522,7 +595,7 @@ impl Fixture {
         let mut opened = None;
         let constructed = std::panic::AssertUnwindSafe(tokio::time::timeout(
             WAIT,
-            Self::build(directory.clone(), mode, wrong_destination, &mut opened),
+            Self::build(directory.clone(), mode, wrong_destination, &mut opened, source_store),
         ))
         .catch_unwind()
         .await;
@@ -548,6 +621,7 @@ impl Fixture {
         mode: DeliveryMode,
         wrong_destination: bool,
         opened: &mut Option<UnifiedRuntime>,
+        source_store: Option<RecoverySourceStore>,
     ) -> Self {
         let owner = initialized(&directory.path().join("grants"));
         let grants = owner.grants();
@@ -664,23 +738,13 @@ impl Fixture {
             binding: None,
             placement: None,
         };
-        let lease = lease_provider.acquire_leases(std::slice::from_ref(&identity), runtime_instance)
-            .await.unwrap().remove(&identity).unwrap();
-        let LeaseAcquireResult::Acquired(lease) = lease else { panic!("fixture lease refused") };
-        runtime
-            .register(
-                member_spec.clone(),
-                IdentityLifecycleState::Active,
-                Some(ContinuityRecord {
-                    identity: identity.clone(),
-                    agent_runtime_id: AgentRuntimeId::parse(&format!("rt:{identity}:0")).unwrap(),
-                    session_id: session.clone(),
-                    generation: ContinuityGeneration::new(0),
-                    checkpoint_version: CheckpointVersion::new(0),
-                }),
-                Some(lease),
-            )
-            .await;
+        // Core already owns this spawned member and session; registration adds its roster spec.
+        runtime.register(member_spec.clone()).await;
+        let status = runtime.status(&identity).await.unwrap();
+        assert_eq!(status.state, IdentityLifecycleState::Active);
+        assert_eq!(status.session_id, Some(session.clone()));
+        assert!(status.agent_runtime_id.is_some(), "spawned Core member has a runtime identity");
+        assert_eq!(runtime.core_session_owner(&session).await.unwrap(), Some(identity.clone()));
         native.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
             runtime,
             Arc::new(MutableRosterProvider::new(vec![member_spec])),
@@ -690,16 +754,19 @@ impl Fixture {
         )));
         let runtime = native.identity_runtime().unwrap();
         let domain = owner.ingress_domain().clone();
+        let raw_source: Arc<dyn toolkit_store::ToolkitStore> = Arc::new(
+            toolkit_store::SqliteStore::open(directory.path().join("originals.sqlite3")).unwrap());
+        let selected_source = match source_store {
+            Some(select) => select(raw_source, fault.clone()),
+            None => raw_source,
+        };
         let source = Arc::new(
             PrivateOriginals::new(
                 StoreScope {
                     realm: "test-realm".into(),
                     owner: "originals".into(),
                 },
-                Arc::new(
-                    toolkit_store::SqliteStore::open(directory.path().join("originals.sqlite3"))
-                        .unwrap(),
-                ),
+                selected_source,
                 owner.clone(),
                 vec![PrivateOriginalRoute {
                     id: Id::new("route").unwrap(),
@@ -815,7 +882,7 @@ impl Fixture {
     fn contributor(&self) -> Result<bool, meerkat_core::authorization::ControllerReadinessFailure> {
         let c = self.association.candidate();
         self.owner
-            .retained_original(&c.ingress_namespace, &c.original_work)
+            .admitted_original_basis(&c.ingress_namespace, &c.original_work)
             .map(|original| original.is_some())
     }
 

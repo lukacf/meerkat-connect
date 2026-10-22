@@ -261,9 +261,7 @@ impl LlmClient for ReadPriorRequest {
                 ),
             }),
             Ok(LlmEvent::Done {
-                outcome: meerkat::LlmDoneOutcome::Success {
-                    stop_reason: meerkat::StopReason::ToolUse,
-                },
+                outcome: meerkat::LlmDoneOutcome::success(meerkat::StopReason::ToolUse),
             }),
         ]))
     }

@@ -195,10 +195,30 @@ async def test_legacy_authorization_thread_rechecks_age_after_sender_wait(tmp_pa
         return await select(**kwargs)
 
     monkeypatch.setattr(authority, "select_dispatch", waiting)
-    async with authority._lock:
+    activating, release = asyncio.Event(), asyncio.Event()
+
+    class Candidate:
+        async def activate(self):
+            activating.set()
+            await release.wait()
+
+        async def deactivate(self):
+            pass
+
+        async def __call__(self, *, thread_id=None, **kwargs):
+            return sender(thread_id=thread_id, **kwargs)
+
+    handle = authority.stage_activation(sender_id="s", to_owner_id="owner", sender=Candidate())
+    activation = asyncio.create_task(authority.commit_activation(handle))
+    try:
+        await asyncio.wait_for(activating.wait(), 1)
         task = owner.spawn_dispatch(output)
         await asyncio.wait_for(entered.wait(), 1)
+        assert not task.done()
         now[0] += 2_000_000_000
+    finally:
+        release.set()
+        await asyncio.wait_for(activation, 1)
     await task
     assert calls == [] and owner.attempt_count(output_id=output) == 0
     assert owner.status(output_id=output).part_states == ("expired",)

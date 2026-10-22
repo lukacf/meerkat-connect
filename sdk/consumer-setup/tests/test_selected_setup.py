@@ -557,11 +557,13 @@ class SelectedMcpTests(SelectedFixture, unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(owner.dispatch("/api/selected_install", self.selection(checked)))
         await asyncio.to_thread(c.runner.entered.wait, 5)
         task.cancel("PRIVATE_CANCEL")
-        try:
+        await asyncio.sleep(0)
+        self.assertFalse(task.done(), "entered installation remains joined")
+        self.assertNotIn("stop", c.job)
+        c.runner.block.set()
+        with self.assertRaises(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
-        c.runner.block.set(); await asyncio.to_thread(c.join)
+        await asyncio.to_thread(c.join)
         replay = await owner.dispatch("/api/selected_install", self.selection(checked))
         self.assertEqual(replay["job"]["status"], "succeeded")
         self.assertEqual(sum("--destination" in a and "--verify-existing" not in a for a, _ in c.runner.calls), 1)

@@ -88,6 +88,8 @@ fn credential_review_request(selected: &InstalledConnectorSelection, config: &Mc
     if checked != *config {
         return Err(refused("The checked credential configuration changed"));
     }
+    require_console_tool_policy(SETUP_ACCOUNT_REQUEST, config, &selection.operations, selection.tool_policy.as_ref())
+        .map_err(|error| refused(error.to_string()))?;
     let software = &selected.installed;
     let body = json!({
         "phase": "installed_credential_service_access",
@@ -184,6 +186,13 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
         .map_err(|_| unavailable())?;
     let selection = CredentialSelection { operations: proposal.operations.into_iter().collect(),
         agent: proposal.agent, expires_in_ms: proposal.expires_in_ms, tool_policy: proposal.tool_policy };
+    let permitted = selected.secret_operations().map_err(|_| unavailable())?;
+    if !selection.operations.is_subset(&permitted) {
+        let names = serde_json::to_string(&permitted).map_err(|_| unavailable())?;
+        return Err(ToolError::InvalidArguments { name: call.name.into(), reason: format!(
+            "operations must contain exact raw MCP tool names from the current checked selection. Use operation_tools values, not declaration IDs from its keys. Permitted raw names: {names}. Select only the operations needed for this task, keeping the same job, agent and requested lifetime. This request has not entered access review."
+        ) });
+    }
     let (config, slots) = checked_configuration(&selected, &selection).map_err(|_| unavailable())?;
     let prepared = match &owner.tasks {
         Some(tasks) => tasks.prepare_captured_consumer(call, &current, plan).await,
@@ -201,6 +210,7 @@ pub(super) async fn dispatch(owner: &RequestTool, call: ToolCallView<'_>,
     if task.console_login().is_none()
         || checked_configuration(&selected, &selection).ok().as_ref().map(|value| &value.0) != Some(&config)
     { return Err(ToolError::access_denied(call.name)); }
+    require_console_tool_policy(call.name, &config, &selection.operations, selection.tool_policy.as_ref())?;
     let entry = current.reviewed_entry_ticket(call, plan)?;
     let (checks, mut requests) = mpsc::channel::<oneshot::Sender<bool>>(1);
     let (response, receive) = oneshot::channel();

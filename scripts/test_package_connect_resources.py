@@ -502,7 +502,7 @@ class ExplicitResourceSelectionTests(unittest.TestCase):
                 "acquisition_node_bytes": node.stat().st_size, "npm_archive": npm,
                 "npm_archive_sha256": PACKAGE.digest(npm), "npm_archive_bytes": npm.stat().st_size}
 
-    def build_with_npm(self, target="macos-arm64", **overrides):
+    def build_with_npm(self, target="macos-arm64", *, resource_options=None, **overrides):
         npm = self.npm_inputs(target, **overrides)
         upstream = self.root / ("upstream-" + target); upstream.mkdir()
         selected = copy.deepcopy(PACKAGE.TARGETS)
@@ -536,7 +536,7 @@ class ExplicitResourceSelectionTests(unittest.TestCase):
             # Inert headers have no case-colliding runtime tree. This fixture
             # substitutes the staging host prerequisite, not Linux execution.
             result = PACKAGE.build(self.root / ("output-" + target), upstream, Path("/inert/zstd"),
-                                   target=target, **self.kwargs(), **npm)
+                                   target=target, **self.kwargs(), **npm, **(resource_options or {}))
         run.assert_called_once()  # Controlled zstd only; no target executable is invoked.
         if target == "linux-x86_64": case_check.assert_called_once_with(self.root)
         else: case_check.assert_not_called()
@@ -573,6 +573,134 @@ class ExplicitResourceSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "explicit current starter"):
             PACKAGE.build(self.root / "unused", self.root, Path("/unused/zstd"), **values)
         self.assertFalse((self.root / "unused").exists())
+
+    def prebuilt_policy(self, target="macos-arm64"):
+        observed = self.root / ("target-observation-" + target)
+        RuntimeCompatibilityTests().resources(observed, target, node="24.19.0")
+        policy = {"schema_version": 1, "scope": "trusted_public_node_prebuilt_resources",
+            "target": {"node_sha256": PACKAGE.digest(observed / "runtime/node/bin/node"),
+                "node_version": "v24.19.0", "node_abi": "137",
+                "platform": "linux" if target == "linux-x86_64" else "darwin",
+                "arch": "x64" if target == "linux-x86_64" else "arm64",
+                "libc": {"family": "glibc", "version": "2.39"} if target == "linux-x86_64" else None},
+            "allowed_origins": ["https://github.com"],
+            "allowed_redirect_origins": ["https://release-assets.githubusercontent.com"]}
+        path = self.root / ("prebuilt-" + target + ".json")
+        path.write_text(json.dumps(policy, indent=2) + "\n")
+        return path, policy
+
+    def test_explicit_node_prebuilt_policy_is_captured_in_both_resource_archives(self):
+        for target in ("macos-arm64", "linux-x86_64"):
+            with self.subTest(target=target):
+                path, _ = self.prebuilt_policy(target)
+                original = path.read_bytes()
+                result, _ = self.build_with_npm(target, resource_options={
+                    "node_prebuilt_policy": path, "node_prebuilt_policy_sha256": PACKAGE.digest(path)})
+                resources = Path(result["resources"])
+                manifest, _ = PREPARE.verify_resources(resources)
+                selected = PREPARE.node_prebuilt_resources(resources, manifest)
+                self.assertEqual(selected["path"].read_bytes(), original)
+                self.assertEqual(selected["sha256"], hashlib.sha256(original).hexdigest())
+                self.assertEqual(result["node_prebuilt_policy_input"]["sha256"], selected["sha256"])
+                with tarfile.open(result["archive"], "r:gz") as archive:
+                    name = "meerkat-connect-" + target + "/libexec/meerkat-connect/node-prebuilt-policy.json"
+                    self.assertEqual(archive.extractfile(name).read(), original)
+                path.write_bytes(b"changed source after captured packaging")
+                self.assertEqual(selected["path"].read_bytes(), original)
+
+    def test_node_prebuilt_wrong_target_and_boolean_schema_never_emit_archive(self):
+        for target, change in (("macos-arm64", "node"), ("linux-x86_64", "schema")):
+            with self.subTest(change=change):
+                path, policy = self.prebuilt_policy(target)
+                if change == "node": policy["target"]["node_sha256"] = "0" * 64
+                else: policy["schema_version"] = True
+                path.write_text(json.dumps(policy))
+                with self.assertRaisesRegex(ValueError, "does not bind the selected target"):
+                    self.build_with_npm(target, resource_options={
+                        "node_prebuilt_policy": path, "node_prebuilt_policy_sha256": PACKAGE.digest(path)})
+                self.assertFalse(list((self.root / ("output-" + target)).glob("*.tar.gz")))
+                self.assertFalse((self.root / ("output-" + target) / "build.json").exists())
+
+    def test_node_prebuilt_requires_exact_hash_and_selected_npm_before_output(self):
+        path, _ = self.prebuilt_policy()
+        values = self.npm_inputs()
+        for options in ({"node_prebuilt_policy": path},
+                        {"node_prebuilt_policy": path, "node_prebuilt_policy_sha256": "0" * 64}):
+            with self.subTest(options=options), mock.patch.object(PACKAGE.subprocess, "run") as run:
+                with self.assertRaises(ValueError):
+                    PACKAGE.build(self.root / "unused", self.root, Path("/unused/zstd"),
+                                  **self.kwargs(), **values, **options)
+                run.assert_not_called()
+                self.assertFalse((self.root / "unused").exists())
+        with self.assertRaises(ValueError):
+            PACKAGE.build(self.root / "unused", self.root, Path("/unused/zstd"), **self.kwargs(),
+                          node_prebuilt_policy=path, node_prebuilt_policy_sha256=PACKAGE.digest(path))
+
+    def test_node_build_capture_requires_pair_bounds_regular_bytes_and_selected_node(self):
+        capture = PACKAGE.captured_node_build_profile
+        self.assertIsNone(capture(None, None, selected_node=False))
+        profile = self.root / "build-profile.json"
+        raw = b'{ "external_tool": "/host/selected/tool", "literal": "unchanged" }\n'
+        profile.write_bytes(raw)
+        expected = hashlib.sha256(raw).hexdigest()
+        self.assertEqual(capture(profile, expected, selected_node=True), raw)
+        for path, sha, selected in ((profile, None, True), (None, expected, True),
+                (profile, expected, False), (profile, "0" * 64, True),
+                (profile, expected.upper(), True), (Path("relative.json"), expected, True)):
+            with self.subTest(path=path, sha=sha, selected=selected), self.assertRaises((ValueError, OSError)):
+                capture(path, sha, selected_node=selected)
+        link = self.root / "build-profile-link.json"
+        link.symlink_to(profile)
+        with self.assertRaises(OSError):
+            capture(link, expected, selected_node=True)
+        for raw in (b"", b"x" * 65537):
+            profile.write_bytes(raw)
+            with self.assertRaises(ValueError):
+                capture(profile, hashlib.sha256(raw).hexdigest(), selected_node=True)
+
+    def test_node_build_profile_is_exact_inventory_without_internal_path_relocation(self):
+        # The packager transports bytes. The backend pins the profile; its
+        # semantic tool validation belongs to the installer at build review.
+        raw = b'{ "external_tool": "/host/selected/tool", "literal": "unchanged" }\n'
+        profile = self.root / "build-profile.json"
+        profile.write_bytes(raw)
+        expected = hashlib.sha256(raw).hexdigest()
+        for target in ("macos-arm64", "linux-x86_64"):
+            with self.subTest(target=target):
+                result, _ = self.build_with_npm(target, resource_options={
+                    "node_build_profile": profile, "node_build_profile_sha256": expected})
+                resources = Path(result["resources"])
+                manifest, _ = PREPARE.verify_resources(resources)
+                selected = PREPARE.node_build_resources(resources, manifest)
+                self.assertEqual(selected, {"path": resources / "node-build-profile.json", "sha256": expected})
+                self.assertEqual(selected["path"].read_bytes(), raw)
+                self.assertNotIn("node_build", manifest)
+                self.assertEqual(result["node_build_profile_input"], {"path": str(profile),
+                    "sha256": expected, "bytes": len(raw),
+                    "scope": "exact_profile_bytes_external_toolchain_paths_remain_host_owned"})
+                with tarfile.open(result["archive"], "r:gz") as archive:
+                    name = "meerkat-connect-" + target + "/libexec/meerkat-connect/node-build-profile.json"
+                    self.assertEqual(archive.extractfile(name).read(), raw)
+                for change in ("no_node", "no_entry", "duplicate", "changed"):
+                    altered = copy.deepcopy(manifest)
+                    rows = [row for row in altered["entries"] if row["path"] == "node-build-profile.json"]
+                    if change == "no_node": altered.pop("npm_acquisition")
+                    elif change == "no_entry": altered["entries"].remove(rows[0])
+                    elif change == "duplicate": altered["entries"].append(rows[0])
+                    else: rows[0]["sha256"] = "0" * 64
+                    with self.subTest(change=change), self.assertRaises(PREPARE.ResourceError):
+                        PREPARE.node_build_resources(resources, altered)
+        profile.write_bytes(b"source changed after packaging")
+        self.assertEqual(selected["path"].read_bytes(), raw)
+
+    def test_node_build_cli_preserves_explicit_pair(self):
+        values = self.kwargs() | self.npm_inputs() | {
+            "node_build_profile": self.root / "build-profile.json", "node_build_profile_sha256": "a" * 64}
+        argv = ["package", "--destination", "/unused/output", "--upstream", "/unused/upstream", "--zstd", "/unused/zstd"]
+        for key, value in values.items(): argv.extend(["--" + key.replace("_", "-"), str(value)])
+        with mock.patch("sys.argv", argv), mock.patch.object(PACKAGE, "build", return_value={}) as build:
+            with contextlib.redirect_stdout(io.StringIO()): PACKAGE.main()
+        self.assertEqual(build.call_args.kwargs, {"target": "macos-arm64", **values})
 
     def test_npm_owner_refuses_wrong_archive_version_and_unsupported_acquisition_node(self):
         with self.assertRaisesRegex(ValueError, "npm_tool_version"):

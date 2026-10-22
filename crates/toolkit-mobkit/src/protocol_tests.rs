@@ -104,6 +104,7 @@ impl Host {
             ContentDigest::of_bytes(format!("{}:{call_id}", self.audience).as_bytes()).to_string();
         HostToolAdmission {
             host: HostSetupRequest {
+                setup_helper: None,
                 target: self.target.clone(),
                 correlation: id(&correlation),
                 parent_operation: Some(id("original-task")),
@@ -1186,4 +1187,64 @@ async fn installed_tool_retries_clock_conflict_once_with_exact_raw_input() {
     assert!(matches!(tool.dispatch_protocol_fixture(call, &context).await, Err(ToolError::InvalidArguments { .. })));
     assert_eq!(host.calls.load(Ordering::SeqCst), 2);
     assert_eq!(f.store.get(winner.snapshot.key()).await.unwrap().unwrap(), held);
+}
+
+
+#[cfg(feature = "native-host")]
+#[tokio::test]
+async fn helper_review_lifetime_binds_exact_canonical_snapshot_and_refuses_changed_or_terminal() {
+    use crate::{original_ingress::helper_originals::HelperOperation,
+        private_originals::{PrivateOriginalError, setup_helpers::bind_snapshot_deadline_fixture}};
+    use std::sync::OnceLock;
+    let f = Fixture::new();
+    let admission = f.host.admission("call-1");
+    let context = SetupUseContext {
+        tenant: &admission.context.tenant, deployment: &admission.context.deployment,
+        realm: &admission.context.realm, target: &admission.context.target,
+        authorization: &f.host.authorization, policy_revision: &admission.context.policy_revision,
+        now_ms: 200,
+    };
+    let request = validate_request(serde_json::from_value(input()).unwrap(), admission.host.clone(),
+        &admission.evidence, &context, f.references.as_ref()).unwrap();
+    let bridge = SetupStore::new(f.store.as_ref(), f.scope()).unwrap();
+    let snapshot = bridge.admit(&request, &admission.evidence, &context, f.references.as_ref())
+        .await.unwrap().snapshot;
+    let operation = HelperOperation {
+        acquisition: snapshot.key().clone(), effect: "work-admission".into(),
+        input_digest: ContentDigest::of_bytes(&toolkit_package::canonical_json(request.request()).unwrap()),
+    };
+    let held = OnceLock::new();
+    bind_snapshot_deadline_fixture(&held, &operation, &snapshot).unwrap();
+    bind_snapshot_deadline_fixture(&held, &operation, &snapshot).unwrap();
+    assert_eq!(held.get(), Some(&900));
+    // These are real independently validated canonical rows, not modified
+    // snapshots or model-provided deadline scalars.
+    for change in ["acquisition", "input", "deadline"] {
+        let other = SqliteStore::open(f.directory.path().join(format!("deadline-{change}.sqlite3"))).unwrap();
+        let mut host = admission.host.clone();
+        let mut body = request.request().clone();
+        match change {
+            "acquisition" => host.correlation = id("another-call"),
+            "input" => body.request.push_str(" Different exact input."),
+            "deadline" => host.limits.deadline_ms = 901,
+            _ => unreachable!(),
+        }
+        let changed = validate_request(body, host, &admission.evidence, &context, f.references.as_ref()).unwrap();
+        let changed = SetupStore::new(&other, f.scope()).unwrap()
+            .admit(&changed, &admission.evidence, &context, f.references.as_ref()).await.unwrap().snapshot;
+        let result = bind_snapshot_deadline_fixture(&held, &operation, &changed);
+        if change == "deadline" {
+            assert!(matches!(result, Err(PrivateOriginalError::Conflict)));
+        } else {
+            assert!(matches!(result, Err(PrivateOriginalError::Denied)));
+        }
+        assert_eq!(held.get(), Some(&900));
+    }
+    let terminal = bridge.resolve(&snapshot, Resolution::Cancelled(context_reference()), None,
+        SetupAccess { evidence: &admission.evidence, context: &context, references: f.references.as_ref() })
+        .await.unwrap();
+    let unbound = OnceLock::new();
+    assert!(matches!(bind_snapshot_deadline_fixture(&unbound, &operation, &terminal),
+        Err(PrivateOriginalError::Denied)));
+    assert!(unbound.get().is_none());
 }

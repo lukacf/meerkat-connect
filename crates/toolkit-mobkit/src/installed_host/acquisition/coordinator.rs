@@ -110,6 +110,7 @@ impl InstalledAcquisition {
         }
         let owner = SameHostSetupWorkOwner {
             acquisition: self,
+            selection: self.selected_helper(snapshot.request())?,
             operation,
             call,
             context,
@@ -244,13 +245,22 @@ impl InstalledAcquisition {
             return Err(SetupError::InvalidRecord);
         }
         let submission = originals
-            .submit_setup_helper(&prepared, held, content)
+            .submit_setup_helper(&prepared, held, &snapshot, content, source_deadline)
             .await
             .map_err(|error| {
                 #[cfg(test)]
                 aa1_private_failure("advance.submit_helper", error);
                 source_error(error)
             })?;
+        let crate::private_originals::setup_helpers::SetupHelperSubmission::Native(submission) =
+            submission
+        else {
+            // Both in-call attempts were definitely not admitted. Only this
+            // same current invocation can replay its completed work/source;
+            // a later model call has another correlation, and no worker is
+            // scheduled here. The original deadline and effect stay unchanged.
+            return Ok(SetupWorkerObservation::RetrySafe);
+        };
         Ok(match submission {
             PrivateOriginalSubmission::Admitted {
                 deduplicated,
@@ -272,6 +282,7 @@ impl InstalledAcquisition {
 
 struct SameHostSetupWorkOwner<'a> {
     acquisition: &'a InstalledAcquisition,
+    selection: HelperAdmissionSelection,
     operation: &'a Id,
     call: ToolCallView<'a>,
     context: &'a ToolDispatchContext,
@@ -281,11 +292,7 @@ struct SameHostSetupWorkOwner<'a> {
 
 impl SameHostSetupWorkOwner<'_> {
     fn selection(&self) -> HelperAdmissionSelection {
-        HelperAdmissionSelection {
-            helper: self.acquisition.helper.clone(),
-            member: self.acquisition.helper_member.clone(),
-            grant_caller: self.acquisition.grant_caller.clone(),
-        }
+        self.selection.clone()
     }
     fn operation(
         &self,
@@ -662,11 +669,7 @@ impl InstalledAcquisition {
             effect: store.native_work_effect_key(snapshot).await?,
             origin: original.setup_origin(),
             contributors: original.contributors,
-            selection: HelperAdmissionSelection {
-                helper: self.helper.clone(),
-                member: self.helper_member.clone(),
-                grant_caller: self.grant_caller.clone(),
-            },
+            selection: self.selected_helper(snapshot.request())?,
             backend: &self.work_backend,
         };
         store

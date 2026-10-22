@@ -77,7 +77,7 @@ class NodeAcquisitionTests(unittest.TestCase):
         self.stop_requested = False
         self.mutate_lock = lambda lock: None
         self.after_stage = lambda stage: None
-        self.runtime = {"version": "v24.19.0", "platform": "darwin", "arch": "arm64"}
+        self.runtime = {"version": "v24.19.0", "platform": "darwin", "arch": "arm64", "abi": "137", "libc": None}
 
     def owner(self):
         self.profile_path.write_bytes(M.wire(self.profile))
@@ -157,6 +157,32 @@ class NodeAcquisitionTests(unittest.TestCase):
         with self.assertRaisesRegex(B.SetupError, "invalid_node_acquisition_profile"):
             M.NodeAcquisition(self.io, None, "0" * 64, self.python, self.staging,
                               self.installer, M.sha(self.installer.read_bytes()), self.node)
+
+    def test_named_primary_and_dependency_use_shared_archive_owner_without_rewriting(self):
+        def rewrap(raw, wrapper):
+            parsed = W.MODULE.npm_archive(raw)
+            return W.tarball([(wrapper + "/" + path, data, tarfile.REGTYPE, "")
+                              for path, data in parsed["files"].items()])
+        self.primary = rewrap(self.primary, "primary-wrapper")
+        self.dependency = rewrap(self.dependency, "dependency-wrapper")
+        result = self.execute()
+        destination = self.staging / self.job.name
+        self.assertEqual((destination / "artifact.tgz").read_bytes(), self.primary)
+        self.assertEqual((destination / "closure" / ("archive-" + M.sha(self.dependency))).read_bytes(),
+                         self.dependency)
+        self.assertEqual([(item["name"], item["version"]) for item in result["artifacts"]],
+                         [("outside-server", "1.0.0"), ("dependency", "1.0.0")])
+        files = {name: B.read_file(destination, name, M.FILE_LIMIT) for name in result["files"]}
+        graph = W.MODULE.selected_npm_closure(files, {"entrypoint": {"executable": "index.js"}})
+        self.assertEqual(set(graph["rows"]), {"node_modules/outside-server", "node_modules/dependency"})
+
+    def test_mixed_archive_wrappers_fail_without_publishing_a_selection(self):
+        self.dependency = W.tarball([
+            ("first/package.json", M.wire({"name": "dependency", "version": "1.0.0"}), tarfile.REGTYPE, ""),
+            ("second/index.js", b"// Inert test payload.\n", tarfile.REGTYPE, "")])
+        with self.assertRaises(B.SetupError):
+            self.execute()
+        self.assert_unpublished()
 
     def test_only_exact_safe_package_and_version_are_accepted(self):
         owner = self.owner()
@@ -245,19 +271,17 @@ class NodeAcquisitionTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 5)
         self.assert_unpublished()
 
-    def test_optional_and_platform_filtered_archives_are_not_silent_success(self):
+    def test_workspace_and_shrinkwrap_archives_remain_unsupported(self):
         owner = self.owner()
-        for extra in ({"optionalDependencies": {"elsewhere": "1.0.0"}}, {"os": ["darwin"]},
-                      {"cpu": ["arm64"]}, {"libc": ["glibc"]}, {"workspaces": ["x"]}):
-            package = {"name": "outside-server", "version": "1.0.0", **extra}
-            raw = W.package("outside-server", "1.0.0", {"package.json": M.wire(package)})
-            with self.subTest(extra=extra), self.assertRaises(ValueError):
-                owner.archive(vars(W.MODULE), raw)
+        package = {"name": "outside-server", "version": "1.0.0", "workspaces": ["x"]}
+        raw = W.package("outside-server", "1.0.0", {"package.json": M.wire(package)})
+        with self.assertRaises(ValueError):
+            owner.archive(vars(W.MODULE), raw)
         raw = W.package("outside-server", "1.0.0", {"npm-shrinkwrap.json": b"{}"})
         with self.assertRaises(ValueError):
             owner.archive(vars(W.MODULE), raw)
 
-    def test_optional_lock_dependency_reports_unsupported_closure_after_resolution(self):
+    def test_optional_lock_dependency_without_integrity_cannot_be_silently_omitted(self):
         def optional_lock(lock):
             packages = lock["packages"]
             root = packages.pop("")
@@ -267,20 +291,53 @@ class NodeAcquisitionTests(unittest.TestCase):
                 **packages,
             }
         self.mutate_lock = optional_lock
-        with self.assertRaisesRegex(B.SetupError, "^node_acquisition_unsupported_closure$"):
+        with self.assertRaisesRegex(B.SetupError, "^node_acquisition_unconfirmed$"):
             self.execute()
         self.assertEqual([call[0][-3] for call in self.calls],
                          ["--probe", "--fetch", "--fetch", "--resolve"])
         self.assert_unpublished()
 
-    def test_platform_archive_reports_the_same_unsupported_closure(self):
+    def test_matching_platform_archive_retains_exact_owned_target(self):
         self.primary = W.package("outside-server", "1.0.0", {"package.json": M.wire({
-            "name": "outside-server", "version": "1.0.0", "os": ["darwin"]})})
-        with self.assertRaisesRegex(B.SetupError, "^node_acquisition_unsupported_closure$"):
-            self.execute()
-        self.assertEqual([call[0][-3] for call in self.calls],
-                         ["--probe", "--fetch", "--fetch"])
-        self.assert_unpublished()
+            "name": "outside-server", "version": "1.0.0", "os": ["darwin"],
+            "dependencies": {"dependency": "1.0.0"}}), "index.js": b"// inert\n"})
+        self.mutate_lock = lambda lock: lock["packages"]["node_modules/outside-server"].update(os=["darwin"])
+        result = self.execute()
+        target = self.staging / self.job.name / "closure/npm-target"
+        self.assertEqual(json.loads(target.read_bytes()), M._npm_target(self.runtime, M.sha(self.node.read_bytes())))
+        self.assertEqual(result["files"]["closure/npm-target"], M.sha(target.read_bytes()))
+
+    def test_optional_platform_closure_is_retained_and_readback_rejects_target_removal(self):
+        self.primary = W.package("outside-server", "1.0.0", {"package.json": M.wire({
+            "name": "outside-server", "version": "1.0.0", "optionalDependencies": {"dependency": "1.0.0"}}),
+            "index.js": b"// inert\n"})
+        self.dependency = W.package("dependency", "1.0.0", {"package.json": M.wire({
+            "name": "dependency", "version": "1.0.0", "os": ["linux"]})})
+        def optional(lock):
+            row = lock["packages"]["node_modules/outside-server"]
+            row["optionalDependencies"] = row.pop("dependencies")
+            lock["packages"]["node_modules/dependency"].update(optional=True, os=["linux"])
+        self.mutate_lock = optional
+        owner = self.owner()
+        result = owner.run(self.request, self.job, self.runner, lambda: None)
+        destination = self.staging / self.job.name
+        files = {key: (destination / key).read_bytes() for key in result["files"]}
+        graph = W.MODULE.npm_archive_closure(files)
+        self.assertEqual(set(graph["rows"]), {"node_modules/outside-server"})
+        self.assertEqual(graph["excluded_optional_packages"], {"node_modules/dependency": "platform_mismatch"})
+        self.assertEqual(len(result["artifacts"]), 2)
+        retained = {"arguments": self.request, "family": "selected-node", "job_id": self.job.name,
+                    "workspace": str(self.workspace), "staging_root": str(self.staging),
+                    "host": {"profile_sha256": owner.profile_sha,
+                             "assets": {name: M.sha(owner.frozen[name]) for name in
+                                        ("profile.json", "npm.tgz", "installer.py", "worker.py")}}}
+        self.assertEqual(M.readback(self.io, retained, self.job)["receipt_sha256"], result["receipt_sha256"])
+        altered = dict(result); altered.pop("receipt_path"); altered.pop("receipt_sha256")
+        altered["files"] = {key: value for key, value in altered["files"].items() if key != "closure/npm-target"}
+        (destination / "closure/npm-target").unlink()
+        (destination / "acquisition.json").write_bytes(M.wire(altered))
+        with self.assertRaisesRegex(B.SetupError, "node_acquisition_readback_unconfirmed"):
+            M.readback(self.io, retained, self.job)
 
     def test_malformed_lock_row_remains_unconfirmed(self):
         self.mutate_lock = lambda lock: lock["packages"].update({"node_modules/dependency": None})

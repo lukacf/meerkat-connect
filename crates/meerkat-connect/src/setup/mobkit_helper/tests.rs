@@ -120,10 +120,12 @@ fn dedicated_profile_preserves_shared_research_and_exact_server_ceiling() {
     assert!(access.permits("setup_acquire_python"));
     assert!(access.permits("setup_search_node"));
     assert!(access.permits("setup_acquire_node"));
+    assert!(access.permits("setup_acquire_node_prebuilt"));
     let preparation = helper(SetupHelperTools::Preparation);
     let preparation_access = preparation.server().access.as_ref().unwrap();
     assert!(!preparation_access.permits("setup_search_node"));
     assert!(!preparation_access.permits("setup_acquire_node"));
+    assert!(!preparation_access.permits("setup_acquire_node_prebuilt"));
     assert!(!access.permits("setup_install"));
     assert!(!access.permits("unadvertised_operation"));
     // This checks the public durable Profile shape only. It deliberately does

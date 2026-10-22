@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use thiserror::Error;
 
-pub use conditional::{ConditionalAdmission, ConditionalAdmissionStore, RecordCondition};
+pub use conditional::{ConditionalAdmission, ConditionalAdmissionStore, ConditionalTransition, RecordCondition};
 pub use sqlite::SqliteStore;
 
 /// Mechanical invalidation supplied by the actual installed record owner.

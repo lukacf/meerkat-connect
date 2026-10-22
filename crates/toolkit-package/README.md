@@ -80,6 +80,12 @@ authentication and access policy. Export does not execute instructions, launch
 servers, expand placeholders or resolve credentials. Derived `Serialize`
 encodings remain unchanged because retained bundle digests depend on them.
 
+Connect's native protected attachment can separately enforce a host-approved
+subset of exact tool names. Separate write tools do not by themselves rule out
+that read subset; allowed query semantics, startup effects and filesystem
+confinement still need independent assessment and controls. See
+[operation selection and runtime enforcement](../../sdk/consumer-setup/METADATA.md#operation-selection-and-runtime-enforcement).
+
 ## Validation
 
 `bundled_adopted_catalog()` separately exposes the adopted local MCP profiles as

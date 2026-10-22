@@ -47,6 +47,7 @@ impl Fixture {
         };
         let parent = input.helper.controller_parent[0].clone();
         input.members[0].setup_capability = Some(CompiledAgentSetupCapability {
+            helper: None,
             route: Id::new("original-route").unwrap(), parent, helper_targets: vec![],
         });
         let resources = crate::application_setup::tests::prepared(root);
@@ -107,7 +108,7 @@ impl Fixture {
         };
         let output_audience = BTreeSet::from([Id::new("operator").unwrap()]);
         let acquisition = ApplicationAcquisitionSelection {
-            schema: 1, console_setup: None, standing_policy: None,
+            schema: 1, console_setup: None, local_operator_recovery: None, standing_policy: None,
             prepared_application_setup: reference("setup.json", &canonical_json(&prepared).unwrap()),
             backend_generation: Id::new("retained-backend").unwrap(),
             proposal_ceiling: Ceiling { actions: BTreeSet::new(), services: BTreeSet::new(),

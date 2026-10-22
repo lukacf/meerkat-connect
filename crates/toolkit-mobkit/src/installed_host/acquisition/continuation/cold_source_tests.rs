@@ -392,3 +392,6 @@ async fn durable_owner_reopen_drains_same_pending_completion_after_source_recove
     assert!(cleanup.is_ok(), "{cleanup:?}");
     if let Err(panic) = result { std::panic::resume_unwind(panic); }
 }
+
+#[path = "custody_recovery_wake_tests.rs"]
+mod custody_recovery_wake_tests;

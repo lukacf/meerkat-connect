@@ -353,7 +353,44 @@ async def test_restart_without_enforced_configuration_is_documented_legacy_bound
         assert legacy.status(output_id=output).delivery_state == "provider_accepted"
 
 
-async def test_sender_transition_does_not_queue_a_previously_allowed_entry(tmp_path):
+@asynccontextmanager
+async def blocked_sender_activation(authority, send):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Candidate:
+        async def activate(self):
+            entered.set()
+            await release.wait()
+
+        async def deactivate(self):
+            pass
+
+        async def __call__(self, **kwargs):
+            return await send(**kwargs)
+
+    handle = authority.stage_activation(sender_id="s", to_owner_id="owner", sender=Candidate())
+    task = asyncio.create_task(authority.commit_activation(handle))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        yield
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 1)
+
+
+def observe_sender_selection(authority, monkeypatch):
+    waiting = asyncio.Event()
+    select = authority.select_dispatch
+
+    async def observed(**kwargs):
+        waiting.set()
+        return await select(**kwargs)
+
+    monkeypatch.setattr(authority, "select_dispatch", observed)
+    return waiting
+
+
+async def test_sender_transition_does_not_queue_a_previously_allowed_entry(tmp_path, monkeypatch):
     path = tmp_path / "outbox.sqlite3"
     audience = HostAudience(tmp_path / "host.sqlite3")
     audience.grant()
@@ -367,49 +404,31 @@ async def test_sender_transition_does_not_queue_a_previously_allowed_entry(tmp_p
     async with transport() as (send, calls, _):
         authority = SenderAuthority(path=tmp_path / "sender.sqlite3")
         authority.attach_active(sender_id="s", owner_id="owner", sender=send)
-        waiting = asyncio.Event()
-
-        class ObservedLock(asyncio.Lock):
-            async def acquire(self):
-                waiting.set()
-                return await super().acquire()
-
-        authority._lock = ObservedLock()
+        waiting = observe_sender_selection(authority, monkeypatch)
         engine = owner(path, send, policy, sender_authority=authority)
         output = commit(engine)
-        await authority._lock.acquire()
-        waiting.clear()
-        task = asyncio.create_task(engine._dispatch_output(output))
-        try:
+        async with blocked_sender_activation(authority, send):
+            task = asyncio.create_task(engine._dispatch_output(output))
             await asyncio.wait_for(waiting.wait(), 1)
+            assert not checked.is_set() and not task.done()
             audience.revoke()
-        finally:
-            authority._lock.release()
         await asyncio.wait_for(task, 1)
         assert not calls
         assert rows(path) == [(0, "pending", 0, 0, None)]
 
 
 @pytest.mark.parametrize("failure", ["timeout", "cancel"])
-async def test_waiting_for_sender_is_not_a_provider_attempt(tmp_path, failure):
+async def test_waiting_for_sender_is_not_a_provider_attempt(tmp_path, failure, monkeypatch):
     path = tmp_path / "outbox.sqlite3"
-    waiting = asyncio.Event()
-
-    class ObservedLock(asyncio.Lock):
-        async def acquire(self):
-            waiting.set()
-            return await super().acquire()
 
     async with transport() as (send, calls, _):
         authority = SenderAuthority(path=tmp_path / "sender.sqlite3")
         authority.attach_active(sender_id="s", owner_id="owner", sender=send)
-        authority._lock = ObservedLock()
+        waiting = observe_sender_selection(authority, monkeypatch)
         engine = owner(path, send, lambda _: Decision.ALLOWED, sender_authority=authority,
                        dispatch_timeout_seconds=0.03)
-        await authority._lock.acquire()
-        waiting.clear()
-        task = asyncio.create_task(engine._dispatch_output(commit(engine)))
-        try:
+        async with blocked_sender_activation(authority, send):
+            task = asyncio.create_task(engine._dispatch_output(commit(engine)))
             await asyncio.wait_for(waiting.wait(), 1)
             if failure == "cancel":
                 task.cancel()
@@ -419,8 +438,6 @@ async def test_waiting_for_sender_is_not_a_provider_attempt(tmp_path, failure):
                 await asyncio.wait_for(task, 1)
             assert not calls
             assert rows(path) == [(0, "pending", 0, 0, None)]
-        finally:
-            authority._lock.release()
 
 
 async def test_same_owner_reattachment_during_policy_wait_invalidates_selection(tmp_path):
